@@ -19,6 +19,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.view.KeyEvent
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -30,8 +31,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -62,15 +61,6 @@ class SendspinService : Service() {
         private const val NOTIFICATION_ID = 2
     }
 
-    private data class MediaInfo(
-        val title: String,
-        val artist: String,
-        val album: String,
-        val durationMs: Long,
-        val isPlaying: Boolean,
-        val artUrl: String?
-    )
-
     @Inject lateinit var sendspinManager: SendspinManager
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var playerRepository: PlayerRepository
@@ -92,7 +82,7 @@ class SendspinService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 Log.d(TAG, "Audio becoming noisy (headset unplugged), pausing")
-                val id = playerRepository.selectedPlayer.value?.playerId ?: return
+                val id = sendspinPlayerId ?: return
                 scope.launch { playerRepository.pause(id) }
             }
         }
@@ -101,6 +91,7 @@ class SendspinService : Service() {
     private var currentArt: Bitmap? = null
     private var currentArtUrl: String? = null
     private var isStreaming = false
+    private var isSendspinReady = false
     private var wasPlayingBeforeDisconnect = false
     private var currentTitle = ""
     private var currentArtist = ""
@@ -108,6 +99,8 @@ class SendspinService : Service() {
     private var currentDurationMs = 0L
     private var currentPositionMs = 0L
     private var currentIsPlaying = false
+    private var optimisticUntil = 0L
+    private var sendspinPlayerId: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -125,15 +118,25 @@ class SendspinService : Service() {
             ACTION_START -> startSendspin()
             ACTION_STOP -> stopSendspin()
             ACTION_PLAY_PAUSE -> {
-                val id = playerRepository.selectedPlayer.value?.playerId ?: return START_STICKY
+                val id = sendspinPlayerId ?: return START_STICKY
+                if (currentIsPlaying) {
+                    currentIsPlaying = false
+                    sendspinManager.pauseAudio()
+                } else {
+                    currentIsPlaying = true
+                    if (!hasAudioFocus) requestAudioFocus()
+                    sendspinManager.resumeAudio()
+                }
+                optimisticUntil = System.currentTimeMillis() + 1000
+                updateMediaSession()
                 scope.launch { playerRepository.playPause(id) }
             }
             ACTION_NEXT -> {
-                val id = playerRepository.selectedPlayer.value?.playerId ?: return START_STICKY
+                val id = sendspinPlayerId ?: return START_STICKY
                 scope.launch { playerRepository.next(id) }
             }
             ACTION_PREV -> {
-                val id = playerRepository.selectedPlayer.value?.playerId ?: return START_STICKY
+                val id = sendspinPlayerId ?: return START_STICKY
                 scope.launch { playerRepository.previous(id) }
             }
         }
@@ -164,7 +167,7 @@ class SendspinService : Service() {
                         Log.d(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
                         if (isStreaming) {
-                            val id = playerRepository.selectedPlayer.value?.playerId
+                            val id = sendspinPlayerId
                             if (id != null) {
                                 scope.launch { playerRepository.pause(id) }
                             }
@@ -227,28 +230,73 @@ class SendspinService : Service() {
                 MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
             )
             setCallback(object : MediaSessionCompat.Callback() {
+                override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
+                    val keyEvent = mediaButtonEvent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                    val keyCode = keyEvent?.keyCode
+                    val action = when (keyEvent?.action) {
+                        KeyEvent.ACTION_DOWN -> "DOWN"
+                        KeyEvent.ACTION_UP -> "UP"
+                        else -> "?"
+                    }
+                    val keyName = when (keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "PLAY_PAUSE"
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> "PLAY"
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> "PAUSE"
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> "NEXT"
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "PREVIOUS"
+                        KeyEvent.KEYCODE_MEDIA_STOP -> "STOP"
+                        KeyEvent.KEYCODE_HEADSETHOOK -> "HEADSETHOOK"
+                        else -> "keyCode=$keyCode"
+                    }
+                    Log.d(TAG, "BT mediaButton: $keyName $action, currentIsPlaying=$currentIsPlaying, pbState=${if (currentIsPlaying) "PLAYING" else if (isSendspinReady) "PAUSED" else "BUFFERING"}")
+                    return super.onMediaButtonEvent(mediaButtonEvent)
+                }
                 override fun onStop() {
+                    Log.d(TAG, "MediaSession onStop callback")
                     stopSendspin()
                 }
                 override fun onPlay() {
-                    val id = playerRepository.selectedPlayer.value?.playerId ?: return
+                    Log.d(TAG, "MediaSession onPlay")
+                    val id = sendspinPlayerId ?: return
+                    currentIsPlaying = true
+                    optimisticUntil = System.currentTimeMillis() + 1000
+                    updateMediaSession()
+                    if (!hasAudioFocus) requestAudioFocus()
+                    sendspinManager.resumeAudio()
                     scope.launch { playerRepository.play(id) }
                 }
                 override fun onPause() {
-                    val id = playerRepository.selectedPlayer.value?.playerId ?: return
+                    Log.d(TAG, "MediaSession onPause")
+                    val id = sendspinPlayerId ?: return
+                    currentIsPlaying = false
+                    optimisticUntil = System.currentTimeMillis() + 1000
+                    updateMediaSession()
+                    sendspinManager.pauseAudio()
                     scope.launch { playerRepository.pause(id) }
                 }
                 override fun onSkipToNext() {
-                    val id = playerRepository.selectedPlayer.value?.playerId ?: return
-                    scope.launch { playerRepository.next(id) }
+                    Log.d(TAG, "MediaSession onSkipToNext")
+                    val id = sendspinPlayerId ?: return
+                    scope.launch {
+                        try { playerRepository.next(id) }
+                        catch (e: Exception) { Log.w(TAG, "MediaSession next failed: ${e.message}") }
+                    }
                 }
                 override fun onSkipToPrevious() {
-                    val id = playerRepository.selectedPlayer.value?.playerId ?: return
-                    scope.launch { playerRepository.previous(id) }
+                    Log.d(TAG, "MediaSession onSkipToPrevious")
+                    val id = sendspinPlayerId ?: return
+                    scope.launch {
+                        try { playerRepository.previous(id) }
+                        catch (e: Exception) { Log.w(TAG, "MediaSession previous failed: ${e.message}") }
+                    }
                 }
                 override fun onSeekTo(pos: Long) {
-                    val id = playerRepository.selectedPlayer.value?.playerId ?: return
-                    scope.launch { playerRepository.seek(id, pos / 1000.0) }
+                    Log.d(TAG, "MediaSession onSeekTo $pos")
+                    val id = sendspinPlayerId ?: return
+                    scope.launch {
+                        try { playerRepository.seek(id, pos / 1000.0) }
+                        catch (e: Exception) { Log.w(TAG, "MediaSession seek failed: ${e.message}") }
+                    }
                 }
             })
             isActive = true
@@ -276,12 +324,23 @@ class SendspinService : Service() {
             sendspinManager.connectionState.collect { state ->
                 val wasStreaming = isStreaming
                 isStreaming = state == SendspinState.STREAMING
+                isSendspinReady = state == SendspinState.SYNCING || state == SendspinState.STREAMING
+                Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isSendspinReady=$isSendspinReady")
                 // Track if sendspin dropped while actively streaming (for auto-resume)
                 if (wasStreaming && !isStreaming) {
                     wasPlayingBeforeDisconnect = true
                     Log.d(TAG, "Sendspin dropped while streaming, marking for auto-resume")
                 }
-                if (!isStreaming) {
+                val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
+                if (isStreaming && !wasStreaming) {
+                    if (outsideOptimistic) currentIsPlaying = true
+                    updateMediaSession()
+                    updateNotification()
+                } else if (wasStreaming && state == SendspinState.SYNCING) {
+                    if (outsideOptimistic) currentIsPlaying = false
+                    updateMediaSession()
+                    updateNotification()
+                } else if (!isStreaming && state != SendspinState.SYNCING) {
                     currentTitle = when (state) {
                         SendspinState.STREAMING -> ""
                         SendspinState.SYNCING -> "Ready"
@@ -295,86 +354,68 @@ class SendspinService : Service() {
                     currentAlbum = ""
                     currentDurationMs = 0
                     currentPositionMs = 0
-                    currentIsPlaying = false
                     updateMediaSession()
                     updateNotification()
                 }
             }
         }
 
-        // Observe track metadata changes ONLY (no elapsed time!)
+        // Observe sendspin player metadata from the players list (not selectedPlayer)
         scope.launch {
-            combine(
-                playerRepository.selectedPlayer,
-                playerRepository.queueState
-            ) { player, queue ->
-                if (!isStreaming || player == null) return@combine null
-                val track = queue?.currentItem?.track
-                MediaInfo(
-                    title = track?.name ?: player.currentMedia?.title ?: "MassDroid Speaker",
-                    artist = track?.artistNames ?: player.currentMedia?.artist ?: "",
-                    album = track?.albumName ?: player.currentMedia?.album ?: "",
-                    durationMs = ((track?.duration ?: queue?.currentItem?.duration
-                        ?: player.currentMedia?.duration ?: 0.0) * 1000).toLong(),
-                    isPlaying = player.state == PlaybackState.PLAYING,
-                    artUrl = queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
-                )
-            }.distinctUntilChanged().collect { info ->
-                if (info == null) return@collect
+            playerRepository.players
+                .map { list -> list.find { it.playerId == sendspinPlayerId } }
+                .distinctUntilChanged()
+                .collect { player ->
+                    if (!isStreaming || player == null) return@collect
+                    val media = player.currentMedia
+                    val title = media?.title ?: "MassDroid Speaker"
+                    val artist = media?.artist ?: ""
+                    val album = media?.album ?: ""
+                    val durationMs = ((media?.duration ?: 0.0) * 1000).toLong()
+                    val artUrl = media?.imageUrl
 
-                val metadataChanged = info.title != currentTitle ||
-                        info.artist != currentArtist ||
-                        info.album != currentAlbum ||
-                        info.durationMs != currentDurationMs
-                val stateChanged = info.isPlaying != currentIsPlaying
+                    val metadataChanged = title != currentTitle ||
+                            artist != currentArtist ||
+                            album != currentAlbum ||
+                            durationMs != currentDurationMs
+                    val artChanged = artUrl != currentArtUrl
 
-                val artChanged = info.artUrl != currentArtUrl
+                    currentTitle = title
+                    currentArtist = artist
+                    currentAlbum = album
+                    currentDurationMs = durationMs
 
-                currentTitle = info.title
-                currentArtist = info.artist
-                currentAlbum = info.album
-                currentDurationMs = info.durationMs
-                currentIsPlaying = info.isPlaying
+                    if (artChanged) {
+                        currentArtUrl = artUrl
+                        currentArt = loadArt(artUrl)
+                    }
 
-                if (artChanged) {
-                    currentArtUrl = info.artUrl
-                    currentArt = loadArt(info.artUrl)
+                    currentPositionMs = ((media?.elapsedTime ?: 0.0) * 1000).toLong()
+
+                    updateMediaSession()
+
+                    if (metadataChanged || artChanged) {
+                        updateNotification()
+                    }
                 }
-
-                currentPositionMs = (playerRepository.elapsedTime.value * 1000).toLong()
-
-                updateMediaSession()
-
-                if (metadataChanged || stateChanged || artChanged) {
-                    updateNotification()
-                }
-            }
         }
 
-        // Immediate audio pause/resume via playback intent (fires BEFORE server round-trip)
+        // Immediate audio pause/resume when app UI controls the sendspin player
         scope.launch {
             playerRepository.playbackIntent.collect { willPlay ->
-                if (!isStreaming) return@collect
+                val selectedId = playerRepository.selectedPlayer.value?.playerId
+                if (selectedId != sendspinPlayerId) return@collect
+                if (!isSendspinReady) return@collect
                 if (willPlay) {
+                    currentIsPlaying = true
                     if (!hasAudioFocus) requestAudioFocus()
                     sendspinManager.resumeAudio()
                 } else {
+                    currentIsPlaying = false
                     sendspinManager.pauseAudio()
                 }
+                updateMediaSession()
             }
-        }
-
-        // Sync MediaSession state when server confirms state change
-        scope.launch {
-            playerRepository.selectedPlayer
-                .map { it?.state }
-                .distinctUntilChanged()
-                .collect { state ->
-                    if (!isStreaming) return@collect
-                    currentIsPlaying = state == PlaybackState.PLAYING
-                    currentPositionMs = (playerRepository.elapsedTime.value * 1000).toLong()
-                    updateMediaSession()
-                }
         }
 
         // Read settings and start sendspin
@@ -393,8 +434,9 @@ class SendspinService : Service() {
                 settingsRepository.setSendspinClientId(clientId)
             }
 
+            sendspinPlayerId = clientId
             sendspinManager.start(url, token, clientId, "MassDroid")
-            Log.d(TAG, "Sendspin started via service")
+            Log.d(TAG, "Sendspin started via service, playerId=$clientId")
         }
 
         // Resume playback when MA reconnects after a drop (only if was playing before)
@@ -422,31 +464,35 @@ class SendspinService : Service() {
                         Log.d(TAG, "MA reconnected, sendspin already $currentSsState, skipping restart")
                     }
 
-                    val playerId = playerRepository.selectedPlayer.value?.playerId
-                    Log.d(TAG, "Reconnect: selectedPlayerId=$playerId, clientId=$clientId, wasPlaying=$wasPlayingBeforeDisconnect")
-                    if (playerId != null && wasPlayingBeforeDisconnect) {
+                    Log.d(TAG, "Reconnect: clientId=$clientId, wasPlaying=$wasPlayingBeforeDisconnect")
+                    if (wasPlayingBeforeDisconnect) {
                         wasPlayingBeforeDisconnect = false
                         // Wait for sendspin handshake
-                        val ssState = sendspinManager.connectionState
-                            .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                        Log.d(TAG, "Reconnect: sendspin reached $ssState")
-                        // Wait for server to update player state (leaves stale PLAYING)
-                        val readyPlayer = kotlinx.coroutines.withTimeoutOrNull(5000) {
-                            playerRepository.players
-                                .map { list -> list.find { it.playerId == clientId } }
-                                .first { it != null && it.state != PlaybackState.PLAYING }
+                        val ssReady = kotlinx.coroutines.withTimeoutOrNull(10000) {
+                            sendspinManager.connectionState
+                                .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
                         }
-                        Log.d(TAG, "Reconnect: player state=${readyPlayer?.state ?: "timeout"}")
-                        Log.d(TAG, "Resuming playback on $playerId after reconnect")
-                        try {
-                            playerRepository.play(playerId)
-                            Log.d(TAG, "Reconnect: play command sent successfully")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Resume playback failed: ${e.message}")
+                        if (ssReady == null) {
+                            Log.w(TAG, "Reconnect: sendspin didn't reach ready state, skipping auto-resume")
+                        } else {
+                            Log.d(TAG, "Reconnect: sendspin reached $ssReady")
+                            // Wait for server to register the sendspin player
+                            val readyPlayer = kotlinx.coroutines.withTimeoutOrNull(5000) {
+                                playerRepository.players
+                                    .map { list -> list.find { it.playerId == clientId } }
+                                    .first { it != null && it.state != PlaybackState.PLAYING }
+                            }
+                            Log.d(TAG, "Reconnect: sendspin player state=${readyPlayer?.state ?: "timeout"}")
+                            // Resume on the SENDSPIN player, not the selected UI player
+                            Log.d(TAG, "Resuming playback on sendspin player $clientId")
+                            try {
+                                playerRepository.play(clientId)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Resume playback failed: ${e.message}")
+                            }
                         }
-                    } else if (playerId != null) {
+                    } else {
                         Log.d(TAG, "Reconnect: skipping auto-resume, was not playing before disconnect")
-                        wasPlayingBeforeDisconnect = false
                     }
                 }
                 if (isConnected) connectedBefore = true
@@ -479,8 +525,9 @@ class SendspinService : Service() {
                 PlaybackStateCompat.ACTION_SEEK_TO
 
         val pbState = if (currentIsPlaying) PlaybackStateCompat.STATE_PLAYING
-        else if (isStreaming) PlaybackStateCompat.STATE_PAUSED
+        else if (isSendspinReady) PlaybackStateCompat.STATE_PAUSED
         else PlaybackStateCompat.STATE_BUFFERING
+        Log.d(TAG, "MediaSession state: playing=$currentIsPlaying, streaming=$isStreaming -> pbState=$pbState")
 
         val stateBuilder = PlaybackStateCompat.Builder()
             .setActions(actions)

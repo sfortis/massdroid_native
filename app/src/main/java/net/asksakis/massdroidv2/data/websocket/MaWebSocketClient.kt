@@ -153,7 +153,11 @@ class MaWebSocketClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (gen != connectionGeneration) return
-                handleMessage(text)
+                try {
+                    handleMessage(text)
+                } catch (e: Exception) {
+                    Log.e(TAG, "handleMessage error: ${e.message}")
+                }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

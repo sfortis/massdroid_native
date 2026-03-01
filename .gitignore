@@ -11,6 +11,10 @@ local.properties
 /app/build
 .kotlin
 
+# Signing
+*.jks
+*.keystore
+
 # Claude Code
 CLAUDE.md
 .claude/

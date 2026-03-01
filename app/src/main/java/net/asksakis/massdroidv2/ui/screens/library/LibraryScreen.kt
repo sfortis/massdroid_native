@@ -50,10 +50,13 @@ fun LibraryScreen(
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
     val players by viewModel.players.collectAsStateWithLifecycle()
 
+    val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
+
     // Action sheet state
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
-    LaunchedEffect(selectedTab) {
+    LaunchedEffect(selectedTab, settingsLoaded) {
+        if (!settingsLoaded) return@LaunchedEffect
         when (selectedTab) {
             0 -> if (artists.isEmpty()) viewModel.loadArtists()
             1 -> if (albums.isEmpty()) viewModel.loadAlbums()

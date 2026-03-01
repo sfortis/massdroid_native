@@ -83,7 +83,19 @@ class LibraryViewModel @Inject constructor(
     private var hasMoreTracks = true
     private var hasMorePlaylists = true
 
+    private val _settingsLoaded = MutableStateFlow(false)
+    val settingsLoaded: StateFlow<Boolean> = _settingsLoaded.asStateFlow()
+
     init {
+        // Load all settings eagerly before any data loading
+        viewModelScope.launch {
+            _displayModes.value = settingsRepository.libraryDisplayModes.first()
+            _sortOptions.value = settingsRepository.librarySortOptions.first()
+            _sortDescendings.value = settingsRepository.librarySortDescending.first()
+            _favoritesOnlyMap.value = settingsRepository.libraryFavoritesOnly.first()
+            _settingsLoaded.value = true
+        }
+        // Keep syncing after initial load
         viewModelScope.launch {
             settingsRepository.libraryDisplayModes.collect { _displayModes.value = it }
         }

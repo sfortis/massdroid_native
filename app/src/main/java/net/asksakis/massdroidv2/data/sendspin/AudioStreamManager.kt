@@ -205,12 +205,12 @@ class AudioStreamManager {
             // Set flag FIRST to immediately block new frames on any thread
             playbackActive = false
             try {
-                audioTrack?.pause()
+                audioTrack?.stop()
                 audioTrack?.flush()
             } catch (e: Exception) {
                 Log.e(TAG, "setPaused(true) error: ${e.message}")
             }
-            Log.d(TAG, "Playback paused, buffer flushed")
+            Log.d(TAG, "Playback stopped, buffer flushed")
         } else {
             try {
                 audioTrack?.play()
@@ -233,11 +233,17 @@ class AudioStreamManager {
 
     fun clearBuffer() {
         try {
-            audioTrack?.pause()
-            audioTrack?.flush()
-            codec?.flush()
-            audioTrack?.play()
-            Log.d(TAG, "Buffer cleared")
+            if (playbackActive) {
+                audioTrack?.pause()
+                audioTrack?.flush()
+                codec?.flush()
+                audioTrack?.play()
+            } else {
+                // Paused/stopped: only flush codec, don't restart AudioTrack
+                // (Samsung BT stack monitors AudioTrack state for AVRCP)
+                codec?.flush()
+            }
+            Log.d(TAG, "Buffer cleared (playbackActive=$playbackActive)")
         } catch (e: Exception) {
             Log.e(TAG, "Clear buffer error: ${e.message}")
         }

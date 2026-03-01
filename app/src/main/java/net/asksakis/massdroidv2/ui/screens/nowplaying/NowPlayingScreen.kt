@@ -226,16 +226,31 @@ private fun SeekBar(
 ) {
     var seeking by remember { mutableStateOf(false) }
     var seekValue by remember { mutableFloatStateOf(0f) }
+    var seekTarget by remember { mutableFloatStateOf(-1f) }
+
+    // Release hold once server position catches up to the seek target
+    if (seekTarget >= 0f && !seeking) {
+        if (kotlin.math.abs(elapsed.toFloat() - seekTarget) < 2f) {
+            seekTarget = -1f
+        }
+    }
+
+    val displayValue = when {
+        seeking -> seekValue
+        seekTarget >= 0f -> seekTarget
+        else -> elapsed.toFloat()
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
-            value = if (seeking) seekValue else elapsed.toFloat(),
+            value = displayValue,
             onValueChange = {
                 seeking = true
                 seekValue = it
             },
             onValueChangeFinished = {
                 onSeek(seekValue.toDouble())
+                seekTarget = seekValue
                 seeking = false
             },
             valueRange = 0f..duration.toFloat().coerceAtLeast(1f)
@@ -245,7 +260,7 @@ private fun SeekBar(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(formatTime(if (seeking) seekValue.toDouble() else elapsed), style = MaterialTheme.typography.bodySmall)
+            Text(formatTime(displayValue.toDouble()), style = MaterialTheme.typography.bodySmall)
             Text(formatTime(duration), style = MaterialTheme.typography.bodySmall)
         }
     }

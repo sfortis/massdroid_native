@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.service
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -26,23 +27,36 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class PlaybackService : MediaSessionService() {
 
+    companion object {
+        private const val TAG = "PlaybackSvc"
+    }
+
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var sendspinManager: SendspinManager
 
     private var mediaSession: MediaSession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var remotePlayer: RemoteControlPlayer? = null
+    private var sendspinActive = false
 
     override fun onCreate() {
         super.onCreate()
+        remotePlayer = createRemotePlayer()
+        createMediaSession()
+        observePlayerState()
+        observeSendspinState()
+    }
 
-        remotePlayer = RemoteControlPlayer(
+    private fun createRemotePlayer(): RemoteControlPlayer {
+        return RemoteControlPlayer(
             Looper.getMainLooper(),
             onPlay = {
+                Log.d(TAG, "RemotePlayer onPlay")
                 val id = playerRepository.selectedPlayer.value?.playerId ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.play(id) }
             },
             onPause = {
+                Log.d(TAG, "RemotePlayer onPause")
                 val id = playerRepository.selectedPlayer.value?.playerId ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.pause(id) }
             },
@@ -59,19 +73,28 @@ class PlaybackService : MediaSessionService() {
                 scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
             }
         )
+    }
 
+    private fun createMediaSession() {
         val pendingIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
         mediaSession = MediaSession.Builder(this, remotePlayer!!)
             .setSessionActivity(pendingIntent)
             .build()
+        Log.d(TAG, "MediaSession created")
+    }
 
-        observePlayerState()
-        observeSendspinState()
+    private fun releaseMediaSession() {
+        mediaSession?.run {
+            player.release()
+            release()
+        }
+        mediaSession = null
+        remotePlayer = null
+        Log.d(TAG, "MediaSession released (sendspin active)")
     }
 
     private fun observePlayerState() {
@@ -83,7 +106,7 @@ class PlaybackService : MediaSessionService() {
             ) { player, queue, elapsed ->
                 Triple(player, queue, elapsed)
             }.collect { (player, queue, elapsed) ->
-                if (player == null) return@collect
+                if (player == null || sendspinActive) return@collect
 
                 val currentTrack = queue?.currentItem?.track
                 val title = currentTrack?.name ?: player.currentMedia?.title ?: ""
@@ -104,19 +127,22 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private var sendspinActive = false
-
     private fun observeSendspinState() {
         scope.launch {
             sendspinManager.enabled.collect { active ->
-                sendspinActive = active
+                if (active && !sendspinActive) {
+                    sendspinActive = true
+                    releaseMediaSession()
+                } else if (!active && sendspinActive) {
+                    sendspinActive = false
+                    remotePlayer = createRemotePlayer()
+                    createMediaSession()
+                }
             }
         }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
-        // When Sendspin is active, it owns the MediaSession. Yield to it.
-        if (sendspinActive) return null
         return mediaSession
     }
 
