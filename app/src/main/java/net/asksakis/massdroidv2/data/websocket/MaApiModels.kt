@@ -94,7 +94,8 @@ data class ServerMediaItem(
     val sort_name: String? = null,
     val version: String? = null,
     val position: Int? = null,
-    val year: Int? = null
+    val year: Int? = null,
+    @SerialName("album_type") val albumType: String? = null
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images */
     fun resolveImageUrl(wsClient: MaWebSocketClient): String? {

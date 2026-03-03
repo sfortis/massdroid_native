@@ -140,37 +140,34 @@ fun MediaItemGrid(
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null
 ) {
-    Card(
+    Column(
         modifier = modifier.combinedClickable(
             onClick = onClick,
             onLongClick = onLongClick
-        ),
-        shape = MaterialTheme.shapes.medium
+        )
     ) {
-        Column {
-            AsyncImage(
-                model = imageUrl,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f),
-                contentScale = ContentScale.Crop
-            )
-            Column(modifier = Modifier.padding(8.dp)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = subtitle.ifBlank { "\u00A0" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
+        AsyncImage(
+            model = imageUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(MaterialTheme.shapes.medium),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = subtitle.ifBlank { "\u00A0" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

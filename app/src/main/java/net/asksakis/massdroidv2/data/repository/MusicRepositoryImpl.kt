@@ -4,6 +4,8 @@ import android.util.Log
 import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.model.RecommendationFolder
+import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
@@ -150,11 +152,12 @@ class MusicRepositoryImpl @Inject constructor(
         })
     }
 
-    override suspend fun playMedia(queueId: String, uris: List<String>, option: String?) {
+    override suspend fun playMedia(queueId: String, uris: List<String>, option: String?, radioMode: Boolean) {
         wsClient.sendCommand("player_queues/play_media", buildJsonObject {
             put("queue_id", queueId)
             put("media", JsonArray(uris.map { JsonPrimitive(it) }))
             option?.let { put("option", it) }
+            if (radioMode) put("radio_mode", true)
         })
     }
 
@@ -226,6 +229,43 @@ class MusicRepositoryImpl @Inject constructor(
             ?: itemId.toInt()
     }
 
+    override suspend fun getRecommendations(): List<RecommendationFolder> {
+        val result = wsClient.sendCommand("music/recommendations", null)
+        val array = result as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            try {
+                val obj = element.jsonObject
+                val itemId = obj["item_id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                val name = obj["name"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                val provider = obj["provider"]?.jsonPrimitive?.content ?: "library"
+                val itemsArray = obj["items"] as? JsonArray ?: return@mapNotNull null
+
+                val serverItems = itemsArray.mapNotNull { itemEl ->
+                    try {
+                        json.decodeFromJsonElement<ServerMediaItem>(itemEl)
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+
+                val artists = serverItems.filter { it.mediaType == "artist" }.mapNotNull { it.toArtist() }
+                val albums = serverItems.filter { it.mediaType == "album" }.mapNotNull { it.toAlbum() }
+                val tracks = serverItems.filter { it.mediaType == "track" }.mapNotNull { it.toTrack() }
+                val playlists = serverItems.filter { it.mediaType == "playlist" }.mapNotNull { it.toPlaylist() }
+
+                RecommendationFolder(
+                    itemId = itemId,
+                    name = name,
+                    provider = provider,
+                    items = RecommendationItems(artists, albums, tracks, playlists)
+                )
+            } catch (e: Exception) {
+                Log.e("MusicRepo", "Failed to parse recommendation folder", e)
+                null
+            }
+        }
+    }
+
     private fun parseMediaItems(result: JsonElement?): List<ServerMediaItem> {
         if (result == null) return emptyList()
         return when (result) {
@@ -253,7 +293,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = resolveImageUrl(wsClient) ?: wsClient.getImageUrl(uri),
             favorite = favorite,
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList()
@@ -268,14 +308,15 @@ class MusicRepositoryImpl @Inject constructor(
             name = name,
             uri = uri,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = resolveImageUrl(wsClient) ?: wsClient.getImageUrl(uri),
             favorite = favorite,
             version = version,
             year = year,
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList(),
             label = metadata?.label,
-            artists = artists?.mapNotNull { it.toArtist() } ?: emptyList()
+            artists = artists?.mapNotNull { it.toArtist() } ?: emptyList(),
+            albumType = albumType
         )
     }
 
@@ -290,13 +331,18 @@ class MusicRepositoryImpl @Inject constructor(
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
             albumName = album?.name ?: "",
             imageUrl = resolveImageUrl(wsClient)
-                ?: album?.resolveImageUrl(wsClient),
+                ?: album?.resolveImageUrl(wsClient)
+                ?: wsClient.getImageUrl(uri),
             favorite = favorite,
             position = position,
             artistItemId = artists?.firstOrNull()?.itemId,
             artistProvider = artists?.firstOrNull()?.provider,
             albumItemId = album?.itemId,
-            albumProvider = album?.provider
+            albumProvider = album?.provider,
+            artistUri = artists?.firstOrNull()?.uri,
+            albumUri = album?.uri,
+            genres = metadata?.genres ?: emptyList(),
+            year = album?.year ?: year
         )
     }
 

@@ -12,6 +12,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.service.SendspinService
 import javax.inject.Inject
@@ -24,6 +25,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var settingsRepository: SettingsRepository
+
+    @Inject
+    lateinit var playHistoryRepository: PlayHistoryRepository
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var sendspinServiceStarted = false
@@ -51,6 +55,15 @@ class MassDroidApp : Application(), ImageLoaderFactory {
             if (username.isNotBlank() && password.isNotBlank()) {
                 wsClient.setSavedCredentials(username, password)
                 Log.d("MassDroidApp", "Saved credentials loaded for user: $username")
+            }
+        }
+
+        // Clean up old play history entries
+        appScope.launch {
+            try {
+                playHistoryRepository.cleanup(retentionMonths = 6)
+            } catch (e: Exception) {
+                Log.e("MassDroidApp", "Play history cleanup failed: ${e.message}")
             }
         }
 

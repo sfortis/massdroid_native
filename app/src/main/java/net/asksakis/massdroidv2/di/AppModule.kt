@@ -1,12 +1,15 @@
 package net.asksakis.massdroidv2.di
 
 import android.content.Context
+import androidx.room.Room
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
+import net.asksakis.massdroidv2.data.database.AppDatabase
+import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.sendspin.AudioStreamManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -62,4 +65,17 @@ object AppModule {
         client: SendspinClient,
         audio: AudioStreamManager,
     ): SendspinManager = SendspinManager(client, audio)
+
+    @Provides
+    @Singleton
+    fun provideAppDatabase(
+        @ApplicationContext context: Context
+    ): AppDatabase = Room.databaseBuilder(
+        context,
+        AppDatabase::class.java,
+        "massdroid.db"
+    ).fallbackToDestructiveMigration().build()
+
+    @Provides
+    fun providePlayHistoryDao(db: AppDatabase): PlayHistoryDao = db.playHistoryDao()
 }

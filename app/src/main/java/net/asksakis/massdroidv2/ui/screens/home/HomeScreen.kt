@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import coil.compose.SubcomposeAsyncImage
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,6 +51,7 @@ fun HomeScreen(
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     var volumeSliderValue by remember { mutableFloatStateOf(selectedPlayer?.volumeLevel?.toFloat() ?: 0f) }
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     // Sync slider when server updates volume
     LaunchedEffect(selectedPlayer?.volumeLevel) {
@@ -57,15 +60,17 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("MassDroid") },
-                actions = {
-                    ConnectionIndicator(connectionState)
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+            if (!isLandscape) {
+                TopAppBar(
+                    title = { Text("MassDroid") },
+                    actions = {
+                        ConnectionIndicator(connectionState)
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
-                }
-            )
+                )
+            }
         }
     ) { paddingValues ->
         Column(
@@ -73,6 +78,23 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("MassDroid", style = MaterialTheme.typography.titleMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ConnectionIndicator(connectionState)
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    }
+                }
+            }
             if (isInitializing || connectionState is ConnectionState.Connecting) {
                 ConnectingIndicator()
             } else when (connectionState) {
@@ -87,52 +109,100 @@ fun HomeScreen(
                 is ConnectionState.Connected -> {
                     // Selected player header with volume
                     selectedPlayer?.let { player ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        ) {
+                        if (isLandscape) {
+                            // Compact single-row layout for landscape
                             Row(
-                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 PlayerIcon(
                                     player = player,
-                                    modifier = Modifier.size(28.dp),
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                    modifier = Modifier.size(22.dp),
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
-                                Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = player.displayName,
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 120.dp)
                                 )
-                                Spacer(modifier = Modifier.weight(1f))
+                                Slider(
+                                    value = volumeSliderValue,
+                                    onValueChange = { volumeSliderValue = it },
+                                    onValueChangeFinished = {
+                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
+                                    },
+                                    valueRange = 0f..100f,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp),
+                                    thumb = {},
+                                    track = { sliderState ->
+                                        SliderDefaults.Track(
+                                            sliderState = sliderState,
+                                            drawStopIndicator = null,
+                                            thumbTrackGapSize = 0.dp
+                                        )
+                                    }
+                                )
                                 Text(
                                     text = "${volumeSliderValue.toInt()}%",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Slider(
-                                value = volumeSliderValue,
-                                onValueChange = { volumeSliderValue = it },
-                                onValueChangeFinished = {
-                                    viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
-                                },
-                                valueRange = 0f..100f,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 0.dp),
-                                thumb = {},
-                                track = { sliderState ->
-                                    SliderDefaults.Track(
-                                        sliderState = sliderState,
-                                        drawStopIndicator = null,
-                                        thumbTrackGapSize = 0.dp
+                        } else {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    PlayerIcon(
+                                        player = player,
+                                        modifier = Modifier.size(28.dp),
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = player.displayName,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Spacer(modifier = Modifier.weight(1f))
+                                    Text(
+                                        text = "${volumeSliderValue.toInt()}%",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
-                            )
+                                Slider(
+                                    value = volumeSliderValue,
+                                    onValueChange = { volumeSliderValue = it },
+                                    onValueChangeFinished = {
+                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
+                                    },
+                                    valueRange = 0f..100f,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 0.dp),
+                                    thumb = {},
+                                    track = { sliderState ->
+                                        SliderDefaults.Track(
+                                            sliderState = sliderState,
+                                            drawStopIndicator = null,
+                                            thumbTrackGapSize = 0.dp
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
 

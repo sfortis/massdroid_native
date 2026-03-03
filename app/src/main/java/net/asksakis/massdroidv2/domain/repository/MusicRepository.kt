@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.domain.repository
 import net.asksakis.massdroidv2.domain.model.*
 
 interface MusicRepository {
+    suspend fun getRecommendations(): List<RecommendationFolder>
     suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Artist>
     suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Album>
     suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Track>
@@ -20,7 +21,7 @@ interface MusicRepository {
     suspend fun getQueueItems(queueId: String, limit: Int = 100, offset: Int = 0): List<QueueItem>
 
     suspend fun playMedia(queueId: String, uri: String, option: String? = null, radioMode: Boolean = false)
-    suspend fun playMedia(queueId: String, uris: List<String>, option: String? = null)
+    suspend fun playMedia(queueId: String, uris: List<String>, option: String? = null, radioMode: Boolean = false)
     suspend fun shuffleQueue(queueId: String, enabled: Boolean)
     suspend fun repeatQueue(queueId: String, mode: RepeatMode)
     suspend fun clearQueue(queueId: String)

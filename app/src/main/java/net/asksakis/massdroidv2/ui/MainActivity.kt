@@ -1,21 +1,41 @@
 package net.asksakis.massdroidv2.ui
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.*
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -29,16 +49,41 @@ import net.asksakis.massdroidv2.ui.navigation.Routes
 import net.asksakis.massdroidv2.ui.screens.home.MiniPlayerViewModel
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 
+private data class NavItem(
+    val route: String,
+    val icon: ImageVector,
+    val label: String
+)
+
+private val navItems = listOf(
+    NavItem(Routes.HOME, Icons.Default.Home, "Home"),
+    NavItem(Routes.PLAYERS, Icons.Default.Speaker, "Players"),
+    NavItem(Routes.LIBRARY, Icons.Default.LibraryMusic, "Library"),
+    NavItem(Routes.SEARCH, Icons.Default.Search, "Search")
+)
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* granted or not, nothing to do */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestNotificationPermission()
         checkBatteryOptimization()
         setContent {
             MassDroidTheme {
                 MassDroidApp()
             }
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -76,7 +121,7 @@ private fun MassDroidApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    val showBottomBar = currentRoute in listOf(Routes.HOME, Routes.LIBRARY, Routes.SEARCH)
+    val showNav = currentRoute in navItems.map { it.route }
     val showMiniPlayer = currentRoute != Routes.NOW_PLAYING
 
     val connectionState by miniPlayerViewModel.connectionState.collectAsStateWithLifecycle()
@@ -91,6 +136,47 @@ private fun MassDroidApp(
     val imageUrl = currentTrack?.imageUrl ?: player?.currentMedia?.imageUrl
     val hasMiniPlayer = isConnected && player != null && showMiniPlayer
 
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    if (isLandscape) {
+        LandscapeLayout(
+            navController = navController,
+            currentRoute = currentRoute,
+            showNav = showNav,
+            hasMiniPlayer = hasMiniPlayer,
+            title = title,
+            artist = artist,
+            imageUrl = imageUrl,
+            isPlaying = player?.state == PlaybackState.PLAYING,
+            miniPlayerViewModel = miniPlayerViewModel
+        )
+    } else {
+        PortraitLayout(
+            navController = navController,
+            currentRoute = currentRoute,
+            showNav = showNav,
+            hasMiniPlayer = hasMiniPlayer,
+            title = title,
+            artist = artist,
+            imageUrl = imageUrl,
+            isPlaying = player?.state == PlaybackState.PLAYING,
+            miniPlayerViewModel = miniPlayerViewModel
+        )
+    }
+}
+
+@Composable
+private fun PortraitLayout(
+    navController: NavHostController,
+    currentRoute: String?,
+    showNav: Boolean,
+    hasMiniPlayer: Boolean,
+    title: String,
+    artist: String,
+    imageUrl: String?,
+    isPlaying: Boolean,
+    miniPlayerViewModel: MiniPlayerViewModel
+) {
     Scaffold(
         bottomBar = {
             Column {
@@ -99,56 +185,19 @@ private fun MassDroidApp(
                         title = title,
                         artist = artist,
                         imageUrl = imageUrl,
-                        isPlaying = player?.state == PlaybackState.PLAYING,
+                        isPlaying = isPlaying,
                         onPlayPause = { miniPlayerViewModel.playPause() },
                         onNext = { miniPlayerViewModel.next() },
                         onQueue = {
-                            navController.navigate(Routes.QUEUE) {
-                                launchSingleTop = true
-                            }
+                            navController.navigate(Routes.QUEUE) { launchSingleTop = true }
                         },
                         onClick = {
-                            navController.navigate(Routes.NOW_PLAYING) {
-                                launchSingleTop = true
-                            }
+                            navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true }
                         }
                     )
                 }
-                if (showBottomBar) {
-                    NavigationBar {
-                        NavigationBarItem(
-                            icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                            label = { Text("Home") },
-                            selected = currentRoute == Routes.HOME,
-                            onClick = {
-                                navController.navigate(Routes.HOME) {
-                                    popUpTo(Routes.HOME) { inclusive = true }
-                                }
-                            }
-                        )
-                        NavigationBarItem(
-                            icon = { Icon(Icons.Default.LibraryMusic, contentDescription = "Library") },
-                            label = { Text("Library") },
-                            selected = currentRoute == Routes.LIBRARY,
-                            onClick = {
-                                navController.navigate(Routes.LIBRARY) {
-                                    popUpTo(Routes.HOME)
-                                    launchSingleTop = true
-                                }
-                            }
-                        )
-                        NavigationBarItem(
-                            icon = { Icon(Icons.Default.Search, contentDescription = "Search") },
-                            label = { Text("Search") },
-                            selected = currentRoute == Routes.SEARCH,
-                            onClick = {
-                                navController.navigate(Routes.SEARCH) {
-                                    popUpTo(Routes.HOME)
-                                    launchSingleTop = true
-                                }
-                            }
-                        )
-                    }
+                if (showNav) {
+                    BottomNavBar(navController, currentRoute)
                 }
             }
         }
@@ -157,5 +206,99 @@ private fun MassDroidApp(
             navController = navController,
             modifier = Modifier.padding(paddingValues)
         )
+    }
+}
+
+@Composable
+private fun LandscapeLayout(
+    navController: NavHostController,
+    currentRoute: String?,
+    showNav: Boolean,
+    hasMiniPlayer: Boolean,
+    title: String,
+    artist: String,
+    imageUrl: String?,
+    isPlaying: Boolean,
+    miniPlayerViewModel: MiniPlayerViewModel
+) {
+    Scaffold(
+        bottomBar = {
+            if (hasMiniPlayer) {
+                MiniPlayer(
+                    title = title,
+                    artist = artist,
+                    imageUrl = imageUrl,
+                    isPlaying = isPlaying,
+                    onPlayPause = { miniPlayerViewModel.playPause() },
+                    onNext = { miniPlayerViewModel.next() },
+                    onQueue = {
+                        navController.navigate(Routes.QUEUE) { launchSingleTop = true }
+                    },
+                    onClick = {
+                        navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true }
+                    }
+                )
+            }
+        }
+    ) { paddingValues ->
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            if (showNav) {
+                SideNavRail(navController, currentRoute)
+            }
+            MassDroidNavHost(
+                navController = navController,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BottomNavBar(navController: NavHostController, currentRoute: String?) {
+    NavigationBar {
+        for (item in navItems) {
+            NavigationBarItem(
+                icon = { Icon(item.icon, contentDescription = item.label) },
+                label = { Text(item.label) },
+                selected = currentRoute == item.route,
+                onClick = {
+                    navController.navigate(item.route) {
+                        if (item.route == Routes.HOME) {
+                            popUpTo(Routes.HOME) { inclusive = true }
+                        } else {
+                            popUpTo(Routes.HOME)
+                            launchSingleTop = true
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SideNavRail(navController: NavHostController, currentRoute: String?) {
+    NavigationRail {
+        for (item in navItems) {
+            NavigationRailItem(
+                icon = { Icon(item.icon, contentDescription = item.label) },
+                label = { Text(item.label) },
+                selected = currentRoute == item.route,
+                onClick = {
+                    navController.navigate(item.route) {
+                        if (item.route == Routes.HOME) {
+                            popUpTo(Routes.HOME) { inclusive = true }
+                        } else {
+                            popUpTo(Routes.HOME)
+                            launchSingleTop = true
+                        }
+                    }
+                }
+            )
+        }
     }
 }

@@ -11,6 +11,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.domain.model.*
@@ -27,6 +29,7 @@ fun SearchScreen(
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Column(modifier = Modifier.fillMaxSize()) {
         SearchBar(
@@ -52,7 +55,10 @@ fun SearchScreen(
             onExpandedChange = {},
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(
+                    horizontal = if (isLandscape) 8.dp else 16.dp,
+                    vertical = if (isLandscape) 2.dp else 8.dp
+                )
         ) {}
 
         if (isSearching) {

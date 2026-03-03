@@ -14,10 +14,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -43,6 +46,7 @@ fun LibraryScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
     val displayMode by viewModel.displayMode.collectAsStateWithLifecycle()
@@ -51,6 +55,7 @@ fun LibraryScreen(
     val players by viewModel.players.collectAsStateWithLifecycle()
 
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     // Action sheet state
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
@@ -66,96 +71,180 @@ fun LibraryScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Search bar at top
-        TextField(
-            value = searchQuery,
-            onValueChange = { viewModel.updateSearch(it) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            placeholder = {
-                Text(when (selectedTab) {
-                    0 -> "Search artists..."
-                    1 -> "Search albums..."
-                    2 -> "Search tracks..."
-                    3 -> "Search playlists..."
-                    else -> "Search library..."
-                })
-            },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.updateSearch("") }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            shape = MaterialTheme.shapes.extraLarge,
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-            )
-        )
-
-        // Tabs
-        TabRow(selectedTabIndex = selectedTab) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { viewModel.setCurrentTab(index) },
-                    text = { Text(title) }
+        if (isLandscape) {
+            // Compact landscape header: search + tabs + sort in minimal space
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Compact search field
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { viewModel.updateSearch(it) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                    placeholder = { Text("Search...", style = MaterialTheme.typography.bodySmall) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.updateSearch("") }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
+                    )
                 )
-            }
-        }
-
-        // Sort + Display mode
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SortDropdown(
-                    selected = sortOption,
-                    onSelect = { viewModel.updateSort(it) }
-                )
-                IconButton(onClick = { viewModel.toggleSortDirection() }) {
+                Spacer(modifier = Modifier.width(8.dp))
+                // Sort + display mode controls
+                SortDropdown(selected = sortOption, onSelect = { viewModel.updateSort(it) })
+                IconButton(onClick = { viewModel.toggleSortDirection() }, modifier = Modifier.size(32.dp)) {
                     Icon(
                         if (sortDescending) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
                         contentDescription = "Toggle sort direction",
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
-                IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
+                IconButton(onClick = { viewModel.toggleFavoritesFilter() }, modifier = Modifier.size(32.dp)) {
                     Icon(
                         if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Filter favorites",
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(18.dp),
                         tint = if (favoritesOnly) MaterialTheme.colorScheme.error
                                else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                        contentDescription = "Toggle view",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            // Compact tabs
+            ScrollableTabRow(
+                selectedTabIndex = selectedTab,
+                edgePadding = 8.dp,
+                modifier = Modifier.height(36.dp)
+            ) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { viewModel.setCurrentTab(index) },
+                        text = { Text(title, style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.height(36.dp)
+                    )
+                }
+            }
+        } else {
+            // Portrait: full-size header
+            // Search bar at top
+            TextField(
+                value = searchQuery,
+                onValueChange = { viewModel.updateSearch(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                placeholder = {
+                    Text(when (selectedTab) {
+                        0 -> "Search artists..."
+                        1 -> "Search albums..."
+                        2 -> "Search tracks..."
+                        3 -> "Search playlists..."
+                        else -> "Search library..."
+                    })
+                },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.updateSearch("") }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = MaterialTheme.shapes.extraLarge,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
+                )
+            )
+
+            // Tabs
+            TabRow(selectedTabIndex = selectedTab) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { viewModel.setCurrentTab(index) },
+                        text = { Text(title) }
+                    )
+                }
             }
 
-            IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
-                Icon(
-                    if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
-                    contentDescription = "Toggle view"
-                )
+            // Sort + Display mode
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SortDropdown(
+                        selected = sortOption,
+                        onSelect = { viewModel.updateSort(it) }
+                    )
+                    IconButton(onClick = { viewModel.toggleSortDirection() }) {
+                        Icon(
+                            if (sortDescending) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
+                            contentDescription = "Toggle sort direction",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
+                        Icon(
+                            if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "Filter favorites",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (favoritesOnly) MaterialTheme.colorScheme.error
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
+                    Icon(
+                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                        contentDescription = "Toggle view"
+                    )
+                }
             }
         }
 
-        if (isLoading) {
+        if (isLoading && !isRefreshing) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
         } else {
-            Box(modifier = Modifier.weight(1f)) {
+            @OptIn(ExperimentalMaterial3Api::class)
+            PullToRefreshBox(
+                isRefreshing = isRefreshing,
+                onRefresh = { viewModel.refresh() },
+                modifier = Modifier.weight(1f)
+            ) {
                 when (selectedTab) {
                     0 -> MediaList(
                         items = artists,
@@ -224,7 +313,6 @@ fun LibraryScreen(
                 }
             }
         }
-
     }
 
     // Action sheet

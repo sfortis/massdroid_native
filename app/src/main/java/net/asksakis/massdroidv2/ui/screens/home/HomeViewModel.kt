@@ -53,17 +53,7 @@ class HomeViewModel @Inject constructor(
             _isInitializing.value = false
         }
 
-        // When connected, load players
-        viewModelScope.launch {
-            wsClient.connectionState.collect { state ->
-                if (state is ConnectionState.Connected) {
-                    playerRepository.refreshPlayers()
-                    settingsRepository.selectedPlayerId.first()?.let { id ->
-                        playerRepository.selectPlayer(id)
-                    }
-                }
-            }
-        }
+        // PlayerRepositoryImpl handles refreshPlayers + restore saved player on Connected
     }
 
     fun connectIfNeeded() {
@@ -81,9 +71,6 @@ class HomeViewModel @Inject constructor(
 
     fun selectPlayer(player: Player) {
         playerRepository.selectPlayer(player.playerId)
-        viewModelScope.launch {
-            settingsRepository.setSelectedPlayerId(player.playerId)
-        }
     }
 
     fun setVolume(playerId: String, volume: Int) {

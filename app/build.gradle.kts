@@ -4,6 +4,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.dagger.hilt.android")
+    id("com.google.devtools.ksp")
     id("io.gitlab.arturbosch.detekt")
     kotlin("kapt")
 }
@@ -96,6 +97,7 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.9.0")
 
     // Image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
@@ -110,6 +112,11 @@ dependencies {
 
     // DataStore for settings
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // Room
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
 
     // Core
     implementation("androidx.core:core-ktx:1.16.0")

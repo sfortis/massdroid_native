@@ -1,19 +1,24 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class PlayerRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
-    private val json: Json
+    private val json: Json,
+    private val playHistoryRepository: PlayHistoryRepository,
+    private val settingsRepository: SettingsRepository
 ) : PlayerRepository {
 
     companion object {
@@ -51,16 +56,37 @@ class PlayerRepositoryImpl @Inject constructor(
     private var favoriteOverride: Boolean? = null
     private var favoriteOverrideUri: String? = null
 
+    // Play history tracking (per queue)
+    private data class QueueTrackingState(
+        val track: Track,
+        val artists: List<Pair<String, String>>,
+        val startTime: Long
+    )
+    private val queueTracking = ConcurrentHashMap<String, QueueTrackingState>()
+    private val artistGenreCache = ConcurrentHashMap<String, List<String>>()
+
     init {
         scope.launch { observeEvents() }
         scope.launch {
             wsClient.connectionState.collect { state ->
-                if (state is ConnectionState.Disconnected || state is ConnectionState.Connecting) {
-                    _players.value = emptyList()
-                    _selectedPlayer.value = null
-                    _queueState.value = null
-                    _elapsedTime.value = 0.0
-                    stopPositionTicker()
+                when (state) {
+                    is ConnectionState.Disconnected, is ConnectionState.Connecting -> {
+                        _players.value = emptyList()
+                        _selectedPlayer.value = null
+                        _queueState.value = null
+                        _elapsedTime.value = 0.0
+                        stopPositionTicker()
+                        queueTracking.clear()
+                        artistGenreCache.clear()
+                    }
+                    is ConnectionState.Connected -> {
+                        refreshPlayers()
+                        settingsRepository.selectedPlayerId.first()?.let { id ->
+                            selectPlayer(id)
+                            Log.d(TAG, "Restored saved player: $id")
+                        }
+                    }
+                    else -> {}
                 }
             }
         }
@@ -97,6 +123,11 @@ class PlayerRepositoryImpl @Inject constructor(
                             list.map { if (it.playerId == player.playerId) player else it }
                         } else list + player
                     }
+                    // Auto-select if this is the saved player and nothing is selected yet
+                    if (_selectedPlayer.value == null && player.playerId == selectedPlayerId) {
+                        selectPlayer(player.playerId)
+                        Log.d(TAG, "Auto-selected late-arriving player: ${player.displayName}")
+                    }
                 }
                 EventType.PLAYER_REMOVED -> {
                     Log.d(TAG, "PLAYER_REMOVED event: ${event.objectId}")
@@ -107,6 +138,10 @@ class PlayerRepositoryImpl @Inject constructor(
                     val serverQueue = event.data?.let {
                         json.decodeFromJsonElement<ServerQueue>(it)
                     } ?: return@collect
+
+                    // Play history: track all queues, not just selected
+                    trackPlayHistory(serverQueue)
+
                     if (serverQueue.queueId == selectedPlayerId) {
                         var domainState = serverQueue.toDomain(wsClient)
                         // Apply favorite override if current track matches
@@ -120,7 +155,6 @@ class PlayerRepositoryImpl @Inject constructor(
                                 )
                             )
                         } else {
-                            // Track changed, clear override
                             favoriteOverride = null
                             favoriteOverrideUri = null
                         }
@@ -142,6 +176,111 @@ class PlayerRepositoryImpl @Inject constructor(
                     updatePosition(elapsed)
                 }
             }
+        }
+    }
+
+    private fun trackPlayHistory(serverQueue: ServerQueue) {
+        val mediaItem = serverQueue.currentItem?.mediaItem ?: return
+        val trackUri = mediaItem.uri.takeIf { it.isNotBlank() } ?: return
+        val queueId = serverQueue.queueId
+        val now = System.currentTimeMillis()
+
+        val prev = queueTracking[queueId]
+        if (prev != null && prev.track.uri != trackUri) {
+            // Track changed: record previous if listened >30s
+            val listenedMs = now - prev.startTime
+            if (listenedMs > 30_000L) {
+                scope.launch {
+                    try {
+                        playHistoryRepository.recordPlay(
+                            prev.track, queueId, listenedMs, prev.artists
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Play history failed: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        if (prev == null || prev.track.uri != trackUri) {
+            Log.d(TAG, "New track: $trackUri, artists=${mediaItem.artists?.map {
+                "${it.name}(uri=${it.uri}, id=${it.itemId}, prov=${it.provider})"
+            }}")
+            val artists = mediaItem.artists
+                ?.mapNotNull { a ->
+                    a.uri.takeIf { it.isNotBlank() }?.let { uri -> uri to a.name }
+                } ?: emptyList()
+
+            // Resolve genres from cache immediately if available
+            val cachedGenres = mediaItem.artists
+                ?.flatMap { artistGenreCache[it.uri] ?: emptyList() }
+                ?.distinct()
+                ?: emptyList()
+
+            val track = Track(
+                itemId = mediaItem.itemId,
+                provider = mediaItem.provider,
+                name = mediaItem.name,
+                uri = mediaItem.uri,
+                duration = mediaItem.duration,
+                artistNames = mediaItem.artists?.joinToString(", ") { it.name } ?: "",
+                albumName = mediaItem.album?.name ?: "",
+                imageUrl = mediaItem.resolveImageUrl(wsClient)
+                    ?: mediaItem.album?.resolveImageUrl(wsClient),
+                artistUri = mediaItem.artists?.firstOrNull()?.uri,
+                albumUri = mediaItem.album?.uri,
+                genres = cachedGenres,
+                year = mediaItem.album?.year ?: mediaItem.year
+            )
+            queueTracking[queueId] = QueueTrackingState(track, artists, now)
+
+            // Fetch genres async for uncached artists
+            val uncachedArtists = mediaItem.artists
+                ?.filter { it.uri.isNotBlank() && !artistGenreCache.containsKey(it.uri) }
+                ?: emptyList()
+            Log.d(TAG, "Uncached artists for genre fetch: ${uncachedArtists.size}")
+            if (uncachedArtists.isNotEmpty()) {
+                scope.launch { fetchAndApplyGenres(uncachedArtists, queueId, trackUri) }
+            }
+        }
+    }
+
+    private suspend fun fetchAndApplyGenres(
+        artists: List<ServerMediaItem>,
+        queueId: String,
+        trackUri: String
+    ) {
+        Log.d(TAG, "fetchAndApplyGenres: ${artists.map { "${it.name}(${it.itemId})" }}")
+        val allGenres = mutableSetOf<String>()
+        for (artist in artists) {
+            try {
+                val result = wsClient.sendCommand("music/artists/get", buildJsonObject {
+                    put("item_id", artist.itemId)
+                    put("provider_instance_id_or_domain", artist.provider)
+                    put("lazy", true)
+                })
+                val genres = result?.let {
+                    json.decodeFromJsonElement<ServerMediaItem>(it)
+                }?.metadata?.genres ?: emptyList()
+                Log.d(TAG, "Artist ${artist.name} genres: $genres")
+                artistGenreCache[artist.uri] = genres
+                allGenres.addAll(genres)
+            } catch (e: Exception) {
+                Log.w(TAG, "Genre fetch failed for ${artist.name}: ${e.message}")
+                artistGenreCache[artist.uri] = emptyList()
+            }
+        }
+        // Include already-cached genres from other artists on this track
+        queueTracking[queueId]?.artists?.forEach { (uri, _) ->
+            artistGenreCache[uri]?.let { allGenres.addAll(it) }
+        }
+        if (allGenres.isNotEmpty()) {
+            queueTracking.computeIfPresent(queueId) { _, state ->
+                if (state.track.uri == trackUri) {
+                    state.copy(track = state.track.copy(genres = allGenres.toList()))
+                } else state
+            }
+            Log.d(TAG, "Genres resolved for $trackUri: $allGenres")
         }
     }
 
@@ -195,7 +334,10 @@ class PlayerRepositoryImpl @Inject constructor(
         _selectedPlayer.value = player
         isPlaying = player?.state == PlaybackState.PLAYING
         stopPositionTicker()
-        scope.launch { refreshQueueForPlayer(playerId) }
+        scope.launch {
+            settingsRepository.setSelectedPlayerId(playerId)
+            refreshQueueForPlayer(playerId)
+        }
     }
 
     private suspend fun refreshQueueForPlayer(playerId: String) {
@@ -416,7 +558,11 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                     artistItemId = mi.artists?.firstOrNull()?.itemId,
                     artistProvider = mi.artists?.firstOrNull()?.provider,
                     albumItemId = mi.album?.itemId,
-                    albumProvider = mi.album?.provider
+                    albumProvider = mi.album?.provider,
+                    artistUri = mi.artists?.firstOrNull()?.uri,
+                    albumUri = mi.album?.uri,
+                    genres = mi.metadata?.genres ?: emptyList(),
+                    year = mi.album?.year ?: mi.year
                 )
             },
             imageUrl = item.mediaItem?.resolveImageUrl(wsClient)

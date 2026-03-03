@@ -1,5 +1,8 @@
 package net.asksakis.massdroidv2.domain.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class Track(
     val itemId: String,
     val provider: String,
@@ -14,9 +17,14 @@ data class Track(
     val artistItemId: String? = null,
     val artistProvider: String? = null,
     val albumItemId: String? = null,
-    val albumProvider: String? = null
+    val albumProvider: String? = null,
+    val artistUri: String? = null,
+    val albumUri: String? = null,
+    val genres: List<String> = emptyList(),
+    val year: Int? = null
 )
 
+@Serializable
 data class Album(
     val itemId: String,
     val provider: String,
@@ -30,9 +38,11 @@ data class Album(
     val description: String? = null,
     val genres: List<String> = emptyList(),
     val label: String? = null,
-    val artists: List<Artist> = emptyList()
+    val artists: List<Artist> = emptyList(),
+    val albumType: String? = null
 )
 
+@Serializable
 data class Artist(
     val itemId: String,
     val provider: String,
@@ -44,6 +54,7 @@ data class Artist(
     val genres: List<String> = emptyList()
 )
 
+@Serializable
 data class Playlist(
     val itemId: String,
     val provider: String,

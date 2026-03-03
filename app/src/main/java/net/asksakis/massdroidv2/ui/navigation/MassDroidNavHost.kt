@@ -7,6 +7,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import net.asksakis.massdroidv2.ui.screens.home.DiscoverScreen
 import net.asksakis.massdroidv2.ui.screens.home.HomeScreen
 import net.asksakis.massdroidv2.ui.screens.library.AlbumDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.ArtistDetailScreen
@@ -19,6 +20,7 @@ import net.asksakis.massdroidv2.ui.screens.settings.SettingsScreen
 
 object Routes {
     const val HOME = "home"
+    const val PLAYERS = "players"
     const val LIBRARY = "library"
     const val SEARCH = "search"
     const val NOW_PLAYING = "now_playing"
@@ -47,6 +49,22 @@ fun MassDroidNavHost(
         modifier = modifier
     ) {
         composable(Routes.HOME) {
+            DiscoverScreen(
+                onArtistClick = { artist ->
+                    navController.navigate(Routes.artistDetail(artist.itemId, artist.provider, artist.name))
+                },
+                onAlbumClick = { album ->
+                    navController.navigate(Routes.albumDetail(album.itemId, album.provider, album.name))
+                },
+                onPlaylistClick = { playlist ->
+                    navController.navigate(
+                        Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite)
+                    )
+                }
+            )
+        }
+
+        composable(Routes.PLAYERS) {
             HomeScreen(
                 onNavigateToNowPlaying = { navController.navigate(Routes.NOW_PLAYING) },
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }

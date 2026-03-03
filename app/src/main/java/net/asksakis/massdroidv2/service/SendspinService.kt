@@ -25,6 +25,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -85,6 +86,12 @@ class SendspinService : Service() {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 Log.d(TAG, "Audio becoming noisy (headset unplugged), pausing")
                 val id = sendspinPlayerId ?: return
+                // Immediately stop local audio (before server roundtrip)
+                currentIsPlaying = false
+                sendspinManager.pauseAudio()
+                optimisticUntil = System.currentTimeMillis() + 1000
+                updateMediaSession()
+                updateNotification()
                 scope.launch { playerRepository.pause(id) }
             }
         }
@@ -214,9 +221,11 @@ class SendspinService : Service() {
 
     private fun registerNoisyReceiver() {
         if (!noisyReceiverRegistered) {
-            registerReceiver(
+            ContextCompat.registerReceiver(
+                this,
                 noisyReceiver,
-                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                ContextCompat.RECEIVER_NOT_EXPORTED
             )
             noisyReceiverRegistered = true
         }

@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -46,6 +47,9 @@ class LibraryViewModel @Inject constructor(
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
 
@@ -53,6 +57,7 @@ class LibraryViewModel @Inject constructor(
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private var searchJob: Job? = null
+    private var mediaEventJob: Job? = null
     private val _currentTab = MutableStateFlow(0)
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
 
@@ -123,6 +128,33 @@ class LibraryViewModel @Inject constructor(
                     }
                 }
         }
+        viewModelScope.launch {
+            wsClient.events.collect { event ->
+                when (event.event) {
+                    EventType.MEDIA_ITEM_ADDED,
+                    EventType.MEDIA_ITEM_UPDATED,
+                    EventType.MEDIA_ITEM_DELETED -> {
+                        mediaEventJob?.cancel()
+                        mediaEventJob = launch {
+                            delay(500)
+                            reloadCurrentTab()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun refresh() {
+        if (_isRefreshing.value) return
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                reloadCurrentTab()
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
     }
 
     private val currentSearch: String? get() = _searchQuery.value.ifBlank { null }
@@ -155,7 +187,12 @@ class LibraryViewModel @Inject constructor(
     fun updateSort(option: SortOption) {
         val tab = _currentTab.value
         _sortOptions.value = _sortOptions.value + (tab to option)
-        viewModelScope.launch { settingsRepository.setLibrarySortOption(tab, option) }
+        val defaultDesc = option != SortOption.NAME
+        _sortDescendings.value = _sortDescendings.value + (tab to defaultDesc)
+        viewModelScope.launch {
+            settingsRepository.setLibrarySortOption(tab, option)
+            settingsRepository.setLibrarySortDescending(tab, defaultDesc)
+        }
         reloadCurrentTab()
     }
 
