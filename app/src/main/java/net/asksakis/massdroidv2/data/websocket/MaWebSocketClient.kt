@@ -199,6 +199,7 @@ class MaWebSocketClient(
         val url = serverUrl ?: return
         if (authToken == null && pendingLogin == null && savedCredentials == null) return
 
+        reconnectJob?.cancel()
         reconnectJob = scope.launch {
             Log.d(TAG, "Reconnecting in ${currentBackoffMs}ms")
             delay(currentBackoffMs)
@@ -260,7 +261,7 @@ class MaWebSocketClient(
 
                 "event" in obj -> {
                     val event = json.decodeFromJsonElement<ServerEvent>(obj)
-                    scope.launch { _events.emit(event) }
+                    _events.tryEmit(event)
                 }
             }
         } catch (e: Exception) {
@@ -351,7 +352,15 @@ class MaWebSocketClient(
             throw MaApiException("WebSocket not connected", -1)
         }
 
-        return withTimeout(30_000) { deferred.await() }
+        return try {
+            withTimeout(30_000) { deferred.await() }
+        } catch (_: TimeoutCancellationException) {
+            throw MaApiException("Request timed out", -1)
+        } finally {
+            // Ensure no stale pending/partial state remains if request times out or caller is canceled.
+            pendingRequests.remove(messageId)
+            partialResults.remove(messageId)
+        }
     }
 
     private fun failAllPending(reason: String) {
@@ -369,6 +378,12 @@ class MaWebSocketClient(
 
     /** Expose current OkHttpClient so Coil can use same mTLS config */
     fun getHttpClient(): OkHttpClient = okHttpClient
+
+    /** Client with finite timeouts for image/API downloads (inherits mTLS + connection pool) */
+    fun getImageClient(): OkHttpClient = okHttpClient.newBuilder()
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
 
     private fun isPrivateHost(host: String): Boolean {
         if (host == "localhost" || host.endsWith(".local")) return true

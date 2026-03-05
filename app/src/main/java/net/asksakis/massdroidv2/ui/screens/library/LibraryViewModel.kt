@@ -249,16 +249,18 @@ class LibraryViewModel @Inject constructor(
 
     fun loadMoreArtists() {
         if (_isLoadingMore.value || !hasMoreArtists) return
+        _isLoadingMore.value = true
         viewModelScope.launch {
-            _isLoadingMore.value = true
             try {
                 val items = musicRepository.getArtists(
                     search = currentSearch, limit = PAGE_SIZE, offset = _artists.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
                 )
                 _artists.value = _artists.value + items
                 hasMoreArtists = items.size >= PAGE_SIZE
-            } catch (_: Exception) {}
-            _isLoadingMore.value = false
+            } catch (_: Exception) {
+            } finally {
+                _isLoadingMore.value = false
+            }
         }
     }
 
@@ -278,16 +280,18 @@ class LibraryViewModel @Inject constructor(
 
     fun loadMoreAlbums() {
         if (_isLoadingMore.value || !hasMoreAlbums) return
+        _isLoadingMore.value = true
         viewModelScope.launch {
-            _isLoadingMore.value = true
             try {
                 val items = musicRepository.getAlbums(
                     search = currentSearch, limit = PAGE_SIZE, offset = _albums.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
                 )
                 _albums.value = _albums.value + items
                 hasMoreAlbums = items.size >= PAGE_SIZE
-            } catch (_: Exception) {}
-            _isLoadingMore.value = false
+            } catch (_: Exception) {
+            } finally {
+                _isLoadingMore.value = false
+            }
         }
     }
 
@@ -307,16 +311,18 @@ class LibraryViewModel @Inject constructor(
 
     fun loadMoreTracks() {
         if (_isLoadingMore.value || !hasMoreTracks) return
+        _isLoadingMore.value = true
         viewModelScope.launch {
-            _isLoadingMore.value = true
             try {
                 val items = musicRepository.getTracks(
                     search = currentSearch, limit = PAGE_SIZE, offset = _tracks.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
                 )
                 _tracks.value = _tracks.value + items
                 hasMoreTracks = items.size >= PAGE_SIZE
-            } catch (_: Exception) {}
-            _isLoadingMore.value = false
+            } catch (_: Exception) {
+            } finally {
+                _isLoadingMore.value = false
+            }
         }
     }
 
@@ -336,16 +342,18 @@ class LibraryViewModel @Inject constructor(
 
     fun loadMorePlaylists() {
         if (_isLoadingMore.value || !hasMorePlaylists) return
+        _isLoadingMore.value = true
         viewModelScope.launch {
-            _isLoadingMore.value = true
             try {
                 val items = musicRepository.getPlaylists(
                     search = currentSearch, limit = PAGE_SIZE, offset = _playlists.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
                 )
                 _playlists.value = _playlists.value + items
                 hasMorePlaylists = items.size >= PAGE_SIZE
-            } catch (_: Exception) {}
-            _isLoadingMore.value = false
+            } catch (_: Exception) {
+            } finally {
+                _isLoadingMore.value = false
+            }
         }
     }
 
@@ -572,6 +580,20 @@ class ArtistDetailViewModel @Inject constructor(
     }
 
     fun playTrack(track: Track) = playUri(track.uri)
+
+    fun playAllTracks(option: String = "replace") {
+        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val uris = _tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = option)
+            } catch (e: Exception) {
+                Log.w(TAG, "playAllTracks failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
+        }
+    }
 
     fun toggleArtistFavorite() {
         val a = _artist.value ?: return

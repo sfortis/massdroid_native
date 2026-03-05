@@ -167,6 +167,11 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         return result
     }
 
+    override suspend fun getGenreArtistMap(): Map<String, List<String>> {
+        return dao.getGenreArtistUris()
+            .groupBy({ it.genre }, { it.artistUri })
+    }
+
     override suspend fun getRediscoverAlbums(limit: Int): List<RecentAlbum> {
         val now = System.currentTimeMillis()
         val before = now - (30 * MILLIS_PER_DAY)

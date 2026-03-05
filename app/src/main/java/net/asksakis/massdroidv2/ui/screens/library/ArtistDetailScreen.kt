@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.PlayArrow
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
@@ -39,9 +41,7 @@ fun ArtistDetailScreen(
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val artistName by viewModel.artistName.collectAsStateWithLifecycle()
-    val players by viewModel.players.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
-    val selectedPlayerId = players.firstOrNull()?.playerId
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -180,11 +180,55 @@ fun ArtistDetailScreen(
 
             if (tracks.isNotEmpty()) {
                 item {
-                    Text(
-                        "Top Tracks",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                    var showPlaySheet by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Top Tracks",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { viewModel.playAllTracks() },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Play All", style = MaterialTheme.typography.labelMedium)
+                            }
+                            TextButton(
+                                onClick = { showPlaySheet = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
+                            }
+                        }
+                    }
+                    if (showPlaySheet) {
+                        ModalBottomSheet(onDismissRequest = { showPlaySheet = false }) {
+                            Column(modifier = Modifier.padding(bottom = 32.dp)) {
+                                ListItem(
+                                    headlineContent = { Text("Add to Queue") },
+                                    modifier = Modifier.clickable {
+                                        viewModel.playAllTracks(option = "add")
+                                        showPlaySheet = false
+                                    }
+                                )
+                                ListItem(
+                                    headlineContent = { Text("Play Next") },
+                                    modifier = Modifier.clickable {
+                                        viewModel.playAllTracks(option = "next")
+                                        showPlaySheet = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
                 items(tracks, key = { it.uri }) { track ->
                     MediaItemRow(
@@ -204,12 +248,13 @@ fun ArtistDetailScreen(
     }
 
     actionSheetItem?.let { target ->
+        val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
             imageUrl = target.imageUrl,
             players = players,
-            selectedPlayerId = selectedPlayerId,
+            selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)

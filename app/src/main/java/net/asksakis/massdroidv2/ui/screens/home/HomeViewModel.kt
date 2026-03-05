@@ -10,6 +10,7 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
@@ -19,6 +20,7 @@ private const val TAG = "HomeVM"
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
+    private val musicRepository: MusicRepository,
     private val settingsRepository: SettingsRepository,
     private val wsClient: MaWebSocketClient
 ) : ViewModel() {
@@ -147,6 +149,26 @@ class HomeViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "previous failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
+    fun clearQueue(playerId: String) {
+        viewModelScope.launch {
+            try {
+                musicRepository.clearQueue(playerId)
+            } catch (e: Exception) {
+                Log.w(TAG, "clearQueue failed: ${e.message}")
+            }
+        }
+    }
+
+    fun transferQueue(sourceId: String, targetId: String) {
+        viewModelScope.launch {
+            try {
+                musicRepository.transferQueue(sourceId, targetId)
+            } catch (e: Exception) {
+                Log.w(TAG, "transferQueue failed: ${e.message}")
             }
         }
     }

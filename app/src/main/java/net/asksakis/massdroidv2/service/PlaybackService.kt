@@ -2,15 +2,19 @@ package net.asksakis.massdroidv2.service
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.BitmapLoader
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -57,7 +61,7 @@ class PlaybackService : MediaLibraryService() {
     private var sendspinPlayerId: String? = null
     private var cachedSearchResults: SearchResult? = null
     private var cachedArtworkUrl: String? = null
-    private var cachedArtworkData: ByteArray? = null
+    @Volatile private var cachedArtworkData: ByteArray? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -113,6 +117,7 @@ class PlaybackService : MediaLibraryService() {
         )
         mediaLibrarySession = MediaLibrarySession.Builder(this, remotePlayer!!, libraryCallback)
             .setSessionActivity(pendingIntent)
+            .setBitmapLoader(SyncBitmapLoader())
             .build()
         Log.d(TAG, "MediaLibrarySession created")
     }
@@ -144,6 +149,10 @@ class PlaybackService : MediaLibraryService() {
                 val imageUrl = currentTrack?.imageUrl
                     ?: queue?.currentItem?.imageUrl
                     ?: player.currentMedia?.imageUrl
+
+                if (cachedArtworkUrl == null && imageUrl != null) {
+                    Log.d(TAG, "First artwork URL: $imageUrl (track=${currentTrack?.imageUrl != null}, qi=${queue?.currentItem?.imageUrl != null}, media=${player.currentMedia?.imageUrl != null})")
+                }
 
                 updateArtwork(imageUrl)
 
@@ -233,9 +242,12 @@ class PlaybackService : MediaLibraryService() {
 
     private fun updateArtwork(imageUrl: String?) {
         if (imageUrl != null && imageUrl != cachedArtworkUrl) {
+            Log.d(TAG, "Artwork URL changed: $imageUrl")
             cachedArtworkUrl = imageUrl
+            cachedArtworkData = null
             scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl) }
-        } else if (imageUrl == null) {
+        } else if (imageUrl == null && cachedArtworkUrl != null) {
+            Log.d(TAG, "Artwork URL cleared")
             cachedArtworkUrl = null
             cachedArtworkData = null
         }
@@ -244,16 +256,46 @@ class PlaybackService : MediaLibraryService() {
     private fun downloadArtwork(url: String) {
         try {
             val request = Request.Builder().url(url).build()
-            val response = wsClient.getHttpClient().newCall(request).execute()
-            val bytes = response.body?.bytes()
+            val response = wsClient.getImageClient().newCall(request).execute()
+            val code = response.code
+            val contentType = response.header("Content-Type")
+            val rawBytes = response.body?.bytes()
             response.close()
-            if (bytes != null && bytes.isNotEmpty()) {
-                cachedArtworkData = bytes
-                scope.launch { remotePlayer?.setArtwork(bytes) }
+            Log.d(TAG, "Artwork HTTP $code, type=$contentType, bytes=${rawBytes?.size ?: 0} for $url")
+            if (rawBytes != null && rawBytes.isNotEmpty()) {
+                val resized = resizeArtwork(rawBytes)
+                cachedArtworkData = resized
+                Log.d(TAG, "Artwork decoded+resized: ${resized.size} bytes, setting on player")
+                scope.launch {
+                    remotePlayer?.setArtwork(resized)
+                    Log.d(TAG, "Artwork setArtwork() called on Main thread")
+                }
+            } else {
+                Log.w(TAG, "Artwork response empty for $url")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Artwork download failed: $url", e)
         }
+    }
+
+    private fun resizeArtwork(rawBytes: ByteArray, maxSize: Int = 320): ByteArray {
+        val original = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return rawBytes
+        val scale = maxSize.toFloat() / maxOf(original.width, original.height)
+        if (scale >= 1f) {
+            original.recycle()
+            return rawBytes
+        }
+        val scaled = Bitmap.createScaledBitmap(
+            original,
+            (original.width * scale).toInt(),
+            (original.height * scale).toInt(),
+            true
+        )
+        original.recycle()
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+        scaled.recycle()
+        return out.toByteArray()
     }
 
     /** Track sendspin state without releasing the session. */
@@ -560,6 +602,30 @@ class PlaybackService : MediaLibraryService() {
         .build()
 
     // endregion
+}
+
+/**
+ * Synchronous BitmapLoader that decodes artwork immediately.
+ * Avoids the async decode race in Media3's default CacheBitmapLoader
+ * which uses reference equality on cloned byte arrays (cache always misses).
+ */
+@OptIn(UnstableApi::class)
+private class SyncBitmapLoader : BitmapLoader {
+    override fun supportsMimeType(mimeType: String): Boolean = true
+
+    override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> {
+        return try {
+            val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+            if (bitmap != null) Futures.immediateFuture(bitmap)
+            else Futures.immediateFailedFuture(IllegalArgumentException("Cannot decode bitmap"))
+        } catch (e: Exception) {
+            Futures.immediateFailedFuture(e)
+        }
+    }
+
+    override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> {
+        return Futures.immediateFailedFuture(UnsupportedOperationException("URI loading not supported"))
+    }
 }
 
 data class QueueEntry(

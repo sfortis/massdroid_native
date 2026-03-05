@@ -7,6 +7,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -34,30 +35,55 @@ class QueueViewModel @Inject constructor(
         .map { it?.currentItem?.queueItemId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val players: StateFlow<List<Player>> = playerRepository.players
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
 
-    private val queueId: String?
+    val selectedPlayerId: String?
         get() = playerRepository.selectedPlayer.value?.playerId
+    private val queueId: String?
+        get() = selectedPlayerId
+    private var queueLoadGeneration = 0L
 
     init {
-        loadQueue()
         viewModelScope.launch {
-            playerRepository.queueItemsChanged.collect { loadQueue() }
+            playerRepository.selectedPlayer
+                .map { it?.playerId }
+                .distinctUntilChanged()
+                .collect {
+                    _queueItems.value = emptyList()
+                    loadQueue()
+                }
+        }
+        viewModelScope.launch {
+            playerRepository.queueItemsChanged.collect { changedQueueId ->
+                if (changedQueueId == queueId) loadQueue()
+            }
         }
     }
 
     private fun loadQueue() {
-        val id = queueId ?: return
+        val id = queueId ?: run {
+            _queueItems.value = emptyList()
+            _isLoading.value = false
+            return
+        }
+        val generation = ++queueLoadGeneration
         val isInitialLoad = _queueItems.value.isEmpty()
         viewModelScope.launch {
             if (isInitialLoad) _isLoading.value = true
             try {
-                _queueItems.value = musicRepository.getQueueItems(id)
+                val items = musicRepository.getQueueItems(id)
+                if (generation != queueLoadGeneration || queueId != id) return@launch
+                _queueItems.value = items
             } catch (e: Exception) {
                 Log.w(TAG, "loadQueue failed: ${e.message}")
+            } finally {
+                if (generation == queueLoadGeneration && isInitialLoad) {
+                    _isLoading.value = false
+                }
             }
-            if (isInitialLoad) _isLoading.value = false
         }
     }
 
@@ -146,6 +172,18 @@ class QueueViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "clearQueue failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
+    fun transferQueue(targetId: String) {
+        val id = queueId ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.transferQueue(id, targetId)
+            } catch (e: Exception) {
+                Log.w(TAG, "transferQueue failed: ${e.message}")
+                _error.tryEmit("Transfer failed")
             }
         }
     }

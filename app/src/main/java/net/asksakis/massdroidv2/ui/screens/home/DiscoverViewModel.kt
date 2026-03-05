@@ -43,6 +43,7 @@ private const val RECENTLY_ADDED_TRACKS_FOLDER_ID = "recently_added_tracks"
 private const val RECENT_FAVORITE_ALBUMS_TITLE = "Recent Favorite Albums"
 private const val RECENT_FAVORITE_TRACKS_TITLE = "Recent Favorite Tracks"
 private const val RECENTLY_ADDED_TRACKS_TITLE = "Recently Added Tracks"
+private const val RECENT_TRACKS_QUERY_FACTOR = 5
 
 data class GenreItem(
     val name: String,
@@ -77,6 +78,8 @@ class DiscoverViewModel @Inject constructor(
     private var genreArtists = mapOf<String, List<String>>()
     private var cacheStale = true
     private var mediaEventJob: Job? = null
+    private var fullLoadJob: Job? = null
+    private var loadGeneration = 0L
 
     init {
         autoConnect()
@@ -103,7 +106,12 @@ class DiscoverViewModel @Inject constructor(
 
     private suspend fun loadFromCache() {
         val cached = discoverCache.load() ?: return
-        val genreItems = buildGenreItemsFromArtists(cached.topArtists)
+        val historyGenreArtists = try {
+            playHistoryRepository.getGenreArtistMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val genreItems = buildGenreItemsFromArtists(cached.topArtists, historyGenreArtists)
         val bllScores = try {
             playHistoryRepository.getScoredGenres(days = 90, limit = 20)
         } catch (_: Exception) {
@@ -174,18 +182,7 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun refreshRecentFavoriteTracksSection() {
-        val recommendationFolders = try {
-            musicRepository.getRecommendations()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to refresh recent favorite tracks section", e)
-            return
-        }
-
-        val freshTracks = recommendationFolders
-            .firstOrNull { it.provider == "library" && it.itemId == RECENT_FAVORITE_TRACKS_FOLDER_ID }
-            ?.items
-            ?.tracks
-            .orEmpty()
+        val freshTracks = loadRecentFavoriteTracks()
 
         _sections.value = reorderHomeSections(
             upsertTrackSection(
@@ -198,20 +195,8 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun refreshFavoriteAlbumsAndRecentlyAddedTracksSections() {
-        val recommendationFolders = try {
-            musicRepository.getRecommendations()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to refresh favorite/recent track sections", e)
-            return
-        }
-
         val freshAlbums = loadRecentFavoriteAlbums()
-
-        val freshTracks = recommendationFolders
-            .firstOrNull { it.provider == "library" && it.itemId == RECENTLY_ADDED_TRACKS_FOLDER_ID }
-            ?.items
-            ?.tracks
-            .orEmpty()
+        val freshTracks = loadRecentlyAddedTracks()
 
         val withAlbums = upsertAlbumSection(
             current = _sections.value,
@@ -334,7 +319,9 @@ class DiscoverViewModel @Inject constructor(
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
         }
-        viewModelScope.launch {
+        val generation = ++loadGeneration
+        fullLoadJob?.cancel()
+        fullLoadJob = viewModelScope.launch {
             Log.d(TAG, "loadFromServer: starting (manual=$isManualRefresh)")
             if (isManualRefresh) _isRefreshing.value = true
             try {
@@ -355,7 +342,12 @@ class DiscoverViewModel @Inject constructor(
                 }.distinctBy { it.uri }
                 Log.d(TAG, "Merged ${merged.size} library artists, ${serverFolders.size} server folders")
 
-                val genreItems = buildGenreItemsFromArtists(merged)
+                val historyGenreArtists = try {
+                    playHistoryRepository.getGenreArtistMap()
+                } catch (_: Exception) {
+                    emptyMap()
+                }
+                val genreItems = buildGenreItemsFromArtists(merged, historyGenreArtists)
 
                 val suggested = try {
                     buildSuggestedArtists(merged)
@@ -372,6 +364,7 @@ class DiscoverViewModel @Inject constructor(
                 } catch (_: Exception) {
                     emptyList()
                 }
+                if (generation != loadGeneration) return@launch
 
                 _sections.value = sectionBuilder.buildSections(
                     serverFolders = enrichedFolders,
@@ -392,8 +385,10 @@ class DiscoverViewModel @Inject constructor(
                     )
                 )
             } finally {
-                _isLoading.value = false
-                _isRefreshing.value = false
+                if (generation == loadGeneration) {
+                    _isLoading.value = false
+                    _isRefreshing.value = false
+                }
             }
         }
     }
@@ -426,18 +421,34 @@ class DiscoverViewModel @Inject constructor(
         )
     }
 
-    private fun buildGenreItemsFromArtists(artists: List<Artist>): List<GenreItem> {
+    private fun buildGenreItemsFromArtists(
+        artists: List<Artist>,
+        historyGenreArtists: Map<String, List<String>> = emptyMap()
+    ): List<GenreItem> {
         val genreMap = mutableMapOf<String, MutableList<Artist>>()
         for (artist in artists) {
             for (genre in artist.genres) {
                 genreMap.getOrPut(genre) { mutableListOf() }.add(artist)
             }
         }
-        genreArtists = genreMap.mapValues { (_, artistList) ->
+        // Merge server artists with Room DB artists (distinct URIs per genre)
+        val serverUris = genreMap.mapValues { (_, artistList) ->
             artistList.map { it.uri }
         }
-        for ((genre, artistList) in genreMap.entries.sortedByDescending { it.value.size }.take(10)) {
-            Log.d(TAG, "Genre '$genre': ${artistList.size} artists -> ${artistList.map { it.name }}")
+        genreArtists = buildMap {
+            val allGenres = serverUris.keys + historyGenreArtists.keys
+            for (genre in allGenres) {
+                val merged = buildList {
+                    addAll(serverUris[genre].orEmpty())
+                    addAll(historyGenreArtists[genre].orEmpty())
+                }.distinct()
+                put(genre, merged)
+            }
+        }
+        for ((genre, uris) in genreArtists.entries.sortedByDescending { it.value.size }.take(10)) {
+            val serverCount = serverUris[genre]?.size ?: 0
+            val historyCount = historyGenreArtists[genre]?.size ?: 0
+            Log.d(TAG, "Genre '$genre': ${uris.size} artists (server=$serverCount, history=$historyCount)")
         }
         return genreMap
             .map { (name, artistList) ->
@@ -452,14 +463,14 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private suspend fun loadLibraryArtists(): List<Artist>? = try {
-        musicRepository.getArtists(orderBy = "play_count_desc", limit = 200)
+        musicRepository.getArtists(orderBy = "play_count_desc", limit = 500)
     } catch (e: Exception) {
         Log.e(TAG, "Failed to load library artists", e)
         null
     }
 
     private suspend fun loadRandomArtists(): List<Artist>? = try {
-        musicRepository.getArtists(orderBy = "random", limit = 200)
+        musicRepository.getArtists(orderBy = "random", limit = 500)
     } catch (e: Exception) {
         Log.e(TAG, "Failed to load random artists", e)
         null
@@ -477,7 +488,7 @@ class DiscoverViewModel @Inject constructor(
         val favoritesByAdded = try {
             musicRepository.getAlbums(
                 orderBy = "timestamp_added_desc",
-                limit = limit * 5,
+                limit = limit * RECENT_TRACKS_QUERY_FACTOR,
                 favoriteOnly = true
             )
         } catch (_: Exception) {
@@ -486,6 +497,40 @@ class DiscoverViewModel @Inject constructor(
 
         return favoritesByAdded
             .filter { it.favorite }
+            .distinctBy { it.uri }
+            .take(limit)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun loadRecentFavoriteTracks(limit: Int = 10): List<Track> {
+        val favoritesByAdded = try {
+            musicRepository.getTracks(
+                orderBy = "timestamp_added_desc",
+                limit = limit * RECENT_TRACKS_QUERY_FACTOR,
+                favoriteOnly = true
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        return favoritesByAdded
+            .filter { it.favorite }
+            .distinctBy { it.uri }
+            .take(limit)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun loadRecentlyAddedTracks(limit: Int = 10): List<Track> {
+        val recentTracks = try {
+            musicRepository.getTracks(
+                orderBy = "timestamp_added_desc",
+                limit = limit * 2
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        return recentTracks
             .distinctBy { it.uri }
             .take(limit)
     }

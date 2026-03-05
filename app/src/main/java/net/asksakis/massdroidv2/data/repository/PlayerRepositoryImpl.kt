@@ -99,7 +99,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     val serverPlayer = event.data?.let {
                         json.decodeFromJsonElement<ServerPlayer>(it)
                     } ?: return@collect
-                    val player = serverPlayer.toDomain(wsClient)
+                    val trackImg = queueTracking[serverPlayer.playerId]?.track?.imageUrl
+                    val player = serverPlayer.toDomain(wsClient, trackImg)
                     _players.update { list ->
                         list.map { if (it.playerId == player.playerId) player else it }
                     }
@@ -133,6 +134,18 @@ class PlayerRepositoryImpl @Inject constructor(
                     Log.d(TAG, "PLAYER_REMOVED event: ${event.objectId}")
                     val id = event.objectId ?: return@collect
                     _players.update { list -> list.filter { it.playerId != id } }
+                    queueTracking.remove(id)
+                    if (selectedPlayerId == id) {
+                        selectedPlayerId = null
+                        _selectedPlayer.value = null
+                        _queueState.value = null
+                        _elapsedTime.value = 0.0
+                        trackDuration = 0.0
+                        favoriteOverride = null
+                        favoriteOverrideUri = null
+                        stopPositionTicker()
+                        scope.launch { settingsRepository.setSelectedPlayerId(null) }
+                    }
                 }
                 EventType.QUEUE_UPDATED -> {
                     val serverQueue = event.data?.let {
@@ -313,7 +326,10 @@ class PlayerRepositoryImpl @Inject constructor(
             val result = wsClient.sendCommand("players/all")
             val serverPlayers = result?.let { json.decodeFromJsonElement<List<ServerPlayer>>(it) } ?: emptyList()
             Log.d(TAG, "Loaded ${serverPlayers.size} players")
-            val fromServer = serverPlayers.map { it.toDomain(wsClient) }
+            val fromServer = serverPlayers.map {
+                val trackImg = queueTracking[it.playerId]?.track?.imageUrl
+                it.toDomain(wsClient, trackImg)
+            }
             val serverIds = fromServer.map { it.playerId }.toSet()
             _players.update { currentList ->
                 val eventOnly = currentList.filter { it.playerId !in serverIds }
@@ -492,7 +508,10 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 }
 
-fun ServerPlayer.toDomain(wsClient: MaWebSocketClient): Player = Player(
+fun ServerPlayer.toDomain(
+    wsClient: MaWebSocketClient,
+    queueTrackImageUrl: String? = null
+): Player = Player(
     playerId = playerId,
     displayName = displayName.ifBlank { name },
     provider = provider,
@@ -517,7 +536,8 @@ fun ServerPlayer.toDomain(wsClient: MaWebSocketClient): Player = Player(
             title = it.title ?: "",
             artist = it.artist ?: "",
             album = it.album ?: "",
-            imageUrl = it.imageUrl
+            imageUrl = queueTrackImageUrl
+                ?: it.imageUrl
                 ?: it.image?.path?.let { path -> wsClient.getImageUrl(path) },
             duration = it.duration ?: 0.0,
             elapsedTime = it.elapsedTime ?: 0.0,

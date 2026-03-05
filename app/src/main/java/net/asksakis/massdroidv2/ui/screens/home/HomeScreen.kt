@@ -215,6 +215,7 @@ fun HomeScreen(
 
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
+                    var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
 
                     LazyColumn(
                         modifier = Modifier.weight(1f)
@@ -225,7 +226,8 @@ fun HomeScreen(
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
-                                onSettingsClick = { settingsPlayer = player }
+                                onSettingsClick = { settingsPlayer = player },
+                                onQueueMenuClick = { queueMenuPlayer = player }
                             )
                         }
                     }
@@ -250,6 +252,22 @@ fun HomeScreen(
                         )
                     }
 
+                    queueMenuPlayer?.let { player ->
+                        PlayerQueueSheet(
+                            player = player,
+                            allPlayers = players.filter { it.available },
+                            onClearQueue = {
+                                viewModel.clearQueue(player.playerId)
+                                queueMenuPlayer = null
+                            },
+                            onTransferQueue = { targetId ->
+                                viewModel.transferQueue(player.playerId, targetId)
+                                queueMenuPlayer = null
+                            },
+                            onDismiss = { queueMenuPlayer = null }
+                        )
+                    }
+
                 }
             }
         }
@@ -264,7 +282,8 @@ private fun PlayerListItem(
     isSelected: Boolean,
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
-    onSettingsClick: () -> Unit
+    onSettingsClick: () -> Unit,
+    onQueueMenuClick: () -> Unit
 ) {
     ListItem(
         headlineContent = { Text(player.displayName) },
@@ -310,10 +329,92 @@ private fun PlayerListItem(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Queue options",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         modifier = Modifier.clickable(onClick = onClick)
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlayerQueueSheet(
+    player: Player,
+    allPlayers: List<Player>,
+    onClearQueue: () -> Unit,
+    onTransferQueue: (targetId: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showTransferList by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState()
+    val otherPlayers = remember(allPlayers, player.playerId) {
+        allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Column(modifier = Modifier.padding(bottom = 24.dp)) {
+            Text(
+                text = player.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            if (!showTransferList) {
+                ListItem(
+                    headlineContent = { Text("Clear Queue") },
+                    leadingContent = {
+                        Icon(Icons.Default.DeleteSweep, contentDescription = null)
+                    },
+                    modifier = Modifier.clickable(onClick = onClearQueue)
+                )
+                if (otherPlayers.isNotEmpty()) {
+                    ListItem(
+                        headlineContent = { Text("Transfer Queue") },
+                        leadingContent = {
+                            Icon(Icons.Default.SwapHoriz, contentDescription = null)
+                        },
+                        trailingContent = {
+                            Icon(Icons.Default.ChevronRight, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable { showTransferList = true }
+                    )
+                }
+            } else {
+                ListItem(
+                    headlineContent = {
+                        Text("Transfer queue to:", style = MaterialTheme.typography.labelMedium)
+                    },
+                    leadingContent = {
+                        IconButton(onClick = { showTransferList = false }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                )
+                otherPlayers.forEach { target ->
+                    ListItem(
+                        headlineContent = { Text(target.displayName) },
+                        leadingContent = {
+                            PlayerIcon(
+                                player = target,
+                                modifier = Modifier.size(32.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable { onTransferQueue(target.playerId) }
+                    )
+                }
+            }
+        }
+    }
 }
 
 private data class IconOption(val mdiName: String, val label: String, val icon: ImageVector)

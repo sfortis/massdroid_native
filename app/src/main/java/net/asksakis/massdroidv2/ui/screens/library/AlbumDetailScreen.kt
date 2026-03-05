@@ -45,9 +45,7 @@ fun AlbumDetailScreen(
     val album by viewModel.album.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val albumName by viewModel.albumName.collectAsStateWithLifecycle()
-    val players by viewModel.players.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
-    val selectedPlayerId = players.firstOrNull()?.playerId
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -193,24 +191,17 @@ fun AlbumDetailScreen(
 
                     // Split play button
                     var showPlaySheet by remember { mutableStateOf(false) }
-                    Row {
-                        Button(
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
                             onClick = { viewModel.playAll() },
-                            shape = MaterialTheme.shapes.medium.copy(
-                                topEnd = androidx.compose.foundation.shape.CornerSize(0.dp),
-                                bottomEnd = androidx.compose.foundation.shape.CornerSize(0.dp)
-                            )
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Play All")
                         }
-                        Button(
+                        TextButton(
                             onClick = { showPlaySheet = true },
-                            shape = MaterialTheme.shapes.medium.copy(
-                                topStart = androidx.compose.foundation.shape.CornerSize(0.dp),
-                                bottomStart = androidx.compose.foundation.shape.CornerSize(0.dp)
-                            ),
                             contentPadding = PaddingValues(horizontal = 8.dp)
                         ) {
                             Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
@@ -304,12 +295,13 @@ fun AlbumDetailScreen(
     }
 
     actionSheetItem?.let { target ->
+        val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
             imageUrl = target.imageUrl,
             players = players,
-            selectedPlayerId = selectedPlayerId,
+            selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)

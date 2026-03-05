@@ -40,7 +40,9 @@ fun QueueScreen(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val currentQueueItemId by viewModel.currentQueueItemId.collectAsStateWithLifecycle()
+    val players by viewModel.players.collectAsStateWithLifecycle()
     var actionSheetItem by remember { mutableStateOf<QueueActionItem?>(null) }
+    var showQueueMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -59,6 +61,9 @@ fun QueueScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showQueueMenu = true }) {
+                        Icon(Icons.Default.SwapHoriz, contentDescription = "Transfer queue")
+                    }
                     IconButton(onClick = { viewModel.clearQueue() }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear queue")
                     }
@@ -208,6 +213,30 @@ fun QueueScreen(
                         actionSheetItem = null
                     }
                 )
+            }
+        }
+    }
+
+    if (showQueueMenu) {
+        val otherPlayers = players.filter { it.available && it.playerId != viewModel.selectedPlayerId }
+            .sortedBy { it.displayName.lowercase() }
+
+        ModalBottomSheet(onDismissRequest = { showQueueMenu = false }) {
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                Text(
+                    text = "Transfer queue to:",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                otherPlayers.forEach { target ->
+                    ListItem(
+                        headlineContent = { Text(target.displayName) },
+                        modifier = Modifier.clickable {
+                            viewModel.transferQueue(target.playerId)
+                            showQueueMenu = false
+                        }
+                    )
+                }
             }
         }
     }

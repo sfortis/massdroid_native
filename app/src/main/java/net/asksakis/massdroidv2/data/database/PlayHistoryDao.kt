@@ -175,6 +175,18 @@ interface PlayHistoryDao {
     )
     suspend fun getArtistPlayTimestamps(since: Long): List<ArtistPlayTimestamp>
 
+    // Genre -> artist URI mappings (for genre radio)
+    @Query(
+        """
+        SELECT tg.genre_name AS genre, a.uri AS artistUri
+        FROM track_genres tg
+        JOIN track_artists ta ON ta.track_uri = tg.track_uri
+        JOIN artists a ON a.uri = ta.artist_uri
+        GROUP BY tg.genre_name, a.uri
+        """
+    )
+    suspend fun getGenreArtistUris(): List<GenreArtistUri>
+
     // Genre co-occurrence for adjacency map
     @Query(
         """
@@ -266,6 +278,11 @@ data class ArtistPlayTimestamp(
     @ColumnInfo(name = "artistUri") val artistUri: String,
     @ColumnInfo(name = "artistName") val artistName: String,
     @ColumnInfo(name = "playedAt") val playedAt: Long
+)
+
+data class GenreArtistUri(
+    val genre: String,
+    @ColumnInfo(name = "artistUri") val artistUri: String
 )
 
 data class GenreCoOccurrence(

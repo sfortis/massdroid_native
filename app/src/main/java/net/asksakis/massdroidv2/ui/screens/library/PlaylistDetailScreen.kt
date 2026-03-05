@@ -26,8 +26,6 @@ fun PlaylistDetailScreen(
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlistName by viewModel.playlistName.collectAsStateWithLifecycle()
     val isFavorite by viewModel.favorite.collectAsStateWithLifecycle()
-    val players by viewModel.players.collectAsStateWithLifecycle()
-    val selectedPlayerId = players.firstOrNull()?.playerId
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -74,12 +72,13 @@ fun PlaylistDetailScreen(
     }
 
     actionSheetItem?.let { target ->
+        val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
             imageUrl = target.imageUrl,
             players = players,
-            selectedPlayerId = selectedPlayerId,
+            selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)

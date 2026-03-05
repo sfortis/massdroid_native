@@ -181,6 +181,14 @@ class MusicRepositoryImpl @Inject constructor(
         })
     }
 
+    override suspend fun transferQueue(sourceQueueId: String, targetQueueId: String) {
+        wsClient.sendCommand("player_queues/transfer", buildJsonObject {
+            put("source_queue_id", sourceQueueId)
+            put("target_queue_id", targetQueueId)
+            put("auto_play", true)
+        })
+    }
+
     override suspend fun deleteQueueItem(queueId: String, itemIdOrIndex: String) {
         wsClient.sendCommand("player_queues/delete_item", buildJsonObject {
             put("queue_id", queueId)

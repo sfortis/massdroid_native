@@ -28,8 +28,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -102,6 +104,7 @@ class SendspinService : Service() {
     private var isStreaming = false
     private var isSendspinReady = false
     private var wasPlayingBeforeDisconnect = false
+    private var lastSendspinReportedPlaying = false
     private var resumePositionSeconds = 0.0
     private var resumeTrackUri: String? = null
     private var currentTrackUri: String? = null
@@ -113,6 +116,7 @@ class SendspinService : Service() {
     private var currentIsPlaying = false
     private var optimisticUntil = 0L
     private var sendspinPlayerId: String? = null
+    private val collectorJobs = mutableListOf<Job>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -240,6 +244,23 @@ class SendspinService : Service() {
         }
     }
 
+    private fun hasBluetoothAudioOutput(): Boolean =
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        }
+
+    private fun autoSelectSendspinIfBluetooth() {
+        if (hasBluetoothAudioOutput()) {
+            val id = sendspinPlayerId ?: return
+            val currentSelectedId = playerRepository.selectedPlayer.value?.playerId
+            if (currentSelectedId != id) {
+                Log.d(TAG, "BT AVRCP command with BT audio output, selecting sendspin player")
+                playerRepository.selectPlayer(id)
+            }
+        }
+    }
+
     private fun setupMediaSession() {
         mediaSession = MediaSessionCompat(this, "MassDroidSpeaker").apply {
             @Suppress("DEPRECATION")
@@ -267,6 +288,7 @@ class SendspinService : Service() {
                         else -> "keyCode=$keyCode"
                     }
                     Log.d(TAG, "BT mediaButton: $keyName $action, currentIsPlaying=$currentIsPlaying, pbState=${if (currentIsPlaying) "PLAYING" else if (isSendspinReady) "PAUSED" else "BUFFERING"}")
+                    autoSelectSendspinIfBluetooth()
                     return super.onMediaButtonEvent(mediaButtonEvent)
                 }
                 override fun onStop() {
@@ -353,7 +375,10 @@ class SendspinService : Service() {
     }
 
     private fun startSendspin() {
-        // Request audio focus before starting
+        // Cancel any existing collectors from a previous start (idempotency guard)
+        for (job in collectorJobs) job.cancel(CancellationException("Sendspin restart"))
+        collectorJobs.clear()
+
         requestAudioFocus()
         registerNoisyReceiver()
 
@@ -369,7 +394,7 @@ class SendspinService : Service() {
         }
 
         // Observe connection state
-        scope.launch {
+        collectorJobs += scope.launch {
             sendspinManager.connectionState.collect { state ->
                 val wasStreaming = isStreaming
                 isStreaming = state == SendspinState.STREAMING
@@ -377,10 +402,17 @@ class SendspinService : Service() {
                 Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isSendspinReady=$isSendspinReady")
                 // Track if sendspin dropped while actively streaming (for auto-resume)
                 if (wasStreaming && !isStreaming) {
-                    wasPlayingBeforeDisconnect = currentIsPlaying
+                    val sendspinWasPlaying = playerRepository.players.value
+                        .firstOrNull { it.playerId == sendspinPlayerId }
+                        ?.state == PlaybackState.PLAYING
+                    wasPlayingBeforeDisconnect = sendspinWasPlaying
                     resumePositionSeconds = currentPositionMs / 1000.0
                     resumeTrackUri = currentTrackUri
-                    Log.d(TAG, "Sendspin dropped while streaming, wasPlaying=$currentIsPlaying, pos=${resumePositionSeconds}s, uri=$resumeTrackUri")
+                    Log.d(
+                        TAG,
+                        "Sendspin dropped while streaming, sendspinWasPlaying=$sendspinWasPlaying, " +
+                                "currentIsPlaying=$currentIsPlaying, pos=${resumePositionSeconds}s, uri=$resumeTrackUri"
+                    )
                 }
                 val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
                 if (isStreaming && !wasStreaming) {
@@ -392,6 +424,7 @@ class SendspinService : Service() {
                     updateMediaSession()
                     updateNotification()
                 } else if (!isStreaming && state != SendspinState.SYNCING) {
+                    if (outsideOptimistic) currentIsPlaying = false
                     currentTitle = when (state) {
                         SendspinState.STREAMING -> ""
                         SendspinState.SYNCING -> "Ready"
@@ -412,11 +445,14 @@ class SendspinService : Service() {
         }
 
         // Observe sendspin player metadata from the players list (not selectedPlayer)
-        scope.launch {
+        collectorJobs += scope.launch {
             playerRepository.players
                 .map { list -> list.find { it.playerId == sendspinPlayerId } }
                 .distinctUntilChanged()
                 .collect { player ->
+                    lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
+                    val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
+                    if (outsideOptimistic) currentIsPlaying = lastSendspinReportedPlaying
                     if (!isStreaming || player == null) return@collect
                     val media = player.currentMedia
                     val title = media?.title ?: "MassDroid Speaker"
@@ -453,7 +489,7 @@ class SendspinService : Service() {
         }
 
         // Immediate audio pause/resume when app UI controls the sendspin player
-        scope.launch {
+        collectorJobs += scope.launch {
             playerRepository.playbackIntent.collect { willPlay ->
                 val selectedId = playerRepository.selectedPlayer.value?.playerId
                 if (selectedId != sendspinPlayerId) return@collect
@@ -475,7 +511,7 @@ class SendspinService : Service() {
         }
 
         // Read settings and start sendspin
-        scope.launch {
+        collectorJobs += scope.launch {
             val url = settingsRepository.serverUrl.first()
             val token = settingsRepository.authToken.first()
             if (url.isBlank() || token.isBlank()) {
@@ -496,7 +532,7 @@ class SendspinService : Service() {
         }
 
         // Resume playback when MA reconnects after a drop (only if was playing before)
-        scope.launch {
+        collectorJobs += scope.launch {
             var connectedBefore = false
             wsClient.connectionState.collect { state ->
                 val isConnected = state is net.asksakis.massdroidv2.data.websocket.ConnectionState.Connected
@@ -613,7 +649,7 @@ class SendspinService : Service() {
         if (url == null) return null
         return withContext(Dispatchers.IO) {
             try {
-                val client = wsClient.getHttpClient()
+                val client = wsClient.getImageClient()
                 val request = okhttp3.Request.Builder().url(url).build()
                 val response = client.newCall(request).execute()
                 response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
@@ -657,7 +693,10 @@ class SendspinService : Service() {
     }
 
     private fun stopSendspin() {
+        for (job in collectorJobs) job.cancel(CancellationException("Sendspin restart"))
+        collectorJobs.clear()
         wasPlayingBeforeDisconnect = false
+        lastSendspinReportedPlaying = false
         abandonAudioFocus()
         unregisterNoisyReceiver()
         sendspinManager.stop()

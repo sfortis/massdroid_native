@@ -55,6 +55,7 @@ interface PlayHistoryRepository {
     suspend fun getScoredGenres(days: Int = 90, limit: Int = 20): List<GenreScore>
     suspend fun getScoredArtists(days: Int = 90, limit: Int = 50): List<ArtistScore>
     suspend fun getGenreAdjacencyMap(): Map<String, Set<String>>
+    suspend fun getGenreArtistMap(): Map<String, List<String>>
     suspend fun getRediscoverAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getPlaysForTimeAnalysis(days: Int = 30): List<Long>
     suspend fun cleanup(retentionMonths: Int = 6)

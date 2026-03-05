@@ -52,7 +52,6 @@ fun LibraryScreen(
     val displayMode by viewModel.displayMode.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
-    val players by viewModel.players.collectAsStateWithLifecycle()
 
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -317,6 +316,7 @@ fun LibraryScreen(
 
     // Action sheet
     actionSheetItem?.let { target ->
+        val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
@@ -389,7 +389,11 @@ private fun <T> MediaList(
             val listState = rememberLazyListState()
             InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
             LazyColumn(state = listState) {
-                items(items, key = { key(it) }) { item ->
+                items(
+                    items = items,
+                    key = { key(it) },
+                    contentType = { "library_list_item" }
+                ) { item ->
                     MediaItemRow(
                         title = title(item),
                         subtitle = subtitle(item),
@@ -415,7 +419,11 @@ private fun <T> MediaList(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(items, key = { key(it) }) { item ->
+                items(
+                    items = items,
+                    key = { key(it) },
+                    contentType = { "library_grid_item" }
+                ) { item ->
                     MediaItemGrid(
                         title = title(item),
                         subtitle = subtitle(item),

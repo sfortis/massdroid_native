@@ -12,14 +12,17 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import coil.request.CachePolicy
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -37,6 +40,17 @@ fun MediaItemRow(
     onPlayClick: (() -> Unit)? = null,
     showEqualizer: Boolean = false
 ) {
+    val context = LocalContext.current
+    val imageModel = remember(imageUrl, context) {
+        ImageRequest.Builder(context)
+            .data(imageUrl)
+            .size(192)
+            .crossfade(false)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .build()
+    }
+
     ListItem(
         headlineContent = {
             Text(
@@ -64,7 +78,7 @@ fun MediaItemRow(
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = imageUrl,
+                    model = imageModel,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
@@ -140,6 +154,17 @@ fun MediaItemGrid(
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    val imageModel = remember(imageUrl, context) {
+        ImageRequest.Builder(context)
+            .data(imageUrl)
+            .size(384)
+            .crossfade(false)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .build()
+    }
+
     Column(
         modifier = modifier.combinedClickable(
             onClick = onClick,
@@ -147,7 +172,7 @@ fun MediaItemGrid(
         )
     ) {
         AsyncImage(
-            model = imageUrl,
+            model = imageModel,
             contentDescription = null,
             modifier = Modifier
                 .fillMaxWidth()
