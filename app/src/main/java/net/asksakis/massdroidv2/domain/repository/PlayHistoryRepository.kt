@@ -29,6 +29,17 @@ data class AlbumScore(
     val score: Double
 )
 
+data class TrackScore(
+    val trackUri: String,
+    val trackName: String,
+    val score: Double
+)
+
+data class DecadeScore(
+    val decade: Int,
+    val score: Double
+)
+
 data class PlayHistoryEntry(
     val trackUri: String,
     val trackName: String,
@@ -51,12 +62,17 @@ interface PlayHistoryRepository {
     suspend fun getRecentAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getTopGenres(days: Int = 30, limit: Int = 10): List<GenreScore>
     suspend fun getTopArtists(days: Int = 30, limit: Int = 10): List<ArtistScore>
+    suspend fun getTopTracks(days: Int = 30, limit: Int = 10): List<TrackScore>
     suspend fun getTopAlbums(days: Int = 30, limit: Int = 10): List<AlbumScore>
     suspend fun getScoredGenres(days: Int = 90, limit: Int = 20): List<GenreScore>
     suspend fun getScoredArtists(days: Int = 90, limit: Int = 50): List<ArtistScore>
+    suspend fun getArtistDaypartAffinity(targetHour: Int, days: Int = 180): Map<String, Double>
+    suspend fun getArtistDominantDecades(days: Int = 365): Map<String, Int>
+    suspend fun getTopDecadesForGenre(genre: String, days: Int = 365, limit: Int = 3): List<DecadeScore>
     suspend fun getGenreAdjacencyMap(): Map<String, Set<String>>
     suspend fun getGenreArtistMap(): Map<String, List<String>>
     suspend fun getRediscoverAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getPlaysForTimeAnalysis(days: Int = 30): List<Long>
     suspend fun cleanup(retentionMonths: Int = 6)
+    suspend fun clearRecommendationData()
 }

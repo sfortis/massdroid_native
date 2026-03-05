@@ -39,12 +39,20 @@ class RecommendationEngine @Inject constructor() {
         artistScores: List<ArtistScore>,
         genreAdjacency: Map<String, Set<String>>,
         recentlyAdded: List<Artist>,
+        excludedArtistUris: Set<String> = emptySet(),
+        artistSignalScores: Map<String, Double> = emptyMap(),
+        artistIdentity: (Artist) -> String = { it.uri },
         count: Int = 10
     ): List<Artist> {
         if (genreScores.isEmpty()) return candidates.shuffled().take(count)
 
         val topArtistUris = artistScores.map { it.artistUri }.toSet()
-        val eligible = candidates.filter { it.imageUrl != null && it.uri !in topArtistUris }
+        val eligible = candidates.filter {
+            val artistKey = artistIdentity(it)
+            it.imageUrl != null &&
+                artistKey !in topArtistUris &&
+                artistKey !in excludedArtistUris
+        }
         if (eligible.isEmpty()) return candidates.shuffled().take(count)
 
         val genreScoreMap = genreScores.associate { it.genre to it.score }
@@ -53,7 +61,8 @@ class RecommendationEngine @Inject constructor() {
         // Score each candidate by sum of their genre affinities + random jitter
         val scored = eligible.map { artist ->
             val affinityScore = artist.genres.sumOf { g -> genreScoreMap[g] ?: 0.0 }
-            ScoredArtist(artist, affinityScore)
+            val signalBoost = artistSignalScores[artistIdentity(artist)] ?: 0.0
+            ScoredArtist(artist, affinityScore + (signalBoost * 0.5))
         }.filter { it.relevance > 0.0 }
 
         val exploitCount = (count * EXPLOIT_RATIO).toInt().coerceAtLeast(1)
@@ -62,33 +71,36 @@ class RecommendationEngine @Inject constructor() {
 
         // Exploit: MMR re-ranked top scored (with jitter for variety)
         val exploitPicks = mmrRerank(scored, ARTIST_LAMBDA, exploitCount) { it.artist.genres.toSet() }
-        val usedUris = exploitPicks.mapTo(mutableSetOf()) { it.artist.uri }
+        val usedUris = exploitPicks.mapTo(mutableSetOf()) { artistIdentity(it.artist) }
 
         // Explore: artists from adjacent genres (not in top genres)
         val adjacentGenres = topGenreNames.flatMapTo(mutableSetOf()) { g ->
             genreAdjacency[g].orEmpty()
         } - topGenreNames
         val exploreCandidates = if (adjacentGenres.isNotEmpty()) {
-            eligible.filter { it.uri !in usedUris && it.genres.any { g -> g in adjacentGenres } }
+            eligible.filter { artistIdentity(it) !in usedUris && it.genres.any { g -> g in adjacentGenres } }
         } else {
             // No adjacency data: pick random artists outside top genres for diversity
-            eligible.filter { it.uri !in usedUris && it.genres.none { g -> g in topGenreNames } }
+            eligible.filter { artistIdentity(it) !in usedUris && it.genres.none { g -> g in topGenreNames } }
         }
         val explorePicks = exploreCandidates.shuffled().take(exploreCount)
-        usedUris.addAll(explorePicks.map { it.uri })
+        usedUris.addAll(explorePicks.map { artistIdentity(it) })
 
         // Wildcard: random from recently added or remaining eligible
         val remainingSlots = count - exploitPicks.size - explorePicks.size
-        val wildcardPool = recentlyAdded.filter { it.imageUrl != null && it.uri !in usedUris && it.uri !in topArtistUris }
+        val wildcardPool = recentlyAdded.filter { artist ->
+            val key = artistIdentity(artist)
+            artist.imageUrl != null && key !in usedUris && key !in topArtistUris
+        }
         val wildcardPicks = if (wildcardPool.isNotEmpty()) {
             wildcardPool.shuffled().take(remainingSlots)
         } else {
-            eligible.filter { it.uri !in usedUris }.shuffled().take(remainingSlots)
+            eligible.filter { artistIdentity(it) !in usedUris }.shuffled().take(remainingSlots)
         }
 
         val result = exploitPicks.map { it.artist } + explorePicks + wildcardPicks
         Log.d(TAG, "Artists: ${exploitPicks.size} exploit, ${explorePicks.size} explore, ${wildcardPicks.size} wildcard")
-        return result.distinctBy { it.uri }.ifEmpty { candidates.shuffled().take(count) }
+        return result.distinctBy { artistIdentity(it) }.ifEmpty { candidates.shuffled().take(count) }
     }
 
     fun rankAlbumsForDiscovery(

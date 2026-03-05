@@ -108,3 +108,50 @@ data class PlayHistoryEntity(
     @ColumnInfo(name = "played_at") val playedAt: Long,
     @ColumnInfo(name = "listened_ms") val listenedMs: Long? = null
 )
+
+@Entity(
+    tableName = "smart_feedback",
+    foreignKeys = [
+        ForeignKey(
+            entity = TrackEntity::class,
+            parentColumns = ["uri"],
+            childColumns = ["track_uri"],
+            onDelete = ForeignKey.SET_NULL
+        ),
+        ForeignKey(
+            entity = ArtistEntity::class,
+            parentColumns = ["uri"],
+            childColumns = ["artist_uri"],
+            onDelete = ForeignKey.SET_NULL
+        )
+    ],
+    indices = [Index("track_uri"), Index("artist_uri"), Index("created_at")]
+)
+data class SmartFeedbackEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "track_uri") val trackUri: String? = null,
+    @ColumnInfo(name = "artist_uri") val artistUri: String? = null,
+    val action: String,
+    val signal: Double,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)
+
+@Entity(
+    tableName = "blocked_artists",
+    foreignKeys = [
+        ForeignKey(
+            entity = ArtistEntity::class,
+            parentColumns = ["uri"],
+            childColumns = ["artist_uri"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("artist_uri")]
+)
+data class BlockedArtistEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "artist_uri")
+    val artistUri: String,
+    @ColumnInfo(name = "artist_name") val artistName: String? = null,
+    @ColumnInfo(name = "blocked_at") val blockedAt: Long
+)

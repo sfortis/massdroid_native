@@ -9,6 +9,7 @@ import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
@@ -31,111 +32,94 @@ class MusicRepositoryImpl @Inject constructor(
     private var lastLibrarySyncAtMs = 0L
 
     override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Artist> {
-        val result = wsClient.sendCommand("music/artists/library_items", buildJsonObject {
-            search?.let { put("search", it) }
-            put("limit", limit)
-            put("offset", offset)
-            orderBy?.let { put("order_by", it) }
-            if (favoriteOnly) put("favorite", true)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ARTISTS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+        )
         return parseMediaItems(result).mapNotNull { it.toArtist() }
     }
 
     override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Album> {
-        val result = wsClient.sendCommand("music/albums/library_items", buildJsonObject {
-            search?.let { put("search", it) }
-            put("limit", limit)
-            put("offset", offset)
-            orderBy?.let { put("order_by", it) }
-            if (favoriteOnly) put("favorite", true)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ALBUMS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+        )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }
 
     override suspend fun getTracks(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Track> {
-        val result = wsClient.sendCommand("music/tracks/library_items", buildJsonObject {
-            search?.let { put("search", it) }
-            put("limit", limit)
-            put("offset", offset)
-            orderBy?.let { put("order_by", it) }
-            if (favoriteOnly) put("favorite", true)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.TRACKS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+        )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
     override suspend fun getPlaylists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Playlist> {
-        val result = wsClient.sendCommand("music/playlists/library_items", buildJsonObject {
-            search?.let { put("search", it) }
-            put("limit", limit)
-            put("offset", offset)
-            orderBy?.let { put("order_by", it) }
-            if (favoriteOnly) put("favorite", true)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.PLAYLISTS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+        )
         return parseMediaItems(result).mapNotNull { it.toPlaylist() }
     }
 
     override suspend fun getArtist(itemId: String, provider: String, lazy: Boolean): Artist? {
-        val result = wsClient.sendCommand("music/artists/get", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-            put("lazy", lazy)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ARTISTS_GET,
+            ItemRefLazyArgs(itemId = itemId, provider = provider, lazy = lazy)
+        )
         return result?.let {
             try { json.decodeFromJsonElement<ServerMediaItem>(it).toArtist() } catch (_: Exception) { null }
         }
     }
 
     override suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean): Album? {
-        val result = wsClient.sendCommand("music/albums/get", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-            put("lazy", lazy)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ALBUMS_GET,
+            ItemRefLazyArgs(itemId = itemId, provider = provider, lazy = lazy)
+        )
         return result?.let {
             try { json.decodeFromJsonElement<ServerMediaItem>(it).toAlbum() } catch (_: Exception) { null }
         }
     }
 
     override suspend fun getArtistAlbums(itemId: String, provider: String): List<Album> {
-        val result = wsClient.sendCommand("music/artists/artist_albums", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ARTIST_ALBUMS,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }
 
     override suspend fun getArtistTracks(itemId: String, provider: String): List<Track> {
-        val result = wsClient.sendCommand("music/artists/artist_tracks", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ARTIST_TRACKS,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
     override suspend fun getAlbumTracks(itemId: String, provider: String): List<Track> {
-        val result = wsClient.sendCommand("music/albums/album_tracks", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ALBUM_TRACKS,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
     override suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track> {
-        val result = wsClient.sendCommand("music/playlists/playlist_tracks", buildJsonObject {
-            put("item_id", itemId)
-            put("provider_instance_id_or_domain", provider)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.PLAYLIST_TRACKS,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
     override suspend fun search(query: String, mediaTypes: List<MediaType>?, limit: Int): SearchResult {
-        val result = wsClient.sendCommand("music/search", buildJsonObject {
-            put("search_query", query)
-            put("limit", limit)
-            mediaTypes?.let {
-                put("media_types", JsonArray(it.map { t -> JsonPrimitive(t.apiValue) }))
-            }
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.Music.SEARCH,
+            SearchArgs(query = query, limit = limit, mediaTypes = mediaTypes?.map { it.apiValue })
+        )
 
         val obj = result?.jsonObject ?: return SearchResult()
         return SearchResult(
@@ -147,81 +131,75 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getQueueItems(queueId: String, limit: Int, offset: Int): List<QueueItem> {
-        val result = wsClient.sendCommand("player_queues/items", buildJsonObject {
-            put("queue_id", queueId)
-            put("limit", limit)
-            put("offset", offset)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.PlayerQueues.ITEMS,
+            QueueItemsArgs(queueId = queueId, limit = limit, offset = offset)
+        )
         val items = result?.let { json.decodeFromJsonElement<List<ServerQueueItem>>(it) } ?: emptyList()
         return items.map { it.toDomain() }
     }
 
     override suspend fun playMedia(queueId: String, uri: String, option: String?, radioMode: Boolean) {
-        wsClient.sendCommand("player_queues/play_media", buildJsonObject {
-            put("queue_id", queueId)
-            put("media", JsonArray(listOf(JsonPrimitive(uri))))
-            option?.let { put("option", it) }
-            if (radioMode) put("radio_mode", true)
-        }, awaitResponse = false)
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.PLAY_MEDIA,
+            PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
+            awaitResponse = false
+        )
     }
 
     override suspend fun playMedia(queueId: String, uris: List<String>, option: String?, radioMode: Boolean) {
-        wsClient.sendCommand("player_queues/play_media", buildJsonObject {
-            put("queue_id", queueId)
-            put("media", JsonArray(uris.map { JsonPrimitive(it) }))
-            option?.let { put("option", it) }
-            if (radioMode) put("radio_mode", true)
-        }, awaitResponse = false)
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.PLAY_MEDIA,
+            PlayMediaArgs(queueId = queueId, mediaUris = uris, option = option, radioMode = radioMode),
+            awaitResponse = false
+        )
     }
 
     override suspend fun shuffleQueue(queueId: String, enabled: Boolean) {
-        wsClient.sendCommand("player_queues/shuffle", buildJsonObject {
-            put("queue_id", queueId)
-            put("shuffle_enabled", enabled)
-        })
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.SHUFFLE,
+            ShuffleArgs(queueId = queueId, enabled = enabled)
+        )
     }
 
     override suspend fun repeatQueue(queueId: String, mode: RepeatMode) {
-        wsClient.sendCommand("player_queues/repeat", buildJsonObject {
-            put("queue_id", queueId)
-            put("repeat_mode", mode.apiValue)
-        })
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.REPEAT,
+            RepeatArgs(queueId = queueId, repeatMode = mode.apiValue)
+        )
     }
 
     override suspend fun clearQueue(queueId: String) {
-        wsClient.sendCommand("player_queues/clear", buildJsonObject {
-            put("queue_id", queueId)
-        })
+        wsClient.sendCommand(MaCommands.PlayerQueues.CLEAR, QueueIdArgs(queueId))
     }
 
     override suspend fun transferQueue(sourceQueueId: String, targetQueueId: String) {
-        wsClient.sendCommand("player_queues/transfer", buildJsonObject {
-            put("source_queue_id", sourceQueueId)
-            put("target_queue_id", targetQueueId)
-            put("auto_play", true)
-        })
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.TRANSFER,
+            TransferQueueArgs(sourceQueueId = sourceQueueId, targetQueueId = targetQueueId, autoPlay = true)
+        )
     }
 
     override suspend fun deleteQueueItem(queueId: String, itemIdOrIndex: String) {
-        wsClient.sendCommand("player_queues/delete_item", buildJsonObject {
-            put("queue_id", queueId)
-            put("item_id_or_index", itemIdOrIndex)
-        })
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.DELETE_ITEM,
+            DeleteQueueItemArgs(queueId = queueId, itemIdOrIndex = itemIdOrIndex)
+        )
     }
 
     override suspend fun moveQueueItem(queueId: String, queueItemId: String, posShift: Int) {
-        wsClient.sendCommand("player_queues/move_item", buildJsonObject {
-            put("queue_id", queueId)
-            put("queue_item_id", queueItemId)
-            put("pos_shift", posShift)
-        })
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.MOVE_ITEM,
+            MoveQueueItemArgs(queueId = queueId, queueItemId = queueItemId, posShift = posShift)
+        )
     }
 
     override suspend fun playQueueIndex(queueId: String, index: Int) {
-        wsClient.sendCommand("player_queues/play_index", buildJsonObject {
-            put("queue_id", queueId)
-            put("index", index)
-        }, awaitResponse = false)
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.PLAY_INDEX,
+            PlayIndexArgs(queueId = queueId, index = index),
+            awaitResponse = false
+        )
     }
 
     override suspend fun requestLibrarySync(force: Boolean): Boolean {
@@ -233,7 +211,7 @@ class MusicRepositoryImpl @Inject constructor(
             }
             try {
                 wsClient.sendCommand(
-                    command = "music/sync",
+                    command = MaCommands.Music.SYNC,
                     awaitResponse = true,
                     timeoutMs = LIBRARY_SYNC_TIMEOUT_MS
                 )
@@ -250,41 +228,39 @@ class MusicRepositoryImpl @Inject constructor(
     override suspend fun refreshItemByUri(uri: String): Boolean {
         return try {
             val mediaItem = wsClient.sendCommand(
-                command = "music/item_by_uri",
-                args = buildJsonObject { put("uri", uri) },
+                command = MaCommands.Music.ITEM_BY_URI,
+                args = ItemByUriArgs(uri),
                 awaitResponse = true,
                 timeoutMs = 5_000L
             ) ?: return false
 
             wsClient.sendCommand(
-                command = "music/refresh_item",
-                args = buildJsonObject { put("media_item", mediaItem) },
+                command = MaCommands.Music.REFRESH_ITEM,
+                args = RefreshItemArgs(mediaItem),
                 awaitResponse = true,
                 timeoutMs = 8_000L
             )
-            Log.d(TAG, "Refreshed item via music/refresh_item: $uri")
+            Log.d(TAG, "Refreshed item via ${MaCommands.Music.REFRESH_ITEM}: $uri")
             true
         } catch (e: Exception) {
-            Log.w(TAG, "music/refresh_item failed for '$uri': ${e.message}")
+            Log.w(TAG, "${MaCommands.Music.REFRESH_ITEM} failed for '$uri': ${e.message}")
             false
         }
     }
 
     override suspend fun setFavorite(uri: String, mediaType: MediaType, itemId: String, favorite: Boolean) {
         if (favorite) {
-            sendFavoriteCommandWithRetry("music/favorites/add_item", buildJsonObject {
-                put("item", uri)
-            })
+            sendFavoriteCommandWithRetry(MaCommands.Music.FAVORITES_ADD, FavoriteAddArgs(item = uri))
         } else {
             val libraryItemId = resolveLibraryItemId(uri, itemId)
-            sendFavoriteCommandWithRetry("music/favorites/remove_item", buildJsonObject {
-                put("media_type", mediaType.apiValue)
-                put("library_item_id", libraryItemId)
-            })
+            sendFavoriteCommandWithRetry(
+                MaCommands.Music.FAVORITES_REMOVE,
+                FavoriteRemoveArgs(mediaType = mediaType.apiValue, libraryItemId = libraryItemId)
+            )
         }
     }
 
-    private suspend fun sendFavoriteCommandWithRetry(command: String, args: JsonObject) {
+    private suspend fun sendFavoriteCommandWithRetry(command: String, args: MaCommandArgs) {
         var attempt = 1
         var lastError: MaApiException? = null
         while (attempt <= FAVORITE_MAX_ATTEMPTS) {
@@ -323,15 +299,13 @@ class MusicRepositoryImpl @Inject constructor(
         val libraryMatch = Regex("^library://\\w+/(\\d+)$").find(uri)
         if (libraryMatch != null) return libraryMatch.groupValues[1].toInt()
         // Resolve via server using the full provider URI
-        val result = wsClient.sendCommand("music/item_by_uri", buildJsonObject {
-            put("uri", uri)
-        })
+        val result = wsClient.sendCommand(MaCommands.Music.ITEM_BY_URI, ItemByUriArgs(uri))
         return result?.jsonObject?.get("item_id")?.jsonPrimitive?.intOrNull
             ?: itemId.toInt()
     }
 
     override suspend fun getRecommendations(): List<RecommendationFolder> {
-        val result = wsClient.sendCommand("music/recommendations", null)
+        val result = wsClient.sendCommand(MaCommands.Music.RECOMMENDATIONS, null)
         val array = result as? JsonArray ?: return emptyList()
         return array.mapNotNull { element ->
             try {
@@ -440,8 +414,14 @@ class MusicRepositoryImpl @Inject constructor(
             artistProvider = artists?.firstOrNull()?.provider,
             albumItemId = album?.itemId,
             albumProvider = album?.provider,
-            artistUri = artists?.firstOrNull()?.uri,
-            albumUri = album?.uri,
+            artistUri = MediaIdentity.canonicalArtistKey(
+                itemId = artists?.firstOrNull()?.itemId,
+                uri = artists?.firstOrNull()?.uri
+            ),
+            albumUri = MediaIdentity.canonicalAlbumKey(
+                itemId = album?.itemId,
+                uri = album?.uri
+            ),
             genres = metadata?.genres ?: emptyList(),
             year = album?.year ?: year
         )

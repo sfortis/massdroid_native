@@ -1,8 +1,9 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying
 
 import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -38,12 +39,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
 import coil.imageLoader
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.RepeatMode
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.VolumeSlider
+import kotlin.math.max
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,8 +63,16 @@ fun NowPlayingScreen(
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     val elapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
+    val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
 
     val currentTrack = queueState?.currentItem?.track
+    val currentArtistUri = MediaIdentity.canonicalArtistKey(
+        itemId = currentTrack?.artistItemId,
+        uri = currentTrack?.artistUri
+    )
+    val artistBlocked = currentArtistUri?.let { it in blockedArtistUris } ?: false
+    val canToggleArtistBlock = currentArtistUri != null
+    var showPlayerMenu by remember { mutableStateOf(false) }
     val title = currentTrack?.name ?: player?.currentMedia?.title ?: "No track"
     val artist = currentTrack?.artistNames ?: player?.currentMedia?.artist ?: ""
     val album = currentTrack?.albumName ?: player?.currentMedia?.album ?: ""
@@ -98,6 +112,31 @@ fun NowPlayingScreen(
                             @Suppress("DEPRECATION")
                             Icon(Icons.Default.QueueMusic, contentDescription = "Queue")
                         }
+                        Box {
+                            IconButton(onClick = { showPlayerMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Player options")
+                            }
+                            DropdownMenu(
+                                expanded = showPlayerMenu,
+                                onDismissRequest = { showPlayerMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (artistBlocked) "Allow this Artist"
+                                            else "Do Not Play this Artist"
+                                        )
+                                    },
+                                    onClick = {
+                                        showPlayerMenu = false
+                                        if (canToggleArtistBlock) {
+                                            viewModel.toggleCurrentArtistBlocked()
+                                        }
+                                    },
+                                    enabled = canToggleArtistBlock
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
@@ -125,6 +164,8 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     viewModel = viewModel,
+                    artistBlocked = artistBlocked,
+                    canToggleArtistBlock = canToggleArtistBlock,
                     onBack = onBack,
                     onNavigateToQueue = onNavigateToQueue,
                     onNavigateToArtist = onNavigateToArtist,
@@ -237,11 +278,14 @@ private fun NowPlayingLandscape(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     viewModel: NowPlayingViewModel,
+    artistBlocked: Boolean,
+    canToggleArtistBlock: Boolean,
     onBack: () -> Unit,
     onNavigateToQueue: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
+    var showPlayerMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -293,9 +337,36 @@ private fun NowPlayingLandscape(
                         .align(Alignment.CenterVertically),
                     textAlign = TextAlign.Center
                 )
-                IconButton(onClick = onNavigateToQueue, modifier = Modifier.size(36.dp)) {
-                    @Suppress("DEPRECATION")
-                    Icon(Icons.Default.QueueMusic, contentDescription = "Queue", modifier = Modifier.size(20.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onNavigateToQueue, modifier = Modifier.size(36.dp)) {
+                        @Suppress("DEPRECATION")
+                        Icon(Icons.Default.QueueMusic, contentDescription = "Queue", modifier = Modifier.size(20.dp))
+                    }
+                    Box {
+                        IconButton(onClick = { showPlayerMenu = true }, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(20.dp))
+                        }
+                        DropdownMenu(
+                            expanded = showPlayerMenu,
+                            onDismissRequest = { showPlayerMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (artistBlocked) "Allow this Artist"
+                                        else "Do Not Play this Artist"
+                                    )
+                                },
+                                onClick = {
+                                    showPlayerMenu = false
+                                    if (canToggleArtistBlock) {
+                                        viewModel.toggleCurrentArtistBlocked()
+                                    }
+                                },
+                                enabled = canToggleArtistBlock
+                            )
+                        }
+                    }
                 }
             }
 
@@ -366,7 +437,7 @@ private fun TrackInfoSection(
             maxLines = 1,
             textAlign = TextAlign.Center,
             modifier = Modifier
-                .padding(horizontal = 48.dp)
+                .padding(horizontal = if (compact) 44.dp else 56.dp)
                 .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
         )
         IconButton(
@@ -478,7 +549,8 @@ private fun SwipeableAlbumArt(
     fillMaxWidth: Boolean = true
 ) {
     val scope = rememberCoroutineScope()
-    val offsetX = remember { Animatable(0f) }
+    val context = LocalContext.current
+    var offsetX by remember { mutableFloatStateOf(0f) }
     var containerWidth by remember { mutableIntStateOf(1) }
 
     val shape = MaterialTheme.shapes.medium
@@ -496,40 +568,66 @@ private fun SwipeableAlbumArt(
                 detectHorizontalDragGestures(
                     onDragEnd = {
                         val threshold = containerWidth * 0.25f
-                        val current = offsetX.value
+                        val current = offsetX
+                        val width = containerWidth.toFloat().coerceAtLeast(1f)
                         scope.launch {
+                            suspend fun animateOffsetTo(target: Float, durationMs: Int) {
+                                val start = offsetX
+                                animate(
+                                    initialValue = start,
+                                    targetValue = target,
+                                    animationSpec = tween(durationMillis = durationMs)
+                                ) { value, _ ->
+                                    offsetX = value
+                                }
+                            }
                             if (current < -threshold) {
-                                offsetX.animateTo(
-                                    -containerWidth.toFloat(),
-                                    animationSpec = tween(150)
-                                )
+                                animateOffsetTo(-width, 130)
                                 onNext()
-                                offsetX.snapTo(containerWidth.toFloat())
-                                offsetX.animateTo(0f, animationSpec = tween(200))
+                                offsetX = width
+                                animateOffsetTo(0f, 170)
                             } else if (current > threshold) {
-                                offsetX.animateTo(
-                                    containerWidth.toFloat(),
-                                    animationSpec = tween(150)
-                                )
+                                animateOffsetTo(width, 130)
                                 onPrevious()
-                                offsetX.snapTo(-containerWidth.toFloat())
-                                offsetX.animateTo(0f, animationSpec = tween(200))
+                                offsetX = -width
+                                animateOffsetTo(0f, 170)
                             } else {
-                                offsetX.animateTo(0f, animationSpec = tween(200))
+                                animateOffsetTo(0f, 170)
                             }
                         }
                     },
                     onDragCancel = {
-                        scope.launch { offsetX.animateTo(0f, animationSpec = tween(200)) }
+                        scope.launch {
+                            val start = offsetX
+                            animate(
+                                initialValue = start,
+                                targetValue = 0f,
+                                animationSpec = tween(durationMillis = 170)
+                            ) { value, _ ->
+                                offsetX = value
+                            }
+                        }
                     },
-                    onHorizontalDrag = { _, dragAmount ->
-                        scope.launch { offsetX.snapTo(offsetX.value + dragAmount) }
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        val width = containerWidth.toFloat().coerceAtLeast(1f)
+                        offsetX = (offsetX + dragAmount).coerceIn(-width, width)
                     }
                 )
             }
     ) {
+        val imageRequest = remember(imageUrl, containerWidth) {
+            ImageRequest.Builder(context)
+                .data(imageUrl)
+                .size(max(containerWidth, 512))
+                .crossfade(false)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .build()
+        }
+
         val progress = if (containerWidth > 0) {
-            (offsetX.value / containerWidth).coerceIn(-1f, 1f)
+            (offsetX / containerWidth).coerceIn(-1f, 1f)
         } else {
             0f
         }
@@ -537,12 +635,12 @@ private fun SwipeableAlbumArt(
         val alpha = 1f - 0.3f * kotlin.math.abs(progress)
 
         AsyncImage(
-            model = imageUrl,
+            model = imageRequest,
             contentDescription = "Album art",
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationX = offsetX.value
+                    translationX = offsetX
                     scaleX = scale
                     scaleY = scale
                     this.alpha = alpha
@@ -556,35 +654,35 @@ private fun SwipeableAlbumArt(
 @Composable
 private fun extractDominantColor(imageUrl: String?, isDark: Boolean): State<Color> {
     val context = LocalContext.current
-    val colorState = remember { mutableStateOf(Color.Transparent) }
-
-    LaunchedEffect(imageUrl, isDark) {
-        if (imageUrl == null) {
-            colorState.value = Color.Transparent
-            return@LaunchedEffect
+    return produceState(initialValue = Color.Transparent, imageUrl, isDark) {
+        if (imageUrl.isNullOrBlank()) {
+            value = Color.Transparent
+            return@produceState
         }
 
-        val request = ImageRequest.Builder(context)
-            .data(imageUrl)
-            .size(128)
-            .allowHardware(false)
-            .memoryCacheKey("palette_$imageUrl")
-            .build()
+        value = withContext(Dispatchers.Default) {
+            try {
+                val request = ImageRequest.Builder(context)
+                    .data(imageUrl)
+                    .size(96)
+                    .allowHardware(false)
+                    .crossfade(false)
+                    .memoryCacheKey("palette_$imageUrl")
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .build()
 
-        val result = context.imageLoader.execute(request)
-        if (result is SuccessResult) {
-            val bitmap = (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-            if (bitmap != null) {
-                colorState.value = extractColor(bitmap, isDark)
-            } else {
-                colorState.value = Color.Transparent
+                val result = context.imageLoader.execute(request)
+                val bitmap = (result as? SuccessResult)?.drawable
+                    ?.let { it as? BitmapDrawable }
+                    ?.bitmap
+                    ?: return@withContext Color.Transparent
+                extractColor(bitmap, isDark)
+            } catch (_: Exception) {
+                Color.Transparent
             }
-        } else {
-            colorState.value = Color.Transparent
         }
     }
-
-    return colorState
 }
 
 private fun extractColor(bitmap: Bitmap, isDark: Boolean): Color {

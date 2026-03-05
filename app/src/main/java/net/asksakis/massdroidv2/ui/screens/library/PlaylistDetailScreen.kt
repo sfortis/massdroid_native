@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
@@ -26,6 +27,7 @@ fun PlaylistDetailScreen(
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlistName by viewModel.playlistName.collectAsStateWithLifecycle()
     val isFavorite by viewModel.favorite.collectAsStateWithLifecycle()
+    val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -64,7 +66,17 @@ fun PlaylistDetailScreen(
                     onClick = { viewModel.playTrack(track) },
                     favorite = track.favorite,
                     onLongClick = {
-                        actionSheetItem = ActionSheetItem(track.name, track.artistNames, track.uri, track.imageUrl, track.favorite, MediaType.TRACK, track.itemId)
+                        actionSheetItem = ActionSheetItem(
+                            title = track.name,
+                            subtitle = track.artistNames,
+                            uri = track.uri,
+                            imageUrl = track.imageUrl,
+                            favorite = track.favorite,
+                            mediaType = MediaType.TRACK,
+                            itemId = track.itemId,
+                            primaryArtistUri = track.artistUri,
+                            primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { "Artist" }
+                        )
                     }
                 )
             }
@@ -80,8 +92,15 @@ fun PlaylistDetailScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
+            artistBlocked = target.primaryArtistUri?.let { uri ->
+                val key = MediaIdentity.canonicalArtistKey(uri = uri)
+                key != null && key in blockedArtistUris
+            } ?: false,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
+            },
+            onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
+                { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },

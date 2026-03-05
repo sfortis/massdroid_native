@@ -5,13 +5,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.RepeatMode
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 
 private const val TAG = "NowPlayingVM"
@@ -19,15 +24,24 @@ private const val TAG = "NowPlayingVM"
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
-    private val musicRepository: MusicRepository
+    private val musicRepository: MusicRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
     val queueState = playerRepository.queueState
     val elapsedTime = playerRepository.elapsedTime
+    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
+    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+
+    init {
+        viewModelScope.launch {
+            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
+        }
+    }
 
     fun playPause() {
         val player = selectedPlayer.value ?: return
@@ -119,6 +133,12 @@ class NowPlayingViewModel @Inject constructor(
                 // Optimistic UI update so heart icon responds instantly.
                 playerRepository.updateCurrentTrackFavorite(newFavorite)
                 musicRepository.setFavorite(track.uri, MediaType.TRACK, track.itemId, newFavorite)
+                val artists = trackArtists(track.artistItemId, track.artistUri, track.artistNames)
+                if (newFavorite) {
+                    smartListeningRepository.recordLike(track, artists)
+                } else {
+                    smartListeningRepository.recordUnlike(track, artists)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
                 // Roll back only if we're still on the same track.
@@ -128,6 +148,53 @@ class NowPlayingViewModel @Inject constructor(
                 _error.tryEmit("Failed to update favorite")
             }
         }
+    }
+
+    fun toggleCurrentArtistBlocked() {
+        val track = queueState.value?.currentItem?.track ?: return
+        val artistUri = MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri) ?: return
+        val artistName = track.artistNames
+            .split(",")
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+            .ifBlank { "Artist" }
+
+        viewModelScope.launch {
+            val wasBlocked = _blockedArtistUris.value.contains(artistUri)
+            val optimistic = if (wasBlocked) {
+                _blockedArtistUris.value - artistUri
+            } else {
+                _blockedArtistUris.value + artistUri
+            }
+            _blockedArtistUris.value = optimistic
+            try {
+                smartListeningRepository.setArtistBlocked(
+                    artistUri = artistUri,
+                    artistName = artistName,
+                    blocked = !wasBlocked
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "toggleCurrentArtistBlocked failed: ${e.message}")
+                _blockedArtistUris.value = if (wasBlocked) {
+                    _blockedArtistUris.value + artistUri
+                } else {
+                    _blockedArtistUris.value - artistUri
+                }
+                _error.tryEmit("Failed to update artist filter")
+            }
+        }
+    }
+
+    private fun trackArtists(artistItemId: String?, artistUri: String?, artistNames: String): List<Pair<String, String>> {
+        val uri = MediaIdentity.canonicalArtistKey(itemId = artistItemId, uri = artistUri) ?: return emptyList()
+        val name = artistNames
+            .split(",")
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
+            .ifBlank { "Artist" }
+        return listOf(uri to name)
     }
 
     fun cycleRepeat() {

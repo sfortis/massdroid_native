@@ -362,7 +362,7 @@ class MaWebSocketClient(
 
     private suspend fun loginWithCredentials(username: String, password: String) {
         Log.d(TAG, "Logging in with username: $username")
-        val loginResult = sendCommand("auth/login", buildJsonObject {
+        val loginResult = sendCommand(MaCommands.Auth.LOGIN, buildJsonObject {
             put("username", username)
             put("password", password)
             put("device_name", "MassDroid")
@@ -385,7 +385,7 @@ class MaWebSocketClient(
     }
 
     private suspend fun authorizeWithToken(token: String) {
-        sendCommand("auth", buildJsonObject {
+        sendCommand(MaCommands.Auth.AUTH, buildJsonObject {
             put("token", token)
             put("device_name", "MassDroid")
         })

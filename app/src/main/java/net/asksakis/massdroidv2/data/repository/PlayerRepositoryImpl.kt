@@ -7,9 +7,11 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,11 +20,15 @@ class PlayerRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val json: Json,
     private val playHistoryRepository: PlayHistoryRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : PlayerRepository {
 
     companion object {
         private const val TAG = "PlayerRepo"
+        private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
+        private const val BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS = 2_000L
+        private const val BLOCKED_QUEUE_ITEMS_LIMIT = 500
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -64,9 +70,33 @@ class PlayerRepositoryImpl @Inject constructor(
     )
     private val queueTracking = ConcurrentHashMap<String, QueueTrackingState>()
     private val artistGenreCache = ConcurrentHashMap<String, List<String>>()
+    private val manualSkipByQueue = ConcurrentHashMap<String, String>()
+    private val blockedAutoSkipByQueue = ConcurrentHashMap<String, Pair<String, Long>>()
+    private val blockedQueueCleanupAtByQueue = ConcurrentHashMap<String, Long>()
+    private var blockedQueueCleanupJob: Job? = null
+    @Volatile
+    private var blockedArtistUrisSnapshot: Set<String> = emptySet()
+    @Volatile
+    private var suppressedArtistUrisSnapshot: Set<String> = emptySet()
 
     init {
         scope.launch { observeEvents() }
+        scope.launch {
+            smartListeningRepository.blockedArtistUris.collect { blocked ->
+                blockedArtistUrisSnapshot = blocked
+                selectedPlayerId?.let { selectedId ->
+                    val currentTrack = queueTracking[selectedId]?.track
+                    val artistUris = queueTracking[selectedId]?.artists?.map { it.first }.orEmpty()
+                    maybeAutoSkipBlockedTrack(
+                        queueId = selectedId,
+                        track = currentTrack,
+                        artistUris = artistUris,
+                        trigger = "blocked_update"
+                    )
+                    scheduleBlockedQueueCleanup(selectedId, reason = "blocked_update")
+                }
+            }
+        }
         scope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
@@ -78,6 +108,11 @@ class PlayerRepositoryImpl @Inject constructor(
                         stopPositionTicker()
                         queueTracking.clear()
                         artistGenreCache.clear()
+                        manualSkipByQueue.clear()
+                        blockedAutoSkipByQueue.clear()
+                        blockedQueueCleanupAtByQueue.clear()
+                        blockedQueueCleanupJob?.cancel()
+                        suppressedArtistUrisSnapshot = emptySet()
                     }
                     is ConnectionState.Connected -> {
                         refreshPlayers()
@@ -135,6 +170,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     val id = event.objectId ?: return@collect
                     _players.update { list -> list.filter { it.playerId != id } }
                     queueTracking.remove(id)
+                    blockedAutoSkipByQueue.remove(id)
+                    blockedQueueCleanupAtByQueue.remove(id)
                     if (selectedPlayerId == id) {
                         selectedPlayerId = null
                         _selectedPlayer.value = null
@@ -181,6 +218,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     val queueId = event.objectId ?: return@collect
                     if (queueId == selectedPlayerId) {
                         _queueItemsChanged.tryEmit(queueId)
+                        scheduleBlockedQueueCleanup(queueId, reason = "queue_items_updated")
                     }
                 }
                 EventType.QUEUE_TIME_UPDATED -> {
@@ -200,13 +238,18 @@ class PlayerRepositoryImpl @Inject constructor(
 
         val prev = queueTracking[queueId]
         if (prev != null && prev.track.uri != trackUri) {
-            // Track changed: record previous if listened >30s
+            // Track changed: record previous if listened >30s and not manually skipped.
             val listenedMs = now - prev.startTime
-            if (listenedMs > 30_000L) {
+            val wasManualSkip = manualSkipByQueue.remove(queueId) == prev.track.uri
+            if (listenedMs > 30_000L && !wasManualSkip) {
                 scope.launch {
                     try {
                         playHistoryRepository.recordPlay(
                             prev.track, queueId, listenedMs, prev.artists
+                        )
+                        smartListeningRepository.recordListen(
+                            track = prev.track,
+                            artists = prev.artists
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "Play history failed: ${e.message}")
@@ -240,12 +283,29 @@ class PlayerRepositoryImpl @Inject constructor(
                 albumName = mediaItem.album?.name ?: "",
                 imageUrl = mediaItem.resolveImageUrl(wsClient)
                     ?: mediaItem.album?.resolveImageUrl(wsClient),
-                artistUri = mediaItem.artists?.firstOrNull()?.uri,
-                albumUri = mediaItem.album?.uri,
+                artistItemId = mediaItem.artists?.firstOrNull()?.itemId,
+                artistProvider = mediaItem.artists?.firstOrNull()?.provider,
+                albumItemId = mediaItem.album?.itemId,
+                albumProvider = mediaItem.album?.provider,
+                artistUri = MediaIdentity.canonicalArtistKey(
+                    itemId = mediaItem.artists?.firstOrNull()?.itemId,
+                    uri = mediaItem.artists?.firstOrNull()?.uri
+                ),
+                albumUri = MediaIdentity.canonicalAlbumKey(
+                    itemId = mediaItem.album?.itemId,
+                    uri = mediaItem.album?.uri
+                ),
                 genres = cachedGenres,
                 year = mediaItem.album?.year ?: mediaItem.year
             )
             queueTracking[queueId] = QueueTrackingState(track, artists, now)
+            maybeAutoSkipBlockedTrack(
+                queueId = queueId,
+                track = track,
+                artistUris = artists.map { it.first },
+                trigger = "queue_update"
+            )
+            scheduleBlockedQueueCleanup(queueId, reason = "queue_update")
 
             // Fetch genres async for uncached artists
             val uncachedArtists = mediaItem.artists
@@ -258,6 +318,110 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun maybeAutoSkipBlockedTrack(
+        queueId: String,
+        track: Track?,
+        artistUris: List<String>,
+        trigger: String
+    ) {
+        if (queueId != selectedPlayerId) return
+        val currentTrack = track ?: return
+        if (currentTrack.uri.isBlank()) return
+        val filteredArtists = blockedArtistUrisSnapshot + suppressedArtistUrisSnapshot
+        if (filteredArtists.isEmpty()) return
+
+        val distinctUris = artistUris
+            .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
+            .distinct()
+        if (distinctUris.none { it in filteredArtists }) return
+
+        val now = System.currentTimeMillis()
+        val last = blockedAutoSkipByQueue[queueId]
+        if (last != null && last.first == currentTrack.uri && now - last.second < BLOCKED_AUTO_SKIP_COOLDOWN_MS) {
+            return
+        }
+        blockedAutoSkipByQueue[queueId] = currentTrack.uri to now
+
+        scope.launch {
+            try {
+                playerCmd("next", queueId)
+                Log.d(TAG, "Auto-skipped blocked track (${currentTrack.uri}) via $trigger")
+            } catch (e: Exception) {
+                Log.w(TAG, "Auto-skip blocked track failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun scheduleBlockedQueueCleanup(queueId: String, reason: String, force: Boolean = false) {
+        if (queueId != selectedPlayerId) return
+        val now = System.currentTimeMillis()
+        val lastAt = blockedQueueCleanupAtByQueue[queueId] ?: 0L
+        if (!force && now - lastAt < BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS) return
+        blockedQueueCleanupAtByQueue[queueId] = now
+        blockedQueueCleanupJob?.cancel()
+        blockedQueueCleanupJob = scope.launch {
+            purgeBlockedTracksFromQueue(queueId, reason)
+        }
+    }
+
+    private suspend fun purgeBlockedTracksFromQueue(queueId: String, reason: String) {
+        val blocked = blockedArtistUrisSnapshot
+        val suppressed = try {
+            val smartEnabled = settingsRepository.smartListeningEnabled.first()
+            if (smartEnabled) smartListeningRepository.getSuppressedArtistUris(days = 120) else emptySet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        suppressedArtistUrisSnapshot = suppressed
+        val filteredArtists = blocked + suppressed
+        if (filteredArtists.isEmpty()) return
+
+        try {
+            val result = wsClient.sendCommand(
+                MaCommands.PlayerQueues.ITEMS,
+                QueueItemsArgs(
+                    queueId = queueId,
+                    limit = BLOCKED_QUEUE_ITEMS_LIMIT,
+                    offset = 0
+                )
+            )
+            val items = result?.let { json.decodeFromJsonElement<List<ServerQueueItem>>(it) } ?: emptyList()
+            if (items.isEmpty()) return
+
+            val currentTrackUri = queueTracking[queueId]?.track?.uri
+                ?: _queueState.value?.currentItem?.track?.uri
+            val removeQueueItemIds = items.mapNotNull { item ->
+                val media = item.mediaItem ?: return@mapNotNull null
+                val mediaUri = media.uri.takeIf { it.isNotBlank() }
+                if (!currentTrackUri.isNullOrBlank() && mediaUri == currentTrackUri) {
+                    return@mapNotNull null
+                }
+                val artistUris = media.artists
+                    ?.mapNotNull { artist ->
+                        MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+                    }
+                    .orEmpty()
+                if (artistUris.any { it in filteredArtists }) item.queueItemId else null
+            }
+            if (removeQueueItemIds.isEmpty()) return
+
+            removeQueueItemIds.forEach { itemId ->
+                wsClient.sendCommand(
+                    MaCommands.PlayerQueues.DELETE_ITEM,
+                    DeleteQueueItemArgs(queueId = queueId, itemIdOrIndex = itemId),
+                    awaitResponse = false
+                )
+            }
+            Log.d(
+                TAG,
+                "Removed ${removeQueueItemIds.size} filtered track(s) from queue $queueId via $reason " +
+                    "(blocked=${blocked.size}, suppressed=${suppressed.size})"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "purgeBlockedTracksFromQueue failed: ${e.message}")
+        }
+    }
+
     private suspend fun fetchAndApplyGenres(
         artists: List<ServerMediaItem>,
         queueId: String,
@@ -267,11 +431,14 @@ class PlayerRepositoryImpl @Inject constructor(
         val allGenres = mutableSetOf<String>()
         for (artist in artists) {
             try {
-                val result = wsClient.sendCommand("music/artists/get", buildJsonObject {
-                    put("item_id", artist.itemId)
-                    put("provider_instance_id_or_domain", artist.provider)
-                    put("lazy", true)
-                })
+                val result = wsClient.sendCommand(
+                    MaCommands.Music.ARTISTS_GET,
+                    ItemRefLazyArgs(
+                        itemId = artist.itemId,
+                        provider = artist.provider,
+                        lazy = true
+                    )
+                )
                 val genres = result?.let {
                     json.decodeFromJsonElement<ServerMediaItem>(it)
                 }?.metadata?.genres ?: emptyList()
@@ -323,7 +490,7 @@ class PlayerRepositoryImpl @Inject constructor(
 
     override suspend fun refreshPlayers() {
         try {
-            val result = wsClient.sendCommand("players/all")
+            val result = wsClient.sendCommand(MaCommands.Players.ALL)
             val serverPlayers = result?.let { json.decodeFromJsonElement<List<ServerPlayer>>(it) } ?: emptyList()
             Log.d(TAG, "Loaded ${serverPlayers.size} players")
             val fromServer = serverPlayers.map {
@@ -353,14 +520,16 @@ class PlayerRepositoryImpl @Inject constructor(
         scope.launch {
             settingsRepository.setSelectedPlayerId(playerId)
             refreshQueueForPlayer(playerId)
+            scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
         }
     }
 
     private suspend fun refreshQueueForPlayer(playerId: String) {
         try {
-            val result = wsClient.sendCommand("player_queues/get_active_queue", buildJsonObject {
-                put("player_id", playerId)
-            })
+            val result = wsClient.sendCommand(
+                MaCommands.PlayerQueues.GET_ACTIVE_QUEUE,
+                ActiveQueueArgs(playerId = playerId)
+            )
             val serverQueue = result?.let { json.decodeFromJsonElement<ServerQueue>(it) }
             _queueState.value = serverQueue?.toDomain(wsClient)
             if (serverQueue != null) {
@@ -385,37 +554,42 @@ class PlayerRepositoryImpl @Inject constructor(
         _playbackIntent.tryEmit(willPlay)
         playerCmd("play_pause", playerId)
     }
-    override suspend fun next(playerId: String) = playerCmd("next", playerId)
+    override suspend fun next(playerId: String) {
+        maybeRecordManualSkip(playerId)
+        playerCmd("next", playerId)
+    }
+
     override suspend fun previous(playerId: String) = playerCmd("previous", playerId)
 
     override suspend fun seek(playerId: String, position: Double) {
-        sendPlayerCommandWithRetry("players/cmd/seek", buildJsonObject {
-            put("player_id", playerId)
-            put("position", position)
-        })
+        sendPlayerCommandWithRetry(
+            MaCommands.Players.CMD_SEEK,
+            SeekArgs(playerId = playerId, position = position)
+        )
     }
 
     override suspend fun setVolume(playerId: String, volumeLevel: Int) {
-        wsClient.sendCommand("players/cmd/volume_set", buildJsonObject {
-            put("player_id", playerId)
-            put("volume_level", volumeLevel)
-        })
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_VOLUME_SET,
+            VolumeSetArgs(playerId = playerId, volumeLevel = volumeLevel)
+        )
     }
 
     override suspend fun toggleMute(playerId: String, muted: Boolean) {
-        wsClient.sendCommand("players/cmd/volume_mute", buildJsonObject {
-            put("player_id", playerId)
-            put("muted", muted)
-        })
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_VOLUME_MUTE,
+            VolumeMuteArgs(playerId = playerId, muted = muted)
+        )
     }
 
     override suspend fun updatePlayerIcon(playerId: String, icon: String) {
-        wsClient.sendCommand("config/players/save", buildJsonObject {
-            put("player_id", playerId)
-            put("values", buildJsonObject {
-                put("icon", icon)
-            })
-        })
+        wsClient.sendCommand(
+            MaCommands.ConfigPlayers.SAVE,
+            ConfigPlayerSaveArgs(
+                playerId = playerId,
+                values = buildJsonObject { put("icon", icon) }
+            )
+        )
         // Update local state immediately
         _players.update { list ->
             list.map { if (it.playerId == playerId) it.copy(icon = icon) else it }
@@ -426,12 +600,13 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun renamePlayer(playerId: String, name: String) {
-        wsClient.sendCommand("config/players/save", buildJsonObject {
-            put("player_id", playerId)
-            put("values", buildJsonObject {
-                put("name", name)
-            })
-        })
+        wsClient.sendCommand(
+            MaCommands.ConfigPlayers.SAVE,
+            ConfigPlayerSaveArgs(
+                playerId = playerId,
+                values = buildJsonObject { put("name", name) }
+            )
+        )
         _players.update { list ->
             list.map { if (it.playerId == playerId) it.copy(displayName = name) else it }
         }
@@ -441,9 +616,10 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getPlayerConfig(playerId: String): PlayerConfig? {
-        val result = wsClient.sendCommand("config/players/get", buildJsonObject {
-            put("player_id", playerId)
-        })
+        val result = wsClient.sendCommand(
+            MaCommands.ConfigPlayers.GET,
+            ConfigPlayerGetArgs(playerId = playerId)
+        )
         return try {
             val obj = result?.jsonObject ?: return null
             val values = obj["values"]?.jsonObject
@@ -475,19 +651,22 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
-        wsClient.sendCommand("config/players/save", buildJsonObject {
-            put("player_id", playerId)
-            put("values", buildJsonObject {
-                values.forEach { (key, value) ->
-                    when (value) {
-                        is String -> put(key, value)
-                        is Boolean -> put(key, value)
-                        is Int -> put(key, value)
-                        else -> put(key, value.toString())
+        wsClient.sendCommand(
+            MaCommands.ConfigPlayers.SAVE,
+            ConfigPlayerSaveArgs(
+                playerId = playerId,
+                values = buildJsonObject {
+                    values.forEach { (key, value) ->
+                        when (value) {
+                            is String -> put(key, value)
+                            is Boolean -> put(key, value)
+                            is Int -> put(key, value)
+                            else -> put(key, value.toString())
+                        }
                     }
                 }
-            })
-        })
+            )
+        )
     }
 
     override fun updateCurrentTrackFavorite(favorite: Boolean) {
@@ -500,14 +679,29 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    private suspend fun maybeRecordManualSkip(playerId: String) {
+        val current = queueTracking[playerId] ?: return
+        val smartEnabled = settingsRepository.smartListeningEnabled.first()
+        if (!smartEnabled) return
+        manualSkipByQueue[playerId] = current.track.uri
+        scope.launch {
+            try {
+                smartListeningRepository.recordSkip(current.track, current.artists)
+            } catch (e: Exception) {
+                Log.w(TAG, "Skip signal failed: ${e.message}")
+            }
+        }
+    }
+
     private suspend fun playerCmd(cmd: String, playerId: String) {
-        sendPlayerCommandWithRetry("players/cmd/$cmd", buildJsonObject {
-            put("player_id", playerId)
-        })
+        sendPlayerCommandWithRetry(
+            MaCommands.Players.cmd(cmd),
+            PlayerIdArgs(playerId = playerId)
+        )
         Log.d(TAG, "playerCmd sent: $cmd($playerId)")
     }
 
-    private suspend fun sendPlayerCommandWithRetry(command: String, args: JsonObject) {
+    private suspend fun sendPlayerCommandWithRetry(command: String, args: MaCommandArgs) {
         var attempt = 0
         var lastError: MaApiException? = null
         while (attempt < 2) {
@@ -608,8 +802,14 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                     artistProvider = mi.artists?.firstOrNull()?.provider,
                     albumItemId = mi.album?.itemId,
                     albumProvider = mi.album?.provider,
-                    artistUri = mi.artists?.firstOrNull()?.uri,
-                    albumUri = mi.album?.uri,
+                    artistUri = MediaIdentity.canonicalArtistKey(
+                        itemId = mi.artists?.firstOrNull()?.itemId,
+                        uri = mi.artists?.firstOrNull()?.uri
+                    ),
+                    albumUri = MediaIdentity.canonicalAlbumKey(
+                        itemId = mi.album?.itemId,
+                        uri = mi.album?.uri
+                    ),
                     genres = mi.metadata?.genres ?: emptyList(),
                     year = mi.album?.year ?: mi.year
                 )

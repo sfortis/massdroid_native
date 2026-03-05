@@ -2,12 +2,49 @@ package net.asksakis.massdroidv2.ui.screens.settings
 
 import android.app.Activity
 import android.security.KeyChain
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -22,6 +59,7 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenRecommendationInsights: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
@@ -31,6 +69,7 @@ fun SettingsScreen(
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
+    val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
@@ -44,7 +83,6 @@ fun SettingsScreen(
     val isConnected = connectionState is ConnectionState.Connected
     val hasToken = authToken.isNotBlank()
 
-    // Load saved certificate on screen open
     LaunchedEffect(Unit) {
         viewModel.loadSavedCertificate(context)
     }
@@ -65,10 +103,10 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Connection status
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = when (connectionState) {
@@ -106,7 +144,6 @@ fun SettingsScreen(
                 }
             }
 
-            // Server URL
             OutlinedTextField(
                 value = editUrl,
                 onValueChange = { editUrl = it },
@@ -121,11 +158,8 @@ fun SettingsScreen(
                 HorizontalDivider()
 
                 if (hasToken) {
-                    // Quick reconnect with saved token
                     Button(
-                        onClick = {
-                            viewModel.connectWithToken(editUrl)
-                        },
+                        onClick = { viewModel.connectWithToken(editUrl) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.Cloud, contentDescription = null)
@@ -142,7 +176,6 @@ fun SettingsScreen(
                     )
                 }
 
-                // Username
                 OutlinedTextField(
                     value = username,
                     onValueChange = {
@@ -155,7 +188,6 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Password
                 OutlinedTextField(
                     value = password,
                     onValueChange = {
@@ -165,13 +197,11 @@ fun SettingsScreen(
                     label = { Text("Password") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    visualTransformation = if (showPassword) VisualTransformation.None
-                        else PasswordVisualTransformation(),
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         IconButton(onClick = { showPassword = !showPassword }) {
                             Icon(
-                                if (showPassword) Icons.Default.VisibilityOff
-                                    else Icons.Default.Visibility,
+                                if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                 contentDescription = "Toggle password"
                             )
                         }
@@ -179,7 +209,6 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Error
                 loginError?.let { error ->
                     Text(
                         text = error,
@@ -188,14 +217,13 @@ fun SettingsScreen(
                     )
                 }
 
-                // Login button
                 Button(
                     onClick = { viewModel.login(editUrl, username, password) },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = connectionState !is ConnectionState.Connecting
                 ) {
                     if (connectionState is ConnectionState.Connecting) {
-                        CircularProgressIndicator(
+                        androidx.compose.material3.CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             strokeWidth = 2.dp
                         )
@@ -218,7 +246,6 @@ fun SettingsScreen(
                 }
             }
 
-            // mTLS Certificate
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -245,10 +272,13 @@ fun SettingsScreen(
                             OutlinedButton(onClick = {
                                 val activity = context as? Activity ?: return@OutlinedButton
                                 KeyChain.choosePrivateKeyAlias(
-                                    activity, { alias ->
-                                        viewModel.onCertificateSelected(alias, context)
-                                    },
-                                    null, null, null, -1, clientCertAlias
+                                    activity,
+                                    { alias -> viewModel.onCertificateSelected(alias, context) },
+                                    null,
+                                    null,
+                                    null,
+                                    -1,
+                                    clientCertAlias
                                 )
                             }) {
                                 Text("Change")
@@ -266,10 +296,13 @@ fun SettingsScreen(
                         OutlinedButton(onClick = {
                             val activity = context as? Activity ?: return@OutlinedButton
                             KeyChain.choosePrivateKeyAlias(
-                                activity, { alias ->
-                                    viewModel.onCertificateSelected(alias, context)
-                                },
-                                null, null, null, -1, null
+                                activity,
+                                { alias -> viewModel.onCertificateSelected(alias, context) },
+                                null,
+                                null,
+                                null,
+                                -1,
+                                null
                             )
                         }) {
                             Icon(Icons.Default.Security, contentDescription = null)
@@ -280,7 +313,69 @@ fun SettingsScreen(
                 }
             }
 
-            // Sendspin section (only when connected)
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Smart Listening",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            "Learns from skip/like/listen actions and improves recommendations.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = smartListeningEnabled,
+                        onCheckedChange = { viewModel.toggleSmartListening(it) }
+                    )
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Recommendation Insights", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Open detailed score stats, blocked artists, and recommendation DB actions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = onOpenRecommendationInsights,
+                        enabled = smartListeningEnabled
+                    ) {
+                        Text("Open Insights")
+                    }
+                    if (!smartListeningEnabled) {
+                        Text(
+                            "Enable Smart Listening first.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             if (isConnected) {
                 HorizontalDivider()
 

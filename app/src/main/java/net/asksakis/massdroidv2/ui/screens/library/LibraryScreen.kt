@@ -25,6 +25,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.distinctUntilChanged
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
@@ -55,6 +56,7 @@ fun LibraryScreen(
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
 
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
+    val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     // Action sheet state
@@ -258,7 +260,17 @@ fun LibraryScreen(
                         favorite = { it.favorite },
                         onClick = { onArtistClick(it) },
                         onLongClick = { artist ->
-                            actionSheetItem = ActionSheetItem(artist.name, "", artist.uri, artist.imageUrl, artist.favorite, MediaType.ARTIST, artist.itemId)
+                            actionSheetItem = ActionSheetItem(
+                                title = artist.name,
+                                subtitle = "",
+                                uri = artist.uri,
+                                imageUrl = artist.imageUrl,
+                                favorite = artist.favorite,
+                                mediaType = MediaType.ARTIST,
+                                itemId = artist.itemId,
+                                primaryArtistUri = artist.uri,
+                                primaryArtistName = artist.name
+                            )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
@@ -276,7 +288,17 @@ fun LibraryScreen(
                         favorite = { it.favorite },
                         onClick = { onAlbumClick(it) },
                         onLongClick = { album ->
-                            actionSheetItem = ActionSheetItem(album.name, album.artistNames, album.uri, album.imageUrl, album.favorite, MediaType.ALBUM, album.itemId)
+                            actionSheetItem = ActionSheetItem(
+                                title = album.name,
+                                subtitle = album.artistNames,
+                                uri = album.uri,
+                                imageUrl = album.imageUrl,
+                                favorite = album.favorite,
+                                mediaType = MediaType.ALBUM,
+                                itemId = album.itemId,
+                                primaryArtistUri = album.artists.firstOrNull()?.uri,
+                                primaryArtistName = album.artists.firstOrNull()?.name
+                            )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
@@ -292,7 +314,17 @@ fun LibraryScreen(
                         favorite = { it.favorite },
                         onClick = { viewModel.playTrack(it) },
                         onLongClick = { track ->
-                            actionSheetItem = ActionSheetItem(track.name, track.artistNames, track.uri, track.imageUrl, track.favorite, MediaType.TRACK, track.itemId)
+                            actionSheetItem = ActionSheetItem(
+                                title = track.name,
+                                subtitle = track.artistNames,
+                                uri = track.uri,
+                                imageUrl = track.imageUrl,
+                                favorite = track.favorite,
+                                mediaType = MediaType.TRACK,
+                                itemId = track.itemId,
+                                primaryArtistUri = track.artistUri,
+                                primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
+                            )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
@@ -308,7 +340,15 @@ fun LibraryScreen(
                         favorite = { it.favorite },
                         onClick = { onPlaylistClick(it) },
                         onLongClick = { playlist ->
-                            actionSheetItem = ActionSheetItem(playlist.name, "", playlist.uri, playlist.imageUrl, playlist.favorite, MediaType.PLAYLIST, playlist.itemId)
+                            actionSheetItem = ActionSheetItem(
+                                title = playlist.name,
+                                subtitle = "",
+                                uri = playlist.uri,
+                                imageUrl = playlist.imageUrl,
+                                favorite = playlist.favorite,
+                                mediaType = MediaType.PLAYLIST,
+                                itemId = playlist.itemId
+                            )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
@@ -327,8 +367,15 @@ fun LibraryScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
+            artistBlocked = target.primaryArtistUri?.let { uri ->
+                val key = MediaIdentity.canonicalArtistKey(uri = uri)
+                key != null && key in blockedArtistUris
+            } ?: false,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
+            },
+            onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
+                { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },

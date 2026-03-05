@@ -12,11 +12,13 @@ import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayHistoryRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayerRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SettingsRepositoryImpl
+import net.asksakis.massdroidv2.data.repository.SmartListeningRepositoryImpl
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Singleton
 
 @Module
@@ -37,12 +39,26 @@ object RepositoryModule {
 
     @Provides
     @Singleton
+    fun provideSmartListeningRepository(
+        dao: PlayHistoryDao,
+        settingsRepository: SettingsRepository
+    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository)
+
+    @Provides
+    @Singleton
     fun providePlayerRepository(
         wsClient: MaWebSocketClient,
         json: Json,
         playHistoryRepository: PlayHistoryRepository,
-        settingsRepository: SettingsRepository
-    ): PlayerRepository = PlayerRepositoryImpl(wsClient, json, playHistoryRepository, settingsRepository)
+        settingsRepository: SettingsRepository,
+        smartListeningRepository: SmartListeningRepository
+    ): PlayerRepository = PlayerRepositoryImpl(
+        wsClient = wsClient,
+        json = json,
+        playHistoryRepository = playHistoryRepository,
+        settingsRepository = settingsRepository,
+        smartListeningRepository = smartListeningRepository
+    )
 
     @Provides
     @Singleton

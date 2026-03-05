@@ -1,714 +1,876 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import kotlinx.coroutines.delay
+import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.domain.model.Album
+import net.asksakis.massdroidv2.domain.model.Artist
+import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
+import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
-import net.asksakis.massdroidv2.domain.model.CrossfadeMode
-import net.asksakis.massdroidv2.domain.model.PlaybackState
-import net.asksakis.massdroidv2.domain.model.Player
-import net.asksakis.massdroidv2.domain.model.PlayerConfig
-import net.asksakis.massdroidv2.domain.model.PlayerType
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.draw.clip
 
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import android.content.res.Configuration
-import androidx.compose.ui.platform.LocalConfiguration
-import coil.compose.SubcomposeAsyncImage
+private val radioStartPhrases = listOf(
+    "Tuning the airwaves...",
+    "Mixing the perfect blend...",
+    "Finding hidden gems...",
+    "Crafting your vibe...",
+    "Summoning the beat...",
+    "Spinning up the groove...",
+    "Consulting the music gods...",
+    "Connecting sonic dots...",
+    "Warming up the speakers...",
+    "Shuffling the universe...",
+    "Dialing in the frequency...",
+    "Unleashing the rhythm..."
+)
+
+// Fixed heights for LazyColumn item prefetch (avoids layout thrashing)
+private val ArtistRowHeight = 114.dp  // 90 image + 4 spacer + 20 text
+private val AlbumRowHeight = 148.dp   // 110 image + 4 spacer + 18 name + 16 artist
+private val PlaylistRowHeight = 148.dp
+private val TrackRowHeight = 48.dp
+private val GenreRowHeight = 70.dp    // 140 * 0.5 aspect ratio
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    onNavigateToNowPlaying: () -> Unit,
+    onArtistClick: (Artist) -> Unit,
+    onAlbumClick: (Album) -> Unit,
+    onPlaylistClick: (Playlist) -> Unit,
     onNavigateToSettings: () -> Unit,
-    viewModel: HomeViewModel = hiltViewModel()
+    viewModel: DiscoverViewModel = hiltViewModel()
 ) {
-    val players by viewModel.players.collectAsStateWithLifecycle()
-    val selectedPlayer by viewModel.selectedPlayer.collectAsStateWithLifecycle()
+    val sections by viewModel.sections.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val radioOverlayGenre by viewModel.radioOverlayGenre.collectAsStateWithLifecycle()
+    val isBuildingSmartMix by viewModel.isBuildingSmartMix.collectAsStateWithLifecycle()
+    val smartMixMessage by viewModel.smartMixMessage.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
-    val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
-    var volumeSliderValue by remember { mutableFloatStateOf(selectedPlayer?.volumeLevel?.toFloat() ?: 0f) }
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-    // Sync slider when server updates volume
-    LaunchedEffect(selectedPlayer?.volumeLevel) {
-        selectedPlayer?.volumeLevel?.let { volumeSliderValue = it.toFloat() }
-    }
+    val connectionProbe by viewModel.connectionProbe.collectAsStateWithLifecycle()
+    val pullToRefreshState = rememberPullToRefreshState()
+    var showConnectionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
-            if (!isLandscape) {
-                TopAppBar(
-                    title = { Text("MassDroid") },
-                    actions = {
-                        ConnectionIndicator(connectionState)
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .size(60.dp)
+                                .aspectRatio(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("MassDroid")
                     }
-                )
-            }
+                },
+                actions = {
+                    IconButton(onClick = { showConnectionDialog = true }) {
+                        val (icon, tint) = when (connectionState) {
+                            is ConnectionState.Connected -> Icons.Default.Cloud to MaterialTheme.colorScheme.primary
+                            is ConnectionState.Connecting -> Icons.Default.CloudSync to MaterialTheme.colorScheme.tertiary
+                            is ConnectionState.Disconnected -> Icons.Default.CloudOff to MaterialTheme.colorScheme.error
+                            is ConnectionState.Error -> Icons.Default.CloudOff to MaterialTheme.colorScheme.error
+                        }
+                        Icon(icon, contentDescription = "Connection status", tint = tint)
+                    }
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                }
+            )
         }
     ) { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            if (isLandscape) {
-                Row(
+            if (isLoading && sections.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                PullToRefreshBox(
+                    isRefreshing = isRefreshing,
+                    onRefresh = { viewModel.refresh() },
+                    state = pullToRefreshState,
+                    indicator = {},
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(bottom = 8.dp)
+                    ) {
+                        item(key = "smart_mix_action") {
+                            SmartMixActionCard(
+                                isBusy = isBuildingSmartMix,
+                                message = smartMixMessage,
+                                onClick = { viewModel.makePlaylistForMe() }
+                            )
+                        }
+                        itemsIndexed(
+                            items = sections,
+                            key = { _, section -> sectionKey(section) },
+                            contentType = { _, section -> section::class.simpleName ?: "section" }
+                        ) { _, section ->
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                when (section) {
+                                    is DiscoverSection.ArtistSection -> {
+                                        SectionHeader(section.title)
+                                        ArtistRow(
+                                            artists = section.artists,
+                                            onArtistClick = onArtistClick,
+                                            modifier = Modifier.height(ArtistRowHeight)
+                                        )
+                                    }
+                                    is DiscoverSection.AlbumSection -> {
+                                        SectionHeader(section.title)
+                                        AlbumRow(
+                                            albums = section.albums,
+                                            onAlbumClick = onAlbumClick,
+                                            modifier = Modifier.height(AlbumRowHeight)
+                                        )
+                                    }
+                                    is DiscoverSection.PlaylistSection -> {
+                                        SectionHeader(section.title)
+                                        PlaylistRow(
+                                            playlists = section.playlists,
+                                            onPlaylistClick = onPlaylistClick,
+                                            modifier = Modifier.height(PlaylistRowHeight)
+                                        )
+                                    }
+                                    is DiscoverSection.TrackSection -> {
+                                        SectionHeader(section.title)
+                                        TrackRow(
+                                            tracks = section.tracks,
+                                            onTrackClick = { track -> viewModel.playTrack(track) },
+                                            modifier = Modifier.height(TrackRowHeight)
+                                        )
+                                    }
+                                    is DiscoverSection.GenreRadioSection -> {
+                                        SectionHeader(section.title)
+                                        GenreRow(
+                                            genres = section.genres,
+                                            onGenreClick = { genre ->
+                                                viewModel.startGenreRadio(genre.name)
+                                            },
+                                            modifier = Modifier.height(GenreRowHeight)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                AnimatedVisibility(
+                    visible = isRefreshing,
+                    enter = fadeIn(animationSpec = tween(durationMillis = 250)),
+                    exit = fadeOut(animationSpec = tween(durationMillis = 250)),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.50f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            EqualizerBars(
+                                modifier = Modifier.height(56.dp),
+                                barWidth = 6.dp,
+                                spacing = 4.dp,
+                                barCount = 5,
+                                bpm = 120,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Refreshing...",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Radio start overlay
+            if (radioOverlayGenre != null) {
+                RadioStartOverlay(genre = radioOverlayGenre ?: "")
+            }
+        }
+    }
+
+    LaunchedEffect(smartMixMessage) {
+        if (smartMixMessage != null) {
+            delay(2800)
+            viewModel.clearSmartMixMessage()
+        }
+    }
+
+    LaunchedEffect(showConnectionDialog) {
+        if (showConnectionDialog) {
+            viewModel.probeConnection()
+        }
+    }
+
+    if (showConnectionDialog) {
+        ConnectionStatusDialog(
+            connectionState = connectionState,
+            probeState = connectionProbe,
+            onRefresh = { viewModel.probeConnection() },
+            onDismiss = { showConnectionDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun SmartMixActionCard(
+    isBusy: Boolean,
+    message: String?,
+    onClick: () -> Unit
+) {
+    val glowTransition = rememberInfiniteTransition(label = "smart_mix_glow")
+    val glowAlpha by glowTransition.animateFloat(
+        initialValue = 0.22f,
+        targetValue = 0.46f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "smart_mix_glow_alpha"
+    )
+    val secondaryGlowAlpha by glowTransition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.28f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "smart_mix_secondary_glow_alpha"
+    )
+    val glowShape = MaterialTheme.shapes.large
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(glowShape)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha),
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = secondaryGlowAlpha),
+                            MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha)
+                        )
+                    )
+                )
+                .padding(2.5.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(glowShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha * 0.35f))
+                    .padding(1.5.dp)
+            ) {
+            ElevatedCard(
+                colors = androidx.compose.material3.CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !isBusy, onClick = onClick),
+                shape = glowShape
+            ) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 14.dp, vertical = 14.dp)
                 ) {
-                    Text("MassDroid", style = MaterialTheme.typography.titleMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ConnectionIndicator(connectionState)
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
-                    }
-                }
-            }
-            if (isInitializing || connectionState is ConnectionState.Connecting) {
-                ConnectingIndicator()
-            } else when (connectionState) {
-                is ConnectionState.Disconnected, is ConnectionState.Error -> {
-                    ConnectionPrompt(
-                        state = connectionState,
-                        onSettings = onNavigateToSettings,
-                        onRetry = { viewModel.connectIfNeeded() }
-                    )
-                }
-                is ConnectionState.Connecting -> { /* handled above */ }
-                is ConnectionState.Connected -> {
-                    // Selected player header with volume
-                    selectedPlayer?.let { player ->
-                        if (isLandscape) {
-                            // Compact single-row layout for landscape
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                PlayerIcon(
-                                    player = player,
-                                    modifier = Modifier.size(22.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = player.displayName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 120.dp)
-                                )
-                                Slider(
-                                    value = volumeSliderValue,
-                                    onValueChange = { volumeSliderValue = it },
-                                    onValueChangeFinished = {
-                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
-                                    },
-                                    valueRange = 0f..100f,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(horizontal = 8.dp),
-                                    thumb = {},
-                                    track = { sliderState ->
-                                        SliderDefaults.Track(
-                                            sliderState = sliderState,
-                                            drawStopIndicator = null,
-                                            thumbTrackGapSize = 0.dp
-                                        )
-                                    }
-                                )
-                                Text(
-                                    text = "${volumeSliderValue.toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    PlayerIcon(
-                                        player = player,
-                                        modifier = Modifier.size(28.dp),
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = player.displayName,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                    Spacer(modifier = Modifier.weight(1f))
-                                    Text(
-                                        text = "${volumeSliderValue.toInt()}%",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                }
-                                Slider(
-                                    value = volumeSliderValue,
-                                    onValueChange = { volumeSliderValue = it },
-                                    onValueChangeFinished = {
-                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
-                                    },
-                                    valueRange = 0f..100f,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 0.dp),
-                                    thumb = {},
-                                    track = { sliderState ->
-                                        SliderDefaults.Track(
-                                            sliderState = sliderState,
-                                            drawStopIndicator = null,
-                                            thumbTrackGapSize = 0.dp
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // Players list
                     Text(
-                        text = "All Players",
+                        text = if (isBusy) "Building Smart Mix..." else "Smart Mix",
                         style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.Center)
                     )
-
-                    var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
-                    var settingsPlayer by remember { mutableStateOf<Player?>(null) }
-                    var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
-
-                    LazyColumn(
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        items(players.filter { it.available }.sortedBy { it.displayName.lowercase() }) { player ->
-                            PlayerListItem(
-                                player = player,
-                                isSelected = player.playerId == selectedPlayer?.playerId,
-                                onClick = { viewModel.selectPlayer(player) },
-                                onIconLongPress = { iconPickerPlayer = player },
-                                onSettingsClick = { settingsPlayer = player },
-                                onQueueMenuClick = { queueMenuPlayer = player }
-                            )
-                        }
-                    }
-
-                    iconPickerPlayer?.let { player ->
-                        IconPickerDialog(
-                            playerName = player.displayName,
-                            currentIcon = player.icon,
-                            onIconSelected = { mdiName ->
-                                viewModel.updatePlayerIcon(player.playerId, mdiName)
-                                iconPickerPlayer = null
-                            },
-                            onDismiss = { iconPickerPlayer = null }
+                    if (isBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
-
-                    settingsPlayer?.let { player ->
-                        PlayerSettingsDialog(
-                            player = player,
-                            viewModel = viewModel,
-                            onDismiss = { settingsPlayer = null }
-                        )
-                    }
-
-                    queueMenuPlayer?.let { player ->
-                        PlayerQueueSheet(
-                            player = player,
-                            allPlayers = players.filter { it.available },
-                            onClearQueue = {
-                                viewModel.clearQueue(player.playerId)
-                                queueMenuPlayer = null
-                            },
-                            onTransferQueue = { targetId ->
-                                viewModel.transferQueue(player.playerId, targetId)
-                                queueMenuPlayer = null
-                            },
-                            onDismiss = { queueMenuPlayer = null }
-                        )
-                    }
-
                 }
+            }
             }
         }
-    }
-
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun PlayerListItem(
-    player: Player,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    onIconLongPress: () -> Unit,
-    onSettingsClick: () -> Unit,
-    onQueueMenuClick: () -> Unit
-) {
-    ListItem(
-        headlineContent = { Text(player.displayName) },
-        supportingContent = {
-            val stateText = when (player.state) {
-                PlaybackState.PLAYING -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Playing"
-                PlaybackState.PAUSED -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Paused"
-                PlaybackState.IDLE -> "Idle"
-            }
-            Text(stateText)
-        },
-        leadingContent = {
-            val iconTint = if (isSelected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            Box(modifier = Modifier.combinedClickable(
-                onClick = {},
-                onLongClick = onIconLongPress
-            )) {
-                PlayerIcon(
-                    player = player,
-                    modifier = Modifier.size(48.dp),
-                    tint = iconTint
-                )
-            }
-        },
-        trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (player.state == PlaybackState.PLAYING) {
-                    EqualizerBars(
-                        modifier = Modifier.height(18.dp),
-                        barWidth = 3.dp,
-                        spacing = 2.dp,
-                        barCount = 4,
-                        bpm = 90
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                }
-                IconButton(onClick = onSettingsClick, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "Player settings",
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "Queue options",
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        },
-        modifier = Modifier.clickable(onClick = onClick)
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PlayerQueueSheet(
-    player: Player,
-    allPlayers: List<Player>,
-    onClearQueue: () -> Unit,
-    onTransferQueue: (targetId: String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var showTransferList by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
-    val otherPlayers = remember(allPlayers, player.playerId) {
-        allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState
-    ) {
-        Column(modifier = Modifier.padding(bottom = 24.dp)) {
+        if (message != null) {
             Text(
-                text = player.displayName,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-            if (!showTransferList) {
-                ListItem(
-                    headlineContent = { Text("Clear Queue") },
-                    leadingContent = {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = null)
-                    },
-                    modifier = Modifier.clickable(onClick = onClearQueue)
-                )
-                if (otherPlayers.isNotEmpty()) {
-                    ListItem(
-                        headlineContent = { Text("Transfer Queue") },
-                        leadingContent = {
-                            Icon(Icons.Default.SwapHoriz, contentDescription = null)
-                        },
-                        trailingContent = {
-                            Icon(Icons.Default.ChevronRight, contentDescription = null)
-                        },
-                        modifier = Modifier.clickable { showTransferList = true }
-                    )
-                }
-            } else {
-                ListItem(
-                    headlineContent = {
-                        Text("Transfer queue to:", style = MaterialTheme.typography.labelMedium)
-                    },
-                    leadingContent = {
-                        IconButton(onClick = { showTransferList = false }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                )
-                otherPlayers.forEach { target ->
-                    ListItem(
-                        headlineContent = { Text(target.displayName) },
-                        leadingContent = {
-                            PlayerIcon(
-                                player = target,
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        modifier = Modifier.clickable { onTransferQueue(target.playerId) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-private data class IconOption(val mdiName: String, val label: String, val icon: ImageVector)
-
-private val iconOptions = listOf(
-    IconOption("mdi-speaker", "Speaker", Icons.Default.Speaker),
-    IconOption("mdi-speaker-multiple", "Group", Icons.Default.SpeakerGroup),
-    IconOption("mdi-cast", "Cast", Icons.Default.Cast),
-    IconOption("mdi-cast-connected", "Cast Connected", Icons.Default.CastConnected),
-    IconOption("mdi-television", "TV", Icons.Default.Tv),
-    IconOption("mdi-cellphone", "Phone", Icons.Default.PhoneAndroid),
-    IconOption("mdi-laptop", "Laptop", Icons.Default.Laptop),
-    IconOption("mdi-radio", "Radio", Icons.Default.Radio),
-    IconOption("mdi-headphones", "Headphones", Icons.Default.Headphones),
-    IconOption("mdi-bluetooth", "Bluetooth", Icons.Default.Bluetooth),
-    IconOption("mdi-music-note", "Music", Icons.Default.MusicNote),
-    IconOption("mdi-monitor", "Monitor", Icons.Default.Monitor)
-)
-
-@Composable
-private fun IconPickerDialog(
-    playerName: String,
-    currentIcon: String?,
-    onIconSelected: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val currentNormalized = currentIcon?.replace(":", "-")?.lowercase()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(playerName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
-        text = {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(4),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(iconOptions) { option ->
-                    val isCurrentIcon = currentNormalized == option.mdiName
-                    val containerColor = if (isCurrentIcon)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant
-                    val contentColor = if (isCurrentIcon)
-                        MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-
-                    Surface(
-                        onClick = { onIconSelected(option.mdiName) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = containerColor
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = option.icon,
-                                contentDescription = option.label,
-                                modifier = Modifier.size(32.dp),
-                                tint = contentColor
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = option.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
-                                color = contentColor
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
-}
-
-@Composable
-private fun PlayerSettingsDialog(
-    player: Player,
-    viewModel: HomeViewModel,
-    onDismiss: () -> Unit
-) {
-    var config by remember { mutableStateOf<PlayerConfig?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-    var name by remember { mutableStateOf(player.displayName) }
-    var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
-    var volumeNormalization by remember { mutableStateOf(false) }
-
-    LaunchedEffect(player.playerId) {
-        val loaded = viewModel.getPlayerConfig(player.playerId)
-        if (loaded != null) {
-            config = loaded
-            name = loaded.name.ifBlank { player.displayName }
-            crossfadeMode = loaded.crossfadeMode
-            volumeNormalization = loaded.volumeNormalization
-        }
-        isLoading = false
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Player Settings") },
-        text = {
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Player name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Crossfade
-                    Text("Crossfade", style = MaterialTheme.typography.labelMedium)
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        CrossfadeMode.entries.forEachIndexed { index, mode ->
-                            SegmentedButton(
-                                selected = crossfadeMode == mode,
-                                onClick = { crossfadeMode = mode },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = CrossfadeMode.entries.size
-                                ),
-                                label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-
-                    // Volume normalization
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Volume normalization")
-                        Switch(
-                            checked = volumeNormalization,
-                            onCheckedChange = { volumeNormalization = it }
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val values = mutableMapOf<String, Any>(
-                        "smart_fades_mode" to crossfadeMode.apiValue,
-                        "volume_normalization" to volumeNormalization
-                    )
-                    if (name.isNotBlank() && name.trim() != player.displayName) {
-                        values["name"] = name.trim()
-                    }
-                    viewModel.savePlayerConfig(player.playerId, values)
-                    onDismiss()
-                },
-                enabled = !isLoading
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
-}
-
-@Composable
-private fun ConnectionIndicator(state: ConnectionState) {
-    val (icon, tint) = when (state) {
-        is ConnectionState.Connected -> Icons.Default.Cloud to MaterialTheme.colorScheme.primary
-        is ConnectionState.Connecting -> Icons.Default.CloudSync to MaterialTheme.colorScheme.tertiary
-        is ConnectionState.Disconnected -> Icons.Default.CloudOff to MaterialTheme.colorScheme.error
-        is ConnectionState.Error -> Icons.Default.CloudOff to MaterialTheme.colorScheme.error
-    }
-    Icon(icon, contentDescription = "Connection status", tint = tint, modifier = Modifier.padding(8.dp))
-}
-
-@Composable
-private fun ConnectingIndicator() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            EqualizerBars(
-                modifier = Modifier.height(48.dp),
-                barWidth = 8.dp,
-                spacing = 6.dp,
-                bpm = 130
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Connecting...",
-                style = MaterialTheme.typography.bodyLarge,
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
 }
 
-// EqualizerBars moved to net.asksakis.massdroidv2.ui.components.EqualizerBars
+@Composable
+private fun ConnectionStatusDialog(
+    connectionState: ConnectionState,
+    probeState: ConnectionProbeState,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val statusText = when (connectionState) {
+        is ConnectionState.Connected -> "Connected (v${connectionState.serverInfo.serverVersion})"
+        is ConnectionState.Connecting -> "Connecting..."
+        is ConnectionState.Disconnected -> "Disconnected"
+        is ConnectionState.Error -> "Error: ${connectionState.message}"
+    }
+    val samples = probeState.samplesMs
+    val avgMs = if (samples.isNotEmpty()) samples.average().toInt() else null
+    val minMs = samples.minOrNull()?.toInt()
+    val maxMs = samples.maxOrNull()?.toInt()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Connection Status") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(statusText, style = MaterialTheme.typography.bodyMedium)
+
+                when {
+                    probeState.inProgress -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text("Measuring roundtrip...", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    avgMs != null -> {
+                        Text(
+                            text = "Method: ${probeState.probeMethod ?: "Unknown"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Roundtrip: avg ${avgMs}ms (min ${minMs}ms, max ${maxMs}ms)",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (probeState.failedSamples > 0) {
+                            Text(
+                                text = "Failed samples: ${probeState.failedSamples}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    probeState.error != null -> {
+                        Text(
+                            text = probeState.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    else -> {
+                        Text("No RTT data yet", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onRefresh, enabled = !probeState.inProgress) {
+                Text("Measure Again")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
 
 @Composable
-private fun ConnectionPrompt(
-    state: ConnectionState,
-    onSettings: () -> Unit,
-    onRetry: () -> Unit
-) {
-    Column(
+private fun RadioStartOverlay(genre: String) {
+    var phrase by remember { mutableStateOf(radioStartPhrases.random()) }
+
+    LaunchedEffect(genre) {
+        while (true) {
+            delay(800)
+            phrase = radioStartPhrases.random()
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
+        contentAlignment = Alignment.Center
     ) {
-        Icon(
-            Icons.Default.CloudOff,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = when (state) {
-                is ConnectionState.Error -> "Connection error: ${state.message}"
-                else -> "Not connected to Music Assistant"
-            },
-            style = MaterialTheme.typography.bodyLarge
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onSettings) {
-            Text("Configure Server")
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(onClick = onRetry) {
-            Text("Retry")
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            EqualizerBars(
+                modifier = Modifier.height(48.dp),
+                barWidth = 6.dp,
+                spacing = 4.dp,
+                barCount = 5,
+                bpm = 120,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+                text = "Tuning into $genre Radio",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = phrase,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
 
 @Composable
-private fun PlayerIcon(
-    player: Player,
-    modifier: Modifier = Modifier,
-    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant
+private fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 16.dp)
+    )
+}
+
+private fun sectionTitle(section: DiscoverSection): String {
+    return when (section) {
+        is DiscoverSection.ArtistSection -> section.title
+        is DiscoverSection.AlbumSection -> section.title
+        is DiscoverSection.PlaylistSection -> section.title
+        is DiscoverSection.TrackSection -> section.title
+        is DiscoverSection.GenreRadioSection -> section.title
+    }
+}
+
+private fun sectionKey(section: DiscoverSection): String {
+    return "${section::class.simpleName}:${sectionTitle(section)}"
+}
+
+@Composable
+private fun rememberSizedImageModel(
+    url: String?,
+    widthPx: Int,
+    heightPx: Int = widthPx
+): Any? {
+    if (url == null) return null
+    val context = LocalContext.current
+    return remember(url, widthPx, heightPx, context) {
+        ImageRequest.Builder(context)
+            .data(url)
+            .size(widthPx, heightPx)
+            .crossfade(false)
+            .build()
+    }
+}
+
+@Composable
+private fun ArtistRow(
+    artists: List<Artist>,
+    onArtistClick: (Artist) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val iconValue = player.icon
-    if (iconValue != null && (iconValue.startsWith("http://") || iconValue.startsWith("https://"))) {
-        SubcomposeAsyncImage(
-            model = iconValue,
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(artists, key = { it.uri }) { artist ->
+            ArtistCard(artist = artist, onClick = { onArtistClick(artist) })
+        }
+    }
+}
+
+@Composable
+private fun ArtistCard(
+    artist: Artist,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .width(90.dp)
+            .semantics { contentDescription = artist.name }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        AsyncImage(
+            model = rememberSizedImageModel(artist.imageUrl, widthPx = 236),
             contentDescription = null,
-            modifier = modifier.clip(MaterialTheme.shapes.small),
-            contentScale = ContentScale.Fit,
-            error = {
-                val fallback = typeBasedIcon(player.type)
-                Icon(imageVector = fallback, contentDescription = null, modifier = modifier, tint = tint)
-            }
+            modifier = Modifier
+                .size(90.dp)
+                .clip(CircleShape)
+                .background(Color(0x1F888888), CircleShape),
+            contentScale = ContentScale.Crop
         )
-    } else {
-        val imageVector = mapMdiIcon(iconValue) ?: typeBasedIcon(player.type)
-        Icon(imageVector = imageVector, contentDescription = null, modifier = modifier, tint = tint)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = artist.name,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
-private fun typeBasedIcon(type: PlayerType): ImageVector = when (type) {
-    PlayerType.GROUP -> Icons.Default.SpeakerGroup
-    PlayerType.STEREO_PAIR -> Icons.Default.Speaker
-    PlayerType.PLAYER -> Icons.Default.Speaker
-}
-
-private fun mapMdiIcon(mdiName: String?): ImageVector? {
-    if (mdiName == null) return null
-    val normalized = mdiName.replace(":", "-").lowercase()
-    return when {
-        normalized == "mdi-speaker-group" || normalized == "mdi-speaker-multiple" -> Icons.Default.SpeakerGroup
-        normalized == "mdi-speaker" -> Icons.Default.Speaker
-        normalized == "mdi-cast" -> Icons.Default.Cast
-        normalized == "mdi-cast-connected" -> Icons.Default.CastConnected
-        normalized == "mdi-television" || normalized == "mdi-tv" -> Icons.Default.Tv
-        normalized == "mdi-cellphone" || normalized == "mdi-phone" || normalized == "mdi-cellphone-sound" -> Icons.Default.PhoneAndroid
-        normalized == "mdi-laptop" -> Icons.Default.Laptop
-        normalized == "mdi-radio" -> Icons.Default.Radio
-        normalized == "mdi-headphones" -> Icons.Default.Headphones
-        normalized == "mdi-bluetooth" || normalized == "mdi-bluetooth-audio" -> Icons.Default.Bluetooth
-        normalized == "mdi-music" || normalized == "mdi-music-note" -> Icons.Default.MusicNote
-        normalized == "mdi-monitor" -> Icons.Default.Monitor
-        else -> null
+@Composable
+private fun AlbumRow(
+    albums: List<Album>,
+    onAlbumClick: (Album) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(albums, key = { it.uri }) { album ->
+            AlbumCard(album = album, onClick = { onAlbumClick(album) })
+        }
     }
 }
 
+@Composable
+private fun AlbumCard(
+    album: Album,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .width(110.dp)
+            .semantics {
+                contentDescription = if (album.artistNames.isNotBlank()) {
+                    "${album.name}, ${album.artistNames}"
+                } else {
+                    album.name
+                }
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+    ) {
+        AsyncImage(
+            model = rememberSizedImageModel(album.imageUrl, widthPx = 289),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(MaterialTheme.shapes.medium)
+                .background(Color(0x1F888888), MaterialTheme.shapes.medium),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = album.name,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = formatAlbumTypeYear(album.albumType, album.year).ifBlank {
+                album.artistNames.ifBlank { "\u00A0" }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun PlaylistRow(
+    playlists: List<Playlist>,
+    onPlaylistClick: (Playlist) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(playlists, key = { it.uri }) { playlist ->
+            PlaylistCard(playlist = playlist, onClick = { onPlaylistClick(playlist) })
+        }
+    }
+}
+
+@Composable
+private fun PlaylistCard(
+    playlist: Playlist,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .width(110.dp)
+            .semantics { contentDescription = playlist.name }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+    ) {
+        AsyncImage(
+            model = rememberSizedImageModel(playlist.imageUrl, widthPx = 289),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(MaterialTheme.shapes.medium)
+                .background(Color(0x1F888888), MaterialTheme.shapes.medium),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = playlist.name,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun TrackRow(
+    tracks: List<Track>,
+    onTrackClick: (Track) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(tracks, key = { it.uri }) { track ->
+            TrackCard(track = track, onClick = { onTrackClick(track) })
+        }
+    }
+}
+
+@Composable
+private fun TrackCard(
+    track: Track,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .width(200.dp)
+            .semantics {
+                contentDescription = if (track.artistNames.isNotBlank()) {
+                    "${track.name}, ${track.artistNames}"
+                } else {
+                    track.name
+                }
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AsyncImage(
+            model = rememberSizedImageModel(track.imageUrl, widthPx = 126),
+            contentDescription = null,
+            modifier = Modifier
+                .size(48.dp)
+                .clip(MaterialTheme.shapes.small)
+                .background(Color(0x1F888888), MaterialTheme.shapes.small),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.name,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = track.artistNames.ifBlank { "\u00A0" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun GenreRow(
+    genres: List<GenreItem>,
+    onGenreClick: (GenreItem) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(genres, key = { it.name }) { genre ->
+            GenreChip(genre = genre, onClick = { onGenreClick(genre) })
+        }
+    }
+}
+
+@Composable
+private fun GenreChip(
+    genre: GenreItem,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    ElevatedCard(
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Box(
+            modifier = Modifier
+                .width(140.dp)
+                .aspectRatio(2f)
+                .semantics { contentDescription = genre.name }
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            genre.imageUrl?.let { url ->
+                AsyncImage(
+                    model = rememberSizedImageModel(
+                        url = url,
+                        widthPx = 368,
+                        heightPx = 184
+                    ),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.3f
+                )
+            }
+            Text(
+                text = genre.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+    }
+}

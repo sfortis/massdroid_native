@@ -5,6 +5,8 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlayHistoryDao {
@@ -30,6 +32,49 @@ interface PlayHistoryDao {
     @Insert
     suspend fun insertPlay(play: PlayHistoryEntity): Long
 
+    @Insert
+    suspend fun insertSmartFeedback(feedback: SmartFeedbackEntity)
+
+    @Insert
+    suspend fun insertSmartFeedback(feedback: List<SmartFeedbackEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertBlockedArtist(artist: BlockedArtistEntity)
+
+    @Query("DELETE FROM blocked_artists WHERE artist_uri = :artistUri")
+    suspend fun deleteBlockedArtist(artistUri: String)
+
+    @Query("SELECT artist_uri FROM blocked_artists")
+    suspend fun getBlockedArtistUris(): List<String>
+
+    @Query("SELECT artist_uri FROM blocked_artists")
+    fun observeBlockedArtistUris(): Flow<List<String>>
+
+    @Query(
+        """
+        SELECT artist_uri AS artistUri, artist_name AS artistName, blocked_at AS blockedAt
+        FROM blocked_artists
+        ORDER BY blocked_at DESC
+        """
+    )
+    suspend fun getBlockedArtists(): List<BlockedArtistRow>
+
+    @Query(
+        """
+        SELECT
+            CASE
+                WHEN instr(artist_uri, '://') > 0 THEN substr(artist_uri, instr(artist_uri, '://') + 3)
+                ELSE artist_uri
+            END AS artistUri,
+            signal,
+            created_at AS createdAt
+        FROM smart_feedback
+        WHERE artist_uri IS NOT NULL
+          AND created_at > :since
+        """
+    )
+    suspend fun getArtistFeedbackSignals(since: Long): List<ArtistFeedbackSignalRow>
+
     // Top genres by play count
     @Query(
         """
@@ -48,17 +93,37 @@ interface PlayHistoryDao {
     // Top artists by play count
     @Query(
         """
-        SELECT a.uri AS artistUri, a.name AS artistName, COUNT(*) AS playCount
+        SELECT
+            CASE
+                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
+                ELSE a.uri
+            END AS artistUri,
+            MIN(a.name) AS artistName,
+            COUNT(*) AS playCount
         FROM play_history ph
         JOIN track_artists ta ON ta.track_uri = ph.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
-        GROUP BY a.uri
+        GROUP BY artistUri
         ORDER BY playCount DESC
         LIMIT :limit
         """
     )
     suspend fun getTopArtists(since: Long, limit: Int): List<ArtistPlayCount>
+
+    // Top tracks by play count
+    @Query(
+        """
+        SELECT t.uri AS trackUri, t.name AS trackName, COUNT(*) AS playCount
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        WHERE ph.played_at > :since
+        GROUP BY t.uri
+        ORDER BY playCount DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getTopTracks(since: Long, limit: Int): List<TrackPlayCount>
 
     // Top albums by play count
     @Query(
@@ -166,11 +231,18 @@ interface PlayHistoryDao {
     // Artist play timestamps for BLL scoring
     @Query(
         """
-        SELECT a.uri AS artistUri, a.name AS artistName, ph.played_at AS playedAt
+        SELECT
+            CASE
+                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
+                ELSE a.uri
+            END AS artistUri,
+            MIN(a.name) AS artistName,
+            ph.played_at AS playedAt
         FROM play_history ph
         JOIN track_artists ta ON ta.track_uri = ph.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
+        GROUP BY ph.id, artistUri
         """
     )
     suspend fun getArtistPlayTimestamps(since: Long): List<ArtistPlayTimestamp>
@@ -178,11 +250,16 @@ interface PlayHistoryDao {
     // Genre -> artist URI mappings (for genre radio)
     @Query(
         """
-        SELECT tg.genre_name AS genre, a.uri AS artistUri
+        SELECT
+            tg.genre_name AS genre,
+            CASE
+                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
+                ELSE a.uri
+            END AS artistUri
         FROM track_genres tg
         JOIN track_artists ta ON ta.track_uri = tg.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
-        GROUP BY tg.genre_name, a.uri
+        GROUP BY tg.genre_name, artistUri
         """
     )
     suspend fun getGenreArtistUris(): List<GenreArtistUri>
@@ -200,6 +277,50 @@ interface PlayHistoryDao {
     )
     suspend fun getGenreCoOccurrences(): List<GenreCoOccurrence>
 
+    // Artist -> decade play counts (for decade-coherent radio seeding)
+    @Query(
+        """
+        SELECT
+               CASE
+                   WHEN instr(ta.artist_uri, '://') > 0 THEN substr(ta.artist_uri, instr(ta.artist_uri, '://') + 3)
+                   ELSE ta.artist_uri
+               END AS artistUri,
+               ((al.year / 10) * 10) AS decade,
+               COUNT(*) AS playCount
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        JOIN albums al ON al.uri = t.album_uri
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        WHERE ph.played_at > :since
+          AND al.year IS NOT NULL
+        GROUP BY artistUri, decade
+        """
+    )
+    suspend fun getArtistDecadePlayCounts(since: Long): List<ArtistDecadePlayCount>
+
+    // Top listened decades for a specific genre
+    @Query(
+        """
+        SELECT ((al.year / 10) * 10) AS decade,
+               COUNT(*) AS playCount
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        JOIN albums al ON al.uri = t.album_uri
+        JOIN track_genres tg ON tg.track_uri = t.uri
+        WHERE ph.played_at > :since
+          AND al.year IS NOT NULL
+          AND tg.genre_name = :genre
+        GROUP BY decade
+        ORDER BY playCount DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getTopDecadesForGenre(
+        genre: String,
+        since: Long,
+        limit: Int
+    ): List<DecadePlayCount>
+
     // Cleanup
     @Query("DELETE FROM play_history WHERE played_at < :before")
     suspend fun deleteOlderThan(before: Long)
@@ -215,6 +336,49 @@ interface PlayHistoryDao {
 
     @Query("DELETE FROM genres WHERE name NOT IN (SELECT DISTINCT genre_name FROM track_genres)")
     suspend fun deleteOrphanGenres()
+
+    @Query("DELETE FROM smart_feedback WHERE created_at < :before")
+    suspend fun deleteOldSmartFeedback(before: Long)
+
+    @Query("DELETE FROM smart_feedback")
+    suspend fun clearSmartFeedback()
+
+    @Query("DELETE FROM blocked_artists")
+    suspend fun clearBlockedArtists()
+
+    @Query("DELETE FROM play_history")
+    suspend fun clearPlayHistory()
+
+    @Query("DELETE FROM track_genres")
+    suspend fun clearTrackGenres()
+
+    @Query("DELETE FROM track_artists")
+    suspend fun clearTrackArtists()
+
+    @Query("DELETE FROM tracks")
+    suspend fun clearTracks()
+
+    @Query("DELETE FROM albums")
+    suspend fun clearAlbums()
+
+    @Query("DELETE FROM artists")
+    suspend fun clearArtists()
+
+    @Query("DELETE FROM genres")
+    suspend fun clearGenres()
+
+    @Transaction
+    suspend fun clearRecommendationData() {
+        clearSmartFeedback()
+        clearBlockedArtists()
+        clearPlayHistory()
+        clearTrackGenres()
+        clearTrackArtists()
+        clearTracks()
+        clearAlbums()
+        clearArtists()
+        clearGenres()
+    }
 }
 
 // Projection data classes
@@ -227,6 +391,12 @@ data class GenrePlayCount(
 data class ArtistPlayCount(
     @ColumnInfo(name = "artistUri") val artistUri: String,
     @ColumnInfo(name = "artistName") val artistName: String,
+    val playCount: Int
+)
+
+data class TrackPlayCount(
+    @ColumnInfo(name = "trackUri") val trackUri: String,
+    @ColumnInfo(name = "trackName") val trackName: String,
     val playCount: Int
 )
 
@@ -289,4 +459,27 @@ data class GenreCoOccurrence(
     val genre1: String,
     val genre2: String,
     val coCount: Int
+)
+
+data class ArtistDecadePlayCount(
+    @ColumnInfo(name = "artistUri") val artistUri: String,
+    val decade: Int,
+    val playCount: Int
+)
+
+data class DecadePlayCount(
+    val decade: Int,
+    val playCount: Int
+)
+
+data class ArtistFeedbackSignalRow(
+    @ColumnInfo(name = "artistUri") val artistUri: String,
+    val signal: Double,
+    @ColumnInfo(name = "createdAt") val createdAt: Long
+)
+
+data class BlockedArtistRow(
+    @ColumnInfo(name = "artistUri") val artistUri: String,
+    @ColumnInfo(name = "artistName") val artistName: String?,
+    @ColumnInfo(name = "blockedAt") val blockedAt: Long
 )

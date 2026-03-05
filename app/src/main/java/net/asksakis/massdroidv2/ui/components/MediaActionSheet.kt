@@ -26,7 +26,9 @@ data class ActionSheetItem(
     val imageUrl: String?,
     val favorite: Boolean,
     val mediaType: MediaType,
-    val itemId: String
+    val itemId: String,
+    val primaryArtistUri: String? = null,
+    val primaryArtistName: String? = null
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,7 +40,9 @@ fun MediaActionSheet(
     players: List<Player>,
     selectedPlayerId: String?,
     favorite: Boolean = false,
+    artistBlocked: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
+    onToggleArtistBlocked: (() -> Unit)? = null,
     onPlayNow: () -> Unit,
     onPlayOnPlayer: (Player) -> Unit,
     onAddToQueue: () -> Unit,
@@ -106,6 +110,25 @@ fun MediaActionSheet(
                     },
                     modifier = Modifier.clickable {
                         onToggleFavorite()
+                        onDismiss()
+                    }
+                )
+            }
+
+            if (onToggleArtistBlocked != null) {
+                ListItem(
+                    headlineContent = {
+                        Text(if (artistBlocked) "Allow this Artist" else "Do Not Play this Artist")
+                    },
+                    leadingContent = {
+                        Icon(
+                            if (artistBlocked) Icons.Default.Person else Icons.Default.Block,
+                            contentDescription = null,
+                            tint = if (artistBlocked) LocalContentColor.current else MaterialTheme.colorScheme.error
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onToggleArtistBlocked()
                         onDismiss()
                     }
                 )

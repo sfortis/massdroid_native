@@ -13,9 +13,11 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
@@ -26,7 +28,8 @@ class LibraryViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     private val _artists = MutableStateFlow<List<Artist>>(emptyList())
@@ -90,6 +93,8 @@ class LibraryViewModel @Inject constructor(
 
     private val _settingsLoaded = MutableStateFlow(false)
     val settingsLoaded: StateFlow<Boolean> = _settingsLoaded.asStateFlow()
+    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
+    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
     init {
         // Load all settings eagerly before any data loading
@@ -112,6 +117,9 @@ class LibraryViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsRepository.libraryFavoritesOnly.collect { _favoritesOnlyMap.value = it }
+        }
+        viewModelScope.launch {
+            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
         viewModelScope.launch {
             wsClient.connectionState
@@ -456,13 +464,22 @@ class LibraryViewModel @Inject constructor(
             }
         }
     }
+
+    fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
+        val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
+        viewModelScope.launch {
+            val blocked = _blockedArtistUris.value.contains(uri)
+            smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
+        }
+    }
 }
 
 @HiltViewModel
 class ArtistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
-    private val playerRepository: PlayerRepository
+    private val playerRepository: PlayerRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -485,11 +502,16 @@ class ArtistDetailViewModel @Inject constructor(
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
+    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
     val players = playerRepository.players
 
     init {
         viewModelScope.launch { loadData(lazy = true) }
+        viewModelScope.launch {
+            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
+        }
     }
 
     fun refresh() {
@@ -628,13 +650,22 @@ class ArtistDetailViewModel @Inject constructor(
             }
         }
     }
+
+    fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
+        val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
+        viewModelScope.launch {
+            val blocked = _blockedArtistUris.value.contains(uri)
+            smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
+        }
+    }
 }
 
 @HiltViewModel
 class AlbumDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
-    private val playerRepository: PlayerRepository
+    private val playerRepository: PlayerRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -654,11 +685,16 @@ class AlbumDetailViewModel @Inject constructor(
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
+    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
     val players = playerRepository.players
 
     init {
         viewModelScope.launch { loadData(lazy = true) }
+        viewModelScope.launch {
+            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
+        }
     }
 
     fun refresh() {
@@ -825,13 +861,22 @@ class AlbumDetailViewModel @Inject constructor(
             }
         }
     }
+
+    fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
+        val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
+        viewModelScope.launch {
+            val blocked = _blockedArtistUris.value.contains(uri)
+            smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
+        }
+    }
 }
 
 @HiltViewModel
 class PlaylistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
-    private val playerRepository: PlayerRepository
+    private val playerRepository: PlayerRepository,
+    private val smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -849,6 +894,8 @@ class PlaylistDetailViewModel @Inject constructor(
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
+    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
     val players = playerRepository.players
 
@@ -859,6 +906,9 @@ class PlaylistDetailViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "Load playlist tracks failed: ${e.message}")
             }
+        }
+        viewModelScope.launch {
+            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
     }
 
@@ -935,6 +985,14 @@ class PlaylistDetailViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
             }
+        }
+    }
+
+    fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
+        val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
+        viewModelScope.launch {
+            val blocked = _blockedArtistUris.value.contains(uri)
+            smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }
 }

@@ -120,7 +120,9 @@ private fun MassDroidApp(
     val currentRoute = navBackStackEntry?.destination?.route
 
     val showNav = currentRoute in navItems.map { it.route }
-    val showMiniPlayer = currentRoute != Routes.NOW_PLAYING
+    val showMiniPlayer = currentRoute != Routes.NOW_PLAYING &&
+        currentRoute != Routes.SETTINGS &&
+        currentRoute != Routes.RECOMMENDATION_INSIGHTS
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 

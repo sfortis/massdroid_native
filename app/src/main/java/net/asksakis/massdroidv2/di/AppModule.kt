@@ -2,6 +2,8 @@ package net.asksakis.massdroidv2.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -21,6 +23,41 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `smart_feedback` (
+                    `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    `track_uri` TEXT,
+                    `artist_uri` TEXT,
+                    `action` TEXT NOT NULL,
+                    `signal` REAL NOT NULL,
+                    `created_at` INTEGER NOT NULL,
+                    FOREIGN KEY(`track_uri`) REFERENCES `tracks`(`uri`) ON UPDATE NO ACTION ON DELETE SET NULL,
+                    FOREIGN KEY(`artist_uri`) REFERENCES `artists`(`uri`) ON UPDATE NO ACTION ON DELETE SET NULL
+                )
+                """.trimIndent()
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_smart_feedback_track_uri` ON `smart_feedback` (`track_uri`)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_smart_feedback_artist_uri` ON `smart_feedback` (`artist_uri`)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_smart_feedback_created_at` ON `smart_feedback` (`created_at`)")
+
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `blocked_artists` (
+                    `artist_uri` TEXT NOT NULL,
+                    `artist_name` TEXT,
+                    `blocked_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`artist_uri`),
+                    FOREIGN KEY(`artist_uri`) REFERENCES `artists`(`uri`) ON UPDATE NO ACTION ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_blocked_artists_artist_uri` ON `blocked_artists` (`artist_uri`)")
+        }
+    }
 
     @Provides
     @Singleton
@@ -74,7 +111,9 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).fallbackToDestructiveMigration().build()
+    ).addMigrations(MIGRATION_2_3)
+        .fallbackToDestructiveMigration()
+        .build()
 
     @Provides
     fun providePlayHistoryDao(db: AppDatabase): PlayHistoryDao = db.playHistoryDao()

@@ -7,8 +7,8 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
-import net.asksakis.massdroidv2.ui.screens.home.DiscoverScreen
 import net.asksakis.massdroidv2.ui.screens.home.HomeScreen
+import net.asksakis.massdroidv2.ui.screens.home.PlayersScreen
 import net.asksakis.massdroidv2.ui.screens.library.AlbumDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.ArtistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.LibraryScreen
@@ -16,6 +16,7 @@ import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
 import net.asksakis.massdroidv2.ui.screens.queue.QueueScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
+import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.SettingsScreen
 
 object Routes {
@@ -26,6 +27,7 @@ object Routes {
     const val NOW_PLAYING = "now_playing"
     const val QUEUE = "queue"
     const val SETTINGS = "settings"
+    const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
     const val ARTIST_DETAIL = "artist/{itemId}/{provider}?name={name}"
     const val ALBUM_DETAIL = "album/{itemId}/{provider}?name={name}"
     const val PLAYLIST_DETAIL = "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}"
@@ -49,7 +51,7 @@ fun MassDroidNavHost(
         modifier = modifier
     ) {
         composable(Routes.HOME) {
-            DiscoverScreen(
+            HomeScreen(
                 onArtistClick = { artist ->
                     navController.navigate(Routes.artistDetail(artist.itemId, artist.provider, artist.name))
                 },
@@ -60,12 +62,13 @@ fun MassDroidNavHost(
                     navController.navigate(
                         Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite)
                     )
-                }
+                },
+                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
             )
         }
 
         composable(Routes.PLAYERS) {
-            HomeScreen(
+            PlayersScreen(
                 onNavigateToNowPlaying = { navController.navigate(Routes.NOW_PLAYING) },
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
             )
@@ -121,7 +124,14 @@ fun MassDroidNavHost(
         }
 
         composable(Routes.SETTINGS) {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenRecommendationInsights = { navController.navigate(Routes.RECOMMENDATION_INSIGHTS) }
+            )
+        }
+
+        composable(Routes.RECOMMENDATION_INSIGHTS) {
+            RecommendationInsightsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

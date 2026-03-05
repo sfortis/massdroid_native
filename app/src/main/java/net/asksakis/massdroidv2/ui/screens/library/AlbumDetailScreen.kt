@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
@@ -47,6 +48,7 @@ fun AlbumDetailScreen(
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val albumName by viewModel.albumName.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -287,7 +289,19 @@ fun AlbumDetailScreen(
                         .combinedClickable(
                             onClick = { viewModel.playTrack(track) },
                             onLongClick = {
-                                actionSheetItem = ActionSheetItem(track.name, track.artistNames, track.uri, track.imageUrl, track.favorite, MediaType.TRACK, track.itemId)
+                                actionSheetItem = ActionSheetItem(
+                                    title = track.name,
+                                    subtitle = track.artistNames,
+                                    uri = track.uri,
+                                    imageUrl = track.imageUrl,
+                                    favorite = track.favorite,
+                                    mediaType = MediaType.TRACK,
+                                    itemId = track.itemId,
+                                    primaryArtistUri = track.artistUri ?: album?.artists?.firstOrNull()?.uri,
+                                    primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
+                                        .orEmpty()
+                                        .ifBlank { album?.artists?.firstOrNull()?.name ?: "Artist" }
+                                )
                             }
                         )
                 )
@@ -305,8 +319,15 @@ fun AlbumDetailScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
+            artistBlocked = target.primaryArtistUri?.let { uri ->
+                val key = MediaIdentity.canonicalArtistKey(uri = uri)
+                key != null && key in blockedArtistUris
+            } ?: false,
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
+            },
+            onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
+                { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
