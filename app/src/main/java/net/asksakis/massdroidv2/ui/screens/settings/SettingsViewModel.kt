@@ -12,6 +12,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.AlbumScore
@@ -30,6 +31,7 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val settingsRepository: SettingsRepository,
     private val wsClient: MaWebSocketClient,
+    private val appUpdateChecker: AppUpdateChecker,
     private val sendspinManager: SendspinManager,
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository
@@ -55,6 +57,8 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val includeBetaUpdates = settingsRepository.includeBetaUpdates
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private val _loginError = MutableStateFlow<String?>(null)
     val loginError: StateFlow<String?> = _loginError.asStateFlow()
@@ -72,6 +76,14 @@ class SettingsViewModel @Inject constructor(
     val topGenres: StateFlow<List<GenreScore>> = _topGenres.asStateFlow()
     private val _blockedArtists = MutableStateFlow<List<BlockedArtistInfo>>(emptyList())
     val blockedArtists: StateFlow<List<BlockedArtistInfo>> = _blockedArtists.asStateFlow()
+    private val _updateInfo = MutableStateFlow<AppUpdateChecker.UpdateInfo?>(null)
+    val updateInfo: StateFlow<AppUpdateChecker.UpdateInfo?> = _updateInfo.asStateFlow()
+    private val _updateBusy = MutableStateFlow(false)
+    val updateBusy: StateFlow<Boolean> = _updateBusy.asStateFlow()
+    private val _updateProgress = MutableStateFlow<Int?>(null)
+    val updateProgress: StateFlow<Int?> = _updateProgress.asStateFlow()
+    private val _updateMessage = MutableStateFlow<String?>(null)
+    val updateMessage: StateFlow<String?> = _updateMessage.asStateFlow()
 
     val savedUsername = settingsRepository.username
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -82,6 +94,8 @@ class SettingsViewModel @Inject constructor(
     init {
         refreshRecommendationData()
     }
+
+    val appVersion: String = appUpdateChecker.getCurrentVersion()
 
     // Token persistence is handled by MassDroidApp's connectionState observer
 
@@ -119,6 +133,62 @@ class SettingsViewModel @Inject constructor(
 
     fun clearLoginError() {
         _loginError.value = null
+    }
+
+    fun clearUpdateMessage() {
+        _updateMessage.value = null
+    }
+
+    fun toggleIncludeBetaUpdates(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setIncludeBetaUpdates(enabled)
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        _updateInfo.value = null
+    }
+
+    fun checkForUpdates(force: Boolean = true) {
+        if (_updateBusy.value) return
+        viewModelScope.launch {
+            _updateBusy.value = true
+            _updateProgress.value = null
+            when (val result = appUpdateChecker.checkForUpdates(force = force, includePrerelease = includeBetaUpdates.value)) {
+                is AppUpdateChecker.CheckResult.UpdateAvailable -> {
+                    _updateInfo.value = result.info
+                }
+                is AppUpdateChecker.CheckResult.UpToDate -> {
+                    _updateMessage.value = "You're on the latest version"
+                }
+                is AppUpdateChecker.CheckResult.Error -> {
+                    _updateMessage.value = result.message
+                }
+            }
+            _updateBusy.value = false
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val info = _updateInfo.value ?: return
+        if (_updateBusy.value) return
+        viewModelScope.launch {
+            _updateBusy.value = true
+            _updateProgress.value = 0
+            val result = appUpdateChecker.downloadUpdate(info) { progress ->
+                _updateProgress.value = progress
+            }
+            result.onSuccess { file ->
+                _updateBusy.value = false
+                _updateProgress.value = null
+                _updateInfo.value = null
+                appContext.startActivity(appUpdateChecker.buildInstallIntent(file))
+            }.onFailure { error ->
+                _updateBusy.value = false
+                _updateProgress.value = null
+                _updateMessage.value = error.message ?: "Failed to download update"
+            }
+        }
     }
 
     fun onCertificateSelected(alias: String?, context: Context) {

@@ -57,8 +57,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -314,86 +317,103 @@ private fun SmartMixActionCard(
     message: String?,
     onClick: () -> Unit
 ) {
-    val glowTransition = rememberInfiniteTransition(label = "smart_mix_glow")
-    val glowAlpha by glowTransition.animateFloat(
-        initialValue = 0.22f,
-        targetValue = 0.46f,
+    val graphiteStart = Color(0xFF3F3B38)
+    val graphiteMid = Color(0xFF4B4743)
+    val graphiteEnd = Color(0xFF312E2C)
+    val sheenTransition = rememberInfiniteTransition(label = "smart_mix_sheen")
+    val shineOffset by sheenTransition.animateFloat(
+        initialValue = -0.45f,
+        targetValue = 1.45f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400),
+            animation = tween(durationMillis = 2600),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "smart_mix_glow_alpha"
+        label = "smart_mix_shine_offset"
     )
-    val secondaryGlowAlpha by glowTransition.animateFloat(
+    val shineAlpha by sheenTransition.animateFloat(
         initialValue = 0.10f,
-        targetValue = 0.28f,
+        targetValue = 0.24f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1900),
+            animation = tween(durationMillis = 2200),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "smart_mix_secondary_glow_alpha"
+        label = "smart_mix_shine_alpha"
     )
-    val glowShape = MaterialTheme.shapes.large
+    val buttonShape = MaterialTheme.shapes.large
     Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(glowShape)
+                .fillMaxWidth(0.86f)
+                .align(Alignment.CenterHorizontally)
+                .padding(vertical = 12.dp)
+                .clip(buttonShape)
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha),
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = secondaryGlowAlpha),
-                            MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha)
+                            Color(0xFF55504C),
+                            Color(0xFF2F2B29)
                         )
                     )
                 )
-                .padding(2.5.dp)
+                .padding(1.dp)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(glowShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha * 0.35f))
-                    .padding(1.5.dp)
-            ) {
-            ElevatedCard(
-                colors = androidx.compose.material3.CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = !isBusy, onClick = onClick),
-                shape = glowShape
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 14.dp)
-                ) {
-                    Text(
-                        text = if (isBusy) "Building Smart Mix..." else "Smart Mix",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.align(Alignment.Center)
+                    .clip(buttonShape)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                graphiteStart,
+                                graphiteMid,
+                                graphiteEnd
+                            )
+                        )
                     )
-                    if (isBusy) {
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
+                    .drawWithContent {
+                        drawContent()
+                        val shineCenter = size.width * shineOffset
+                        drawRect(
+                            brush = Brush.linearGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.White.copy(alpha = shineAlpha),
+                                    Color.Transparent
+                                ),
+                                start = Offset(shineCenter - size.width * 0.22f, 0f),
+                                end = Offset(shineCenter + size.width * 0.02f, size.height)
+                            )
                         )
                     }
+                    .clickable(enabled = !isBusy, onClick = onClick)
+                    .padding(horizontal = 14.dp, vertical = 14.dp)
+            ) {
+                Text(
+                    text = if (isBusy) "Building Smart Mix..." else "Smart Mix",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        shadow = Shadow(
+                            color = Color(0xAA9FC6FF),
+                            offset = Offset(0f, 0f),
+                            blurRadius = 10f
+                        )
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                if (isBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFFD8D8D8)
+                    )
                 }
-            }
             }
         }
         if (message != null) {

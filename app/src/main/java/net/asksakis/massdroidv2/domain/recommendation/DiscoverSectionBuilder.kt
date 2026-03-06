@@ -70,14 +70,7 @@ class DiscoverSectionBuilder @Inject constructor() {
             }
         }
 
-        // 6. Recently Added Tracks
-        libraryFolders["recently_added_tracks"]?.let { folder ->
-            if (folder.items.tracks.size >= MIN_SECTION_ITEMS) {
-                sections.add(DiscoverSection.TrackSection("Recently Added Tracks", folder.items.tracks))
-            }
-        }
-
-        // 7. Random fallbacks (if few sections so far)
+        // 6. Random fallbacks (if few sections so far)
         if (sections.size < MIN_SECTION_ITEMS) {
             libraryFolders["random_albums"]?.let { folder ->
                 if (folder.items.albums.size >= MIN_SECTION_ITEMS) {

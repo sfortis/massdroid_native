@@ -11,6 +11,7 @@ import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -28,6 +29,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var playHistoryRepository: PlayHistoryRepository
+
+    @Inject
+    lateinit var appUpdateChecker: AppUpdateChecker
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var sendspinServiceStarted = false
@@ -65,6 +69,15 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                 playHistoryRepository.cleanup(retentionMonths = 6)
             } catch (e: Exception) {
                 Log.e("MassDroidApp", "Play history cleanup failed: ${e.message}")
+            }
+        }
+
+        appScope.launch {
+            try {
+                val includeBeta = settingsRepository.includeBetaUpdates.first()
+                appUpdateChecker.checkForUpdates(force = false, includePrerelease = includeBeta)
+            } catch (e: Exception) {
+                Log.d("MassDroidApp", "Background update check skipped: ${e.message}")
             }
         }
 

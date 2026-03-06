@@ -13,6 +13,7 @@ interface SettingsRepository {
     val password: Flow<String>
     val sendspinEnabled: Flow<Boolean>
     val smartListeningEnabled: Flow<Boolean>
+    val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
     val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
@@ -27,6 +28,7 @@ interface SettingsRepository {
     suspend fun setPassword(password: String)
     suspend fun setSendspinEnabled(enabled: Boolean)
     suspend fun setSmartListeningEnabled(enabled: Boolean)
+    suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
     suspend fun setLibraryDisplayMode(tab: Int, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)

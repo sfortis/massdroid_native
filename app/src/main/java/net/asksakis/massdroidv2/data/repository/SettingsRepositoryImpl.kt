@@ -33,6 +33,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_PASSWORD = stringPreferencesKey("password")
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
+        private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
@@ -111,6 +112,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSmartListeningEnabled(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SMART_LISTENING_ENABLED] = enabled }
+    }
+
+    override val includeBetaUpdates: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_INCLUDE_BETA_UPDATES] ?: false
+    }
+
+    override suspend fun setIncludeBetaUpdates(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_INCLUDE_BETA_UPDATES] = enabled }
     }
 
     override val sendspinClientId: Flow<String?> = safeData.map { prefs ->

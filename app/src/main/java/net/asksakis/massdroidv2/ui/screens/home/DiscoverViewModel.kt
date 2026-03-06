@@ -47,10 +47,8 @@ private const val TAG = "DiscoverVM"
 private const val MIN_SECTION_ITEMS = 3
 private const val RECENT_FAVORITE_TRACKS_FOLDER_ID = "recent_favorite_tracks"
 private const val RECENT_FAVORITE_ALBUMS_FOLDER_ID = "recent_favorite_albums"
-private const val RECENTLY_ADDED_TRACKS_FOLDER_ID = "recently_added_tracks"
 private const val RECENT_FAVORITE_ALBUMS_TITLE = "Recent Favorite Albums"
 private const val RECENT_FAVORITE_TRACKS_TITLE = "Recent Favorite Tracks"
-private const val RECENTLY_ADDED_TRACKS_TITLE = "Recently Added Tracks"
 private const val RECENT_TRACKS_QUERY_FACTOR = 5
 private const val BLL_ARTIST_SCORE_LIMIT = 500
 private const val MAX_GENRE_RADIO_ARTIST_URIS = 30
@@ -250,19 +248,14 @@ class DiscoverViewModel @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun refreshFavoriteAlbumsAndRecentlyAddedTracksSections() {
         val freshAlbums = loadRecentFavoriteAlbums()
-        val freshTracks = loadRecentlyAddedTracks()
 
-        val withAlbums = upsertAlbumSection(
-            current = _sections.value,
-            title = RECENT_FAVORITE_ALBUMS_TITLE,
-            albums = freshAlbums
+        _sections.value = reorderHomeSections(
+            upsertAlbumSection(
+                current = _sections.value,
+                title = RECENT_FAVORITE_ALBUMS_TITLE,
+                albums = freshAlbums
+            )
         )
-        val withTracks = upsertTrackSection(
-            current = withAlbums,
-            title = RECENTLY_ADDED_TRACKS_TITLE,
-            tracks = freshTracks
-        )
-        _sections.value = reorderHomeSections(withTracks)
     }
 
     private fun upsertTrackSection(
@@ -347,7 +340,6 @@ class DiscoverViewModel @Inject constructor(
             is DiscoverSection.TrackSection ->
                 when (section.title) {
                     RECENT_FAVORITE_TRACKS_TITLE -> 4
-                    RECENTLY_ADDED_TRACKS_TITLE -> 5
                     else -> 100
                 }
             is DiscoverSection.PlaylistSection -> 100
@@ -828,22 +820,6 @@ class DiscoverViewModel @Inject constructor(
 
         return favoritesByAdded
             .filter { it.favorite }
-            .distinctBy { trackKey(it) ?: it.uri }
-            .take(limit)
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun loadRecentlyAddedTracks(limit: Int = 10): List<Track> {
-        val recentTracks = try {
-            musicRepository.getTracks(
-                orderBy = "timestamp_added_desc",
-                limit = limit * 2
-            )
-        } catch (_: Exception) {
-            emptyList()
-        }
-
-        return recentTracks
             .distinctBy { trackKey(it) ?: it.uri }
             .take(limit)
     }
