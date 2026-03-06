@@ -343,7 +343,12 @@ class MaWebSocketClient(
 
                 Log.d(TAG, "Authenticated")
                 lastAuthenticatedAtMs = System.currentTimeMillis()
-                _connectionState.value = ConnectionState.Connected(serverInfo!!)
+                val info = serverInfo
+                if (info == null) {
+                    _connectionState.value = ConnectionState.Error("Missing server handshake")
+                    return@launch
+                }
+                _connectionState.value = ConnectionState.Connected(info)
             } catch (e: Exception) {
                 Log.e(TAG, "Auth failed: ${e.message}")
                 authToken = null

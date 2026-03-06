@@ -61,6 +61,7 @@ class SendspinService : Service() {
         private const val RECONNECT_STORM_WINDOW_MS = 45_000L
         private const val RECONNECT_STORM_THRESHOLD = 3
         private const val RECONNECT_COOLDOWN_MS = 30_000L
+        private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
         const val ACTION_START = "net.asksakis.massdroidv2.SENDSPIN_START"
         const val ACTION_STOP = "net.asksakis.massdroidv2.SENDSPIN_STOP"
         private const val ACTION_PLAY_PAUSE = "net.asksakis.massdroidv2.SENDSPIN_PLAY_PAUSE"
@@ -286,7 +287,12 @@ class SendspinService : Service() {
             )
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
-                    val keyEvent = mediaButtonEvent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                    val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        mediaButtonEvent?.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        mediaButtonEvent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                    }
                     val keyCode = keyEvent?.keyCode
                     val action = when (keyEvent?.action) {
                         KeyEvent.ACTION_DOWN -> "DOWN"
@@ -887,11 +893,10 @@ class SendspinService : Service() {
         manager?.notify(NOTIFICATION_ID, buildNotification())
     }
 
-    @Suppress("WakelockTimeout")
     private fun acquireLocks() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MassDroid::Sendspin")
-        wakeLock?.acquire()
+        wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
 
         @Suppress("DEPRECATION")
         val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager

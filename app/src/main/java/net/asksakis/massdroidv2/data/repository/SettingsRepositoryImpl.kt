@@ -2,11 +2,13 @@ package net.asksakis.massdroidv2.data.repository
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
@@ -38,15 +40,18 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_LIBRARY_FAV_ONLY = stringPreferencesKey("library_fav_only")
     }
 
-    override val serverUrl: Flow<String> = context.dataStore.data.map { prefs ->
+    private val safeData = context.dataStore.data
+        .catch { emit(emptyPreferences()) }
+
+    override val serverUrl: Flow<String> = safeData.map { prefs ->
         prefs[KEY_SERVER_URL] ?: ""
     }
 
-    override val authToken: Flow<String> = context.dataStore.data.map { prefs ->
+    override val authToken: Flow<String> = safeData.map { prefs ->
         prefs[KEY_AUTH_TOKEN] ?: ""
     }
 
-    override val selectedPlayerId: Flow<String?> = context.dataStore.data.map { prefs ->
+    override val selectedPlayerId: Flow<String?> = safeData.map { prefs ->
         prefs[KEY_SELECTED_PLAYER]
     }
 
@@ -65,7 +70,7 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val clientCertAlias: Flow<String?> = context.dataStore.data.map { prefs ->
+    override val clientCertAlias: Flow<String?> = safeData.map { prefs ->
         prefs[KEY_CLIENT_CERT_ALIAS]
     }
 
@@ -76,7 +81,7 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val username: Flow<String> = context.dataStore.data.map { prefs ->
+    override val username: Flow<String> = safeData.map { prefs ->
         prefs[KEY_USERNAME] ?: ""
     }
 
@@ -84,7 +89,7 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_USERNAME] = username }
     }
 
-    override val password: Flow<String> = context.dataStore.data.map { prefs ->
+    override val password: Flow<String> = safeData.map { prefs ->
         prefs[KEY_PASSWORD] ?: ""
     }
 
@@ -92,7 +97,7 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_PASSWORD] = password }
     }
 
-    override val sendspinEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+    override val sendspinEnabled: Flow<Boolean> = safeData.map { prefs ->
         prefs[KEY_SENDSPIN_ENABLED] ?: true
     }
 
@@ -100,7 +105,7 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_ENABLED] = enabled }
     }
 
-    override val smartListeningEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+    override val smartListeningEnabled: Flow<Boolean> = safeData.map { prefs ->
         prefs[KEY_SMART_LISTENING_ENABLED] ?: false
     }
 
@@ -108,7 +113,7 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SMART_LISTENING_ENABLED] = enabled }
     }
 
-    override val sendspinClientId: Flow<String?> = context.dataStore.data.map { prefs ->
+    override val sendspinClientId: Flow<String?> = safeData.map { prefs ->
         prefs[KEY_SENDSPIN_CLIENT_ID]
     }
 
@@ -116,12 +121,11 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
     }
 
-    override val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>> = context.dataStore.data.map { prefs ->
-        val raw = prefs[KEY_LIBRARY_DISPLAY_MODES] ?: return@map emptyMap()
-        raw.split(",").associate { entry ->
-            val (tab, mode) = entry.split(":")
-            tab.toInt() to LibraryDisplayMode.valueOf(mode)
-        }
+    override val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>> = safeData.map { prefs ->
+        parseStringMap(prefs[KEY_LIBRARY_DISPLAY_MODES]).mapNotNull { (tab, mode) ->
+            val parsed = runCatching { LibraryDisplayMode.valueOf(mode) }.getOrNull() ?: return@mapNotNull null
+            tab to parsed
+        }.toMap()
     }
 
     override suspend fun setLibraryDisplayMode(tab: Int, mode: LibraryDisplayMode) {
@@ -132,7 +136,7 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val librarySortOptions: Flow<Map<Int, SortOption>> = context.dataStore.data.map { prefs ->
+    override val librarySortOptions: Flow<Map<Int, SortOption>> = safeData.map { prefs ->
         parseStringMap(prefs[KEY_LIBRARY_SORT_OPTIONS]).mapValues { (_, v) ->
             SortOption.entries.find { it.name == v } ?: SortOption.NAME
         }
@@ -146,7 +150,7 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val librarySortDescending: Flow<Map<Int, Boolean>> = context.dataStore.data.map { prefs ->
+    override val librarySortDescending: Flow<Map<Int, Boolean>> = safeData.map { prefs ->
         parseStringMap(prefs[KEY_LIBRARY_SORT_DESC]).mapValues { (_, v) -> v == "true" }
     }
 
@@ -158,7 +162,7 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = context.dataStore.data.map { prefs ->
+    override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->
         parseStringMap(prefs[KEY_LIBRARY_FAV_ONLY]).mapValues { (_, v) -> v == "true" }
     }
 
@@ -172,10 +176,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     private fun parseStringMap(raw: String?): Map<Int, String> {
         if (raw.isNullOrBlank()) return emptyMap()
-        return raw.split(",").filter { it.contains(":") }.associate { entry ->
-            val (k, v) = entry.split(":", limit = 2)
-            k.toInt() to v
-        }
+        return raw.split(",")
+            .mapNotNull { entry ->
+                val parts = entry.split(":", limit = 2)
+                if (parts.size != 2) return@mapNotNull null
+                val key = parts[0].toIntOrNull() ?: return@mapNotNull null
+                key to parts[1]
+            }
+            .toMap()
     }
 
     private fun encodeStringMap(map: Map<Int, String>): String =

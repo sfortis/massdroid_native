@@ -45,7 +45,7 @@ class AudioStreamManager {
                 AudioFormat.ENCODING_PCM_16BIT
             ) * 4
 
-            audioTrack = AudioTrack.Builder()
+            val createdAudioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -94,16 +94,23 @@ class AudioStreamManager {
             csd2.rewind()
             format.setByteBuffer("csd-2", csd2)
 
-            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
-            codec!!.configure(format, null, null, 0)
-            codec!!.start()
+            val createdCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS).apply {
+                configure(format, null, null, 0)
+                start()
+            }
 
-            audioTrack!!.play()
+            createdAudioTrack.play()
+            codec = createdCodec
+            audioTrack = createdAudioTrack
             configured = true
             playbackActive = true
             frameCount = 0
             decodedFrameCount = 0
             Log.d(TAG, "Audio pipeline configured: ${sampleRate}Hz ${channels}ch, buffer=$bufferSize, preSkip=${preSkipNs}ns")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to configure audio pipeline", e)
+            release_internal()
+            throw e
         } finally {
             codecLock.unlock()
         }

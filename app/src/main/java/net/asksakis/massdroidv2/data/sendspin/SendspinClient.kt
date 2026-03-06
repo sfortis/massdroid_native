@@ -59,6 +59,7 @@ class SendspinClient(
     private var shouldReconnect = false
     private var reconnectAttempt = 0
     private var connectionGeneration = 0
+    private var droppedBinaryFrames = 0
 
     // Saved for reconnect
     private var savedUrl: String? = null
@@ -117,7 +118,15 @@ class SendspinClient(
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 if (gen != connectionGeneration) return
-                _binaryMessages.tryEmit(bytes.toByteArray())
+                if (!_binaryMessages.tryEmit(bytes.toByteArray())) {
+                    droppedBinaryFrames++
+                    if (droppedBinaryFrames <= 5 || droppedBinaryFrames % 100 == 0) {
+                        Log.w(TAG, "Dropping binary audio frame(s): dropped=$droppedBinaryFrames")
+                    }
+                } else if (droppedBinaryFrames != 0) {
+                    Log.d(TAG, "Recovered after dropping $droppedBinaryFrames binary frame(s)")
+                    droppedBinaryFrames = 0
+                }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

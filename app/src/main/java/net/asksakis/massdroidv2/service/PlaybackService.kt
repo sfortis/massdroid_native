@@ -197,7 +197,7 @@ class PlaybackService : MediaLibraryService() {
                 val items = musicRepository.getQueueItems(queueId)
                 val entries = items.map { qi ->
                     QueueEntry(
-                        id = qi.queueItemId.hashCode().toLong(),
+                        id = qi.queueItemId.toStableLongId(),
                         title = qi.track?.name ?: qi.name,
                         artist = qi.track?.artistNames ?: "",
                         album = qi.track?.albumName ?: "",
@@ -256,11 +256,9 @@ class PlaybackService : MediaLibraryService() {
     private fun downloadArtwork(url: String) {
         try {
             val request = Request.Builder().url(url).build()
-            val response = wsClient.getImageClient().newCall(request).execute()
-            val code = response.code
-            val contentType = response.header("Content-Type")
-            val rawBytes = response.body?.bytes()
-            response.close()
+            val (code, contentType, rawBytes) = wsClient.getImageClient().newCall(request).execute().use { response ->
+                Triple(response.code, response.header("Content-Type"), response.body?.bytes())
+            }
             Log.d(TAG, "Artwork HTTP $code, type=$contentType, bytes=${rawBytes?.size ?: 0} for $url")
             if (url != cachedArtworkUrl) {
                 Log.d(TAG, "Ignoring stale artwork response for $url (current=$cachedArtworkUrl)")
@@ -448,7 +446,7 @@ class PlaybackService : MediaLibraryService() {
                         ?: item.mediaId.takeIf { it.contains("/") }
                     if (uri != null) {
                         try {
-                            musicRepository.playMedia(queueId, uri, option = "play")
+                            musicRepository.playMedia(queueId, uri, option = "replace")
                         } catch (e: Exception) {
                             Log.e(TAG, "playMedia failed for $uri", e)
                         }
@@ -647,6 +645,14 @@ data class QueueEntry(
     val album: String,
     val durationMs: Long
 )
+
+private fun String.toStableLongId(): Long {
+    var hash = 1125899906842597L
+    for (char in this) {
+        hash = 31L * hash + char.code.toLong()
+    }
+    return hash
+}
 
 @OptIn(UnstableApi::class)
 class RemoteControlPlayer(

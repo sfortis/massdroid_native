@@ -112,7 +112,6 @@ object AppModule {
         AppDatabase::class.java,
         "massdroid.db"
     ).addMigrations(MIGRATION_2_3)
-        .fallbackToDestructiveMigration()
         .build()
 
     @Provides
