@@ -51,6 +51,7 @@ fun PlayersScreen(
     val selectedPlayer by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
+    val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
     var volumeSliderValue by remember { mutableFloatStateOf(selectedPlayer?.volumeLevel?.toFloat() ?: 0f) }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val topTitle = selectedPlayer?.displayName ?: "All Players"
@@ -86,7 +87,7 @@ fun PlayersScreen(
                     Text(topTitle, style = MaterialTheme.typography.titleMedium)
                 }
             }
-            if (isInitializing || connectionState is ConnectionState.Connecting) {
+            if (isInitializing || connectionState is ConnectionState.Connecting || suppressConnectionPrompt) {
                 ConnectingIndicator()
             } else when (connectionState) {
                 is ConnectionState.Disconnected, is ConnectionState.Error -> {
@@ -206,6 +207,7 @@ fun PlayersScreen(
 
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
+                    var settingsPlayer by remember { mutableStateOf<Player?>(null) }
 
                     LazyColumn(
                         modifier = Modifier.weight(1f)
@@ -237,6 +239,10 @@ fun PlayersScreen(
                         PlayerQueueSheet(
                             player = player,
                             allPlayers = players.filter { it.available },
+                            onPlayerSettings = {
+                                settingsPlayer = player
+                                queueMenuPlayer = null
+                            },
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
                                 queueMenuPlayer = null
@@ -246,6 +252,14 @@ fun PlayersScreen(
                                 queueMenuPlayer = null
                             },
                             onDismiss = { queueMenuPlayer = null }
+                        )
+                    }
+
+                    settingsPlayer?.let { player ->
+                        PlayerSettingsDialog(
+                            player = player,
+                            viewModel = viewModel,
+                            onDismiss = { settingsPlayer = null }
                         )
                     }
 
@@ -320,6 +334,7 @@ private fun PlayerListItem(
 private fun PlayerQueueSheet(
     player: Player,
     allPlayers: List<Player>,
+    onPlayerSettings: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
     onDismiss: () -> Unit
@@ -347,6 +362,14 @@ private fun PlayerQueueSheet(
                 HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             }
             if (!showTransferList) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Player Settings") },
+                    leadingContent = {
+                        Icon(Icons.Default.Tune, contentDescription = null)
+                    },
+                    modifier = Modifier.clickable(onClick = onPlayerSettings)
+                )
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
                     headlineContent = { Text("Clear Queue") },

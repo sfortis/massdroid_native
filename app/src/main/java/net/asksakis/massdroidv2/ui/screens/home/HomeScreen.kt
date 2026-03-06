@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -188,11 +189,16 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = 8.dp)
                     ) {
                         item(key = "smart_mix_action") {
-                            SmartMixActionCard(
-                                isBusy = isBuildingSmartMix,
-                                message = smartMixMessage,
-                                onClick = { viewModel.makePlaylistForMe() }
-                            )
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                SmartMixActionCard(
+                                    isBusy = isBuildingSmartMix,
+                                    message = smartMixMessage,
+                                    onClick = { viewModel.makePlaylistForMe() }
+                                )
+                            }
                         }
                         itemsIndexed(
                             items = sections,
@@ -340,88 +346,79 @@ private fun SmartMixActionCard(
         label = "smart_mix_shine_alpha"
     )
     val buttonShape = MaterialTheme.shapes.large
-    Column(
+    val buttonText = when {
+        isBusy -> "Building Smart Mix..."
+        !message.isNullOrBlank() -> message
+        else -> "Smart Mix"
+    }
+    Box(
         modifier = Modifier
-            .fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .fillMaxWidth(0.86f)
+            .padding(vertical = 12.dp)
+            .clip(buttonShape)
+            .background(
+                Brush.horizontalGradient(
+                    colors = listOf(
+                        Color(0xFF55504C),
+                        Color(0xFF2F2B29)
+                    )
+                )
+            )
+            .padding(1.dp)
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.86f)
-                .align(Alignment.CenterHorizontally)
-                .padding(vertical = 12.dp)
+                .fillMaxWidth()
                 .clip(buttonShape)
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            Color(0xFF55504C),
-                            Color(0xFF2F2B29)
+                            graphiteStart,
+                            graphiteMid,
+                            graphiteEnd
                         )
                     )
                 )
-                .padding(1.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(buttonShape)
-                    .background(
-                        Brush.horizontalGradient(
+                .drawWithContent {
+                    drawContent()
+                    val shineCenter = size.width * shineOffset
+                    drawRect(
+                        brush = Brush.linearGradient(
                             colors = listOf(
-                                graphiteStart,
-                                graphiteMid,
-                                graphiteEnd
-                            )
+                                Color.Transparent,
+                                Color.White.copy(alpha = shineAlpha),
+                                Color.Transparent
+                            ),
+                            start = Offset(shineCenter - size.width * 0.22f, 0f),
+                            end = Offset(shineCenter + size.width * 0.02f, size.height)
                         )
-                    )
-                    .drawWithContent {
-                        drawContent()
-                        val shineCenter = size.width * shineOffset
-                        drawRect(
-                            brush = Brush.linearGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color.White.copy(alpha = shineAlpha),
-                                    Color.Transparent
-                                ),
-                                start = Offset(shineCenter - size.width * 0.22f, 0f),
-                                end = Offset(shineCenter + size.width * 0.02f, size.height)
-                            )
-                        )
-                    }
-                    .clickable(enabled = !isBusy, onClick = onClick)
-                    .padding(horizontal = 14.dp, vertical = 14.dp)
-            ) {
-                Text(
-                    text = if (isBusy) "Building Smart Mix..." else "Smart Mix",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        shadow = Shadow(
-                            color = Color(0xAA9FC6FF),
-                            offset = Offset(0f, 0f),
-                            blurRadius = 10f
-                        )
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-                if (isBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFFD8D8D8)
                     )
                 }
-            }
-        }
-        if (message != null) {
+                .clickable(enabled = !isBusy, onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+        ) {
             Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = buttonText,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    shadow = Shadow(
+                        color = Color(0xAA9FC6FF),
+                        offset = Offset(0f, 0f),
+                        blurRadius = 10f
+                    )
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center)
             )
+            if (isBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Color(0xFFD8D8D8)
+                )
+            }
         }
     }
 }

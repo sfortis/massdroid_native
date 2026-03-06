@@ -74,8 +74,23 @@ data class ServerQueueItem(
     @SerialName("queue_item_id") val queueItemId: String,
     val name: String = "",
     val duration: Double = 0.0,
+    val streamdetails: StreamDetails? = null,
     @SerialName("media_item") val mediaItem: ServerMediaItem? = null,
     val image: MediaItemImage? = null
+)
+
+@Serializable
+data class StreamDetails(
+    @SerialName("audio_format") val audioFormat: AudioFormat? = null
+)
+
+@Serializable
+data class AudioFormat(
+    @SerialName("content_type") val contentType: String? = null,
+    @SerialName("sample_rate") val sampleRate: Int? = null,
+    @SerialName("bit_depth") val bitDepth: Int? = null,
+    @SerialName("bit_rate") val bitRate: Int? = null,
+    val channels: Int? = null
 )
 
 @Serializable

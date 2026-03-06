@@ -579,6 +579,23 @@ class SendspinService : Service() {
             } else {
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")
             }
+
+            launch {
+                val readyState = kotlinx.coroutines.withTimeoutOrNull(10_000) {
+                    sendspinManager.connectionState
+                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+                }
+                if (readyState == null) {
+                    Log.w(TAG, "Startup: sendspin did not reach ready state, skipping snapshot restore")
+                    return@launch
+                }
+                kotlinx.coroutines.withTimeoutOrNull(5_000) {
+                    playerRepository.players
+                        .map { list -> list.any { it.playerId == clientId } }
+                        .first { it }
+                }
+                restoreStartupSendspinSnapshotIfNeeded(clientId)
+            }
         }
 
         // Resume playback when MA reconnects after a drop (only if was playing before)
@@ -737,9 +754,50 @@ class SendspinService : Service() {
                 .mapNotNull { it.track?.uri?.takeIf { uri -> uri.isNotBlank() } }
             if (uris.isNotEmpty()) {
                 lastKnownSendspinQueueTrackUris = uris
+                settingsRepository.setSendspinSnapshot(
+                    trackUri = currentTrackUri,
+                    positionSeconds = currentPositionMs / 1000.0,
+                    queueUris = uris
+                )
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to snapshot sendspin queue: ${e.message}")
+        }
+    }
+
+    private suspend fun restoreStartupSendspinSnapshotIfNeeded(queueId: String) {
+        val selectedPlayerId = settingsRepository.selectedPlayerId.first()
+        if (selectedPlayerId != queueId) return
+
+        val snapshotTrackUri = settingsRepository.sendspinSnapshotTrackUri.first()
+        val snapshotQueueUris = settingsRepository.sendspinSnapshotQueueUris.first()
+        val snapshotPositionSeconds = settingsRepository.sendspinSnapshotPositionSeconds.first()
+        if (snapshotTrackUri.isNullOrBlank() || snapshotQueueUris.isEmpty()) return
+
+        val currentQueueUris = try {
+            musicRepository.getQueueItems(queueId, limit = 500, offset = 0)
+                .mapNotNull { it.track?.uri?.takeIf { uri -> uri.isNotBlank() } }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to inspect sendspin queue before startup restore: ${e.message}")
+            emptyList()
+        }
+
+        if (currentQueueUris == snapshotQueueUris) {
+            lastKnownSendspinQueueTrackUris = currentQueueUris
+            return
+        }
+
+        Log.d(TAG, "Restoring persisted sendspin startup snapshot (${snapshotQueueUris.size} tracks)")
+        musicRepository.playMedia(queueId, snapshotQueueUris, option = "replace")
+        val restoredIdx = waitForQueueTrackIndex(queueId, snapshotTrackUri)
+        if (restoredIdx >= 0) {
+            musicRepository.playQueueIndex(queueId, restoredIdx)
+            if (snapshotPositionSeconds > 1.0) {
+                playerRepository.seek(queueId, snapshotPositionSeconds)
+            }
+            lastKnownSendspinQueueTrackUris = snapshotQueueUris
+        } else {
+            Log.w(TAG, "Persisted sendspin snapshot restored but track still missing")
         }
     }
 

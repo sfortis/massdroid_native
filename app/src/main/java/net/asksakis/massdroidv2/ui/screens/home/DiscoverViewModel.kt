@@ -5,13 +5,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -32,7 +34,6 @@ import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSectionBuilder
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.RecommendationEngine
-import net.asksakis.massdroidv2.domain.recommendation.ScoredAlbum
 import net.asksakis.massdroidv2.domain.recommendation.SmartMixEngine
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -45,8 +46,6 @@ import kotlin.math.abs
 
 private const val TAG = "DiscoverVM"
 private const val MIN_SECTION_ITEMS = 3
-private const val RECENT_FAVORITE_TRACKS_FOLDER_ID = "recent_favorite_tracks"
-private const val RECENT_FAVORITE_ALBUMS_FOLDER_ID = "recent_favorite_albums"
 private const val RECENT_FAVORITE_ALBUMS_TITLE = "Recent Favorite Albums"
 private const val RECENT_FAVORITE_TRACKS_TITLE = "Recent Favorite Tracks"
 private const val RECENT_TRACKS_QUERY_FACTOR = 5
@@ -81,6 +80,16 @@ data class GenreItem(
     val imageUrl: String?
 )
 
+data class DiscoverUiState(
+    val sections: List<DiscoverSection> = emptyList(),
+    val isLoading: Boolean = true,
+    val isRefreshing: Boolean = false,
+    val radioOverlayGenre: String? = null,
+    val isBuildingSmartMix: Boolean = false,
+    val smartMixMessage: String? = null,
+    val connectionProbe: ConnectionProbeState = ConnectionProbeState()
+)
+
 @HiltViewModel
 class DiscoverViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
@@ -95,24 +104,32 @@ class DiscoverViewModel @Inject constructor(
     private val sectionBuilder: DiscoverSectionBuilder
 ) : ViewModel() {
 
-    private val _sections = MutableStateFlow<List<DiscoverSection>>(emptyList())
-    val sections: StateFlow<List<DiscoverSection>> = _sections.asStateFlow()
-
-    private val _isLoading = MutableStateFlow(true)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-
-    private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
-
-    private val _radioOverlayGenre = MutableStateFlow<String?>(null)
-    val radioOverlayGenre: StateFlow<String?> = _radioOverlayGenre.asStateFlow()
-    private val _isBuildingSmartMix = MutableStateFlow(false)
-    val isBuildingSmartMix: StateFlow<Boolean> = _isBuildingSmartMix.asStateFlow()
-    private val _smartMixMessage = MutableStateFlow<String?>(null)
-    val smartMixMessage: StateFlow<String?> = _smartMixMessage.asStateFlow()
+    private val sectionCoordinator = DiscoverSectionCoordinator(
+        recentFavoriteAlbumsTitle = RECENT_FAVORITE_ALBUMS_TITLE,
+        recentFavoriteTracksTitle = RECENT_FAVORITE_TRACKS_TITLE
+    )
+    private val contentLoader = DiscoverContentLoader(musicRepository, playHistoryRepository)
+    private val recommendationOrchestrator = DiscoverRecommendationOrchestrator(
+        musicRepository = musicRepository,
+        playHistoryRepository = playHistoryRepository,
+        recommendationEngine = recommendationEngine
+    )
+    private val _uiState = MutableStateFlow(DiscoverUiState())
+    val sections: StateFlow<List<DiscoverSection>> = _uiState.map { it.sections }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val isLoading: StateFlow<Boolean> = _uiState.map { it.isLoading }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val isRefreshing: StateFlow<Boolean> = _uiState.map { it.isRefreshing }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val radioOverlayGenre: StateFlow<String?> = _uiState.map { it.radioOverlayGenre }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val isBuildingSmartMix: StateFlow<Boolean> = _uiState.map { it.isBuildingSmartMix }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val smartMixMessage: StateFlow<String?> = _uiState.map { it.smartMixMessage }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
-    private val _connectionProbe = MutableStateFlow(ConnectionProbeState())
-    val connectionProbe: StateFlow<ConnectionProbeState> = _connectionProbe.asStateFlow()
+    val connectionProbe: StateFlow<ConnectionProbeState> = _uiState.map { it.connectionProbe }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ConnectionProbeState())
 
     private var genreArtists = mapOf<String, List<String>>()
     private var cacheStale = true
@@ -163,20 +180,38 @@ class DiscoverViewModel @Inject constructor(
         } catch (_: Exception) {
             emptyMap()
         }
-        val genreItems = buildGenreItemsFromArtists(cached.topArtists, historyGenreArtists)
+        genreArtists = buildMap {
+            val allGenres = cached.topArtists.flatMap { it.genres }.toSet() + historyGenreArtists.keys
+            val cachedArtistMap = cached.topArtists.mapNotNull { artist ->
+                artistKey(artist)?.let { it to artist }
+            }.toMap()
+            for (genre in allGenres) {
+                val merged = buildList {
+                    addAll(cached.topArtists.filter { genre in it.genres }.map { it.uri })
+                    addAll(
+                        historyGenreArtists[genre]
+                            .orEmpty()
+                            .mapNotNull { key -> cachedArtistMap[key]?.uri }
+                    )
+                }.distinctBy { artistKeyFromUri(it) ?: it }
+                put(genre, merged)
+            }
+        }
         val bllScores = try {
             playHistoryRepository.getScoredGenres(days = 90, limit = 20)
         } catch (_: Exception) {
             emptyList()
         }
-        _sections.value = sectionBuilder.buildSections(
+        _uiState.value = _uiState.value.copy(
+            sections = sectionBuilder.buildSections(
             serverFolders = cached.serverFolders,
             suggestedArtists = cached.suggestedArtists,
             suggestedAlbums = cached.discoverAlbums,
-            genreItems = genreItems,
+            genreItems = buildGenreItemsFallback(cached.topArtists, historyGenreArtists),
             bllGenreScores = bllScores
+            ),
+            isLoading = false
         )
-        _isLoading.value = false
         cacheStale = discoverCache.isStale(cached)
     }
 
@@ -236,10 +271,9 @@ class DiscoverViewModel @Inject constructor(
     private suspend fun refreshRecentFavoriteTracksSection() {
         val freshTracks = loadRecentFavoriteTracks()
 
-        _sections.value = reorderHomeSections(
-            upsertTrackSection(
-                current = _sections.value,
-                title = RECENT_FAVORITE_TRACKS_TITLE,
+        _uiState.value = _uiState.value.copy(
+            sections = sectionCoordinator.updateRecentFavoriteTracks(
+                current = _uiState.value.sections,
                 tracks = freshTracks
             )
         )
@@ -247,107 +281,18 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun refreshFavoriteAlbumsAndRecentlyAddedTracksSections() {
-        val freshAlbums = loadRecentFavoriteAlbums()
+        val freshAlbums = contentLoader.loadRecentFavoriteAlbums()
 
-        _sections.value = reorderHomeSections(
-            upsertAlbumSection(
-                current = _sections.value,
-                title = RECENT_FAVORITE_ALBUMS_TITLE,
+        _uiState.value = _uiState.value.copy(
+            sections = sectionCoordinator.updateRecentFavoriteAlbums(
+                current = _uiState.value.sections,
                 albums = freshAlbums
             )
         )
     }
 
-    private fun upsertTrackSection(
-        current: List<DiscoverSection>,
-        title: String,
-        tracks: List<Track>
-    ): List<DiscoverSection> {
-        val currentIndex = current.indexOfFirst {
-            it is DiscoverSection.TrackSection && it.title == title
-        }
-        val hasEnoughItems = tracks.size >= MIN_SECTION_ITEMS
-
-        return when {
-            currentIndex >= 0 && hasEnoughItems -> {
-                current.toMutableList().apply {
-                    this[currentIndex] = DiscoverSection.TrackSection(title = title, tracks = tracks)
-                }
-            }
-            currentIndex >= 0 && !hasEnoughItems -> {
-                current.toMutableList().apply { removeAt(currentIndex) }
-            }
-            currentIndex < 0 && hasEnoughItems -> {
-                current.toMutableList().apply {
-                    add(DiscoverSection.TrackSection(title = title, tracks = tracks))
-                }
-            }
-            else -> current
-        }
-    }
-
-    private fun upsertAlbumSection(
-        current: List<DiscoverSection>,
-        title: String,
-        albums: List<Album>
-    ): List<DiscoverSection> {
-        val currentIndex = current.indexOfFirst {
-            it is DiscoverSection.AlbumSection && it.title == title
-        }
-        val hasEnoughItems = albums.size >= MIN_SECTION_ITEMS
-
-        return when {
-            currentIndex >= 0 && hasEnoughItems -> {
-                current.toMutableList().apply {
-                    this[currentIndex] = DiscoverSection.AlbumSection(title = title, albums = albums)
-                }
-            }
-            currentIndex >= 0 && !hasEnoughItems -> {
-                current.toMutableList().apply { removeAt(currentIndex) }
-            }
-            currentIndex < 0 && hasEnoughItems -> {
-                current.toMutableList().apply {
-                    add(DiscoverSection.AlbumSection(title = title, albums = albums))
-                }
-            }
-            else -> current
-        }
-    }
-
-    private fun reorderHomeSections(sections: List<DiscoverSection>): List<DiscoverSection> {
-        return sections
-            .withIndex()
-            .sortedWith(
-                compareBy<IndexedValue<DiscoverSection>>(
-                    { sectionPriority(it.value) },
-                    { it.index }
-                )
-            )
-            .map { it.value }
-    }
-
-    private fun sectionPriority(section: DiscoverSection): Int {
-        return when (section) {
-            is DiscoverSection.GenreRadioSection -> 0
-            is DiscoverSection.AlbumSection ->
-                when (section.title) {
-                    "Albums You Might Like" -> 1
-                    RECENT_FAVORITE_ALBUMS_TITLE -> 3
-                    else -> 100
-                }
-            is DiscoverSection.ArtistSection ->
-                if (section.title == "Artists You Might Like") 2 else 100
-            is DiscoverSection.TrackSection ->
-                when (section.title) {
-                    RECENT_FAVORITE_TRACKS_TITLE -> 4
-                    else -> 100
-                }
-            is DiscoverSection.PlaylistSection -> 100
-        }
-    }
-
     fun refresh() {
-        if (_isRefreshing.value) return
+        if (_uiState.value.isRefreshing) return
         val connState = wsClient.connectionState.value
         Log.d(TAG, "refresh() called, connection=$connState")
         viewModelScope.launch {
@@ -361,36 +306,42 @@ class DiscoverViewModel @Inject constructor(
     }
 
     fun makePlaylistForMe() {
-        if (_isBuildingSmartMix.value) return
+        if (_uiState.value.isBuildingSmartMix) return
         val queueId = playerRepository.selectedPlayer.value?.playerId
         if (queueId.isNullOrBlank()) {
-            _smartMixMessage.value = "Select a player first"
+            _uiState.value = _uiState.value.copy(smartMixMessage = "Select a player first")
             return
         }
         viewModelScope.launch {
-            _isBuildingSmartMix.value = true
+            _uiState.value = _uiState.value.copy(isBuildingSmartMix = true)
             try {
                 refreshSmartFiltersForMix()
                 ensureBllArtistScoresLoaded()
                 ensureArtistDecadesLoaded()
                 val trackUris = buildSmartMixTrackUris()
                 if (trackUris.size < 8) {
-                    _smartMixMessage.value = "Not enough listening data for a solid mix yet"
+                    _uiState.value = _uiState.value.copy(
+                        smartMixMessage = "Not enough listening data for a solid mix yet"
+                    )
                     return@launch
                 }
                 musicRepository.playMedia(queueId, trackUris, option = "replace")
-                _smartMixMessage.value = "Smart mix ready (${trackUris.size} tracks)"
+                _uiState.value = _uiState.value.copy(
+                    smartMixMessage = "Smart mix ready (${trackUris.size} tracks)"
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "makePlaylistForMe failed", e)
-                _smartMixMessage.value = "Failed to generate smart mix"
+                _uiState.value = _uiState.value.copy(
+                    smartMixMessage = "Failed to generate smart mix"
+                )
             } finally {
-                _isBuildingSmartMix.value = false
+                _uiState.value = _uiState.value.copy(isBuildingSmartMix = false)
             }
         }
     }
 
     fun clearSmartMixMessage() {
-        _smartMixMessage.value = null
+        _uiState.value = _uiState.value.copy(smartMixMessage = null)
     }
 
     fun probeConnection(sampleCount: Int = CONNECTION_PING_SAMPLES) {
@@ -398,17 +349,21 @@ class DiscoverViewModel @Inject constructor(
         connectionProbeJob = viewModelScope.launch {
             val currentState = wsClient.connectionState.value
             if (currentState !is ConnectionState.Connected) {
-                _connectionProbe.value = ConnectionProbeState(
+                _uiState.value = _uiState.value.copy(
+                    connectionProbe = ConnectionProbeState(
                     inProgress = false,
                     samplesMs = emptyList(),
                     failedSamples = 0,
                     error = "Not connected",
                     updatedAtMs = System.currentTimeMillis()
                 )
+                )
                 return@launch
             }
 
-            _connectionProbe.value = ConnectionProbeState(inProgress = true)
+            _uiState.value = _uiState.value.copy(
+                connectionProbe = ConnectionProbeState(inProgress = true)
+            )
 
             val samples = mutableListOf<Long>()
             var failed = 0
@@ -430,13 +385,15 @@ class DiscoverViewModel @Inject constructor(
                 }
             }
 
-            _connectionProbe.value = ConnectionProbeState(
+            _uiState.value = _uiState.value.copy(
+                connectionProbe = ConnectionProbeState(
                 inProgress = false,
                 samplesMs = samples,
                 failedSamples = failed,
                 probeMethod = probeMethod,
                 error = if (samples.isEmpty()) "Ping failed" else null,
                 updatedAtMs = System.currentTimeMillis()
+            )
             )
         }
     }
@@ -557,7 +514,7 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private fun loadFromServer(isManualRefresh: Boolean = false) {
-        if (!isManualRefresh && !cacheStale && _sections.value.isNotEmpty()) {
+        if (!isManualRefresh && !cacheStale && _uiState.value.sections.isNotEmpty()) {
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
         }
@@ -565,30 +522,15 @@ class DiscoverViewModel @Inject constructor(
         fullLoadJob?.cancel()
         fullLoadJob = viewModelScope.launch {
             Log.d(TAG, "loadFromServer: starting (manual=$isManualRefresh)")
-            if (isManualRefresh) _isRefreshing.value = true
+            if (isManualRefresh) {
+                _uiState.value = _uiState.value.copy(isRefreshing = true)
+            }
             try {
-                val artistsDef = async { loadLibraryArtists() }
-                val randomArtistsDef = async { loadRandomArtists() }
-                val favoriteAlbumsDef = async { loadRecentFavoriteAlbums() }
-                val recsDef = async { loadRecommendations() }
-
-                val artists = artistsDef.await()
-                val randomArtists = randomArtistsDef.await()
-                val recentFavoriteAlbums = favoriteAlbumsDef.await()
-                val serverFolders = recsDef.await()
-                val enrichedFolders = mergeFavoriteAlbumsFolder(serverFolders, recentFavoriteAlbums)
-                val recommendationArtists = extractRecommendationArtists(enrichedFolders)
-                val recommendationAlbums = extractRecommendationAlbums(enrichedFolders)
-
-                val merged = buildList {
-                    if (artists != null) addAll(artists)
-                    if (randomArtists != null) addAll(randomArtists)
-                    addAll(recommendationArtists)
-                }.distinctBy { artistKey(it) ?: it.uri }
+                val content = contentLoader.load(excludedArtistUris = excludedArtistUris)
+                val merged = content.mergedArtists
                 artistByUri = merged.mapNotNull { artist ->
                     artistKey(artist)?.let { it to artist }
                 }.toMap()
-                Log.d(TAG, "Merged ${merged.size} library artists, ${serverFolders.size} server folders")
 
                 val smartListeningEnabled = settingsRepository.smartListeningEnabled.first()
                 if (smartListeningEnabled) {
@@ -606,19 +548,22 @@ class DiscoverViewModel @Inject constructor(
                 } else {
                     merged.filterNot { isArtistExcluded(it, excludedArtistUris) }
                 }
-
-                val historyGenreArtists = try {
-                    playHistoryRepository.getGenreArtistMap()
-                } catch (_: Exception) {
-                    emptyMap()
-                }
-                val genreItems = buildGenreItemsFromArtists(smartFilteredArtists, historyGenreArtists)
+                genreArtists = content.genreArtists
+                    .mapValues { (_, uris) ->
+                        uris.filterNot { uri ->
+                            val key = artistKeyFromUri(uri)
+                            key != null && key in excludedArtistUris
+                        }
+                    }
+                val genreItems = content.genreItems
+                    .filter { it.name in genreArtists.keys }
 
                 val suggested = try {
-                    buildSuggestedArtists(
+                    recommendationOrchestrator.buildSuggestedArtists(
                         candidateArtists = smartFilteredArtists,
                         excludedArtistUris = excludedArtistUris,
-                        artistSignalScores = smartArtistScoreMap
+                        artistSignalScores = smartArtistScoreMap,
+                        artistIdentity = { artist -> artistKey(artist) ?: artist.uri }
                     )
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to build suggested artists", e)
@@ -626,11 +571,14 @@ class DiscoverViewModel @Inject constructor(
                 }
                 Log.d(TAG, "Suggested artists: ${suggested.size}")
 
-                val discover = loadDiscoverAlbums(
+                val discover = recommendationOrchestrator.loadDiscoverAlbums(
                     candidateArtists = smartFilteredArtists,
-                    recommendationAlbums = recommendationAlbums,
+                    recommendationAlbums = content.recommendationAlbums,
                     excludedArtistUris = excludedArtistUris,
-                    artistSignalScores = smartArtistScoreMap
+                    artistSignalScores = smartArtistScoreMap,
+                    albumIdentity = { album -> albumKey(album) ?: album.uri },
+                    artistIdentity = { artist -> artistKey(artist) ?: artist.uri },
+                    loadArtistAlbumsForIdentity = ::getArtistAlbumsForIdentity
                 )
 
                 val bllGenreScores = try {
@@ -646,14 +594,16 @@ class DiscoverViewModel @Inject constructor(
                 if (generation != loadGeneration) return@launch
                 bllArtistScoreMap = bllArtistScores.associate { it.artistUri to it.score }
 
-                _sections.value = sectionBuilder.buildSections(
-                    serverFolders = enrichedFolders,
+                _uiState.value = _uiState.value.copy(
+                    sections = sectionBuilder.buildSections(
+                    serverFolders = content.enrichedFolders,
                     suggestedArtists = suggested,
                     suggestedAlbums = discover ?: emptyList(),
                     genreItems = genreItems,
                     bllGenreScores = bllGenreScores
+                    )
                 )
-                Log.d(TAG, "Built ${_sections.value.size} sections")
+                Log.d(TAG, "Built ${_uiState.value.sections.size} sections")
 
                 cacheStale = false
                 discoverCache.save(
@@ -661,54 +611,21 @@ class DiscoverViewModel @Inject constructor(
                         suggestedArtists = suggested,
                         discoverAlbums = discover ?: emptyList(),
                         topArtists = merged,
-                        serverFolders = enrichedFolders
+                        serverFolders = content.enrichedFolders
                     )
                 )
             } finally {
                 if (generation == loadGeneration) {
-                    _isLoading.value = false
-                    _isRefreshing.value = false
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        isRefreshing = false
+                    )
                 }
             }
         }
     }
 
-    private suspend fun buildSuggestedArtists(
-        candidateArtists: List<Artist>,
-        excludedArtistUris: Set<String>,
-        artistSignalScores: Map<String, Double>
-    ): List<Artist> {
-        val genreScores = playHistoryRepository.getScoredGenres(days = 90, limit = 20)
-        val artistScores = playHistoryRepository.getScoredArtists(days = 90, limit = 50)
-        val genreAdjacency = playHistoryRepository.getGenreAdjacencyMap()
-
-        Log.d(TAG, "BLL: ${genreScores.size} genres, ${artistScores.size} artists, ${genreAdjacency.size} adjacency")
-        if (genreScores.isNotEmpty()) {
-            Log.d(TAG, "Top genres: ${genreScores.take(3).map { "${it.genre}=${String.format("%.2f", it.score)}" }}")
-        }
-
-        if (genreScores.isEmpty()) return candidateArtists.shuffled().take(10)
-
-        val recentlyAdded = try {
-            musicRepository.getArtists(orderBy = "recently_added", limit = 20)
-        } catch (_: Exception) {
-            emptyList()
-        }
-
-        return recommendationEngine.buildSuggestedArtists(
-            candidates = candidateArtists,
-            genreScores = genreScores,
-            artistScores = artistScores,
-            genreAdjacency = genreAdjacency,
-            recentlyAdded = recentlyAdded,
-            excludedArtistUris = excludedArtistUris,
-            artistSignalScores = artistSignalScores,
-            artistIdentity = { artist -> artistKey(artist) ?: artist.uri },
-            count = 10
-        )
-    }
-
-    private fun buildGenreItemsFromArtists(
+    private fun buildGenreItemsFallback(
         artists: List<Artist>,
         historyGenreArtists: Map<String, List<String>> = emptyMap()
     ): List<GenreItem> {
@@ -753,59 +670,6 @@ class DiscoverViewModel @Inject constructor(
             .take(10)
     }
 
-    private suspend fun loadLibraryArtists(): List<Artist>? = try {
-        musicRepository.getArtists(orderBy = "play_count_desc", limit = 500)
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to load library artists", e)
-        null
-    }
-
-    private suspend fun loadRandomArtists(): List<Artist>? = try {
-        musicRepository.getArtists(orderBy = "random", limit = 500)
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to load random artists", e)
-        null
-    }
-
-    private suspend fun loadRecommendations(): List<RecommendationFolder> = try {
-        musicRepository.getRecommendations()
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to load recommendations", e)
-        emptyList()
-    }
-
-    private fun extractRecommendationArtists(folders: List<RecommendationFolder>): List<Artist> =
-        folders
-            .asSequence()
-            .flatMap { it.items.artists.asSequence() }
-            .distinctBy { artistKey(it) ?: it.uri }
-            .toList()
-
-    private fun extractRecommendationAlbums(folders: List<RecommendationFolder>): List<Album> =
-        folders
-            .asSequence()
-            .flatMap { it.items.albums.asSequence() }
-            .distinctBy { albumKey(it) ?: it.uri }
-            .toList()
-
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun loadRecentFavoriteAlbums(limit: Int = 10): List<Album> {
-        val favoritesByAdded = try {
-            musicRepository.getAlbums(
-                orderBy = "timestamp_added_desc",
-                limit = limit * RECENT_TRACKS_QUERY_FACTOR,
-                favoriteOnly = true
-            )
-        } catch (_: Exception) {
-            emptyList()
-        }
-
-        return favoritesByAdded
-            .filter { it.favorite }
-            .distinctBy { albumKey(it) ?: it.uri }
-            .take(limit)
-    }
-
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadRecentFavoriteTracks(limit: Int = 10): List<Track> {
         val favoritesByAdded = try {
@@ -822,156 +686,6 @@ class DiscoverViewModel @Inject constructor(
             .filter { it.favorite }
             .distinctBy { trackKey(it) ?: it.uri }
             .take(limit)
-    }
-
-    private fun mergeFavoriteAlbumsFolder(
-        serverFolders: List<RecommendationFolder>,
-        recentFavoriteAlbums: List<Album>
-    ): List<RecommendationFolder> {
-        val withoutFavoriteAlbums = serverFolders.filterNot {
-            it.provider == "library" && it.itemId == RECENT_FAVORITE_ALBUMS_FOLDER_ID
-        }
-        if (recentFavoriteAlbums.size < MIN_SECTION_ITEMS) return withoutFavoriteAlbums
-
-        return withoutFavoriteAlbums + RecommendationFolder(
-            itemId = RECENT_FAVORITE_ALBUMS_FOLDER_ID,
-            name = RECENT_FAVORITE_ALBUMS_TITLE,
-            provider = "library",
-            items = RecommendationItems(albums = recentFavoriteAlbums)
-        )
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun loadDiscoverAlbums(
-        candidateArtists: List<Artist>,
-        recommendationAlbums: List<Album>,
-        excludedArtistUris: Set<String>,
-        artistSignalScores: Map<String, Double>
-    ): List<Album>? = try {
-        val artistScores = playHistoryRepository.getScoredArtists(days = 90, limit = 10)
-        val genreScores = playHistoryRepository.getScoredGenres(days = 90, limit = 10)
-
-        if (artistScores.isEmpty()) {
-            (recommendationAlbums + musicRepository.getAlbums(orderBy = "random", limit = 20))
-                .distinctBy { album -> albumKey(album) ?: album.uri }
-                .take(10)
-        } else {
-            val recentAlbumUris = playHistoryRepository.getRecentAlbums(limit = 50)
-                .map { MediaIdentity.canonicalAlbumKey(uri = it.albumUri) ?: it.albumUri }
-                .toSet()
-            val topArtistUris = artistScores
-                .map { it.artistUri }
-                .filterNot { it in excludedArtistUris }
-                .toSet()
-
-            val artistGenreMap = candidateArtists.mapNotNull { artist ->
-                artistKey(artist)?.let { it to artist.genres.toSet() }
-            }.toMap()
-            val genreScoreMap = genreScores.associate { it.genre to it.score }
-
-            val allCandidateAlbums = mutableListOf<ScoredAlbum>()
-
-            coroutineScope {
-                val artistDefs = artistScores
-                    .filterNot { it.artistUri in excludedArtistUris }
-                    .take(5)
-                    .mapNotNull { score ->
-                    async {
-                        try {
-                            val albums = getArtistAlbumsForIdentity(score.artistUri)
-                            val genres = artistGenreMap[score.artistUri].orEmpty()
-                            albums.filter { album ->
-                                val key = albumKey(album) ?: album.uri
-                                key !in recentAlbumUris && album.albumType != "single"
-                            }.map { album ->
-                                ScoredAlbum(
-                                    album = album,
-                                    genres = genres,
-                                    relevance = genres.sumOf { g -> genreScoreMap[g] ?: 0.0 } +
-                                        (artistSignalScores[score.artistUri] ?: 0.0) * 0.25
-                                )
-                            }
-                        } catch (_: Exception) {
-                            emptyList<ScoredAlbum>()
-                        }
-                    }
-                }
-                for (def in artistDefs) {
-                    allCandidateAlbums.addAll(def.await())
-                }
-
-                val topGenreNames = genreScores.map { it.genre }.toSet()
-                val discoveryArtists = candidateArtists
-                    .filter { artist -> (artistKey(artist) ?: artist.uri) !in topArtistUris }
-                    .filterNot { artist -> isArtistExcluded(artist, excludedArtistUris) }
-                    .filter { it.genres.any { g -> g in topGenreNames } }
-                    .shuffled()
-                    .take(5)
-
-                val genreDefs = discoveryArtists.map { artist ->
-                    async {
-                        try {
-                            val albums = musicRepository.getArtistAlbums(artist.itemId, artist.provider)
-                            val genres = artist.genres.toSet()
-                            albums.filter { album ->
-                                val key = albumKey(album) ?: album.uri
-                                key !in recentAlbumUris && album.albumType != "single"
-                            }.map { album ->
-                                ScoredAlbum(
-                                    album = album,
-                                    genres = genres,
-                                    relevance = genres.sumOf { g -> genreScoreMap[g] ?: 0.0 } +
-                                        (artistSignalScores[artistKey(artist) ?: artist.uri] ?: 0.0) * 0.25
-                                )
-                            }
-                        } catch (_: Exception) {
-                            emptyList<ScoredAlbum>()
-                        }
-                    }
-                }
-                for (def in genreDefs) {
-                    allCandidateAlbums.addAll(def.await())
-                }
-            }
-
-            // Deduplicate and cap per artist to ensure diversity
-            val uniqueCandidates = allCandidateAlbums.distinctBy { albumKey(it.album) ?: it.album.uri }
-            val cappedCandidates = uniqueCandidates
-                .groupBy {
-                    MediaIdentity.canonicalArtistKey(
-                        itemId = it.album.artists.firstOrNull()?.itemId,
-                        uri = it.album.artists.firstOrNull()?.uri
-                    ) ?: it.album.artistNames
-                }
-                .flatMap { (_, albums) -> albums.shuffled().take(1) }
-            val ranked = recommendationEngine.rankAlbumsForDiscovery(cappedCandidates, count = 10)
-
-            val usedUris = ranked.mapTo(mutableSetOf()) { album -> albumKey(album) ?: album.uri }
-            usedUris.addAll(recentAlbumUris)
-            val remaining = 10 - ranked.size
-            val result = ranked.toMutableList()
-            if (remaining > 0) {
-                val randomAlbums = musicRepository.getAlbums(orderBy = "random", limit = 20)
-                    .filter { album -> (albumKey(album) ?: album.uri) !in usedUris }
-                    .take(remaining)
-                result.addAll(randomAlbums)
-            }
-
-            result
-                .distinctBy { album -> albumKey(album) ?: album.uri }
-                .shuffled()
-                .take(10)
-                .ifEmpty {
-                    recommendationAlbums
-                        .distinctBy { album -> albumKey(album) ?: album.uri }
-                        .shuffled()
-                        .take(10)
-                        .ifEmpty { musicRepository.getAlbums(orderBy = "random", limit = 10) }
-                }
-        }
-    } catch (e: Exception) {
-        Log.e(TAG, "Failed to load discover albums", e)
-        null
     }
 
     fun startGenreRadio(genre: String) {
@@ -1013,7 +727,7 @@ class DiscoverViewModel @Inject constructor(
                     "startGenreRadio: genre='$genre', decadeFocus=$focusDecade, " +
                         "sending ${payloadUris.size}/${candidateUris.size} artist URIs"
                 )
-                _radioOverlayGenre.value = genre
+                _uiState.value = _uiState.value.copy(radioOverlayGenre = genre)
                 val requestAccepted = startGenreRadioWithFallback(
                     queueId = queueId,
                     genre = genre,
@@ -1030,10 +744,10 @@ class DiscoverViewModel @Inject constructor(
                 if (!started) {
                     Log.w(TAG, "startGenreRadio: start confirmation timeout for genre='$genre'")
                 }
-                _radioOverlayGenre.value = null
+                _uiState.value = _uiState.value.copy(radioOverlayGenre = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start genre radio", e)
-                _radioOverlayGenre.value = null
+                _uiState.value = _uiState.value.copy(radioOverlayGenre = null)
             } finally {
                 radioStartJob = null
             }

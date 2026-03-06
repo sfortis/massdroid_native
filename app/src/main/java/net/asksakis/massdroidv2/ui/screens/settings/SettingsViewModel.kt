@@ -26,6 +26,16 @@ import net.asksakis.massdroidv2.domain.repository.TrackScore
 import net.asksakis.massdroidv2.service.SendspinService
 import javax.inject.Inject
 
+data class UpdateUiState(
+    val appVersion: String,
+    val includeBetaUpdates: Boolean = false,
+    val availableUpdate: AppUpdateChecker.UpdateInfo? = null,
+    val isChecking: Boolean = false,
+    val isDownloading: Boolean = false,
+    val downloadProgress: Int? = null,
+    val message: String? = null
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -76,14 +86,19 @@ class SettingsViewModel @Inject constructor(
     val topGenres: StateFlow<List<GenreScore>> = _topGenres.asStateFlow()
     private val _blockedArtists = MutableStateFlow<List<BlockedArtistInfo>>(emptyList())
     val blockedArtists: StateFlow<List<BlockedArtistInfo>> = _blockedArtists.asStateFlow()
-    private val _updateInfo = MutableStateFlow<AppUpdateChecker.UpdateInfo?>(null)
-    val updateInfo: StateFlow<AppUpdateChecker.UpdateInfo?> = _updateInfo.asStateFlow()
-    private val _updateBusy = MutableStateFlow(false)
-    val updateBusy: StateFlow<Boolean> = _updateBusy.asStateFlow()
-    private val _updateProgress = MutableStateFlow<Int?>(null)
-    val updateProgress: StateFlow<Int?> = _updateProgress.asStateFlow()
-    private val _updateMessage = MutableStateFlow<String?>(null)
-    val updateMessage: StateFlow<String?> = _updateMessage.asStateFlow()
+    private val _updateUiState = MutableStateFlow(
+        UpdateUiState(appVersion = appUpdateChecker.getCurrentVersion())
+    )
+    val updateUiState: StateFlow<UpdateUiState> = combine(
+        _updateUiState,
+        includeBetaUpdates
+    ) { state, includeBeta ->
+        state.copy(includeBetaUpdates = includeBeta)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        UpdateUiState(appVersion = appUpdateChecker.getCurrentVersion())
+    )
 
     val savedUsername = settingsRepository.username
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -94,8 +109,6 @@ class SettingsViewModel @Inject constructor(
     init {
         refreshRecommendationData()
     }
-
-    val appVersion: String = appUpdateChecker.getCurrentVersion()
 
     // Token persistence is handled by MassDroidApp's connectionState observer
 
@@ -136,7 +149,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearUpdateMessage() {
-        _updateMessage.value = null
+        _updateUiState.update { it.copy(message = null) }
     }
 
     fun toggleIncludeBetaUpdates(enabled: Boolean) {
@@ -146,47 +159,85 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun dismissUpdateDialog() {
-        _updateInfo.value = null
+        _updateUiState.update { it.copy(availableUpdate = null) }
     }
 
     fun checkForUpdates(force: Boolean = true) {
-        if (_updateBusy.value) return
+        if (_updateUiState.value.isChecking || _updateUiState.value.isDownloading) return
         viewModelScope.launch {
-            _updateBusy.value = true
-            _updateProgress.value = null
+            _updateUiState.update {
+                it.copy(
+                    isChecking = true,
+                    isDownloading = false,
+                    downloadProgress = null,
+                    message = null
+                )
+            }
             when (val result = appUpdateChecker.checkForUpdates(force = force, includePrerelease = includeBetaUpdates.value)) {
                 is AppUpdateChecker.CheckResult.UpdateAvailable -> {
-                    _updateInfo.value = result.info
+                    _updateUiState.update {
+                        it.copy(
+                            availableUpdate = result.info,
+                            isChecking = false
+                        )
+                    }
                 }
                 is AppUpdateChecker.CheckResult.UpToDate -> {
-                    _updateMessage.value = "You're on the latest version"
+                    _updateUiState.update {
+                        it.copy(
+                            availableUpdate = null,
+                            isChecking = false,
+                            message = "You're on the latest version"
+                        )
+                    }
                 }
                 is AppUpdateChecker.CheckResult.Error -> {
-                    _updateMessage.value = result.message
+                    _updateUiState.update {
+                        it.copy(
+                            availableUpdate = null,
+                            isChecking = false,
+                            message = result.message
+                        )
+                    }
                 }
             }
-            _updateBusy.value = false
         }
     }
 
     fun downloadAndInstallUpdate() {
-        val info = _updateInfo.value ?: return
-        if (_updateBusy.value) return
+        val info = _updateUiState.value.availableUpdate ?: return
+        if (_updateUiState.value.isChecking || _updateUiState.value.isDownloading) return
         viewModelScope.launch {
-            _updateBusy.value = true
-            _updateProgress.value = 0
+            _updateUiState.update {
+                it.copy(
+                    isChecking = false,
+                    isDownloading = true,
+                    downloadProgress = 0,
+                    message = null
+                )
+            }
             val result = appUpdateChecker.downloadUpdate(info) { progress ->
-                _updateProgress.value = progress
+                _updateUiState.update { state ->
+                    state.copy(downloadProgress = progress)
+                }
             }
             result.onSuccess { file ->
-                _updateBusy.value = false
-                _updateProgress.value = null
-                _updateInfo.value = null
+                _updateUiState.update {
+                    it.copy(
+                        availableUpdate = null,
+                        isDownloading = false,
+                        downloadProgress = null
+                    )
+                }
                 appContext.startActivity(appUpdateChecker.buildInstallIntent(file))
             }.onFailure { error ->
-                _updateBusy.value = false
-                _updateProgress.value = null
-                _updateMessage.value = error.message ?: "Failed to download update"
+                _updateUiState.update {
+                    it.copy(
+                        isDownloading = false,
+                        downloadProgress = null,
+                        message = error.message ?: "Failed to download update"
+                    )
+                }
             }
         }
     }

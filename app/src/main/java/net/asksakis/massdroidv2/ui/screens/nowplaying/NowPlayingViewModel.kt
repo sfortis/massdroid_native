@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -285,6 +286,30 @@ class NowPlayingViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "cycleRepeat failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
+    suspend fun getPlayerConfig(playerId: String): PlayerConfig? {
+        return try {
+            playerRepository.getPlayerConfig(playerId)
+        } catch (e: Exception) {
+            Log.w(TAG, "getPlayerConfig failed: ${e.message}")
+            null
+        }
+    }
+
+    fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
+        viewModelScope.launch {
+            try {
+                playerRepository.savePlayerConfig(playerId, values)
+                val newName = values["name"] as? String
+                if (newName != null) {
+                    playerRepository.renamePlayer(playerId, newName)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "savePlayerConfig failed: ${e.message}")
+                _error.tryEmit("Failed to save player settings")
             }
         }
     }

@@ -4,6 +4,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -33,9 +35,13 @@ class HomeViewModel @Inject constructor(
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()
+    private val _suppressConnectionPrompt = MutableStateFlow(false)
+    val suppressConnectionPrompt: StateFlow<Boolean> = _suppressConnectionPrompt.asStateFlow()
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+    private var hasConnectedOnce = false
+    private var reconnectUiJob: Job? = null
 
     init {
         // Auto-connect on startup if we have saved credentials
@@ -57,6 +63,38 @@ class HomeViewModel @Inject constructor(
         }
 
         // PlayerRepositoryImpl handles refreshPlayers + restore saved player on Connected
+        viewModelScope.launch {
+            wsClient.connectionState.collect { state ->
+                when (state) {
+                    is ConnectionState.Connected -> {
+                        hasConnectedOnce = true
+                        reconnectUiJob?.cancel()
+                        _suppressConnectionPrompt.value = false
+                    }
+                    is ConnectionState.Connecting -> {
+                        if (hasConnectedOnce) {
+                            _suppressConnectionPrompt.value = true
+                        }
+                    }
+                    is ConnectionState.Disconnected, is ConnectionState.Error -> {
+                        if (!hasConnectedOnce) {
+                            reconnectUiJob?.cancel()
+                            _suppressConnectionPrompt.value = false
+                            return@collect
+                        }
+                        reconnectUiJob?.cancel()
+                        _suppressConnectionPrompt.value = true
+                        reconnectUiJob = viewModelScope.launch {
+                            delay(8_000)
+                            val latest = wsClient.connectionState.value
+                            if (latest is ConnectionState.Disconnected || latest is ConnectionState.Error) {
+                                _suppressConnectionPrompt.value = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun connectIfNeeded() {

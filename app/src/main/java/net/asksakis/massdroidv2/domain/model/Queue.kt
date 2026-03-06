@@ -13,7 +13,16 @@ data class QueueItem(
     val name: String = "",
     val duration: Double = 0.0,
     val track: Track? = null,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    val audioFormat: AudioFormatInfo? = null
+)
+
+data class AudioFormatInfo(
+    val contentType: String? = null,
+    val sampleRate: Int? = null,
+    val bitDepth: Int? = null,
+    val bitRate: Int? = null,
+    val channels: Int? = null
 )
 
 enum class RepeatMode(val apiValue: String) {

@@ -54,6 +54,7 @@ class PlayerRepositoryImpl @Inject constructor(
     override val queueItemsChanged: SharedFlow<String> = _queueItemsChanged.asSharedFlow()
 
     private var selectedPlayerId: String? = null
+    private var pendingRestoredPlayerId: String? = null
 
     // Position tracking for smooth seek bar updates
     private var positionBaseTime = 0.0
@@ -114,6 +115,8 @@ class PlayerRepositoryImpl @Inject constructor(
             wsClient.connectionState.collect { state ->
                 when (state) {
                     is ConnectionState.Disconnected, is ConnectionState.Connecting -> {
+                        selectedPlayerId = null
+                        pendingRestoredPlayerId = null
                         _players.value = emptyList()
                         _selectedPlayer.value = null
                         _queueState.value = null
@@ -128,15 +131,16 @@ class PlayerRepositoryImpl @Inject constructor(
                         suppressedArtistUrisSnapshot = emptySet()
                     }
                     is ConnectionState.Connected -> {
+                        val restoredPlayerId = settingsRepository.selectedPlayerId.first()
+                        pendingRestoredPlayerId = restoredPlayerId
+                        selectedPlayerId = restoredPlayerId
                         refreshPlayers()
-                        settingsRepository.selectedPlayerId.first()?.let { id ->
-                            val sendspinId = settingsRepository.sendspinClientId.first()
-                            if (id == sendspinId) {
-                                settingsRepository.setSelectedPlayerId(null)
-                                Log.d(TAG, "Ignoring persisted sendspin player selection: $id")
-                            } else {
+                        restoredPlayerId?.let { id ->
+                            if (_players.value.any { it.playerId == id }) {
                                 selectPlayer(id)
                                 Log.d(TAG, "Restored saved player: $id")
+                            } else {
+                                Log.d(TAG, "Waiting for late-arriving restored player: $id")
                             }
                         }
                     }
@@ -179,8 +183,9 @@ class PlayerRepositoryImpl @Inject constructor(
                         } else list + player
                     }
                     // Auto-select if this is the saved player and nothing is selected yet
-                    if (_selectedPlayer.value == null && player.playerId == selectedPlayerId) {
+                    if (_selectedPlayer.value == null && player.playerId == pendingRestoredPlayerId) {
                         selectPlayer(player.playerId)
+                        pendingRestoredPlayerId = null
                         Log.d(TAG, "Auto-selected late-arriving player: ${player.displayName}")
                     }
                 }
@@ -695,15 +700,13 @@ class PlayerRepositoryImpl @Inject constructor(
 
     override fun selectPlayer(playerId: String) {
         selectedPlayerId = playerId
+        pendingRestoredPlayerId = if (pendingRestoredPlayerId == playerId) null else pendingRestoredPlayerId
         val player = _players.value.find { it.playerId == playerId }
         _selectedPlayer.value = player
         isPlaying = player?.state == PlaybackState.PLAYING
         stopPositionTicker()
         scope.launch {
-            val sendspinId = settingsRepository.sendspinClientId.first()
-            if (playerId != sendspinId) {
-                settingsRepository.setSelectedPlayerId(playerId)
-            }
+            settingsRepository.setSelectedPlayerId(playerId)
             refreshQueueForPlayer(playerId)
             scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
         }
@@ -999,7 +1002,16 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                 )
             },
             imageUrl = item.mediaItem?.resolveImageUrl(wsClient)
-                ?: item.image?.let { if (it.remotelyAccessible) it.path else wsClient.getImageUrl(it.path) }
+                ?: item.image?.let { if (it.remotelyAccessible) it.path else wsClient.getImageUrl(it.path) },
+            audioFormat = item.streamdetails?.audioFormat?.let { format ->
+                AudioFormatInfo(
+                    contentType = format.contentType,
+                    sampleRate = format.sampleRate,
+                    bitDepth = format.bitDepth,
+                    bitRate = format.bitRate,
+                    channels = format.channels
+                )
+            }
         )
     }
 )

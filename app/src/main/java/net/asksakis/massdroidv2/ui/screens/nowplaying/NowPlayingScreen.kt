@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -23,9 +24,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -50,7 +53,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.domain.model.RepeatMode
+import net.asksakis.massdroidv2.domain.model.CrossfadeMode
+import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.VolumeSlider
@@ -88,8 +94,10 @@ fun NowPlayingScreen(
         ?: player?.currentMedia?.imageUrl
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
         ?: player?.currentMedia?.duration ?: 0.0
+    val audioFormat = queueState?.currentItem?.audioFormat
     val isPlaying = player?.state == PlaybackState.PLAYING
     var showPlaylistDialog by remember { mutableStateOf(false) }
+    var showPlayerSettingsDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -152,6 +160,7 @@ fun NowPlayingScreen(
                     title = title,
                     artist = artist,
                     album = album,
+                    audioFormat = audioFormat,
                     isPlaying = isPlaying,
                     currentTrack = currentTrack,
                     queueState = queueState,
@@ -177,6 +186,7 @@ fun NowPlayingScreen(
                     title = title,
                     artist = artist,
                     album = album,
+                    audioFormat = audioFormat,
                     isPlaying = isPlaying,
                     currentTrack = currentTrack,
                     queueState = queueState,
@@ -215,11 +225,25 @@ fun NowPlayingScreen(
             artistBlocked = artistBlocked,
             canToggleArtistBlock = canToggleArtistBlock,
             onDismiss = { showPlayerMenu = false },
+            onPlayerSettings = {
+                showPlayerMenu = false
+                showPlayerSettingsDialog = true
+            },
             onClick = {
                 showPlayerMenu = false
                 viewModel.toggleCurrentArtistBlocked()
             }
         )
+    }
+
+    player?.let { currentPlayer ->
+        if (showPlayerSettingsDialog) {
+            PlayerSettingsDialog(
+                player = currentPlayer,
+                viewModel = viewModel,
+                onDismiss = { showPlayerSettingsDialog = false }
+            )
+        }
     }
 }
 
@@ -230,6 +254,7 @@ private fun NowPlayingPortrait(
     title: String,
     artist: String,
     album: String,
+    audioFormat: AudioFormatInfo?,
     isPlaying: Boolean,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
@@ -241,6 +266,7 @@ private fun NowPlayingPortrait(
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -253,10 +279,15 @@ private fun NowPlayingPortrait(
         SwipeableAlbumArt(
             imageUrl = imageUrl,
             onNext = { viewModel.next() },
-            onPrevious = { viewModel.previous() }
+            onPrevious = { viewModel.previous() },
+            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(32.dp))
+
+        AudioQualityBadges(audioFormat = audioFormat)
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         TrackInfoSection(
             title = title,
@@ -282,7 +313,8 @@ private fun NowPlayingPortrait(
         TransportControls(
             isPlaying = isPlaying,
             queueState = queueState,
-            viewModel = viewModel
+            viewModel = viewModel,
+            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -303,6 +335,7 @@ private fun NowPlayingLandscape(
     title: String,
     artist: String,
     album: String,
+    audioFormat: AudioFormatInfo?,
     isPlaying: Boolean,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
@@ -318,6 +351,7 @@ private fun NowPlayingLandscape(
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     var showPlayerMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
@@ -338,6 +372,7 @@ private fun NowPlayingLandscape(
                 imageUrl = imageUrl,
                 onNext = { viewModel.next() },
                 onPrevious = { viewModel.previous() },
+                onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
                 fillMaxWidth = false
             )
         }
@@ -383,6 +418,10 @@ private fun NowPlayingLandscape(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            AudioQualityBadges(audioFormat = audioFormat, compact = true)
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             TrackInfoSection(
                 title = title,
                 artist = artist,
@@ -409,7 +448,8 @@ private fun NowPlayingLandscape(
                 isPlaying = isPlaying,
                 queueState = queueState,
                 viewModel = viewModel,
-                compact = true
+                compact = true,
+                onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
             )
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -424,12 +464,61 @@ private fun NowPlayingLandscape(
     }
 }
 
+@Composable
+private fun AudioQualityBadges(
+    audioFormat: AudioFormatInfo?,
+    compact: Boolean = false
+) {
+    val badges = remember(audioFormat) { buildAudioQualityBadges(audioFormat) }
+    if (badges.isEmpty()) return
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        badges.forEach { badge ->
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
+                tonalElevation = 0.dp
+            ) {
+                Text(
+                    text = badge,
+                    style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = if (compact) 5.dp else 6.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun buildAudioQualityBadges(audioFormat: AudioFormatInfo?): List<String> {
+    if (audioFormat == null) return emptyList()
+
+    val codec = audioFormat.contentType
+        ?.replace('_', ' ')
+        ?.uppercase()
+        ?.takeIf { it.isNotBlank() && it != "?" }
+
+    val qualityLabel = when {
+        (audioFormat.bitDepth ?: 0) >= 24 -> "HQ"
+        (audioFormat.contentType ?: "").equals("flac", ignoreCase = true) -> "HQ"
+        (audioFormat.bitRate ?: 0) >= 900_000 -> "HQ"
+        else -> "LQ"
+    }
+
+    val primary = listOfNotNull(qualityLabel, codec).joinToString(" • ").ifBlank { null }
+    return listOfNotNull(primary)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerOptionsSheet(
     artistBlocked: Boolean,
     canToggleArtistBlock: Boolean,
     onDismiss: () -> Unit,
+    onPlayerSettings: () -> Unit,
     onClick: () -> Unit
 ) {
     ModalBottomSheet(
@@ -447,6 +536,24 @@ private fun PlayerOptionsSheet(
                 )
                 HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             }
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Player Settings") },
+                supportingContent = {
+                    Text(
+                        "Rename player, crossfade and volume normalization",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                modifier = Modifier.clickable(onClick = onPlayerSettings)
+            )
             ListItem(
                 colors = SheetDefaults.listItemColors(),
                 headlineContent = {
@@ -495,62 +602,90 @@ private fun TrackInfoSection(
     onNavigateToAlbum: (String, String, String) -> Unit,
     compact: Boolean = false
 ) {
+    val haptic = LocalHapticFeedback.current
     val titleStyle = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall
     val artistStyle = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium
     val albumStyle = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleSmall
+    val actionButtonSize = if (compact) 36.dp else 42.dp
+    val actionIconSize = if (compact) 18.dp else 22.dp
+    val artistClickable = currentTrack?.artistItemId != null && currentTrack.artistProvider != null
+    val albumClickable = currentTrack?.albumItemId != null && currentTrack.albumProvider != null
 
+    Text(
+        text = title,
+        style = titleStyle,
+        maxLines = 1,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
+    )
+    Spacer(modifier = Modifier.height(if (compact) 4.dp else 8.dp))
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = title,
-            style = titleStyle,
-            maxLines = 1,
-            textAlign = TextAlign.Center,
+        Row(
             modifier = Modifier
-                .padding(horizontal = if (compact) 80.dp else 96.dp)
-                .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
-        )
-        IconButton(
-            onClick = onShowPlaylistDialog,
-            modifier = Modifier.align(Alignment.CenterStart)
+                .fillMaxWidth(if (compact) 0.9f else 0.94f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
         ) {
-            Icon(
-                Icons.Default.Add,
-                contentDescription = "Add to playlist",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        IconButton(
-            onClick = { viewModel.toggleFavorite() },
-            modifier = Modifier.align(Alignment.CenterEnd)
-        ) {
-            Icon(
-                if (currentTrack?.favorite == true) Icons.Default.Favorite
-                else Icons.Default.FavoriteBorder,
-                contentDescription = "Toggle favorite",
-                tint = if (currentTrack?.favorite == true) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onShowPlaylistDialog()
+                },
+                modifier = Modifier.size(actionButtonSize)
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Add to playlist",
+                        modifier = Modifier.size(actionIconSize),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = if (compact) 4.dp else 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = artist,
+                    style = artistStyle,
+                    color = if (artistClickable) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = (if (artistClickable) {
+                        Modifier.clickable {
+                            onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
+                        }
+                    } else Modifier).fillMaxWidth()
+                )
+            }
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.toggleFavorite()
+                },
+                modifier = Modifier.size(actionButtonSize)
+            ) {
+                Icon(
+                    if (currentTrack?.favorite == true) Icons.Default.Favorite
+                    else Icons.Default.FavoriteBorder,
+                    contentDescription = "Toggle favorite",
+                    modifier = Modifier.size(actionIconSize),
+                    tint = if (currentTrack?.favorite == true) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
-    Spacer(modifier = Modifier.height(if (compact) 4.dp else 8.dp))
-    val artistClickable = currentTrack?.artistItemId != null && currentTrack.artistProvider != null
-    Text(
-        text = artist,
-        style = artistStyle,
-        color = if (artistClickable) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = if (artistClickable) Modifier.clickable {
-            onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
-        } else Modifier
-    )
     if (album.isNotBlank()) {
         Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
-        val albumClickable = currentTrack?.albumItemId != null && currentTrack.albumProvider != null
         Text(
             text = album,
             style = albumStyle,
@@ -657,11 +792,104 @@ private fun AddToPlaylistDialog(
 }
 
 @Composable
+private fun PlayerSettingsDialog(
+    player: net.asksakis.massdroidv2.domain.model.Player,
+    viewModel: NowPlayingViewModel,
+    onDismiss: () -> Unit
+) {
+    var config by remember { mutableStateOf<PlayerConfig?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var name by remember { mutableStateOf(player.displayName) }
+    var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
+    var volumeNormalization by remember { mutableStateOf(false) }
+
+    LaunchedEffect(player.playerId) {
+        val loaded = viewModel.getPlayerConfig(player.playerId)
+        if (loaded != null) {
+            config = loaded
+            name = loaded.name.ifBlank { player.displayName }
+            crossfadeMode = loaded.crossfadeMode
+            volumeNormalization = loaded.volumeNormalization
+        }
+        isLoading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Player Settings") },
+        text = {
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Player name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text("Crossfade", style = MaterialTheme.typography.labelMedium)
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        CrossfadeMode.entries.forEachIndexed { index, mode ->
+                            SegmentedButton(
+                                selected = crossfadeMode == mode,
+                                onClick = { crossfadeMode = mode },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = index,
+                                    count = CrossfadeMode.entries.size
+                                ),
+                                label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Volume normalization")
+                        Switch(
+                            checked = volumeNormalization,
+                            onCheckedChange = { volumeNormalization = it }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val values = mutableMapOf<String, Any>(
+                        "smart_fades_mode" to crossfadeMode.apiValue,
+                        "volume_normalization" to volumeNormalization
+                    )
+                    if (name.isNotBlank() && name.trim() != player.displayName) {
+                        values["name"] = name.trim()
+                    }
+                    viewModel.savePlayerConfig(player.playerId, values)
+                    onDismiss()
+                },
+                enabled = !isLoading
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
 private fun TransportControls(
     isPlaying: Boolean,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
     viewModel: NowPlayingViewModel,
-    compact: Boolean = false
+    compact: Boolean = false,
+    onHaptic: () -> Unit = {}
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
     val playSize = if (compact) 52.dp else 64.dp
@@ -673,7 +901,10 @@ private fun TransportControls(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = { viewModel.toggleShuffle() }) {
+        IconButton(onClick = {
+            onHaptic()
+            viewModel.toggleShuffle()
+        }) {
             Icon(
                 Icons.Default.Shuffle,
                 contentDescription = "Shuffle",
@@ -683,11 +914,17 @@ private fun TransportControls(
             )
         }
 
-        IconButton(onClick = { viewModel.previous() }, modifier = Modifier.size(buttonSize)) {
+        IconButton(onClick = {
+            onHaptic()
+            viewModel.previous()
+        }, modifier = Modifier.size(buttonSize)) {
             Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(iconSize))
         }
 
-        FilledIconButton(onClick = { viewModel.playPause() }, modifier = Modifier.size(playSize)) {
+        FilledIconButton(onClick = {
+            onHaptic()
+            viewModel.playPause()
+        }, modifier = Modifier.size(playSize)) {
             Icon(
                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (isPlaying) "Pause" else "Play",
@@ -695,11 +932,17 @@ private fun TransportControls(
             )
         }
 
-        IconButton(onClick = { viewModel.next() }, modifier = Modifier.size(buttonSize)) {
+        IconButton(onClick = {
+            onHaptic()
+            viewModel.next()
+        }, modifier = Modifier.size(buttonSize)) {
             Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(iconSize))
         }
 
-        IconButton(onClick = { viewModel.cycleRepeat() }) {
+        IconButton(onClick = {
+            onHaptic()
+            viewModel.cycleRepeat()
+        }) {
             Icon(
                 when (queueState?.repeatMode) {
                     RepeatMode.ONE -> Icons.Default.RepeatOne
@@ -719,6 +962,7 @@ private fun SwipeableAlbumArt(
     imageUrl: String?,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    onHaptic: () -> Unit = {},
     fillMaxWidth: Boolean = true
 ) {
     val scope = rememberCoroutineScope()
@@ -756,11 +1000,13 @@ private fun SwipeableAlbumArt(
                             }
                             if (current < -threshold) {
                                 animateOffsetTo(-width, 130)
+                                onHaptic()
                                 onNext()
                                 offsetX = width
                                 animateOffsetTo(0f, 170)
                             } else if (current > threshold) {
                                 animateOffsetTo(width, 130)
+                                onHaptic()
                                 onPrevious()
                                 offsetX = -width
                                 animateOffsetTo(0f, 170)
@@ -891,6 +1137,7 @@ private fun SeekBar(
     duration: Double,
     onSeek: (Double) -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
     var seeking by remember { mutableStateOf(false) }
     var seekValue by remember { mutableFloatStateOf(0f) }
     var seekTarget by remember { mutableFloatStateOf(-1f) }
@@ -916,6 +1163,7 @@ private fun SeekBar(
                 seekValue = it
             },
             onValueChangeFinished = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onSeek(seekValue.toDouble())
                 seekTarget = seekValue
                 seeking = false

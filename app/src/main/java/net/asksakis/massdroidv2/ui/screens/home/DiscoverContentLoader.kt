@@ -1,0 +1,205 @@
+package net.asksakis.massdroidv2.ui.screens.home
+
+import android.util.Log
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import net.asksakis.massdroidv2.domain.model.Album
+import net.asksakis.massdroidv2.domain.model.Artist
+import net.asksakis.massdroidv2.domain.model.RecommendationFolder
+import net.asksakis.massdroidv2.domain.model.RecommendationItems
+import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+
+private const val LOADER_TAG = "DiscoverLoader"
+private const val MIN_DISCOVER_SECTION_ITEMS = 3
+private const val RECENT_TRACKS_QUERY_FACTOR = 5
+private const val RECENT_FAVORITE_ALBUMS_FOLDER_ID_LOCAL = "recent_favorite_albums"
+private const val RECENT_FAVORITE_ALBUMS_TITLE_LOCAL = "Recent Favorite Albums"
+
+data class DiscoverContentBundle(
+    val mergedArtists: List<Artist>,
+    val enrichedFolders: List<RecommendationFolder>,
+    val recommendationAlbums: List<Album>,
+    val genreItems: List<GenreItem>,
+    val genreArtists: Map<String, List<String>>
+)
+
+class DiscoverContentLoader(
+    private val musicRepository: MusicRepository,
+    private val playHistoryRepository: PlayHistoryRepository
+) {
+
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun load(excludedArtistUris: Set<String>): DiscoverContentBundle = coroutineScope {
+        val artistsDef = async { loadLibraryArtists() }
+        val randomArtistsDef = async { loadRandomArtists() }
+        val favoriteAlbumsDef = async { loadRecentFavoriteAlbums() }
+        val recsDef = async { loadRecommendations() }
+
+        val artists = artistsDef.await()
+        val randomArtists = randomArtistsDef.await()
+        val recentFavoriteAlbums = favoriteAlbumsDef.await()
+        val serverFolders = recsDef.await()
+        val enrichedFolders = mergeFavoriteAlbumsFolder(serverFolders, recentFavoriteAlbums)
+        val recommendationArtists = extractRecommendationArtists(enrichedFolders)
+        val recommendationAlbums = extractRecommendationAlbums(enrichedFolders)
+
+        val mergedArtists = buildList {
+            if (artists != null) addAll(artists)
+            if (randomArtists != null) addAll(randomArtists)
+            addAll(recommendationArtists)
+        }.distinctBy { artistKey(it) ?: it.uri }
+
+        val artistByUri = mergedArtists.mapNotNull { artist ->
+            artistKey(artist)?.let { it to artist }
+        }.toMap()
+
+        val filteredArtists = if (excludedArtistUris.isEmpty()) {
+            mergedArtists
+        } else {
+            mergedArtists.filterNot { artist ->
+                val key = artistKey(artist) ?: return@filterNot false
+                key in excludedArtistUris
+            }
+        }
+
+        val historyGenreArtists = try {
+            playHistoryRepository.getGenreArtistMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val (genreItems, genreArtists) = buildGenreData(filteredArtists, historyGenreArtists, artistByUri)
+
+        Log.d(LOADER_TAG, "Merged ${mergedArtists.size} artists, ${serverFolders.size} server folders")
+
+        DiscoverContentBundle(
+            mergedArtists = mergedArtists,
+            enrichedFolders = enrichedFolders,
+            recommendationAlbums = recommendationAlbums,
+            genreItems = genreItems,
+            genreArtists = genreArtists
+        )
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun loadRecentFavoriteAlbums(limit: Int = 10): List<Album> {
+        val favoritesByAdded = try {
+            musicRepository.getAlbums(
+                orderBy = "timestamp_added_desc",
+                limit = limit * RECENT_TRACKS_QUERY_FACTOR,
+                favoriteOnly = true
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        return favoritesByAdded
+            .filter { it.favorite }
+            .distinctBy { albumKey(it) ?: it.uri }
+            .take(limit)
+    }
+
+    private suspend fun loadLibraryArtists(): List<Artist>? = try {
+        musicRepository.getArtists(orderBy = "play_count_desc", limit = 500)
+    } catch (e: Exception) {
+        Log.e(LOADER_TAG, "Failed to load library artists", e)
+        null
+    }
+
+    private suspend fun loadRandomArtists(): List<Artist>? = try {
+        musicRepository.getArtists(orderBy = "random", limit = 500)
+    } catch (e: Exception) {
+        Log.e(LOADER_TAG, "Failed to load random artists", e)
+        null
+    }
+
+    private suspend fun loadRecommendations(): List<RecommendationFolder> = try {
+        musicRepository.getRecommendations()
+    } catch (e: Exception) {
+        Log.e(LOADER_TAG, "Failed to load recommendations", e)
+        emptyList()
+    }
+
+    private fun extractRecommendationArtists(folders: List<RecommendationFolder>): List<Artist> =
+        folders.asSequence()
+            .flatMap { it.items.artists.asSequence() }
+            .distinctBy { artistKey(it) ?: it.uri }
+            .toList()
+
+    private fun extractRecommendationAlbums(folders: List<RecommendationFolder>): List<Album> =
+        folders.asSequence()
+            .flatMap { it.items.albums.asSequence() }
+            .distinctBy { albumKey(it) ?: it.uri }
+            .toList()
+
+    private fun mergeFavoriteAlbumsFolder(
+        serverFolders: List<RecommendationFolder>,
+        recentFavoriteAlbums: List<Album>
+    ): List<RecommendationFolder> {
+        val withoutFavoriteAlbums = serverFolders.filterNot {
+            it.provider == "library" && it.itemId == RECENT_FAVORITE_ALBUMS_FOLDER_ID_LOCAL
+        }
+        if (recentFavoriteAlbums.size < MIN_DISCOVER_SECTION_ITEMS) return withoutFavoriteAlbums
+
+        return withoutFavoriteAlbums + RecommendationFolder(
+            itemId = RECENT_FAVORITE_ALBUMS_FOLDER_ID_LOCAL,
+            name = RECENT_FAVORITE_ALBUMS_TITLE_LOCAL,
+            provider = "library",
+            items = RecommendationItems(albums = recentFavoriteAlbums)
+        )
+    }
+
+    private fun buildGenreData(
+        artists: List<Artist>,
+        historyGenreArtists: Map<String, List<String>>,
+        artistByUri: Map<String, Artist>
+    ): Pair<List<GenreItem>, Map<String, List<String>>> {
+        val genreMap = mutableMapOf<String, MutableList<Artist>>()
+        for (artist in artists) {
+            for (genre in artist.genres) {
+                genreMap.getOrPut(genre) { mutableListOf() }.add(artist)
+            }
+        }
+
+        val serverUris = genreMap.mapValues { (_, artistList) ->
+            artistList.map { it.uri }
+        }
+        val genreArtists = buildMap {
+            val allGenres = serverUris.keys + historyGenreArtists.keys
+            for (genre in allGenres) {
+                val merged = buildList {
+                    addAll(serverUris[genre].orEmpty())
+                    addAll(
+                        historyGenreArtists[genre]
+                            .orEmpty()
+                            .mapNotNull { key -> artistByUri[key]?.uri }
+                    )
+                }.distinctBy { artistKeyFromUri(it) ?: it }
+                put(genre, merged)
+            }
+        }
+
+        val genreItems = genreMap
+            .map { (name, artistList) ->
+                GenreItem(
+                    name = name,
+                    count = artistList.size,
+                    imageUrl = artistList.firstOrNull()?.imageUrl
+                )
+            }
+            .sortedByDescending { it.count }
+            .take(10)
+
+        return genreItems to genreArtists
+    }
+
+    private fun artistKey(artist: Artist): String? =
+        MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+
+    private fun artistKeyFromUri(uri: String?): String? =
+        MediaIdentity.canonicalArtistKey(uri = uri)
+
+    private fun albumKey(album: Album): String? =
+        MediaIdentity.canonicalAlbumKey(itemId = album.itemId, uri = album.uri)
+}

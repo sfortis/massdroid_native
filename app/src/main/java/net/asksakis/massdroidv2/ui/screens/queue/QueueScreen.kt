@@ -58,7 +58,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -94,6 +96,7 @@ fun QueueScreen(
     var actionSheetItem by remember { mutableStateOf<QueueActionItem?>(null) }
     var showQueueMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val haptic = LocalHapticFeedback.current
     val displayItems = remember { mutableStateListOf<QueueItem>() }
     var dragStartIndex by remember { mutableIntStateOf(-1) }
     var draggingQueueItemId by remember { mutableStateOf<String?>(null) }
@@ -213,6 +216,7 @@ fun QueueScreen(
                                             .size(28.dp)
                                             .longPressDraggableHandle(
                                                 onDragStarted = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                     dragStartIndex = index
                                                     draggingQueueItemId = item.queueItemId
                                                 },
@@ -231,6 +235,7 @@ fun QueueScreen(
                                                         toIndex >= 0 &&
                                                         fromIndex != toIndex
                                                     ) {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                                         viewModel.moveItem(queueItemId, fromIndex, toIndex)
                                                     }
                                                 }

@@ -9,6 +9,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -19,11 +21,15 @@ fun VolumeSlider(
     onMuteToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptic = LocalHapticFeedback.current
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onMuteToggle) {
+        IconButton(onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onMuteToggle()
+        }) {
             Icon(
                 imageVector = when {
                     isMuted || volume == 0 -> Icons.Default.VolumeMute
@@ -39,7 +45,10 @@ fun VolumeSlider(
         Slider(
             value = sliderValue,
             onValueChange = { sliderValue = it },
-            onValueChangeFinished = { onVolumeChange(sliderValue.toInt()) },
+            onValueChangeFinished = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onVolumeChange(sliderValue.toInt())
+            },
             valueRange = 0f..100f,
             modifier = Modifier.weight(1f)
         )

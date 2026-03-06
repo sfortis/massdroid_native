@@ -73,11 +73,7 @@ fun SettingsScreen(
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
-    val includeBetaUpdates by viewModel.includeBetaUpdates.collectAsStateWithLifecycle()
-    val updateInfo by viewModel.updateInfo.collectAsStateWithLifecycle()
-    val updateBusy by viewModel.updateBusy.collectAsStateWithLifecycle()
-    val updateProgress by viewModel.updateProgress.collectAsStateWithLifecycle()
-    val updateMessage by viewModel.updateMessage.collectAsStateWithLifecycle()
+    val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
@@ -95,41 +91,19 @@ fun SettingsScreen(
         viewModel.loadSavedCertificate(context)
     }
 
-    LaunchedEffect(updateMessage) {
-        if (updateMessage != null) {
+    LaunchedEffect(updateUiState.message) {
+        if (updateUiState.message != null) {
             kotlinx.coroutines.delay(2500)
             viewModel.clearUpdateMessage()
         }
     }
 
-    updateInfo?.let { info ->
-        val fileSizeMb = info.fileSizeBytes / (1024 * 1024)
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissUpdateDialog() },
-            title = { Text("Update Available") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Version ${info.version} is available${if (fileSizeMb > 0) " (${fileSizeMb}MB)" else ""}.")
-                    Text(
-                        info.releaseNotes.take(500).ifBlank { "No release notes." },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { viewModel.downloadAndInstallUpdate() },
-                    enabled = !updateBusy
-                ) {
-                    Text("Download & Install")
-                }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { viewModel.dismissUpdateDialog() }) {
-                    Text("Later")
-                }
-            }
+    updateUiState.availableUpdate?.let { info ->
+        UpdateAvailableDialog(
+            updateInfo = info,
+            busy = updateUiState.isChecking || updateUiState.isDownloading,
+            onConfirm = viewModel::downloadAndInstallUpdate,
+            onDismiss = viewModel::dismissUpdateDialog
         )
     }
 
@@ -297,65 +271,11 @@ fun SettingsScreen(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text("App Updates", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Current version: ${viewModel.appVersion}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(
-                        onClick = { viewModel.checkForUpdates(force = true) },
-                        enabled = !updateBusy,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (updateBusy && updateProgress == null) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Checking...")
-                        } else if (updateBusy && updateProgress != null) {
-                            Text("Downloading... ${updateProgress ?: 0}%")
-                        } else {
-                            Text("Check for Updates")
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "Include beta updates",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Switch(
-                            checked = includeBetaUpdates,
-                            onCheckedChange = { viewModel.toggleIncludeBetaUpdates(it) }
-                        )
-                    }
-                    if (updateProgress != null) {
-                        LinearProgressIndicator(
-                            progress = { (updateProgress ?: 0) / 100f },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    updateMessage?.let { message ->
-                        Text(
-                            text = message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                UpdatesCard(
+                    state = updateUiState,
+                    onCheck = { viewModel.checkForUpdates(force = true) },
+                    onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
+                )
             }
 
             Card(
@@ -536,6 +456,119 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateAvailableDialog(
+    updateInfo: net.asksakis.massdroidv2.data.update.AppUpdateChecker.UpdateInfo,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val fileSizeMb = updateInfo.fileSizeBytes / (1024 * 1024)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Update Available") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Version ${updateInfo.version} is available${if (fileSizeMb > 0) " (${fileSizeMb}MB)" else ""}.")
+                Text(
+                    updateInfo.releaseNotes.take(500).ifBlank { "No release notes." },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, enabled = !busy) {
+                Text("Download & Install")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss, enabled = !busy) {
+                Text("Later")
+            }
+        }
+    )
+}
+
+@Composable
+private fun UpdatesCard(
+    state: UpdateUiState,
+    onCheck: () -> Unit,
+    onToggleIncludeBeta: (Boolean) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("App Updates", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Current version: ${state.appVersion}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = onCheck,
+                enabled = !state.isChecking && !state.isDownloading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                when {
+                    state.isChecking -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Checking...")
+                    }
+                    state.isDownloading -> {
+                        Text("Downloading... ${state.downloadProgress ?: 0}%")
+                    }
+                    else -> {
+                        Text("Check for Updates")
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Include beta updates",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = state.includeBetaUpdates,
+                    onCheckedChange = onToggleIncludeBeta
+                )
+            }
+            state.downloadProgress?.let { progress ->
+                if (state.isDownloading) {
+                    LinearProgressIndicator(
+                        progress = { progress / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+            state.message?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

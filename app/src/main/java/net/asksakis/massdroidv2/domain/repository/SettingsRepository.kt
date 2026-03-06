@@ -15,6 +15,9 @@ interface SettingsRepository {
     val smartListeningEnabled: Flow<Boolean>
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
+    val sendspinSnapshotTrackUri: Flow<String?>
+    val sendspinSnapshotPositionSeconds: Flow<Double>
+    val sendspinSnapshotQueueUris: Flow<List<String>>
     val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
     val librarySortDescending: Flow<Map<Int, Boolean>>
@@ -30,6 +33,8 @@ interface SettingsRepository {
     suspend fun setSmartListeningEnabled(enabled: Boolean)
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
+    suspend fun setSendspinSnapshot(trackUri: String?, positionSeconds: Double, queueUris: List<String>)
+    suspend fun clearSendspinSnapshot()
     suspend fun setLibraryDisplayMode(tab: Int, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)
