@@ -29,6 +29,8 @@ class PlayerRepositoryImpl @Inject constructor(
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
         private const val BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS = 2_000L
         private const val BLOCKED_QUEUE_ITEMS_LIMIT = 500
+        private const val HISTORY_GENRE_LOOKUP_TIMEOUT_MS = 1_200L
+        private const val HISTORY_ARTIST_LOOKUP_LIMIT = 3
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -68,6 +70,10 @@ class PlayerRepositoryImpl @Inject constructor(
         val artists: List<Pair<String, String>>,
         val startTime: Long
     )
+    private data class MaItemRef(
+        val itemId: String,
+        val provider: String
+    )
     private val queueTracking = ConcurrentHashMap<String, QueueTrackingState>()
     private val artistGenreCache = ConcurrentHashMap<String, List<String>>()
     private val manualSkipByQueue = ConcurrentHashMap<String, String>()
@@ -78,9 +84,16 @@ class PlayerRepositoryImpl @Inject constructor(
     private var blockedArtistUrisSnapshot: Set<String> = emptySet()
     @Volatile
     private var suppressedArtistUrisSnapshot: Set<String> = emptySet()
+    @Volatile
+    private var smartListeningEnabledSnapshot: Boolean = false
 
     init {
         scope.launch { observeEvents() }
+        scope.launch {
+            settingsRepository.smartListeningEnabled.collect { enabled ->
+                smartListeningEnabledSnapshot = enabled
+            }
+        }
         scope.launch {
             smartListeningRepository.blockedArtistUris.collect { blocked ->
                 blockedArtistUrisSnapshot = blocked
@@ -244,11 +257,12 @@ class PlayerRepositoryImpl @Inject constructor(
             if (listenedMs > 30_000L && !wasManualSkip) {
                 scope.launch {
                     try {
+                        val enrichedTrack = enrichTrackGenresForHistory(prev.track, prev.artists)
                         playHistoryRepository.recordPlay(
-                            prev.track, queueId, listenedMs, prev.artists
+                            enrichedTrack, queueId, listenedMs, prev.artists
                         )
                         smartListeningRepository.recordListen(
-                            track = prev.track,
+                            track = enrichedTrack,
                             artists = prev.artists
                         )
                     } catch (e: Exception) {
@@ -267,11 +281,19 @@ class PlayerRepositoryImpl @Inject constructor(
                     a.uri.takeIf { it.isNotBlank() }?.let { uri -> uri to a.name }
                 } ?: emptyList()
 
+            // Start with track-level metadata genres when present, then enrich from artist cache.
+            val trackMetadataGenres = mediaItem.metadata?.genres
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList()
+
             // Resolve genres from cache immediately if available
             val cachedGenres = mediaItem.artists
                 ?.flatMap { artistGenreCache[it.uri] ?: emptyList() }
                 ?.distinct()
                 ?: emptyList()
+            val initialGenres = (trackMetadataGenres + cachedGenres)
+                .distinct()
 
             val track = Track(
                 itemId = mediaItem.itemId,
@@ -295,8 +317,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     itemId = mediaItem.album?.itemId,
                     uri = mediaItem.album?.uri
                 ),
-                genres = cachedGenres,
-                year = mediaItem.album?.year ?: mediaItem.year
+                genres = initialGenres,
+                year = sanitizeYear(mediaItem.album?.year ?: mediaItem.year)
             )
             queueTracking[queueId] = QueueTrackingState(track, artists, now)
             maybeAutoSkipBlockedTrack(
@@ -317,6 +339,158 @@ class PlayerRepositoryImpl @Inject constructor(
             }
         }
     }
+
+    private suspend fun enrichTrackGenresForHistory(
+        track: Track,
+        artists: List<Pair<String, String>>
+    ): Track {
+        val mergedGenres = LinkedHashSet<String>()
+        mergedGenres.addAll(normalizeGenres(track.genres))
+        artists.forEach { (artistUri, _) ->
+            artistGenreCache[artistUri]?.let { mergedGenres.addAll(normalizeGenres(it)) }
+        }
+        if (mergedGenres.isNotEmpty()) {
+            return track.copy(genres = mergedGenres.toList())
+        }
+
+        val trackMeta = fetchMediaItem(
+            command = MaCommands.Music.TRACKS_GET,
+            ref = trackRef(track)
+        )
+        mergedGenres.addAll(normalizeGenres(trackMeta?.metadata?.genres))
+        if (mergedGenres.isNotEmpty()) {
+            Log.d(TAG, "History genres from track metadata for ${track.uri}: $mergedGenres")
+            return track.copy(genres = mergedGenres.toList())
+        }
+
+        val albumMeta = fetchMediaItem(
+            command = MaCommands.Music.ALBUMS_GET,
+            ref = albumRef(track, trackMeta)
+        )
+        mergedGenres.addAll(normalizeGenres(albumMeta?.metadata?.genres))
+        if (mergedGenres.isNotEmpty()) {
+            Log.d(TAG, "History genres from album metadata for ${track.uri}: $mergedGenres")
+            return track.copy(genres = mergedGenres.toList())
+        }
+
+        val artistRefs = artistRefs(track, trackMeta, artists)
+        artistRefs.forEach { ref ->
+            val artistMeta = fetchMediaItem(
+                command = MaCommands.Music.ARTISTS_GET,
+                ref = ref
+            )
+            val artistGenres = normalizeGenres(artistMeta?.metadata?.genres)
+            if (artistGenres.isNotEmpty()) {
+                mergedGenres.addAll(artistGenres)
+            }
+        }
+        if (mergedGenres.isNotEmpty()) {
+            Log.d(TAG, "History genres from artist metadata for ${track.uri}: $mergedGenres")
+        }
+        return track.copy(genres = mergedGenres.toList())
+    }
+
+    private suspend fun fetchMediaItem(command: String, ref: MaItemRef?): ServerMediaItem? {
+        if (ref == null) return null
+        return try {
+            val result = wsClient.sendCommand(
+                command = command,
+                args = ItemRefLazyArgs(
+                    itemId = ref.itemId,
+                    provider = ref.provider,
+                    lazy = true
+                ),
+                timeoutMs = HISTORY_GENRE_LOOKUP_TIMEOUT_MS
+            )
+            result?.let { json.decodeFromJsonElement<ServerMediaItem>(it) }
+        } catch (e: Exception) {
+            Log.d(TAG, "History genre lookup failed for $command ${ref.provider}/${ref.itemId}: ${e.message}")
+            null
+        }
+    }
+
+    private fun trackRef(track: Track): MaItemRef? {
+        if (!track.itemId.isBlank() && !track.provider.isBlank()) {
+            return MaItemRef(itemId = track.itemId, provider = track.provider)
+        }
+        return parseMaItemRef(track.uri)
+    }
+
+    private fun albumRef(track: Track, trackMeta: ServerMediaItem?): MaItemRef? {
+        val fromTrackMeta = trackMeta?.album?.let { album ->
+            if (album.itemId.isNotBlank() && album.provider.isNotBlank()) {
+                MaItemRef(itemId = album.itemId, provider = album.provider)
+            } else null
+        }
+        if (fromTrackMeta != null) return fromTrackMeta
+
+        if (!track.albumItemId.isNullOrBlank() && !track.albumProvider.isNullOrBlank()) {
+            return MaItemRef(itemId = track.albumItemId, provider = track.albumProvider)
+        }
+        return parseMaItemRef(track.albumUri)
+    }
+
+    private fun artistRefs(
+        track: Track,
+        trackMeta: ServerMediaItem?,
+        artists: List<Pair<String, String>>
+    ): List<MaItemRef> {
+        val refs = linkedSetOf<MaItemRef>()
+
+        trackMeta?.artists
+            ?.asSequence()
+            ?.mapNotNull { artist ->
+                if (artist.itemId.isNotBlank() && artist.provider.isNotBlank()) {
+                    MaItemRef(itemId = artist.itemId, provider = artist.provider)
+                } else parseMaItemRef(artist.uri)
+            }
+            ?.forEach { refs.add(it) }
+
+        artists
+            .asSequence()
+            .mapNotNull { (uri, _) -> parseMaItemRef(uri) }
+            .forEach { refs.add(it) }
+
+        if (!track.artistItemId.isNullOrBlank() && !track.artistProvider.isNullOrBlank()) {
+            refs.add(MaItemRef(itemId = track.artistItemId, provider = track.artistProvider))
+        } else {
+            parseMaItemRef(track.artistUri)?.let { refs.add(it) }
+        }
+
+        return refs.take(HISTORY_ARTIST_LOOKUP_LIMIT)
+    }
+
+    private fun parseMaItemRef(uri: String?): MaItemRef? {
+        val raw = uri?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val provider = raw.substringBefore("://", "").trim()
+        if (provider.isEmpty()) return null
+        val path = raw.substringAfter("://", "")
+            .substringBefore('?')
+            .substringBefore('#')
+            .trim('/')
+        if (path.isEmpty()) return null
+        val itemId = path.substringAfterLast('/').trim()
+        if (itemId.isEmpty()) return null
+        return MaItemRef(itemId = itemId, provider = provider)
+    }
+
+    private fun normalizeGenres(genres: List<String>?): List<String> {
+        if (genres.isNullOrEmpty()) return emptyList()
+        val seen = linkedSetOf<String>()
+        val result = mutableListOf<String>()
+        genres.forEach { raw ->
+            val value = raw.trim()
+            if (value.isEmpty()) return@forEach
+            val key = value.lowercase()
+            if (seen.add(key)) {
+                result.add(value)
+            }
+        }
+        return result
+    }
+
+    private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }
 
     private fun maybeAutoSkipBlockedTrack(
         queueId: String,
@@ -450,6 +624,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 artistGenreCache[artist.uri] = emptyList()
             }
         }
+        // Include already-known genres already attached to the tracked item (track metadata / previous cache).
+        queueTracking[queueId]?.track?.genres?.let { allGenres.addAll(it) }
         // Include already-cached genres from other artists on this track
         queueTracking[queueId]?.artists?.forEach { (uri, _) ->
             artistGenreCache[uri]?.let { allGenres.addAll(it) }
@@ -679,10 +855,9 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun maybeRecordManualSkip(playerId: String) {
+    private fun maybeRecordManualSkip(playerId: String) {
         val current = queueTracking[playerId] ?: return
-        val smartEnabled = settingsRepository.smartListeningEnabled.first()
-        if (!smartEnabled) return
+        if (!smartListeningEnabledSnapshot) return
         manualSkipByQueue[playerId] = current.track.uri
         scope.launch {
             try {
@@ -811,7 +986,7 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                         uri = mi.album?.uri
                     ),
                     genres = mi.metadata?.genres ?: emptyList(),
-                    year = mi.album?.year ?: mi.year
+                    year = (mi.album?.year ?: mi.year)?.takeIf { it > 0 }
                 )
             },
             imageUrl = item.mediaItem?.resolveImageUrl(wsClient)

@@ -250,6 +250,19 @@ fun ArtistDetailScreen(
                         imageUrl = track.imageUrl,
                         onClick = { viewModel.playTrack(track) },
                         favorite = track.favorite,
+                        onMoreClick = {
+                            actionSheetItem = ActionSheetItem(
+                                title = track.name,
+                                subtitle = track.artistNames,
+                                uri = track.uri,
+                                imageUrl = track.imageUrl,
+                                favorite = track.favorite,
+                                mediaType = MediaType.TRACK,
+                                itemId = track.itemId,
+                                primaryArtistUri = track.artistUri ?: artist?.uri,
+                                primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { artistName }
+                            )
+                        },
                         onLongClick = {
                             actionSheetItem = ActionSheetItem(
                                 title = track.name,

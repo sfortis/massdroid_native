@@ -62,10 +62,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT
-            CASE
-                WHEN instr(artist_uri, '://') > 0 THEN substr(artist_uri, instr(artist_uri, '://') + 3)
-                ELSE artist_uri
-            END AS artistUri,
+            artist_uri AS artistUri,
             signal,
             created_at AS createdAt
         FROM smart_feedback
@@ -94,10 +91,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT
-            CASE
-                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
-                ELSE a.uri
-            END AS artistUri,
+            a.uri AS artistUri,
             MIN(a.name) AS artistName,
             COUNT(*) AS playCount
         FROM play_history ph
@@ -232,10 +226,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT
-            CASE
-                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
-                ELSE a.uri
-            END AS artistUri,
+            a.uri AS artistUri,
             MIN(a.name) AS artistName,
             ph.played_at AS playedAt
         FROM play_history ph
@@ -252,10 +243,7 @@ interface PlayHistoryDao {
         """
         SELECT
             tg.genre_name AS genre,
-            CASE
-                WHEN instr(a.uri, '://') > 0 THEN substr(a.uri, instr(a.uri, '://') + 3)
-                ELSE a.uri
-            END AS artistUri
+            a.uri AS artistUri
         FROM track_genres tg
         JOIN track_artists ta ON ta.track_uri = tg.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
@@ -281,10 +269,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT
-               CASE
-                   WHEN instr(ta.artist_uri, '://') > 0 THEN substr(ta.artist_uri, instr(ta.artist_uri, '://') + 3)
-                   ELSE ta.artist_uri
-               END AS artistUri,
+               ta.artist_uri AS artistUri,
                ((al.year / 10) * 10) AS decade,
                COUNT(*) AS playCount
         FROM play_history ph
@@ -293,6 +278,7 @@ interface PlayHistoryDao {
         JOIN track_artists ta ON ta.track_uri = t.uri
         WHERE ph.played_at > :since
           AND al.year IS NOT NULL
+          AND al.year > 0
         GROUP BY artistUri, decade
         """
     )
@@ -309,6 +295,7 @@ interface PlayHistoryDao {
         JOIN track_genres tg ON tg.track_uri = t.uri
         WHERE ph.played_at > :since
           AND al.year IS NOT NULL
+          AND al.year > 0
           AND tg.genre_name = :genre
         GROUP BY decade
         ORDER BY playCount DESC

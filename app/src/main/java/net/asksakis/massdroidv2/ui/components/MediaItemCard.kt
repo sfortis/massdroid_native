@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
@@ -38,6 +39,7 @@ fun MediaItemRow(
     onLongClick: (() -> Unit)? = null,
     onMoreClick: (() -> Unit)? = null,
     onPlayClick: (() -> Unit)? = null,
+    dragHandle: (@Composable () -> Unit)? = null,
     showEqualizer: Boolean = false
 ) {
     val context = LocalContext.current
@@ -102,7 +104,7 @@ fun MediaItemRow(
             }
         },
         trailingContent = {
-            if (favorite || onPlayClick != null || onMoreClick != null) {
+            if (favorite || onPlayClick != null || onMoreClick != null || dragHandle != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (favorite) {
                         Icon(
@@ -133,6 +135,9 @@ fun MediaItemRow(
                         IconButton(onClick = onMoreClick, modifier = Modifier.size(36.dp)) {
                             Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(20.dp))
                         }
+                    }
+                    if (dragHandle != null) {
+                        dragHandle()
                     }
                 }
             }

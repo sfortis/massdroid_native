@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -43,9 +45,11 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.VolumeSlider
@@ -64,6 +68,9 @@ fun NowPlayingScreen(
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     val elapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val isLoadingPlaylists by viewModel.isLoadingPlaylists.collectAsStateWithLifecycle()
+    val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
 
     val currentTrack = queueState?.currentItem?.track
     val currentArtistUri = MediaIdentity.canonicalArtistKey(
@@ -81,6 +88,14 @@ fun NowPlayingScreen(
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
         ?: player?.currentMedia?.duration ?: 0.0
     val isPlaying = player?.state == PlaybackState.PLAYING
+    var showPlaylistDialog by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.error.collectLatest { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     val isDark = isSystemInDarkTheme()
     val surfaceColor = MaterialTheme.colorScheme.surface
@@ -142,6 +157,7 @@ fun NowPlayingScreen(
                 )
             }
         },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         containerColor = Color.Transparent
     ) { paddingValues ->
         Box(
@@ -168,6 +184,10 @@ fun NowPlayingScreen(
                     canToggleArtistBlock = canToggleArtistBlock,
                     onBack = onBack,
                     onNavigateToQueue = onNavigateToQueue,
+                    onShowPlaylistDialog = {
+                        showPlaylistDialog = true
+                        viewModel.loadPlaylists()
+                    },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
                 )
@@ -185,11 +205,30 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     viewModel = viewModel,
+                    onShowPlaylistDialog = {
+                        showPlaylistDialog = true
+                        viewModel.loadPlaylists()
+                    },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
                 )
             }
         }
+    }
+
+    if (showPlaylistDialog) {
+        AddToPlaylistDialog(
+            playlists = playlists,
+            isLoading = isLoadingPlaylists,
+            addingToPlaylistId = addingToPlaylistId,
+            onDismiss = { showPlaylistDialog = false },
+            onRetry = { viewModel.loadPlaylists(force = true) },
+            onPlaylistClick = { playlist ->
+                viewModel.addCurrentTrackToPlaylist(playlist) {
+                    showPlaylistDialog = false
+                }
+            }
+        )
     }
 }
 
@@ -207,6 +246,7 @@ private fun NowPlayingPortrait(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     viewModel: NowPlayingViewModel,
+    onShowPlaylistDialog: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
@@ -233,6 +273,7 @@ private fun NowPlayingPortrait(
             album = album,
             currentTrack = currentTrack,
             viewModel = viewModel,
+            onShowPlaylistDialog = onShowPlaylistDialog,
             onNavigateToArtist = onNavigateToArtist,
             onNavigateToAlbum = onNavigateToAlbum
         )
@@ -282,6 +323,7 @@ private fun NowPlayingLandscape(
     canToggleArtistBlock: Boolean,
     onBack: () -> Unit,
     onNavigateToQueue: () -> Unit,
+    onShowPlaylistDialog: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
@@ -378,6 +420,7 @@ private fun NowPlayingLandscape(
                 album = album,
                 currentTrack = currentTrack,
                 viewModel = viewModel,
+                onShowPlaylistDialog = onShowPlaylistDialog,
                 onNavigateToArtist = onNavigateToArtist,
                 onNavigateToAlbum = onNavigateToAlbum,
                 compact = true
@@ -419,6 +462,7 @@ private fun TrackInfoSection(
     album: String,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
     viewModel: NowPlayingViewModel,
+    onShowPlaylistDialog: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit,
     compact: Boolean = false
@@ -437,9 +481,19 @@ private fun TrackInfoSection(
             maxLines = 1,
             textAlign = TextAlign.Center,
             modifier = Modifier
-                .padding(horizontal = if (compact) 44.dp else 56.dp)
+                .padding(horizontal = if (compact) 80.dp else 96.dp)
                 .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
         )
+        IconButton(
+            onClick = onShowPlaylistDialog,
+            modifier = Modifier.align(Alignment.CenterStart)
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = "Add to playlist",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         IconButton(
             onClick = { viewModel.toggleFavorite() },
             modifier = Modifier.align(Alignment.CenterEnd)
@@ -481,6 +535,88 @@ private fun TrackInfoSection(
             } else Modifier
         )
     }
+}
+
+@Composable
+private fun AddToPlaylistDialog(
+    playlists: List<Playlist>,
+    isLoading: Boolean,
+    addingToPlaylistId: String?,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onPlaylistClick: (Playlist) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to Playlist") },
+        text = {
+            when {
+                isLoading -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+                playlists.isEmpty() -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("No playlists available.")
+                        TextButton(onClick = onRetry) {
+                            Text("Reload")
+                        }
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(playlists, key = { it.uri }) { playlist ->
+                            val isAdding = addingToPlaylistId == playlist.itemId
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(MaterialTheme.shapes.medium)
+                                    .clickable(enabled = !isAdding) { onPlaylistClick(playlist) },
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = playlist.name,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (isAdding) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }
 
 @Composable

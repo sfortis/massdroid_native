@@ -150,6 +150,26 @@ class QueueViewModel @Inject constructor(
         }
     }
 
+    fun moveItem(queueItemId: String, fromIndex: Int, toIndex: Int) {
+        val id = queueId ?: return
+        if (fromIndex == toIndex) return
+        viewModelScope.launch {
+            try {
+                musicRepository.moveQueueItem(id, queueItemId, toIndex - fromIndex)
+                val list = _queueItems.value.toMutableList()
+                if (fromIndex in list.indices && toIndex in list.indices) {
+                    val item = list.removeAt(fromIndex)
+                    list.add(toIndex, item)
+                    _queueItems.value = list
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "moveItem failed: ${e.message}", e)
+                _error.tryEmit(parseQueueError(e))
+                loadQueue()
+            }
+        }
+    }
+
     fun playNext(queueItemId: String, currentIndex: Int) {
         val id = queueId ?: return
         viewModelScope.launch {

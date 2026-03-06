@@ -326,6 +326,19 @@ fun LibraryScreen(
                                 primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
                             )
                         },
+                        onMoreClick = { track ->
+                            actionSheetItem = ActionSheetItem(
+                                title = track.name,
+                                subtitle = track.artistNames,
+                                uri = track.uri,
+                                imageUrl = track.imageUrl,
+                                favorite = track.favorite,
+                                mediaType = MediaType.TRACK,
+                                itemId = track.itemId,
+                                primaryArtistUri = track.artistUri,
+                                primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
+                            )
+                        },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
                     3 -> MediaList(
@@ -432,6 +445,7 @@ private fun <T> MediaList(
     favorite: (T) -> Boolean = { false },
     onClick: (T) -> Unit,
     onLongClick: (T) -> Unit,
+    onMoreClick: ((T) -> Unit)? = null,
     onPlayClick: ((T) -> Unit)? = null
 ) {
     when (displayMode) {
@@ -451,6 +465,7 @@ private fun <T> MediaList(
                         onClick = { onClick(item) },
                         favorite = favorite(item),
                         onLongClick = { onLongClick(item) },
+                        onMoreClick = onMoreClick?.let { { it(item) } },
                         onPlayClick = onPlayClick?.let { { it(item) } }
                     )
                 }

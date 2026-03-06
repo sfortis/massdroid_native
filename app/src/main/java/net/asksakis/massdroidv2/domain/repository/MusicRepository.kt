@@ -22,6 +22,8 @@ interface MusicRepository {
 
     suspend fun playMedia(queueId: String, uri: String, option: String? = null, radioMode: Boolean = false)
     suspend fun playMedia(queueId: String, uris: List<String>, option: String? = null, radioMode: Boolean = false)
+    suspend fun addTrackToPlaylist(playlist: Playlist, trackUri: String)
+    suspend fun removeTrackFromPlaylist(playlist: Playlist, position: Int)
     suspend fun shuffleQueue(queueId: String, enabled: Boolean)
     suspend fun repeatQueue(queueId: String, mode: RepeatMode)
     suspend fun clearQueue(queueId: String)

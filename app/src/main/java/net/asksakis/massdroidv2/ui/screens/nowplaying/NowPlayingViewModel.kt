@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -33,6 +34,12 @@ class NowPlayingViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+    private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
+    val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
+    private val _isLoadingPlaylists = MutableStateFlow(false)
+    val isLoadingPlaylists: StateFlow<Boolean> = _isLoadingPlaylists.asStateFlow()
+    private val _addingToPlaylistId = MutableStateFlow<String?>(null)
+    val addingToPlaylistId: StateFlow<String?> = _addingToPlaylistId.asStateFlow()
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -182,6 +189,39 @@ class NowPlayingViewModel @Inject constructor(
                     _blockedArtistUris.value - artistUri
                 }
                 _error.tryEmit("Failed to update artist filter")
+            }
+        }
+    }
+
+    fun loadPlaylists(force: Boolean = false) {
+        if (_isLoadingPlaylists.value) return
+        if (!force && _playlists.value.isNotEmpty()) return
+        viewModelScope.launch {
+            _isLoadingPlaylists.value = true
+            try {
+                _playlists.value = musicRepository.getPlaylists(limit = 200)
+            } catch (e: Exception) {
+                Log.w(TAG, "loadPlaylists failed: ${e.message}")
+                _error.tryEmit("Failed to load playlists")
+            } finally {
+                _isLoadingPlaylists.value = false
+            }
+        }
+    }
+
+    fun addCurrentTrackToPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {
+        val track = queueState.value?.currentItem?.track ?: return
+        if (_addingToPlaylistId.value != null) return
+        viewModelScope.launch {
+            _addingToPlaylistId.value = playlist.itemId
+            try {
+                musicRepository.addTrackToPlaylist(playlist, track.uri)
+                onDone()
+            } catch (e: Exception) {
+                Log.w(TAG, "addCurrentTrackToPlaylist failed: ${e.message}")
+                _error.tryEmit("Failed to add track to playlist")
+            } finally {
+                _addingToPlaylistId.value = null
             }
         }
     }

@@ -891,6 +891,10 @@ class PlaylistDetailViewModel @Inject constructor(
 
     private val _favorite = MutableStateFlow(savedStateHandle.get<Boolean>("favorite") ?: false)
     val favorite: StateFlow<Boolean> = _favorite.asStateFlow()
+    private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
+    val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
+    private val _busyTrackUri = MutableStateFlow<String?>(null)
+    val busyTrackUri: StateFlow<String?> = _busyTrackUri.asStateFlow()
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -905,6 +909,13 @@ class PlaylistDetailViewModel @Inject constructor(
                 _tracks.value = musicRepository.getPlaylistTracks(itemId, provider)
             } catch (e: Exception) {
                 Log.w(TAG, "Load playlist tracks failed: ${e.message}")
+            }
+        }
+        viewModelScope.launch {
+            try {
+                _playlists.value = musicRepository.getPlaylists(limit = 200)
+            } catch (e: Exception) {
+                Log.w(TAG, "Load playlists failed: ${e.message}")
             }
         }
         viewModelScope.launch {
@@ -961,6 +972,42 @@ class PlaylistDetailViewModel @Inject constructor(
 
     fun playTrack(track: Track) = playUri(track.uri)
 
+    fun removeTrackFromPlaylist(track: Track, fallbackPosition: Int) {
+        val playlist = currentPlaylist() ?: return
+        val position = track.position ?: fallbackPosition
+        viewModelScope.launch {
+            _busyTrackUri.value = track.uri
+            try {
+                musicRepository.removeTrackFromPlaylist(playlist, position)
+                _tracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+            } catch (e: Exception) {
+                Log.w(TAG, "removeTrackFromPlaylist failed: ${e.message}")
+                _error.tryEmit("Failed to remove track from playlist")
+            } finally {
+                _busyTrackUri.value = null
+            }
+        }
+    }
+
+    fun moveTrackToPlaylist(track: Track, fallbackPosition: Int, destination: Playlist) {
+        val source = currentPlaylist() ?: return
+        if (destination.uri == source.uri) return
+        val position = track.position ?: fallbackPosition
+        viewModelScope.launch {
+            _busyTrackUri.value = track.uri
+            try {
+                musicRepository.addTrackToPlaylist(destination, track.uri)
+                musicRepository.removeTrackFromPlaylist(source, position)
+                _tracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+            } catch (e: Exception) {
+                Log.w(TAG, "moveTrackToPlaylist failed: ${e.message}")
+                _error.tryEmit("Failed to move track to playlist")
+            } finally {
+                _busyTrackUri.value = null
+            }
+        }
+    }
+
     fun togglePlaylistFavorite() {
         val current = _favorite.value
         viewModelScope.launch {
@@ -994,5 +1041,16 @@ class PlaylistDetailViewModel @Inject constructor(
             val blocked = _blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
+    }
+
+    private fun currentPlaylist(): Playlist? {
+        if (itemId.isBlank()) return null
+        return Playlist(
+            itemId = itemId,
+            provider = provider,
+            name = _playlistName.value,
+            uri = playlistUri,
+            favorite = _favorite.value
+        )
     }
 }

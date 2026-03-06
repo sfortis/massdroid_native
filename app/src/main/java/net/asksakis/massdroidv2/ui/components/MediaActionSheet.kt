@@ -27,8 +27,15 @@ data class ActionSheetItem(
     val favorite: Boolean,
     val mediaType: MediaType,
     val itemId: String,
+    val position: Int? = null,
     val primaryArtistUri: String? = null,
     val primaryArtistName: String? = null
+)
+
+data class MediaActionSheetExtraAction(
+    val title: String,
+    val icon: @Composable () -> Unit,
+    val onClick: () -> Unit
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,6 +50,7 @@ fun MediaActionSheet(
     artistBlocked: Boolean = false,
     onToggleFavorite: (() -> Unit)? = null,
     onToggleArtistBlocked: (() -> Unit)? = null,
+    extraActions: List<MediaActionSheetExtraAction> = emptyList(),
     onPlayNow: () -> Unit,
     onPlayOnPlayer: (Player) -> Unit,
     onAddToQueue: () -> Unit,
@@ -129,6 +137,17 @@ fun MediaActionSheet(
                     },
                     modifier = Modifier.clickable {
                         onToggleArtistBlocked()
+                        onDismiss()
+                    }
+                )
+            }
+
+            extraActions.forEach { action ->
+                ListItem(
+                    headlineContent = { Text(action.title) },
+                    leadingContent = action.icon,
+                    modifier = Modifier.clickable {
+                        action.onClick()
                         onDismiss()
                     }
                 )

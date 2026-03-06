@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
@@ -277,11 +278,38 @@ fun AlbumDetailScreen(
                         )
                     },
                     trailingContent = {
-                        track.duration?.let { dur ->
-                            Text(
-                                "%d:%02d".format((dur / 60).toInt(), (dur % 60).toInt()),
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            track.duration?.let { dur ->
+                                Text(
+                                    "%d:%02d".format((dur / 60).toInt(), (dur % 60).toInt()),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            IconButton(
+                                onClick = {
+                                    actionSheetItem = ActionSheetItem(
+                                        title = track.name,
+                                        subtitle = track.artistNames,
+                                        uri = track.uri,
+                                        imageUrl = track.imageUrl,
+                                        favorite = track.favorite,
+                                        mediaType = MediaType.TRACK,
+                                        itemId = track.itemId,
+                                        primaryArtistUri = track.artistUri ?: album?.artists?.firstOrNull()?.uri,
+                                        primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
+                                            .orEmpty()
+                                            .ifBlank { album?.artists?.firstOrNull()?.name ?: "Artist" }
+                                    )
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "More actions",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     },
                     modifier = Modifier

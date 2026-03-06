@@ -12,28 +12,20 @@ object MediaIdentity {
         canonicalMediaKey(itemId = itemId, uri = uri)
 
     fun canonicalMediaKey(itemId: String? = null, uri: String? = null): String? {
-        val direct = itemId?.trim().orEmpty()
-        if (direct.isNotEmpty()) return direct
-
         val raw = uri?.trim().orEmpty()
-        if (raw.isEmpty()) return null
-
-        val noFragment = raw.substringBefore('#').substringBefore('?')
-        if (noFragment.isEmpty()) return null
-
-        val afterScheme = if (noFragment.contains("://")) {
-            noFragment.substringAfter("://")
-        } else {
-            noFragment
+        if (raw.isNotEmpty()) {
+            val normalizedUri = normalizeUri(raw)
+            if (normalizedUri.isNotEmpty()) return normalizedUri
         }
-        if (afterScheme.isEmpty()) return null
 
-        val tail = afterScheme.substringAfterLast('/')
-        val fromTail = tail.substringAfterLast(':')
-        return when {
-            fromTail.isNotEmpty() -> fromTail
-            tail.isNotEmpty() -> tail
-            else -> afterScheme
-        }
+        val direct = itemId?.trim().orEmpty()
+        return direct.ifEmpty { null }
+    }
+
+    private fun normalizeUri(raw: String): String {
+        return raw
+            .substringBefore('#')
+            .substringBefore('?')
+            .trim()
     }
 }

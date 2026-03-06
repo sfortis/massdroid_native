@@ -18,7 +18,10 @@ object MaCommands {
         const val ARTISTS_LIBRARY_ITEMS = "music/artists/library_items"
         const val ALBUMS_LIBRARY_ITEMS = "music/albums/library_items"
         const val TRACKS_LIBRARY_ITEMS = "music/tracks/library_items"
+        const val TRACKS_GET = "music/tracks/get"
         const val PLAYLISTS_LIBRARY_ITEMS = "music/playlists/library_items"
+        const val PLAYLISTS_ADD_TRACKS = "music/playlists/add_playlist_tracks"
+        const val PLAYLISTS_REMOVE_TRACKS = "music/playlists/remove_playlist_tracks"
         const val ARTISTS_GET = "music/artists/get"
         const val ALBUMS_GET = "music/albums/get"
         const val ARTIST_ALBUMS = "music/artists/artist_albums"
@@ -242,11 +245,31 @@ data class FavoriteAddArgs(val item: String) : MaCommandArgs {
 
 data class FavoriteRemoveArgs(
     val mediaType: String,
-    val libraryItemId: Int
+    val libraryItemId: String
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("media_type", mediaType)
         put("library_item_id", libraryItemId)
+    }
+}
+
+data class AddPlaylistTracksArgs(
+    val dbPlaylistId: String,
+    val uris: List<String>
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("db_playlist_id", dbPlaylistId)
+        put("uris", JsonArray(uris.map(::JsonPrimitive)))
+    }
+}
+
+data class RemovePlaylistTracksArgs(
+    val dbPlaylistId: String,
+    val positionsToRemove: List<Int>
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("db_playlist_id", dbPlaylistId)
+        put("positions_to_remove", JsonArray(positionsToRemove.map(::JsonPrimitive)))
     }
 }
 

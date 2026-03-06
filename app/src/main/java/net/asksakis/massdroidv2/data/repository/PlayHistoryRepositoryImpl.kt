@@ -57,7 +57,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                     uri = albumKey,
                     name = track.albumName,
                     imageUrl = track.imageUrl,
-                    year = track.year
+                    year = sanitizeYear(track.year)
                 )
             )
         }
@@ -292,4 +292,6 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         }
         return if (sum > 0.0) ln(sum) else BLL_FLOOR
     }
+
+    private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }
 }

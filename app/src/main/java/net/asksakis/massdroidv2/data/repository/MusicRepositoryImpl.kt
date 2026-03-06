@@ -155,6 +155,28 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun addTrackToPlaylist(playlist: Playlist, trackUri: String) {
+        val dbPlaylistId = resolvePlaylistDbId(playlist)
+        wsClient.sendCommand(
+            MaCommands.Music.PLAYLISTS_ADD_TRACKS,
+            AddPlaylistTracksArgs(
+                dbPlaylistId = dbPlaylistId,
+                uris = listOf(trackUri)
+            )
+        )
+    }
+
+    override suspend fun removeTrackFromPlaylist(playlist: Playlist, position: Int) {
+        val dbPlaylistId = resolvePlaylistDbId(playlist)
+        wsClient.sendCommand(
+            MaCommands.Music.PLAYLISTS_REMOVE_TRACKS,
+            RemovePlaylistTracksArgs(
+                dbPlaylistId = dbPlaylistId,
+                positionsToRemove = listOf(position)
+            )
+        )
+    }
+
     override suspend fun shuffleQueue(queueId: String, enabled: Boolean) {
         wsClient.sendCommand(
             MaCommands.PlayerQueues.SHUFFLE,
@@ -294,14 +316,16 @@ class MusicRepositoryImpl @Inject constructor(
             msg.contains("closed")
     }
 
-    private suspend fun resolveLibraryItemId(uri: String, itemId: String): Int {
-        // If URI is library://, extract the numeric ID directly
-        val libraryMatch = Regex("^library://\\w+/(\\d+)$").find(uri)
-        if (libraryMatch != null) return libraryMatch.groupValues[1].toInt()
-        // Resolve via server using the full provider URI
+    private suspend fun resolveLibraryItemId(uri: String, itemId: String): String {
+        // If URI is library://, extract the MA library item ID directly.
+        val libraryMatch = Regex("^library://\\w+/(.+)$").find(uri)
+        if (libraryMatch != null) return libraryMatch.groupValues[1]
+        // Resolve via server using the full provider URI.
         val result = wsClient.sendCommand(MaCommands.Music.ITEM_BY_URI, ItemByUriArgs(uri))
-        return result?.jsonObject?.get("item_id")?.jsonPrimitive?.intOrNull
-            ?: itemId.toInt()
+        val resolved = result?.jsonObject?.get("item_id")?.jsonPrimitive?.contentOrNull
+        if (!resolved.isNullOrBlank()) return resolved
+        if (itemId.isNotBlank()) return itemId
+        throw MaApiException("Could not resolve library_item_id for '$uri'", -1)
     }
 
     override suspend fun getRecommendations(): List<RecommendationFolder> {
@@ -386,7 +410,7 @@ class MusicRepositoryImpl @Inject constructor(
             imageUrl = resolveImageUrl(wsClient) ?: wsClient.getImageUrl(uri),
             favorite = favorite,
             version = version,
-            year = year,
+            year = sanitizeYear(year),
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList(),
             label = metadata?.label,
@@ -423,7 +447,7 @@ class MusicRepositoryImpl @Inject constructor(
                 uri = album?.uri
             ),
             genres = metadata?.genres ?: emptyList(),
-            year = album?.year ?: year
+            year = sanitizeYear(album?.year ?: year)
         )
     }
 
@@ -439,6 +463,13 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
+    private fun resolvePlaylistDbId(playlist: Playlist): String {
+        val libraryMatch = Regex("^library://playlist/(.+)$").find(playlist.uri)
+        if (libraryMatch != null) return libraryMatch.groupValues[1]
+        if (playlist.itemId.isNotBlank()) return playlist.itemId
+        throw MaApiException("Could not resolve playlist DB id for '${playlist.name}'", -1)
+    }
+
     private fun ServerQueueItem.toDomain(): QueueItem = QueueItem(
         queueItemId = queueItemId,
         name = name,
@@ -447,4 +478,6 @@ class MusicRepositoryImpl @Inject constructor(
         imageUrl = mediaItem?.resolveImageUrl(wsClient)
             ?: image?.let { if (it.remotelyAccessible) it.path else wsClient.getImageUrl(it.path) }
     )
+
+    private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }
 }

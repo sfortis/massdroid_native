@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -61,6 +62,7 @@ private const val SMART_MIX_DAYPART_LOOKBACK_DAYS = 180
 private const val SMART_MIX_TRACK_TARGET = 40
 private const val SMART_MIX_FAVORITES_QUERY_LIMIT = 500
 private const val GENRE_RADIO_SPAM_WINDOW_MS = 1_500L
+private const val GENRE_RADIO_START_WAIT_TIMEOUT_MS = 8_000L
 private const val CONNECTION_PING_SAMPLES = 3
 private const val CONNECTION_PING_TIMEOUT_MS = 3_000L
 
@@ -617,10 +619,13 @@ class DiscoverViewModel @Inject constructor(
                 val recentFavoriteAlbums = favoriteAlbumsDef.await()
                 val serverFolders = recsDef.await()
                 val enrichedFolders = mergeFavoriteAlbumsFolder(serverFolders, recentFavoriteAlbums)
+                val recommendationArtists = extractRecommendationArtists(enrichedFolders)
+                val recommendationAlbums = extractRecommendationAlbums(enrichedFolders)
 
                 val merged = buildList {
                     if (artists != null) addAll(artists)
                     if (randomArtists != null) addAll(randomArtists)
+                    addAll(recommendationArtists)
                 }.distinctBy { artistKey(it) ?: it.uri }
                 artistByUri = merged.mapNotNull { artist ->
                     artistKey(artist)?.let { it to artist }
@@ -653,7 +658,7 @@ class DiscoverViewModel @Inject constructor(
 
                 val suggested = try {
                     buildSuggestedArtists(
-                        libraryArtists = smartFilteredArtists,
+                        candidateArtists = smartFilteredArtists,
                         excludedArtistUris = excludedArtistUris,
                         artistSignalScores = smartArtistScoreMap
                     )
@@ -664,7 +669,8 @@ class DiscoverViewModel @Inject constructor(
                 Log.d(TAG, "Suggested artists: ${suggested.size}")
 
                 val discover = loadDiscoverAlbums(
-                    libraryArtists = smartFilteredArtists,
+                    candidateArtists = smartFilteredArtists,
+                    recommendationAlbums = recommendationAlbums,
                     excludedArtistUris = excludedArtistUris,
                     artistSignalScores = smartArtistScoreMap
                 )
@@ -696,7 +702,7 @@ class DiscoverViewModel @Inject constructor(
                     DiscoverCache.CacheData(
                         suggestedArtists = suggested,
                         discoverAlbums = discover ?: emptyList(),
-                        topArtists = artists ?: emptyList(),
+                        topArtists = merged,
                         serverFolders = enrichedFolders
                     )
                 )
@@ -710,7 +716,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private suspend fun buildSuggestedArtists(
-        libraryArtists: List<Artist>,
+        candidateArtists: List<Artist>,
         excludedArtistUris: Set<String>,
         artistSignalScores: Map<String, Double>
     ): List<Artist> {
@@ -723,7 +729,7 @@ class DiscoverViewModel @Inject constructor(
             Log.d(TAG, "Top genres: ${genreScores.take(3).map { "${it.genre}=${String.format("%.2f", it.score)}" }}")
         }
 
-        if (genreScores.isEmpty()) return libraryArtists.shuffled().take(10)
+        if (genreScores.isEmpty()) return candidateArtists.shuffled().take(10)
 
         val recentlyAdded = try {
             musicRepository.getArtists(orderBy = "recently_added", limit = 20)
@@ -732,7 +738,7 @@ class DiscoverViewModel @Inject constructor(
         }
 
         return recommendationEngine.buildSuggestedArtists(
-            candidates = libraryArtists,
+            candidates = candidateArtists,
             genreScores = genreScores,
             artistScores = artistScores,
             genreAdjacency = genreAdjacency,
@@ -810,6 +816,20 @@ class DiscoverViewModel @Inject constructor(
         emptyList()
     }
 
+    private fun extractRecommendationArtists(folders: List<RecommendationFolder>): List<Artist> =
+        folders
+            .asSequence()
+            .flatMap { it.items.artists.asSequence() }
+            .distinctBy { artistKey(it) ?: it.uri }
+            .toList()
+
+    private fun extractRecommendationAlbums(folders: List<RecommendationFolder>): List<Album> =
+        folders
+            .asSequence()
+            .flatMap { it.items.albums.asSequence() }
+            .distinctBy { albumKey(it) ?: it.uri }
+            .toList()
+
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadRecentFavoriteAlbums(limit: Int = 10): List<Album> {
         val favoritesByAdded = try {
@@ -881,7 +901,8 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadDiscoverAlbums(
-        libraryArtists: List<Artist>,
+        candidateArtists: List<Artist>,
+        recommendationAlbums: List<Album>,
         excludedArtistUris: Set<String>,
         artistSignalScores: Map<String, Double>
     ): List<Album>? = try {
@@ -889,7 +910,9 @@ class DiscoverViewModel @Inject constructor(
         val genreScores = playHistoryRepository.getScoredGenres(days = 90, limit = 10)
 
         if (artistScores.isEmpty()) {
-            musicRepository.getAlbums(orderBy = "random", limit = 10)
+            (recommendationAlbums + musicRepository.getAlbums(orderBy = "random", limit = 20))
+                .distinctBy { album -> albumKey(album) ?: album.uri }
+                .take(10)
         } else {
             val recentAlbumUris = playHistoryRepository.getRecentAlbums(limit = 50)
                 .map { MediaIdentity.canonicalAlbumKey(uri = it.albumUri) ?: it.albumUri }
@@ -899,7 +922,7 @@ class DiscoverViewModel @Inject constructor(
                 .filterNot { it in excludedArtistUris }
                 .toSet()
 
-            val artistGenreMap = libraryArtists.mapNotNull { artist ->
+            val artistGenreMap = candidateArtists.mapNotNull { artist ->
                 artistKey(artist)?.let { it to artist.genres.toSet() }
             }.toMap()
             val genreScoreMap = genreScores.associate { it.genre to it.score }
@@ -936,7 +959,7 @@ class DiscoverViewModel @Inject constructor(
                 }
 
                 val topGenreNames = genreScores.map { it.genre }.toSet()
-                val discoveryArtists = libraryArtists
+                val discoveryArtists = candidateArtists
                     .filter { artist -> (artistKey(artist) ?: artist.uri) !in topArtistUris }
                     .filterNot { artist -> isArtistExcluded(artist, excludedArtistUris) }
                     .filter { it.genres.any { g -> g in topGenreNames } }
@@ -992,9 +1015,17 @@ class DiscoverViewModel @Inject constructor(
                 result.addAll(randomAlbums)
             }
 
-            result.distinctBy { album -> albumKey(album) ?: album.uri }.shuffled().take(10).ifEmpty {
-                musicRepository.getAlbums(orderBy = "random", limit = 10)
-            }
+            result
+                .distinctBy { album -> albumKey(album) ?: album.uri }
+                .shuffled()
+                .take(10)
+                .ifEmpty {
+                    recommendationAlbums
+                        .distinctBy { album -> albumKey(album) ?: album.uri }
+                        .shuffled()
+                        .take(10)
+                        .ifEmpty { musicRepository.getAlbums(orderBy = "random", limit = 10) }
+                }
         }
     } catch (e: Exception) {
         Log.e(TAG, "Failed to load discover albums", e)
@@ -1042,10 +1073,13 @@ class DiscoverViewModel @Inject constructor(
                 )
                 _radioOverlayGenre.value = genre
                 musicRepository.playMedia(queueId, payloadUris, radioMode = true)
-                waitForGenreRadioStart(
+                val started = waitForGenreRadioStart(
                     wasPlayingBefore = wasPlayingBefore,
                     baselineTrackUri = baselineTrackUri
                 )
+                if (!started) {
+                    Log.w(TAG, "startGenreRadio: start confirmation timeout for genre='$genre'")
+                }
                 _radioOverlayGenre.value = null
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start genre radio", e)
@@ -1164,25 +1198,28 @@ class DiscoverViewModel @Inject constructor(
     private suspend fun waitForGenreRadioStart(
         wasPlayingBefore: Boolean,
         baselineTrackUri: String?
-    ) {
-        while (true) {
-            val player = playerRepository.selectedPlayer.value
-            val isPlayingNow = player?.state == PlaybackState.PLAYING
-            val currentTrackUri = playerRepository.queueState.value?.currentItem?.track?.uri
-                ?: player?.currentMedia?.uri
-            val playbackStarted = !wasPlayingBefore && isPlayingNow
-            val trackChanged = !baselineTrackUri.isNullOrBlank() &&
-                !currentTrackUri.isNullOrBlank() &&
-                currentTrackUri != baselineTrackUri
-            val gainedTrackContext = wasPlayingBefore &&
-                baselineTrackUri.isNullOrBlank() &&
-                !currentTrackUri.isNullOrBlank()
+    ): Boolean {
+        val started = withTimeoutOrNull(GENRE_RADIO_START_WAIT_TIMEOUT_MS) {
+            while (true) {
+                val player = playerRepository.selectedPlayer.value
+                val isPlayingNow = player?.state == PlaybackState.PLAYING
+                val currentTrackUri = playerRepository.queueState.value?.currentItem?.track?.uri
+                    ?: player?.currentMedia?.uri
+                val playbackStarted = !wasPlayingBefore && isPlayingNow
+                val trackChanged = !baselineTrackUri.isNullOrBlank() &&
+                    !currentTrackUri.isNullOrBlank() &&
+                    currentTrackUri != baselineTrackUri
+                val gainedTrackContext = wasPlayingBefore &&
+                    baselineTrackUri.isNullOrBlank() &&
+                    !currentTrackUri.isNullOrBlank()
 
-            if (playbackStarted || trackChanged || gainedTrackContext) {
-                return
+                if (playbackStarted || trackChanged || gainedTrackContext) {
+                    return@withTimeoutOrNull true
+                }
+                delay(120)
             }
-            delay(120)
         }
+        return started == true
     }
 
     fun playTrack(track: Track) {
