@@ -64,10 +64,13 @@ private const val GENRE_RADIO_SPAM_WINDOW_MS = 1_500L
 private const val GENRE_RADIO_START_WAIT_TIMEOUT_MS = 8_000L
 private const val CONNECTION_PING_SAMPLES = 3
 private const val CONNECTION_PING_TIMEOUT_MS = 3_000L
+private const val CONNECTION_PING_INTERVAL_MS = 1_200L
+private const val CONNECTION_PING_HISTORY_LIMIT = 24
 
 data class ConnectionProbeState(
     val inProgress: Boolean = false,
     val samplesMs: List<Long> = emptyList(),
+    val historyMs: List<Long> = emptyList(),
     val failedSamples: Int = 0,
     val probeMethod: String? = null,
     val error: String? = null,
@@ -325,6 +328,10 @@ class DiscoverViewModel @Inject constructor(
                     )
                     return@launch
                 }
+                playerRepository.setQueueFilterMode(
+                    queueId,
+                    PlayerRepository.QueueFilterMode.SMART_GENERATED
+                )
                 musicRepository.playMedia(queueId, trackUris, option = "replace")
                 _uiState.value = _uiState.value.copy(
                     smartMixMessage = "Smart mix ready (${trackUris.size} tracks)"
@@ -344,58 +351,80 @@ class DiscoverViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(smartMixMessage = null)
     }
 
-    fun probeConnection(sampleCount: Int = CONNECTION_PING_SAMPLES) {
+    fun startContinuousConnectionProbe(sampleCount: Int = CONNECTION_PING_SAMPLES) {
         connectionProbeJob?.cancel()
         connectionProbeJob = viewModelScope.launch {
-            val currentState = wsClient.connectionState.value
-            if (currentState !is ConnectionState.Connected) {
+            while (true) {
+                val currentState = wsClient.connectionState.value
+                if (currentState !is ConnectionState.Connected) {
+                    _uiState.value = _uiState.value.copy(
+                        connectionProbe = _uiState.value.connectionProbe.copy(
+                            inProgress = false,
+                            samplesMs = emptyList(),
+                            failedSamples = 0,
+                            error = "Not connected",
+                            updatedAtMs = System.currentTimeMillis()
+                        )
+                    )
+                    delay(CONNECTION_PING_INTERVAL_MS)
+                    continue
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    connectionProbe = _uiState.value.connectionProbe.copy(
+                        inProgress = true,
+                        error = null
+                    )
+                )
+
+                val samples = mutableListOf<Long>()
+                var failed = 0
+                val probeCommand = "players/all"
+                val probeMethod = "WS RPC"
+                repeat(sampleCount.coerceAtLeast(1)) { index ->
+                    if (index > 0) delay(140)
+                    val startNs = System.nanoTime()
+                    try {
+                        wsClient.sendCommand(
+                            command = probeCommand,
+                            awaitResponse = true,
+                            timeoutMs = CONNECTION_PING_TIMEOUT_MS
+                        )
+                        samples += ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(0L)
+                    } catch (e: Exception) {
+                        failed++
+                        Log.w(TAG, "probeConnection failed: ${e.message}")
+                    }
+                }
+
+                val updatedHistory = (
+                    _uiState.value.connectionProbe.historyMs +
+                        samples +
+                        List(failed) { 0L }
+                    ).takeLast(CONNECTION_PING_HISTORY_LIMIT)
+
                 _uiState.value = _uiState.value.copy(
                     connectionProbe = ConnectionProbeState(
-                    inProgress = false,
-                    samplesMs = emptyList(),
-                    failedSamples = 0,
-                    error = "Not connected",
-                    updatedAtMs = System.currentTimeMillis()
-                )
-                )
-                return@launch
-            }
-
-            _uiState.value = _uiState.value.copy(
-                connectionProbe = ConnectionProbeState(inProgress = true)
-            )
-
-            val samples = mutableListOf<Long>()
-            var failed = 0
-            val probeCommand = "players/all"
-            val probeMethod = "WS RPC"
-            repeat(sampleCount.coerceAtLeast(1)) { index ->
-                if (index > 0) delay(140)
-                val startNs = System.nanoTime()
-                try {
-                    wsClient.sendCommand(
-                        command = probeCommand,
-                        awaitResponse = true,
-                        timeoutMs = CONNECTION_PING_TIMEOUT_MS
+                        inProgress = false,
+                        samplesMs = samples,
+                        historyMs = updatedHistory,
+                        failedSamples = failed,
+                        probeMethod = probeMethod,
+                        error = if (samples.isEmpty()) "Ping failed" else null,
+                        updatedAtMs = System.currentTimeMillis()
                     )
-                    samples += ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(0L)
-                } catch (e: Exception) {
-                    failed++
-                    Log.w(TAG, "probeConnection failed: ${e.message}")
-                }
+                )
+                delay(CONNECTION_PING_INTERVAL_MS)
             }
-
-            _uiState.value = _uiState.value.copy(
-                connectionProbe = ConnectionProbeState(
-                inProgress = false,
-                samplesMs = samples,
-                failedSamples = failed,
-                probeMethod = probeMethod,
-                error = if (samples.isEmpty()) "Ping failed" else null,
-                updatedAtMs = System.currentTimeMillis()
-            )
-            )
         }
+    }
+
+    fun stopContinuousConnectionProbe() {
+        connectionProbeJob?.cancel()
+        connectionProbeJob = null
+        _uiState.value = _uiState.value.copy(
+            connectionProbe = _uiState.value.connectionProbe.copy(inProgress = false)
+        )
     }
 
     private suspend fun refreshSmartFiltersForMix() {
@@ -771,6 +800,10 @@ class DiscoverViewModel @Inject constructor(
                         "startGenreRadio attempt: genre='$genre', batchSize=${batch.size}, " +
                             "batch=${index + 1}/${batches.size}, seeds=${batch.joinToString()}"
                     )
+                    playerRepository.setQueueFilterMode(
+                        queueId,
+                        PlayerRepository.QueueFilterMode.RADIO_SMART
+                    )
                     musicRepository.playMedia(
                         queueId = queueId,
                         uris = batch,
@@ -932,6 +965,7 @@ class DiscoverViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, track.uri)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to play track", e)

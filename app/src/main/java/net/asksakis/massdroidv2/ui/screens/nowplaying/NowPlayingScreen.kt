@@ -285,7 +285,12 @@ private fun NowPlayingPortrait(
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        AudioQualityBadges(audioFormat = audioFormat)
+        QualityActionRow(
+            audioFormat = audioFormat,
+            currentTrack = currentTrack,
+            viewModel = viewModel,
+            onShowPlaylistDialog = onShowPlaylistDialog
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -294,8 +299,6 @@ private fun NowPlayingPortrait(
             artist = artist,
             album = album,
             currentTrack = currentTrack,
-            viewModel = viewModel,
-            onShowPlaylistDialog = onShowPlaylistDialog,
             onNavigateToArtist = onNavigateToArtist,
             onNavigateToAlbum = onNavigateToAlbum
         )
@@ -418,7 +421,13 @@ private fun NowPlayingLandscape(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            AudioQualityBadges(audioFormat = audioFormat, compact = true)
+            QualityActionRow(
+                audioFormat = audioFormat,
+                currentTrack = currentTrack,
+                viewModel = viewModel,
+                onShowPlaylistDialog = onShowPlaylistDialog,
+                compact = true
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -427,8 +436,6 @@ private fun NowPlayingLandscape(
                 artist = artist,
                 album = album,
                 currentTrack = currentTrack,
-                viewModel = viewModel,
-                onShowPlaylistDialog = onShowPlaylistDialog,
                 onNavigateToArtist = onNavigateToArtist,
                 onNavigateToAlbum = onNavigateToAlbum,
                 compact = true
@@ -487,6 +494,61 @@ private fun AudioQualityBadges(
                     style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = if (compact) 5.dp else 6.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QualityActionRow(
+    audioFormat: AudioFormatInfo?,
+    currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
+    viewModel: NowPlayingViewModel,
+    onShowPlaylistDialog: () -> Unit,
+    compact: Boolean = false
+) {
+    val haptic = LocalHapticFeedback.current
+    val actionButtonSize = if (compact) 36.dp else 44.dp
+    val actionIconSize = if (compact) 18.dp else 24.dp
+
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(if (compact) 0.88f else 0.92f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onShowPlaylistDialog()
+                },
+                modifier = Modifier.size(actionButtonSize)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Add to playlist",
+                    modifier = Modifier.size(actionIconSize),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            AudioQualityBadges(audioFormat = audioFormat, compact = compact)
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.toggleFavorite()
+                },
+                modifier = Modifier.size(actionButtonSize)
+            ) {
+                Icon(
+                    if (currentTrack?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = "Toggle favorite",
+                    modifier = Modifier.size(actionIconSize),
+                    tint = if (currentTrack?.favorite == true) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -596,18 +658,13 @@ private fun TrackInfoSection(
     artist: String,
     album: String,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
-    viewModel: NowPlayingViewModel,
-    onShowPlaylistDialog: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit,
     compact: Boolean = false
 ) {
-    val haptic = LocalHapticFeedback.current
     val titleStyle = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall
     val artistStyle = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium
     val albumStyle = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.titleSmall
-    val actionButtonSize = if (compact) 36.dp else 42.dp
-    val actionIconSize = if (compact) 18.dp else 22.dp
     val artistClickable = currentTrack?.artistItemId != null && currentTrack.artistProvider != null
     val albumClickable = currentTrack?.albumItemId != null && currentTrack.albumProvider != null
 
@@ -621,69 +678,20 @@ private fun TrackInfoSection(
             .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
     )
     Spacer(modifier = Modifier.height(if (compact) 4.dp else 8.dp))
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(if (compact) 0.9f else 0.94f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            IconButton(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onShowPlaylistDialog()
-                },
-                modifier = Modifier.size(actionButtonSize)
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "Add to playlist",
-                        modifier = Modifier.size(actionIconSize),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = if (compact) 4.dp else 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = artist,
-                    style = artistStyle,
-                    color = if (artistClickable) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    modifier = (if (artistClickable) {
-                        Modifier.clickable {
-                            onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
-                        }
-                    } else Modifier).fillMaxWidth()
-                )
+    Text(
+        text = artist,
+        style = artistStyle,
+        color = if (artistClickable) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = (if (artistClickable) {
+            Modifier.clickable {
+                onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
             }
-            IconButton(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    viewModel.toggleFavorite()
-                },
-                modifier = Modifier.size(actionButtonSize)
-            ) {
-                Icon(
-                    if (currentTrack?.favorite == true) Icons.Default.Favorite
-                    else Icons.Default.FavoriteBorder,
-                    contentDescription = "Toggle favorite",
-                    modifier = Modifier.size(actionIconSize),
-                    tint = if (currentTrack?.favorite == true) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
+        } else Modifier).fillMaxWidth()
+    )
     if (album.isNotBlank()) {
         Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
         Text(

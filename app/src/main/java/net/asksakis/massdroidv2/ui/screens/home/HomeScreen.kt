@@ -9,6 +9,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -61,8 +62,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -303,7 +306,9 @@ fun HomeScreen(
 
     LaunchedEffect(showConnectionDialog) {
         if (showConnectionDialog) {
-            viewModel.probeConnection()
+            viewModel.startContinuousConnectionProbe()
+        } else {
+            viewModel.stopContinuousConnectionProbe()
         }
     }
 
@@ -311,7 +316,6 @@ fun HomeScreen(
         ConnectionStatusDialog(
             connectionState = connectionState,
             probeState = connectionProbe,
-            onRefresh = { viewModel.probeConnection() },
             onDismiss = { showConnectionDialog = false }
         )
     }
@@ -427,7 +431,6 @@ private fun SmartMixActionCard(
 private fun ConnectionStatusDialog(
     connectionState: ConnectionState,
     probeState: ConnectionProbeState,
-    onRefresh: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val statusText = when (connectionState) {
@@ -436,10 +439,9 @@ private fun ConnectionStatusDialog(
         is ConnectionState.Disconnected -> "Disconnected"
         is ConnectionState.Error -> "Error: ${connectionState.message}"
     }
-    val samples = probeState.samplesMs
-    val avgMs = if (samples.isNotEmpty()) samples.average().toInt() else null
-    val minMs = samples.minOrNull()?.toInt()
-    val maxMs = samples.maxOrNull()?.toInt()
+    val historySamples = probeState.historyMs.filter { it > 0L }
+    val avgMs = if (historySamples.isNotEmpty()) historySamples.average().toInt() else null
+    val hasGraphData = historySamples.isNotEmpty()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -448,56 +450,148 @@ private fun ConnectionStatusDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(statusText, style = MaterialTheme.typography.bodyMedium)
 
-                when {
-                    probeState.inProgress -> {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("Measuring roundtrip...", style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                    avgMs != null -> {
-                        Text(
-                            text = "Method: ${probeState.probeMethod ?: "Unknown"}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Roundtrip: avg ${avgMs}ms (min ${minMs}ms, max ${maxMs}ms)",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        if (probeState.failedSamples > 0) {
-                            Text(
-                                text = "Failed samples: ${probeState.failedSamples}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    probeState.error != null -> {
-                        Text(
-                            text = probeState.error,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    else -> {
-                        Text("No RTT data yet", style = MaterialTheme.typography.bodyMedium)
-                    }
+                if (hasGraphData) {
+                    ConnectionLatencyGraph(samples = probeState.historyMs)
+                } else if (probeState.error != null) {
+                    Text(
+                        text = probeState.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else {
+                    Text("No RTT data yet", style = MaterialTheme.typography.bodyMedium)
+                }
+
+                if (avgMs != null) {
+                    Text(
+                        text = "Roundtrip: avg ${avgMs}ms",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                if (probeState.failedSamples > 0) {
+                    Text(
+                        text = "Failed samples: ${probeState.failedSamples}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = onRefresh, enabled = !probeState.inProgress) {
-                Text("Measure Again")
-            }
-        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
+}
+
+@Composable
+private fun ConnectionLatencyGraph(samples: List<Long>) {
+    val filtered = samples.takeLast(24)
+    if (filtered.size < 2) return
+
+    val validSamples = filtered.filter { it > 0L }
+    val maxSample = (validSamples.maxOrNull() ?: 1L).toFloat().coerceAtLeast(1f)
+    val minSample = (validSamples.minOrNull() ?: 0L)
+    val currentSample = validSamples.lastOrNull()
+    val lineColor = MaterialTheme.colorScheme.primary
+    val fillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    val errorColor = MaterialTheme.colorScheme.error.copy(alpha = 0.35f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(84.dp)
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 34.dp, end = 40.dp)
+        ) {
+            val stepX = size.width / (filtered.lastIndex.coerceAtLeast(1))
+            val topInset = 6.dp.toPx()
+            val bottomInset = 6.dp.toPx()
+            val graphHeight = (size.height - topInset - bottomInset).coerceAtLeast(1f)
+
+            val smoothedSamples = filtered.mapIndexed { index, sample ->
+                if (sample <= 0L) {
+                    0f
+                } else {
+                    val prev = filtered.getOrNull(index - 1)?.takeIf { it > 0L }?.toFloat() ?: sample.toFloat()
+                    val next = filtered.getOrNull(index + 1)?.takeIf { it > 0L }?.toFloat() ?: sample.toFloat()
+                    ((prev * 0.2f) + (sample.toFloat() * 0.6f) + (next * 0.2f))
+                }
+            }
+
+            val points = smoothedSamples.mapIndexed { index, sample ->
+                val x = stepX * index
+                val normalized = if (sample <= 0f) 0f else (sample / maxSample).coerceIn(0f, 1f)
+                val y = size.height - bottomInset - (normalized * graphHeight)
+                Offset(x, y)
+            }
+
+            val linePath = Path()
+            val fillPath = Path()
+            linePath.moveTo(points.first().x, points.first().y)
+            fillPath.moveTo(points.first().x, size.height - bottomInset)
+            fillPath.lineTo(points.first().x, points.first().y)
+
+            for (i in 1 until points.size) {
+                val previous = points[i - 1]
+                val current = points[i]
+                val midX = (previous.x + current.x) / 2f
+                val midY = (previous.y + current.y) / 2f
+                linePath.quadraticTo(previous.x, previous.y, midX, midY)
+                fillPath.quadraticTo(previous.x, previous.y, midX, midY)
+            }
+
+            linePath.lineTo(points.last().x, points.last().y)
+            fillPath.lineTo(points.last().x, points.last().y)
+
+            fillPath.lineTo(points.last().x, size.height - bottomInset)
+            fillPath.close()
+
+            drawPath(path = fillPath, color = fillColor)
+            drawPath(
+                path = linePath,
+                color = lineColor,
+                style = Stroke(width = 3.dp.toPx())
+            )
+
+            filtered.forEachIndexed { index, sample ->
+                if (sample <= 0L) {
+                    val x = stepX * index
+                    drawLine(
+                        color = errorColor,
+                        start = Offset(x, topInset),
+                        end = Offset(x, size.height - bottomInset),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = "${maxSample.toInt()}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.TopStart)
+        )
+        Text(
+            text = "${minSample}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.BottomStart)
+        )
+        currentSample?.let {
+            Text(
+                text = "${it}ms",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
+        }
+    }
 }
 
 @Composable

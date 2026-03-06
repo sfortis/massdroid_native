@@ -446,6 +446,7 @@ class PlaybackService : MediaLibraryService() {
                         ?: item.mediaId.takeIf { it.contains("/") }
                     if (uri != null) {
                         try {
+                            playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                             musicRepository.playMedia(queueId, uri, option = "replace")
                         } catch (e: Exception) {
                             Log.e(TAG, "playMedia failed for $uri", e)

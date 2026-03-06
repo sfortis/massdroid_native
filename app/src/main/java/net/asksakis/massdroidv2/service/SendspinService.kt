@@ -791,10 +791,10 @@ class SendspinService : Service() {
         musicRepository.playMedia(queueId, snapshotQueueUris, option = "replace")
         val restoredIdx = waitForQueueTrackIndex(queueId, snapshotTrackUri)
         if (restoredIdx >= 0) {
-            musicRepository.playQueueIndex(queueId, restoredIdx)
-            if (snapshotPositionSeconds > 1.0) {
-                playerRepository.seek(queueId, snapshotPositionSeconds)
-            }
+            Log.d(
+                TAG,
+                "Persisted sendspin snapshot restored at queue index=$restoredIdx without autoplay"
+            )
             lastKnownSendspinQueueTrackUris = snapshotQueueUris
         } else {
             Log.w(TAG, "Persisted sendspin snapshot restored but track still missing")

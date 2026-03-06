@@ -85,7 +85,14 @@ fun SettingsScreen(
     var showPassword by remember { mutableStateOf(false) }
 
     val isConnected = connectionState is ConnectionState.Connected
+    val isRetryingConnection =
+        connectionState is ConnectionState.Connecting || connectionState is ConnectionState.Error
     val hasToken = authToken.isNotBlank()
+    val primaryConnectionButtonLabel = when {
+        isConnected -> "Disconnect"
+        isRetryingConnection -> "Abort"
+        else -> "Connect"
+    }
 
     LaunchedEffect(Unit) {
         viewModel.loadSavedCertificate(context)
@@ -174,19 +181,30 @@ fun SettingsScreen(
                 enabled = !isConnected
             )
 
+            if (hasToken) {
+                Button(
+                    onClick = {
+                        if (isConnected || isRetryingConnection) {
+                            viewModel.disconnect()
+                        } else {
+                            viewModel.connectWithToken(editUrl)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        if (isConnected || isRetryingConnection) Icons.Default.CloudOff else Icons.Default.Cloud,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(primaryConnectionButtonLabel)
+                }
+            }
+
             if (!isConnected) {
                 HorizontalDivider()
 
                 if (hasToken) {
-                    Button(
-                        onClick = { viewModel.connectWithToken(editUrl) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.Cloud, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Reconnect")
-                    }
-
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                     Text(
@@ -254,15 +272,6 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Login")
                     }
-                }
-            } else {
-                OutlinedButton(
-                    onClick = { viewModel.disconnect() },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.CloudOff, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Disconnect")
                 }
             }
 

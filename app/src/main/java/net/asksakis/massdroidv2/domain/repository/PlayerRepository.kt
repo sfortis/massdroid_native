@@ -19,6 +19,12 @@ interface PlayerRepository {
     /** Emits the queue ID whenever QUEUE_ITEMS_UPDATED or QUEUE_UPDATED fires for the selected player. */
     val queueItemsChanged: SharedFlow<String>
 
+    enum class QueueFilterMode {
+        NORMAL,
+        SMART_GENERATED,
+        RADIO_SMART
+    }
+
     suspend fun refreshPlayers()
     fun selectPlayer(playerId: String)
 
@@ -35,4 +41,5 @@ interface PlayerRepository {
     suspend fun getPlayerConfig(playerId: String): PlayerConfig?
     suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>)
     fun updateCurrentTrackFavorite(favorite: Boolean)
+    fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
 }

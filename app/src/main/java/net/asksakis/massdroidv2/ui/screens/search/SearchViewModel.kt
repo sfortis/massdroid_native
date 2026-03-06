@@ -57,6 +57,7 @@ class SearchViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, track.uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playTrack failed: ${e.message}")

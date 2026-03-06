@@ -382,6 +382,7 @@ class LibraryViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "quickPlay failed: ${e.message}")
@@ -394,6 +395,7 @@ class LibraryViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
@@ -405,6 +407,7 @@ class LibraryViewModel @Inject constructor(
     fun playOnPlayer(uri: String, playerId: String) {
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
@@ -429,6 +432,7 @@ class LibraryViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
@@ -549,6 +553,7 @@ class ArtistDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
@@ -560,6 +565,7 @@ class ArtistDetailViewModel @Inject constructor(
     fun playOnPlayer(uri: String, playerId: String) {
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
@@ -584,6 +590,7 @@ class ArtistDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
@@ -596,6 +603,7 @@ class ArtistDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "quickPlay failed: ${e.message}")
@@ -612,6 +620,9 @@ class ArtistDetailViewModel @Inject constructor(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
+                if (option == "replace") {
+                    playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                }
                 musicRepository.playMedia(queueId, uris, option = option)
             } catch (e: Exception) {
                 Log.w(TAG, "playAllTracks failed: ${e.message}")
@@ -733,6 +744,7 @@ class AlbumDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
@@ -744,6 +756,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun playOnPlayer(uri: String, playerId: String) {
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
@@ -768,6 +781,7 @@ class AlbumDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
@@ -796,6 +810,7 @@ class AlbumDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uris, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "playAll failed: ${e.message}")
@@ -835,6 +850,7 @@ class AlbumDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uris, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "replaceQueue failed: ${e.message}")
@@ -927,6 +943,7 @@ class PlaylistDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
@@ -938,6 +955,7 @@ class PlaylistDetailViewModel @Inject constructor(
     fun playOnPlayer(uri: String, playerId: String) {
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
@@ -962,6 +980,7 @@ class PlaylistDetailViewModel @Inject constructor(
         val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
         viewModelScope.launch {
             try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")

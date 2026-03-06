@@ -80,6 +80,7 @@ class PlayerRepositoryImpl @Inject constructor(
     private val manualSkipByQueue = ConcurrentHashMap<String, String>()
     private val blockedAutoSkipByQueue = ConcurrentHashMap<String, Pair<String, Long>>()
     private val blockedQueueCleanupAtByQueue = ConcurrentHashMap<String, Long>()
+    private val queueFilterModeByQueue = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
     private var blockedQueueCleanupJob: Job? = null
     @Volatile
     private var blockedArtistUrisSnapshot: Set<String> = emptySet()
@@ -127,6 +128,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         manualSkipByQueue.clear()
                         blockedAutoSkipByQueue.clear()
                         blockedQueueCleanupAtByQueue.clear()
+                        queueFilterModeByQueue.clear()
                         blockedQueueCleanupJob?.cancel()
                         suppressedArtistUrisSnapshot = emptySet()
                     }
@@ -196,6 +198,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     queueTracking.remove(id)
                     blockedAutoSkipByQueue.remove(id)
                     blockedQueueCleanupAtByQueue.remove(id)
+                    queueFilterModeByQueue.remove(id)
                     if (selectedPlayerId == id) {
                         selectedPlayerId = null
                         _selectedPlayer.value = null
@@ -217,7 +220,10 @@ class PlayerRepositoryImpl @Inject constructor(
                     trackPlayHistory(serverQueue)
 
                     if (serverQueue.queueId == selectedPlayerId) {
-                        var domainState = serverQueue.toDomain(wsClient)
+                        var domainState = preserveCurrentAudioFormat(
+                            previous = _queueState.value,
+                            incoming = serverQueue.toDomain(wsClient)
+                        )
                         // Apply favorite override if current track matches
                         val override = favoriteOverride
                         val overrideUri = favoriteOverrideUri
@@ -512,7 +518,7 @@ class PlayerRepositoryImpl @Inject constructor(
         if (queueId != selectedPlayerId) return
         val currentTrack = track ?: return
         if (currentTrack.uri.isBlank()) return
-        val filteredArtists = blockedArtistUrisSnapshot + suppressedArtistUrisSnapshot
+        val filteredArtists = currentFilteredArtists(queueId)
         if (filteredArtists.isEmpty()) return
 
         val distinctUris = artistUris
@@ -553,7 +559,11 @@ class PlayerRepositoryImpl @Inject constructor(
         val blocked = blockedArtistUrisSnapshot
         val suppressed = try {
             val smartEnabled = settingsRepository.smartListeningEnabled.first()
-            if (smartEnabled) smartListeningRepository.getSuppressedArtistUris(days = 120) else emptySet()
+            if (smartEnabled && shouldApplySuppressedFiltering(queueId)) {
+                smartListeningRepository.getSuppressedArtistUris(days = 120)
+            } else {
+                emptySet()
+            }
         } catch (_: Exception) {
             emptySet()
         }
@@ -600,10 +610,26 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.d(
                 TAG,
                 "Removed ${removeQueueItemIds.size} filtered track(s) from queue $queueId via $reason " +
-                    "(blocked=${blocked.size}, suppressed=${suppressed.size})"
+                    "(mode=${queueFilterModeByQueue[queueId] ?: PlayerRepository.QueueFilterMode.NORMAL}, blocked=${blocked.size}, suppressed=${suppressed.size})"
             )
         } catch (e: Exception) {
             Log.w(TAG, "purgeBlockedTracksFromQueue failed: ${e.message}")
+        }
+    }
+
+    private fun currentFilteredArtists(queueId: String): Set<String> {
+        val blocked = blockedArtistUrisSnapshot
+        if (!smartListeningEnabledSnapshot || !shouldApplySuppressedFiltering(queueId)) {
+            return blocked
+        }
+        return blocked + suppressedArtistUrisSnapshot
+    }
+
+    private fun shouldApplySuppressedFiltering(queueId: String): Boolean {
+        return when (queueFilterModeByQueue[queueId] ?: PlayerRepository.QueueFilterMode.NORMAL) {
+            PlayerRepository.QueueFilterMode.NORMAL -> false
+            PlayerRepository.QueueFilterMode.SMART_GENERATED,
+            PlayerRepository.QueueFilterMode.RADIO_SMART -> true
         }
     }
 
@@ -658,6 +684,26 @@ class PlayerRepositoryImpl @Inject constructor(
         startPositionTicker()
     }
 
+    private fun preserveCurrentAudioFormat(
+        previous: QueueState?,
+        incoming: QueueState
+    ): QueueState {
+        val prevItem = previous?.currentItem ?: return incoming
+        val nextItem = incoming.currentItem ?: return incoming
+        if (nextItem.audioFormat != null) return incoming
+
+        val sameQueueItem = prevItem.queueItemId.isNotBlank() && prevItem.queueItemId == nextItem.queueItemId
+        val prevTrackUri = prevItem.track?.uri
+        val nextTrackUri = nextItem.track?.uri
+        val sameTrack = !prevTrackUri.isNullOrBlank() && prevTrackUri == nextTrackUri
+        if (!sameQueueItem && !sameTrack) return incoming
+
+        val preserved = prevItem.audioFormat ?: return incoming
+        return incoming.copy(
+            currentItem = nextItem.copy(audioFormat = preserved)
+        )
+    }
+
     private fun startPositionTicker() {
         positionTickJob?.cancel()
         if (!isPlaying) return
@@ -709,6 +755,13 @@ class PlayerRepositoryImpl @Inject constructor(
             settingsRepository.setSelectedPlayerId(playerId)
             refreshQueueForPlayer(playerId)
             scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
+        }
+    }
+
+    override fun setQueueFilterMode(playerId: String, mode: PlayerRepository.QueueFilterMode) {
+        queueFilterModeByQueue[playerId] = mode
+        if (playerId == selectedPlayerId) {
+            scheduleBlockedQueueCleanup(playerId, reason = "queue_filter_mode", force = true)
         }
     }
 
