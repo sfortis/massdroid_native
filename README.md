@@ -15,16 +15,30 @@ MassDroid lets you control your Music Assistant players, browse your library, ma
   <img src="screenshots/player_settings.png" width="180" />
 </p>
 
+## Smart Mix & Recommendation Engine
+
+MassDroid includes a local recommendation engine that learns your listening habits and generates personalized content.
+
+- **Smart Mix** : One-tap playlist generation. Combines artist scoring, genre affinity, and time-of-day patterns to build a queue tailored to your current mood. Interleaves tracks to avoid artist repetition.
+- **Genre Radio** : Pick a genre and get a radio-style stream. Uses BLL-weighted artist selection with batch-based pool strategy and decade constraints for variety.
+- **Smart Listening** : Tracks play, skip, like, and unlike signals per artist. Preferences decay naturally over 60 days so the engine adapts as your taste evolves.
+- **Artist Blocking** : Suppress specific artists from all recommendations and radio stations.
+- **Recommendation Insights** : View your top artists, albums, and genres, plus manage blocked artists from Settings.
+
+All recommendation data stays on-device in a local Room database. Nothing is sent to external services.
+
 ## Features
 
-- **Player Controls**
+- **Player Controls** : Play, pause, skip, seek, volume, shuffle, repeat across all MA players
+- **Discover Home** : Dynamic recommendation sections with recently played, top picks, genre radio, and Smart Mix
 - **Library Browsing** : Artists, Albums, Tracks, Playlists with search, sort, and grid/list views
-- **Now Playing** : Full-screen player with album art, seek bar, and favorite toggle
-- **Queue Management** : View, reorder, and manage the playback queue
+- **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, and artist blocking
+- **Queue Management** : View, reorder, transfer, and manage the playback queue with action sheets
 - **Phone as Speaker** : Turn your phone into a Music Assistant speaker using the Sendspin protocol (Opus audio streaming)
-- **Favorites** : Mark artists, albums, tracks, and playlists as favorites - filter library by favorites
-- **Media Session** : Android media notification with playback controls
+- **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
+- **Media Session** : Android media notification with playback controls, Android Auto and car display support
 - **Player Settings** : Rename players, set icons, configure crossfade and volume normalization
+- **Connection Diagnostics** : Real-time latency probing and connection health monitoring
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens
 
