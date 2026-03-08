@@ -146,6 +146,9 @@ fun MassDroidNavHost(
                 onBack = { navController.popBackStack() },
                 onAlbumClick = { album ->
                     navController.navigate(Routes.albumDetail(album.itemId, album.provider, album.name))
+                },
+                onArtistClick = { artist ->
+                    navController.navigate(Routes.artistDetail(artist.itemId, artist.provider, artist.name))
                 }
             )
         }

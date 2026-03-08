@@ -134,6 +134,17 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_item_id` TEXT")
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_provider` TEXT")
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_name` TEXT")
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_image_url` TEXT")
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_uri` TEXT")
+            database.execSQL("ALTER TABLE `lastfm_similar_artists` ADD COLUMN `resolved_at` INTEGER")
+        }
+    }
+
     private val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(
@@ -170,7 +181,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
         .fallbackToDestructiveMigration()
         .build()
 

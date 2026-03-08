@@ -1,10 +1,13 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
@@ -18,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -28,6 +32,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.PlayArrow
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.Album
+import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
@@ -41,11 +46,13 @@ import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 fun ArtistDetailScreen(
     onBack: () -> Unit,
     onAlbumClick: (Album) -> Unit,
+    onArtistClick: (Artist) -> Unit = {},
     viewModel: ArtistDetailViewModel = hiltViewModel()
 ) {
     val artist by viewModel.artist.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val similarArtists by viewModel.similarArtists.collectAsStateWithLifecycle()
     val artistName by viewModel.artistName.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
@@ -202,6 +209,50 @@ fun ArtistDetailScreen(
                 }
             }
 
+            if (similarArtists.isNotEmpty()) {
+                item {
+                    Text(
+                        "Similar Artists",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(similarArtists, key = { it.uri }) { artist ->
+                            Column(
+                                modifier = Modifier
+                                    .width(90.dp)
+                                    .clickable { onArtistClick(artist) },
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                AsyncImage(
+                                    model = artist.imageUrl,
+                                    contentDescription = artist.name,
+                                    modifier = Modifier
+                                        .size(90.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x1F888888), CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = artist.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (albums.isNotEmpty()) {
                 item {
                     Text(
@@ -332,6 +383,7 @@ fun ArtistDetailScreen(
                     )
                 }
             }
+
         }
         }
     }

@@ -196,7 +196,13 @@ data class LastFmSimilarArtistEntity(
     @ColumnInfo(name = "source_artist") val sourceArtist: String,
     @ColumnInfo(name = "similar_artist") val similarArtist: String,
     @ColumnInfo(name = "match_score") val matchScore: Double,
-    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long,
+    @ColumnInfo(name = "resolved_item_id") val resolvedItemId: String? = null,
+    @ColumnInfo(name = "resolved_provider") val resolvedProvider: String? = null,
+    @ColumnInfo(name = "resolved_name") val resolvedName: String? = null,
+    @ColumnInfo(name = "resolved_image_url") val resolvedImageUrl: String? = null,
+    @ColumnInfo(name = "resolved_uri") val resolvedUri: String? = null,
+    @ColumnInfo(name = "resolved_at") val resolvedAt: Long? = null
 )
 
 @Entity(tableName = "artist_track_cache")

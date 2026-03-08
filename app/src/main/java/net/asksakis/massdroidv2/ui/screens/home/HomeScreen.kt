@@ -109,6 +109,19 @@ private val radioStartPhrases = listOf(
     "Unleashing the rhythm..."
 )
 
+private val smartMixPhrases = listOf(
+    "Analyzing your taste...",
+    "Picking your favorites...",
+    "Building the perfect mix...",
+    "Studying your history...",
+    "Balancing the genres...",
+    "Curating tracks for you...",
+    "Reading your mood...",
+    "Assembling the playlist...",
+    "Scoring every track...",
+    "Finding the sweet spot..."
+)
+
 // Fixed heights for LazyColumn item prefetch (avoids layout thrashing)
 private val ArtistRowHeight = 114.dp  // 90 image + 4 spacer + 20 text
 private val AlbumRowHeight = 148.dp   // 110 image + 4 spacer + 18 name + 16 artist
@@ -140,7 +153,6 @@ fun HomeScreen(
         floatingActionButton = {
             SmartMixFab(
                 isBusy = isBuildingSmartMix,
-                message = smartMixMessage,
                 onClick = { viewModel.makePlaylistForMe() }
             )
         },
@@ -194,7 +206,6 @@ fun HomeScreen(
                     isRefreshing = isRefreshing,
                     onRefresh = { viewModel.refresh() },
                     state = pullToRefreshState,
-                    indicator = {},
                     modifier = Modifier.fillMaxSize()
                 ) {
                     LazyColumn(
@@ -293,6 +304,11 @@ fun HomeScreen(
             if (radioOverlayGenre != null) {
                 RadioStartOverlay(genre = radioOverlayGenre ?: "")
             }
+
+            // Smart mix overlay
+            if (isBuildingSmartMix) {
+                SmartMixOverlay()
+            }
         }
     }
 
@@ -323,7 +339,6 @@ fun HomeScreen(
 @Composable
 private fun SmartMixFab(
     isBusy: Boolean,
-    message: String?,
     onClick: () -> Unit
 ) {
     val sparkleTransition = rememberInfiniteTransition(label = "sparkle")
@@ -373,7 +388,7 @@ private fun SmartMixFab(
                 )
             }
         },
-        text = { Text(if (message != null) "Done!" else "Smart Mix") }
+        text = { Text("Smart Mix") }
     )
 }
 
@@ -573,6 +588,51 @@ private fun RadioStartOverlay(genre: String) {
             Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "Tuning into $genre Radio",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = phrase,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmartMixOverlay() {
+    var phrase by remember { mutableStateOf(smartMixPhrases.random()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(800)
+            phrase = smartMixPhrases.random()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            EqualizerBars(
+                modifier = Modifier.height(48.dp),
+                barWidth = 6.dp,
+                spacing = 4.dp,
+                barCount = 5,
+                bpm = 120,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+                text = "Creating Smart Mix",
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,

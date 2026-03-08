@@ -60,11 +60,31 @@ interface PlayHistoryDao {
     @Query("DELETE FROM artist_track_cache WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTrackCache(olderThan: Long)
 
-    @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist")
+    @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist ORDER BY match_score DESC")
     suspend fun getSimilarArtists(sourceArtist: String): List<LastFmSimilarArtistEntity>
 
     @Query("SELECT fetched_at FROM lastfm_similar_artists WHERE source_artist = :sourceArtist LIMIT 1")
     suspend fun getSimilarArtistsFetchedAt(sourceArtist: String): Long?
+
+    @Query(
+        """UPDATE lastfm_similar_artists SET
+           resolved_item_id = :itemId, resolved_provider = :provider, resolved_name = :name,
+           resolved_image_url = :imageUrl, resolved_uri = :uri, resolved_at = :resolvedAt
+           WHERE source_artist = :sourceArtist AND similar_artist = :similarArtist"""
+    )
+    suspend fun updateSimilarArtistResolved(
+        sourceArtist: String, similarArtist: String,
+        itemId: String?, provider: String?, name: String?, imageUrl: String?, uri: String?,
+        resolvedAt: Long
+    )
+
+    @Query(
+        """UPDATE lastfm_similar_artists SET
+           resolved_item_id = NULL, resolved_provider = NULL, resolved_name = NULL,
+           resolved_image_url = NULL, resolved_uri = NULL, resolved_at = NULL
+           WHERE source_artist = :sourceArtist"""
+    )
+    suspend fun clearSimilarArtistResolved(sourceArtist: String)
 
     @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName")
     suspend fun getLastFmTags(artistName: String): LastFmArtistTagsEntity?

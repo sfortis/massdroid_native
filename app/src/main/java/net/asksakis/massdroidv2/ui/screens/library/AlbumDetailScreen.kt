@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,6 +36,7 @@ import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
+import net.asksakis.massdroidv2.ui.components.EqualizerBars
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
@@ -51,6 +53,8 @@ fun AlbumDetailScreen(
     val albumName by viewModel.albumName.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
+    val currentTrackUri by viewModel.currentTrackUri.collectAsStateWithLifecycle()
+    val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
@@ -267,23 +271,30 @@ fun AlbumDetailScreen(
             }
 
             itemsIndexed(tracks, key = { _, track -> track.uri }) { index, track ->
+                val isCurrent = track.uri == currentTrackUri
                 ListItem(
                     headlineContent = {
                         Text(
                             track.name,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified
                         )
                     },
                     supportingContent = {
                         Text(track.artistNames, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     },
                     leadingContent = {
-                        Text(
-                            "${track.position?.takeIf { it > 0 } ?: (index + 1)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (isCurrent && isPlaying) {
+                            EqualizerBars(modifier = Modifier.size(24.dp))
+                        } else {
+                            Text(
+                                "${track.position?.takeIf { it > 0 } ?: (index + 1)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {

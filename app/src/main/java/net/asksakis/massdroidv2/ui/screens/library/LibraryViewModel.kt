@@ -14,6 +14,11 @@ import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.lastfm.LastFmAlbumInfoResolver
+import net.asksakis.massdroidv2.data.lastfm.LastFmArtistInfoResolver
+import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
+import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -478,12 +483,17 @@ class LibraryViewModel @Inject constructor(
     }
 }
 
+
 @HiltViewModel
 class ArtistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
-    private val smartListeningRepository: SmartListeningRepository
+    private val smartListeningRepository: SmartListeningRepository,
+    private val lastFmSimilarResolver: LastFmSimilarResolver,
+    private val lastFmArtistInfoResolver: LastFmArtistInfoResolver,
+    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val dao: PlayHistoryDao
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -509,6 +519,9 @@ class ArtistDetailViewModel @Inject constructor(
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
 
+    private val _similarArtists = MutableStateFlow<List<Artist>>(emptyList())
+    val similarArtists: StateFlow<List<Artist>> = _similarArtists.asStateFlow()
+
     val players = playerRepository.players
 
     init {
@@ -522,6 +535,7 @@ class ArtistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
+                dao.clearSimilarArtistResolved(_artistName.value.lowercase())
                 _artist.value?.uri?.let { musicRepository.refreshItemByUri(it) }
                     ?: musicRepository.requestLibrarySync(force = true)
                 loadData(lazy = false)
@@ -546,6 +560,93 @@ class ArtistDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Load artist detail failed: ${e.message}")
+        }
+
+        val name = _artistName.value
+        if (name.isNotBlank()) {
+            viewModelScope.launch { loadSimilarArtists(name) }
+            if (_artist.value?.description.isNullOrBlank()) {
+                viewModelScope.launch { loadLastFmBio(name) }
+            }
+            if (_artist.value?.genres.isNullOrEmpty()) {
+                viewModelScope.launch { loadLastFmArtistGenres(name) }
+            }
+        }
+    }
+
+    private suspend fun loadSimilarArtists(artistName: String) {
+        try {
+            val similar = lastFmSimilarResolver.resolve(artistName, limit = 8)
+            if (similar.isEmpty()) return
+            val key = artistName.lowercase()
+            val cached = dao.getSimilarArtists(key)
+            val now = System.currentTimeMillis()
+            val resolveTtl = 7 * 86_400_000L
+            val sourceGenres = lastFmGenreResolver.resolve(artistName).toSet()
+
+            val resolved = similar.mapNotNull { sim ->
+                val cachedRow = cached.firstOrNull { it.similarArtist == sim.name }
+                val resolvedAt = cachedRow?.resolvedAt
+                if (resolvedAt != null && now - resolvedAt < resolveTtl) {
+                    return@mapNotNull cachedRow.resolvedUri?.let { uri ->
+                        Artist(
+                            itemId = cachedRow.resolvedItemId.orEmpty(),
+                            provider = cachedRow.resolvedProvider.orEmpty(),
+                            name = cachedRow.resolvedName.orEmpty(),
+                            uri = uri,
+                            imageUrl = cachedRow.resolvedImageUrl
+                        )
+                    }
+                }
+                val searchResult = musicRepository.search(sim.name, listOf(MediaType.ARTIST), limit = 5)
+                val candidates = searchResult.artists.filter { it.name.equals(sim.name, ignoreCase = true) }
+                val matched = if (candidates.isEmpty()) {
+                    null
+                } else if (sourceGenres.isEmpty()) {
+                    candidates.firstOrNull()
+                } else {
+                    candidates.firstNotNullOfOrNull { c ->
+                        val detail = musicRepository.getArtist(c.itemId, c.provider)
+                        val cGenres = detail?.genres?.map { it.lowercase() }?.toSet().orEmpty()
+                        when {
+                            detail == null -> null
+                            cGenres.isEmpty() -> detail
+                            cGenres.any { it in sourceGenres } -> detail
+                            else -> null
+                        }
+                    }
+                }
+                dao.updateSimilarArtistResolved(
+                    sourceArtist = key, similarArtist = sim.name,
+                    itemId = matched?.itemId, provider = matched?.provider,
+                    name = matched?.name, imageUrl = matched?.imageUrl, uri = matched?.uri,
+                    resolvedAt = now
+                )
+                matched
+            }
+            _similarArtists.value = resolved
+        } catch (e: Exception) {
+            Log.w(TAG, "Load similar artists failed: ${e.message}")
+        }
+    }
+
+    private suspend fun loadLastFmArtistGenres(artistName: String) {
+        try {
+            val genres = lastFmGenreResolver.resolve(artistName)
+            if (genres.isNotEmpty()) {
+                _artist.update { it?.copy(genres = genres) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Load Last.fm artist genres failed: ${e.message}")
+        }
+    }
+
+    private suspend fun loadLastFmBio(artistName: String) {
+        try {
+            val bio = lastFmArtistInfoResolver.resolve(artistName) ?: return
+            _artist.update { it?.copy(description = bio) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Load Last.fm bio failed: ${e.message}")
         }
     }
 
@@ -676,7 +777,9 @@ class AlbumDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
-    private val smartListeningRepository: SmartListeningRepository
+    private val smartListeningRepository: SmartListeningRepository,
+    private val lastFmAlbumInfoResolver: LastFmAlbumInfoResolver,
+    private val lastFmGenreResolver: LastFmGenreResolver
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -698,6 +801,14 @@ class AlbumDetailViewModel @Inject constructor(
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+
+    val currentTrackUri: StateFlow<String?> = playerRepository.queueState
+        .map { it?.currentItem?.track?.uri }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isPlaying: StateFlow<Boolean> = playerRepository.selectedPlayer
+        .map { it?.state == PlaybackState.PLAYING }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val players = playerRepository.players
 
@@ -737,6 +848,49 @@ class AlbumDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Load album detail failed: ${e.message}")
+        }
+
+        val album = _album.value ?: return
+        val artistName = album.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+        if (artistName.isNotBlank()) {
+            val needsBio = album.description.isNullOrBlank()
+            val needsYear = album.year == null
+            if (needsBio || needsYear) {
+                viewModelScope.launch { loadLastFmAlbumInfo(artistName, album.name, needsBio, needsYear) }
+            }
+            if (album.genres.isEmpty()) {
+                viewModelScope.launch { loadLastFmGenres(artistName) }
+            }
+        }
+    }
+
+    private suspend fun loadLastFmAlbumInfo(
+        artistName: String,
+        albumName: String,
+        needsBio: Boolean,
+        needsYear: Boolean
+    ) {
+        try {
+            val info = lastFmAlbumInfoResolver.resolve(artistName, albumName) ?: return
+            _album.update { current ->
+                current?.copy(
+                    description = if (needsBio && info.summary != null) info.summary else current.description,
+                    year = if (needsYear && info.year != null) info.year else current.year
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Load Last.fm album info failed: ${e.message}")
+        }
+    }
+
+    private suspend fun loadLastFmGenres(artistName: String) {
+        try {
+            val genres = lastFmGenreResolver.resolve(artistName)
+            if (genres.isNotEmpty()) {
+                _album.update { it?.copy(genres = genres) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Load Last.fm genres failed: ${e.message}")
         }
     }
 
