@@ -24,14 +24,24 @@ MassDroid lets you control your Music Assistant players, browse your library, ma
   </tr>
 </table>
 
+## Hot Features
+
+- **Smart Mix** : One tap, instant playlist. The on-device recommendation engine scores artists by recent listening, weighs genre affinity and time-of-day patterns, then builds a queue that fits your current mood. Tracks are interleaved so the same artist never plays back-to-back.
+- **Genre Radio** : Pick a genre chip on the Discover screen and get a curated playlist. Artist selection is weighted by your play history to keep the mix personal and fresh.
+- **Phone as Speaker** : Flip the Sendspin toggle and your phone becomes a Music Assistant player. Audio streams as Opus frames over WebSocket, decoded and played through your phone speaker or headphones.
+- **Smart Listening** : Runs silently in the background. Every play, skip, like, and unlike trains a per-artist preference model that decays over 60 days, so the engine adapts as your taste evolves.
+- **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results. Available from artist detail, now playing, and action sheets.
+- **Connection Diagnostics** : Tap the cloud icon for a live latency graph with roundtrip stats and server version info.
+
 ## Smart Mix & Recommendation Engine
 
 MassDroid includes a local recommendation engine that learns your listening habits and generates personalized content.
 
-- **Smart Mix** : One-tap playlist generation. Combines artist scoring, genre affinity, and time-of-day patterns to build a queue tailored to your current mood. Interleaves tracks to avoid artist repetition.
-- **Genre Radio** : Pick a genre and get a radio-style stream. Uses BLL-weighted artist selection with batch-based pool strategy and decade constraints for variety.
-- **Smart Listening** : Tracks play, skip, like, and unlike signals per artist. Preferences decay naturally over 60 days so the engine adapts as your taste evolves.
-- **Artist Blocking** : Suppress specific artists from all recommendations and radio stations.
+- **BLL Temporal Decay** : Recent plays weigh dramatically more than older ones, even if the old track was played many times.
+- **MMR Re-ranking** : Prevents genre clustering by penalizing items too similar to already-selected ones.
+- **Genre Adjacency** : Built from co-occurrence in your play history to discover genres you might enjoy.
+- **Exploration Budget** : 70% top matches, 20% adjacent genres, 10% wildcard for serendipitous discovery.
+- **Last.fm Fallback** : When your music provider has no genre data, the app can query Last.fm artist tags as a fallback (optional, cached locally).
 - **Recommendation Insights** : View your top artists, albums, and genres, plus manage blocked artists from Settings.
 
 All recommendation data stays on-device in a local Room database. Nothing is sent to external services.
@@ -43,11 +53,9 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 - **Library Browsing** : Artists, Albums, Tracks, Playlists with search, sort, and grid/list views
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, and artist blocking
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
-- **Phone as Speaker** : Turn your phone into a Music Assistant speaker using the Sendspin protocol (Opus audio streaming)
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
-- **Media Session** : Android media notification with playback controls, Android Auto and car display support
+- **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade and volume normalization
-- **Connection Diagnostics** : Real-time latency probing and connection health monitoring
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens
 
