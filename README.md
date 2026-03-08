@@ -19,9 +19,10 @@ MassDroid lets you control your Music Assistant players, browse your library, ma
   <br/>
   <sub>Players &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Queue &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Smart Listening</sub>
   <br/><br/>
+  <img src="screenshots/artist_detail.png" width="180" />&nbsp;&nbsp;
   <img src="screenshots/connection_status.png" width="180" />
   <br/>
-  <sub>Connection Diagnostics</sub>
+  <sub>Artist Detail &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Connection Diagnostics</sub>
 </p>
 
 ## Smart Mix & Recommendation Engine
