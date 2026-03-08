@@ -33,7 +33,7 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 - **Discover Home** : Dynamic recommendation sections with recently played, top picks, genre radio, and Smart Mix
 - **Library Browsing** : Artists, Albums, Tracks, Playlists with search, sort, and grid/list views
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, and artist blocking
-- **Queue Management** : View, reorder, transfer, and manage the playback queue with action sheets
+- **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Phone as Speaker** : Turn your phone into a Music Assistant speaker using the Sendspin protocol (Opus audio streaming)
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
 - **Media Session** : Android media notification with playback controls, Android Auto and car display support
