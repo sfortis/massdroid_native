@@ -2,7 +2,7 @@
 
 Native Android client for [Music Assistant](https://music-assistant.io/), the open-source music server that integrates all your music sources and players.
 
-MassDroid lets you control your Music Assistant players, browse your library, manage queues, and even turn your phone into a speaker.
+MassDroid lets you control your Music Assistant players, browse your library, manage queues, and turn your phone into a speaker via the Sendspin protocol. It also includes a local recommendation engine that learns from your listening habits to generate personalized playlists (Smart Mix) and genre-based radio stations, all on-device with no external services.
 
 ## Screenshots
 
