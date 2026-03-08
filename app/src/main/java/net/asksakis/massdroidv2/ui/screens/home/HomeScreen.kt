@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -36,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,6 +45,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -134,6 +137,13 @@ fun HomeScreen(
     var showConnectionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
+        floatingActionButton = {
+            SmartMixFab(
+                isBusy = isBuildingSmartMix,
+                message = smartMixMessage,
+                onClick = { viewModel.makePlaylistForMe() }
+            )
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -192,18 +202,6 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         contentPadding = PaddingValues(bottom = 8.dp)
                     ) {
-                        item(key = "smart_mix_action") {
-                            Box(
-                                modifier = Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                SmartMixActionCard(
-                                    isBusy = isBuildingSmartMix,
-                                    message = smartMixMessage,
-                                    onClick = { viewModel.makePlaylistForMe() }
-                                )
-                            }
-                        }
                         itemsIndexed(
                             items = sections,
                             key = { _, section -> sectionKey(section) },
@@ -300,7 +298,7 @@ fun HomeScreen(
 
     LaunchedEffect(smartMixMessage) {
         if (smartMixMessage != null) {
-            delay(2800)
+            delay(2500)
             viewModel.clearSmartMixMessage()
         }
     }
@@ -323,109 +321,60 @@ fun HomeScreen(
 }
 
 @Composable
-private fun SmartMixActionCard(
+private fun SmartMixFab(
     isBusy: Boolean,
     message: String?,
     onClick: () -> Unit
 ) {
-    val graphiteStart = Color(0xFF3F3B38)
-    val graphiteMid = Color(0xFF4B4743)
-    val graphiteEnd = Color(0xFF312E2C)
-    val sheenTransition = rememberInfiniteTransition(label = "smart_mix_sheen")
-    val shineOffset by sheenTransition.animateFloat(
-        initialValue = -0.45f,
-        targetValue = 1.45f,
+    val sparkleTransition = rememberInfiniteTransition(label = "sparkle")
+    val sparkleScale by sparkleTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2600),
+            animation = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "smart_mix_shine_offset"
+        label = "sparkle_scale"
     )
-    val shineAlpha by sheenTransition.animateFloat(
-        initialValue = 0.10f,
-        targetValue = 0.24f,
+    val sparkleAlpha by sparkleTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2200),
+            animation = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "smart_mix_shine_alpha"
+        label = "sparkle_alpha"
     )
-    val buttonShape = MaterialTheme.shapes.large
-    val buttonText = when {
-        isBusy -> "Building Smart Mix..."
-        !message.isNullOrBlank() -> message
-        else -> "Smart Mix"
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth(0.86f)
-            .padding(vertical = 12.dp)
-            .clip(buttonShape)
-            .background(
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF55504C),
-                        Color(0xFF2F2B29)
-                    )
-                )
-            )
-            .padding(1.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(buttonShape)
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            graphiteStart,
-                            graphiteMid,
-                            graphiteEnd
-                        )
-                    )
-                )
-                .drawWithContent {
-                    drawContent()
-                    val shineCenter = size.width * shineOffset
-                    drawRect(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = shineAlpha),
-                                Color.Transparent
-                            ),
-                            start = Offset(shineCenter - size.width * 0.22f, 0f),
-                            end = Offset(shineCenter + size.width * 0.02f, size.height)
-                        )
-                    )
-                }
-                .clickable(enabled = !isBusy, onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 14.dp)
-        ) {
-            Text(
-                text = buttonText,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    shadow = Shadow(
-                        color = Color(0xAA9FC6FF),
-                        offset = Offset(0f, 0f),
-                        blurRadius = 10f
-                    )
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.align(Alignment.Center)
-            )
+    ExtendedFloatingActionButton(
+        onClick = { if (!isBusy) onClick() },
+        shape = CircleShape,
+        containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        elevation = androidx.compose.material3.FloatingActionButtonDefaults.elevation(
+            defaultElevation = 6.dp
+        ),
+        icon = {
             if (isBusy) {
                 CircularProgressIndicator(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .size(18.dp),
+                    modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
                     color = Color(0xFFD8D8D8)
                 )
+            } else {
+                Icon(
+                    Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = sparkleScale
+                            scaleY = sparkleScale
+                            alpha = sparkleAlpha
+                        }
+                )
             }
-        }
-    }
+        },
+        text = { Text(if (message != null) "Done!" else "Smart Mix") }
+    )
 }
 
 @Composable

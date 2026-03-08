@@ -8,6 +8,7 @@ import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 
@@ -50,17 +51,17 @@ class DiscoverContentLoader(
             if (artists != null) addAll(artists)
             if (randomArtists != null) addAll(randomArtists)
             addAll(recommendationArtists)
-        }.distinctBy { artistKey(it) ?: it.uri }
+        }.distinctBy { it.canonicalKey() ?: it.uri }
 
         val artistByUri = mergedArtists.mapNotNull { artist ->
-            artistKey(artist)?.let { it to artist }
+            artist.canonicalKey()?.let { it to artist }
         }.toMap()
 
         val filteredArtists = if (excludedArtistUris.isEmpty()) {
             mergedArtists
         } else {
             mergedArtists.filterNot { artist ->
-                val key = artistKey(artist) ?: return@filterNot false
+                val key = artist.canonicalKey() ?: return@filterNot false
                 key in excludedArtistUris
             }
         }
@@ -98,7 +99,7 @@ class DiscoverContentLoader(
 
         return favoritesByAdded
             .filter { it.favorite }
-            .distinctBy { albumKey(it) ?: it.uri }
+            .distinctBy { it.canonicalKey() ?: it.uri }
             .take(limit)
     }
 
@@ -126,13 +127,13 @@ class DiscoverContentLoader(
     private fun extractRecommendationArtists(folders: List<RecommendationFolder>): List<Artist> =
         folders.asSequence()
             .flatMap { it.items.artists.asSequence() }
-            .distinctBy { artistKey(it) ?: it.uri }
+            .distinctBy { it.canonicalKey() ?: it.uri }
             .toList()
 
     private fun extractRecommendationAlbums(folders: List<RecommendationFolder>): List<Album> =
         folders.asSequence()
             .flatMap { it.items.albums.asSequence() }
-            .distinctBy { albumKey(it) ?: it.uri }
+            .distinctBy { it.canonicalKey() ?: it.uri }
             .toList()
 
     private fun mergeFavoriteAlbumsFolder(
@@ -152,7 +153,7 @@ class DiscoverContentLoader(
         )
     }
 
-    private fun buildGenreData(
+    fun buildGenreData(
         artists: List<Artist>,
         historyGenreArtists: Map<String, List<String>>,
         artistByUri: Map<String, Artist>
@@ -177,7 +178,7 @@ class DiscoverContentLoader(
                             .orEmpty()
                             .mapNotNull { key -> artistByUri[key]?.uri }
                     )
-                }.distinctBy { artistKeyFromUri(it) ?: it }
+                }.distinctBy { MediaIdentity.artistKeyFromUri(it) ?: it }
                 put(genre, merged)
             }
         }
@@ -197,12 +198,33 @@ class DiscoverContentLoader(
         return Triple(genreItems, genreArtists, strictGenreArtists)
     }
 
-    private fun artistKey(artist: Artist): String? =
-        MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun loadFavoriteArtistKeys(limit: Int = 500): Set<String> = try {
+        musicRepository.getArtists(
+            orderBy = "play_count_desc",
+            limit = limit,
+            favoriteOnly = true
+        )
+            .asSequence()
+            .filter { it.favorite }
+            .mapNotNull { it.canonicalKey() }
+            .toSet()
+    } catch (_: Exception) {
+        emptySet()
+    }
 
-    private fun artistKeyFromUri(uri: String?): String? =
-        MediaIdentity.canonicalArtistKey(uri = uri)
-
-    private fun albumKey(album: Album): String? =
-        MediaIdentity.canonicalAlbumKey(itemId = album.itemId, uri = album.uri)
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun loadFavoriteAlbumKeys(limit: Int = 500): Set<String> = try {
+        musicRepository.getAlbums(
+            orderBy = "play_count_desc",
+            limit = limit,
+            favoriteOnly = true
+        )
+            .asSequence()
+            .filter { it.favorite }
+            .mapNotNull { it.canonicalKey() }
+            .toSet()
+    } catch (_: Exception) {
+        emptySet()
+    }
 }

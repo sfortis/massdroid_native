@@ -57,7 +57,7 @@ class RecommendationEngine @Inject constructor() {
         }
         if (eligible.isEmpty()) return candidates.shuffled().take(count)
 
-        val genreScoreMap = genreScores.associate { it.genre.lowercase() to it.score }
+        val genreScoreMap = genreScores.toScoreMap()
         val topGenreNames = genreScoreMap.keys
 
         // Score each candidate by sum of their genre affinities + signal + similar bonus

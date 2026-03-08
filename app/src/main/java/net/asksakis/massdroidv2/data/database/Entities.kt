@@ -198,3 +198,11 @@ data class LastFmSimilarArtistEntity(
     @ColumnInfo(name = "match_score") val matchScore: Double,
     @ColumnInfo(name = "fetched_at") val fetchedAt: Long
 )
+
+@Entity(tableName = "artist_track_cache")
+data class ArtistTrackCacheEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "artist_uri") val artistUri: String,
+    @ColumnInfo(name = "tracks_json") val tracksJson: String,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)

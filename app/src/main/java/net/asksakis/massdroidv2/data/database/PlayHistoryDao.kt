@@ -51,6 +51,15 @@ interface PlayHistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSimilarArtists(entities: List<LastFmSimilarArtistEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertArtistTrackCache(cache: ArtistTrackCacheEntity)
+
+    @Query("SELECT * FROM artist_track_cache WHERE artist_uri = :artistUri LIMIT 1")
+    suspend fun getArtistTrackCache(artistUri: String): ArtistTrackCacheEntity?
+
+    @Query("DELETE FROM artist_track_cache WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredArtistTrackCache(olderThan: Long)
+
     @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist")
     suspend fun getSimilarArtists(sourceArtist: String): List<LastFmSimilarArtistEntity>
 

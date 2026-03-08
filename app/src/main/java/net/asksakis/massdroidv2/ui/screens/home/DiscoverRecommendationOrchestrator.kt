@@ -8,6 +8,7 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.RecommendationEngine
+import net.asksakis.massdroidv2.domain.recommendation.toScoreMap
 import net.asksakis.massdroidv2.domain.recommendation.ScoredAlbum
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -103,7 +104,7 @@ class DiscoverRecommendationOrchestrator(
             val artistGenreMap = candidateArtists.mapNotNull { artist ->
                 artistIdentity(artist).let { it to artist.genres.map { g -> g.lowercase() }.toSet() }
             }.toMap()
-            val genreScoreMap = genreScores.associate { it.genre.lowercase() to it.score }
+            val genreScoreMap = genreScores.toScoreMap()
 
             val allCandidateAlbums = mutableListOf<ScoredAlbum>()
 

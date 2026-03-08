@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
 import net.asksakis.massdroidv2.data.database.AlbumEntity
+import net.asksakis.massdroidv2.data.database.ArtistTrackCacheEntity
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
@@ -19,6 +20,8 @@ import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.RecentAlbum
 import net.asksakis.massdroidv2.domain.repository.TrackScore
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 import java.time.Instant
@@ -28,7 +31,8 @@ import kotlin.math.pow
 
 @Singleton
 class PlayHistoryRepositoryImpl @Inject constructor(
-    private val dao: PlayHistoryDao
+    private val dao: PlayHistoryDao,
+    private val json: Json
 ) : PlayHistoryRepository {
 
     companion object {
@@ -272,6 +276,30 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun getPlaysForTimeAnalysis(days: Int): List<Long> {
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
         return dao.getPlaysForTimeAnalysis(since).map { it.playedAt }
+    }
+
+    override suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>? {
+        val cache = dao.getArtistTrackCache(artistUri) ?: return null
+        if (System.currentTimeMillis() - cache.fetchedAt > maxAgeMs) return null
+        return try {
+            json.decodeFromString(ListSerializer(Track.serializer()), cache.tracksJson)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode artist track cache for $artistUri: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>) {
+        val now = System.currentTimeMillis()
+        val payload = json.encodeToString(ListSerializer(Track.serializer()), tracks)
+        dao.upsertArtistTrackCache(
+            ArtistTrackCacheEntity(
+                artistUri = artistUri,
+                tracksJson = payload,
+                fetchedAt = now
+            )
+        )
+        dao.deleteExpiredArtistTrackCache(now - (14 * MILLIS_PER_DAY))
     }
 
     override suspend fun cleanup(retentionMonths: Int) {

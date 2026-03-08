@@ -35,8 +35,9 @@ object RepositoryModule {
     @Provides
     @Singleton
     fun providePlayHistoryRepository(
-        dao: PlayHistoryDao
-    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao)
+        dao: PlayHistoryDao,
+        json: Json
+    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao, json)
 
     @Provides
     @Singleton
