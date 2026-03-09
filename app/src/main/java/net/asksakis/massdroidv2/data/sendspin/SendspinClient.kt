@@ -151,7 +151,7 @@ class SendspinClient(
                 this@SendspinClient.webSocket = null
                 errorMessage = t.message
                 _state.value = SendspinState.ERROR
-                // Don't auto-reconnect on network errors; SendspinService
+                // Don't auto-reconnect on network errors; SendspinAudioController
                 // will restart with a fresh token after MA WebSocket reconnects
             }
         })

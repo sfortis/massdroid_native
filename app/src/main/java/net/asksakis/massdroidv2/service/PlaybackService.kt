@@ -1,5 +1,8 @@
 package net.asksakis.massdroidv2.service
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
@@ -11,6 +14,7 @@ import android.os.Looper
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.DeviceInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -27,9 +31,13 @@ import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
+import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
@@ -52,6 +60,8 @@ class PlaybackService : MediaLibraryService() {
         private const val PAGE_SIZE_DEFAULT = 50
         private const val VOLUME_STEP = RemoteControlPlayer.VOLUME_SCALE
         private const val VOLUME_OVERRIDE_MS = 15_000L
+        private const val CONN_CHANNEL_ID = "massdroid_connection"
+        private const val CONN_NOTIFICATION_ID = 3
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -69,14 +79,20 @@ class PlaybackService : MediaLibraryService() {
     @Volatile private var cachedArtworkData: ByteArray? = null
     private var optimisticVolume: Int? = null
     private var volumeOverrideUntil: Long = 0
+    private var sendspinController: SendspinAudioController? = null
+    private var sendspinActive = false
 
     override fun onCreate() {
         super.onCreate()
+        createConnectionNotificationChannel()
         remotePlayer = createRemotePlayer()
         createMediaSession()
         loadSendspinPlayerId()
         observePlayerState()
         observeQueueItems()
+        createSendspinController()
+        observeSendspinEnabled()
+        observeConnectionState()
     }
 
     private fun loadSendspinPlayerId() {
@@ -86,6 +102,112 @@ class PlaybackService : MediaLibraryService() {
             }
         }
     }
+
+    private fun createSendspinController() {
+        sendspinController = SendspinAudioController(
+            context = this,
+            sendspinManager = sendspinManager,
+            settingsRepository = settingsRepository,
+            playerRepository = playerRepository,
+            musicRepository = musicRepository,
+            wsClient = wsClient,
+            onMetadataChanged = { _ -> },
+            onStateChanged = { _, _, _ ->
+                updateConnectionNotification()
+            }
+        )
+    }
+
+    private fun observeSendspinEnabled() {
+        scope.launch {
+            settingsRepository.sendspinEnabled.collect { enabled ->
+                Log.d(TAG, "Sendspin enabled: $enabled")
+                if (enabled && !sendspinActive) {
+                    // Only start if WS is connected
+                    val connected = wsClient.connectionState.value is ConnectionState.Connected
+                    if (connected) {
+                        sendspinActive = true
+                        sendspinController?.start()
+                    }
+                } else if (!enabled && sendspinActive) {
+                    sendspinActive = false
+                    sendspinController?.stop()
+                }
+            }
+        }
+    }
+
+    private fun observeConnectionState() {
+        scope.launch {
+            wsClient.connectionState.collect { state ->
+                updateConnectionNotification()
+                // Auto-start sendspin on first connect if enabled
+                if (state is ConnectionState.Connected) {
+                    val sendspinOn = settingsRepository.sendspinEnabled.first()
+                    if (sendspinOn && !sendspinActive) {
+                        sendspinActive = true
+                        sendspinController?.start()
+                    }
+                }
+            }
+        }
+    }
+
+    // region Connection state notification
+
+    private fun createConnectionNotificationChannel() {
+        val channel = NotificationChannel(
+            CONN_CHANNEL_ID,
+            "MassDroid Connection",
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            description = "Shows MassDroid connection status"
+            setShowBadge(false)
+            setSound(null, null)
+            enableLights(false)
+            enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(channel)
+    }
+
+    private fun updateConnectionNotification() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+
+        val connState = wsClient.connectionState.value
+        val text = when (connState) {
+            is ConnectionState.Connected -> "Connected to Music Assistant"
+            is ConnectionState.Connecting -> "Connecting..."
+            is ConnectionState.Error -> "Connection error"
+            is ConnectionState.Disconnected -> {
+                manager.cancel(CONN_NOTIFICATION_ID)
+                return
+            }
+        }
+
+        val contentIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, CONN_CHANNEL_ID)
+            .setContentTitle("MassDroid")
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentIntent(contentIntent)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setOngoing(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+
+        manager.notify(CONN_NOTIFICATION_ID, notification)
+    }
+
+    // endregion
 
     private fun activePlayerId(): String? {
         return playerRepository.selectedPlayer.value?.playerId
@@ -192,6 +314,9 @@ class PlaybackService : MediaLibraryService() {
             }.collect { (player, queue, elapsed) ->
                 if (player == null) return@collect
 
+                val isSendspinPlayer = sendspinPlayerId != null &&
+                    player.playerId == sendspinPlayerId
+
                 val currentTrack = queue?.currentItem?.track
                 val title = currentTrack?.name ?: player.currentMedia?.title ?: ""
                 val artist = currentTrack?.artistNames ?: player.currentMedia?.artist ?: ""
@@ -207,9 +332,6 @@ class PlaybackService : MediaLibraryService() {
                 }
 
                 updateArtwork(imageUrl)
-
-                val isSendspinPlayer = sendspinPlayerId != null &&
-                    player.playerId == sendspinPlayerId
 
                 val effectiveVolume = if (optimisticVolume != null) {
                     if (player.volumeLevel == optimisticVolume) {
@@ -238,6 +360,7 @@ class PlaybackService : MediaLibraryService() {
                     isMuted = player.volumeMuted,
                     isRemotePlayback = !isSendspinPlayer
                 )
+                updateConnectionNotification()
             }
         }
     }
@@ -347,6 +470,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        sendspinController?.destroy()
+        sendspinController = null
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.cancel(CONN_NOTIFICATION_ID)
         scope.cancel()
         mediaLibrarySession?.run {
             player.release()
@@ -369,9 +496,10 @@ class PlaybackService : MediaLibraryService() {
             // Notification buttons -> normal flow (controls selected player)
             if (session.isMediaNotificationController(controllerInfo)) return false
 
-            // BT/hardware buttons: route to sendspin when enabled
-            val ssId = sendspinPlayerId ?: return false
-            if (!sendspinManager.enabled.value) return false
+            // BT/hardware buttons: route to sendspin when active
+            val ctrl = sendspinController ?: return false
+            if (!sendspinActive) return false
+            ctrl.sendspinPlayerId ?: return false
 
             val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
@@ -382,32 +510,12 @@ class PlaybackService : MediaLibraryService() {
             if (keyEvent.action != KeyEvent.ACTION_DOWN) return true
 
             when (keyEvent.keyCode) {
-                KeyEvent.KEYCODE_MEDIA_PLAY -> {
-                    sendspinManager.resumeAudio()
-                    scope.launch { playerRepository.play(ssId) }
-                }
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                    sendspinManager.pauseAudio()
-                    scope.launch { playerRepository.pause(ssId) }
-                }
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> {
-                    val isPlaying = playerRepository.players.value
-                        .firstOrNull { it.playerId == ssId }
-                        ?.state == PlaybackState.PLAYING
-                    if (isPlaying) {
-                        sendspinManager.pauseAudio()
-                        scope.launch { playerRepository.pause(ssId) }
-                    } else {
-                        sendspinManager.resumeAudio()
-                        scope.launch { playerRepository.play(ssId) }
-                    }
-                }
-                KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                    scope.launch { playerRepository.next(ssId) }
-                }
-                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                    scope.launch { playerRepository.previous(ssId) }
-                }
+                KeyEvent.KEYCODE_MEDIA_PLAY -> ctrl.handlePlay()
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> ctrl.handlePause()
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK ->
+                    ctrl.handlePlayPause()
+                KeyEvent.KEYCODE_MEDIA_NEXT -> ctrl.handleNext()
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> ctrl.handlePrev()
                 else -> return false
             }
             Log.d(TAG, "BT media button routed to sendspin: ${keyEvent.keyCode}")
@@ -757,6 +865,12 @@ class RemoteControlPlayer(
     private var _volumeLevel = 0
     private var _isMuted = false
     private var _isRemotePlayback = false
+
+    val currentTitle: String get() = _title
+    val currentArtist: String get() = _artist
+    val currentAlbum: String get() = _album
+    val currentDurationMs: Long get() = _durationMs
+    val currentPositionMs: Long get() = _positionMs
 
     fun updateState(
         isPlaying: Boolean,

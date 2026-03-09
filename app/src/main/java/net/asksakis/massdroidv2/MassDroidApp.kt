@@ -2,10 +2,8 @@ package net.asksakis.massdroidv2
 
 import android.app.Application
 import android.content.ComponentName
-import android.content.Intent
 import android.security.KeyChain
 import android.util.Log
-import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil.ImageLoader
@@ -19,7 +17,6 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.service.PlaybackService
-import net.asksakis.massdroidv2.service.SendspinService
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -38,7 +35,6 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     lateinit var appUpdateChecker: AppUpdateChecker
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var sendspinServiceStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -88,7 +84,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
         // Connect to PlaybackService for media notification (remote control mode)
         connectPlaybackService()
 
-        // Observe connection state: save token on connect, clear on auth failure, auto-start Sendspin
+        // Observe connection state: save token on connect, clear on auth failure
         appScope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
@@ -97,15 +93,6 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                         wsClient.authToken?.let { token ->
                             settingsRepository.setAuthToken(token)
                             Log.d("MassDroidApp", "Token saved to DataStore")
-                        }
-                        val sendspinOn = settingsRepository.sendspinEnabled.first()
-                        if (sendspinOn && !sendspinServiceStarted) {
-                            sendspinServiceStarted = true
-                            val intent = Intent(this@MassDroidApp, SendspinService::class.java).apply {
-                                action = SendspinService.ACTION_START
-                            }
-                            ContextCompat.startForegroundService(this@MassDroidApp, intent)
-                            Log.d("MassDroidApp", "Sendspin service auto-started after WS connect")
                         }
                     }
                     is ConnectionState.Error -> {

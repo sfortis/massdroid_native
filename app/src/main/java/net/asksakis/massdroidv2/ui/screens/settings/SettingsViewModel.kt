@@ -1,10 +1,8 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import android.content.Context
-import android.content.Intent
 import android.security.KeyChain
 import android.util.Log
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -24,7 +22,6 @@ import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.repository.TrackScore
-import net.asksakis.massdroidv2.service.SendspinService
 import javax.inject.Inject
 
 data class UpdateUiState(
@@ -295,14 +292,6 @@ class SettingsViewModel @Inject constructor(
     fun toggleSendspin(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setSendspinEnabled(enabled)
-            val intent = Intent(appContext, SendspinService::class.java)
-            if (enabled) {
-                intent.action = SendspinService.ACTION_START
-                ContextCompat.startForegroundService(appContext, intent)
-            } else {
-                intent.action = SendspinService.ACTION_STOP
-                appContext.startService(intent)
-            }
         }
     }
 
