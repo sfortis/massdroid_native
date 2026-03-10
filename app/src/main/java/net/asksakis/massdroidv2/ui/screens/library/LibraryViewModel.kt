@@ -472,7 +472,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun quickPlay(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -485,7 +485,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun playUri(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -510,7 +510,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun enqueue(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uri, option = "add")
@@ -522,7 +522,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun startRadio(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
@@ -739,7 +739,7 @@ class ArtistDetailViewModel @Inject constructor(
     }
 
     fun playUri(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -764,7 +764,7 @@ class ArtistDetailViewModel @Inject constructor(
     }
 
     fun enqueue(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uri, option = "add")
@@ -776,7 +776,7 @@ class ArtistDetailViewModel @Inject constructor(
     }
 
     fun startRadio(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
@@ -789,7 +789,7 @@ class ArtistDetailViewModel @Inject constructor(
     }
 
     fun quickPlay(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -804,7 +804,7 @@ class ArtistDetailViewModel @Inject constructor(
     fun playTrack(track: Track) = playUri(track.uri)
 
     fun playAllTracks(option: String = "replace") {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         val uris = _tracks.value.map { it.uri }
         if (uris.isEmpty()) return
         viewModelScope.launch {
@@ -983,7 +983,7 @@ class AlbumDetailViewModel @Inject constructor(
     }
 
     fun playUri(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -1008,7 +1008,7 @@ class AlbumDetailViewModel @Inject constructor(
     }
 
     fun enqueue(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uri, option = "add")
@@ -1020,7 +1020,7 @@ class AlbumDetailViewModel @Inject constructor(
     }
 
     fun startRadio(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
@@ -1049,7 +1049,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun playAll() {
         val uris = _tracks.value.map { it.uri }
         if (uris.isEmpty()) return
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -1063,7 +1063,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun addAllToQueue() {
         val uris = _tracks.value.map { it.uri }
         if (uris.isEmpty()) return
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uris, option = "add")
@@ -1076,7 +1076,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun playAllNext() {
         val uris = _tracks.value.map { it.uri }
         if (uris.isEmpty()) return
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uris, option = "next")
@@ -1089,7 +1089,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun replaceQueue() {
         val uris = _tracks.value.map { it.uri }
         if (uris.isEmpty()) return
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -1182,7 +1182,7 @@ class PlaylistDetailViewModel @Inject constructor(
     }
 
     fun playUri(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
@@ -1207,7 +1207,7 @@ class PlaylistDetailViewModel @Inject constructor(
     }
 
     fun enqueue(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 musicRepository.playMedia(queueId, uri, option = "add")
@@ -1219,7 +1219,7 @@ class PlaylistDetailViewModel @Inject constructor(
     }
 
     fun startRadio(uri: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)

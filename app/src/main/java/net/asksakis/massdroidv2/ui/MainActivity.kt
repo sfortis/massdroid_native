@@ -16,8 +16,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -29,9 +32,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -126,13 +134,29 @@ private fun MassDroidApp(
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        miniPlayerViewModel.noPlayerSelectedEvent.collect {
+            navController.navigate(Routes.PLAYERS) {
+                popUpTo(Routes.HOME)
+                launchSingleTop = true
+            }
+            snackbarHostState.showSnackbar(
+                message = "Select a player first",
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
     if (isLandscape) {
         LandscapeLayout(
             navController = navController,
             currentRoute = currentRoute,
             showNav = showNav,
             showMiniPlayer = showMiniPlayer,
-            miniPlayerViewModel = miniPlayerViewModel
+            miniPlayerViewModel = miniPlayerViewModel,
+            snackbarHostState = snackbarHostState
         )
     } else {
         PortraitLayout(
@@ -140,7 +164,8 @@ private fun MassDroidApp(
             currentRoute = currentRoute,
             showNav = showNav,
             showMiniPlayer = showMiniPlayer,
-            miniPlayerViewModel = miniPlayerViewModel
+            miniPlayerViewModel = miniPlayerViewModel,
+            snackbarHostState = snackbarHostState
         )
     }
 }
@@ -151,11 +176,15 @@ private fun PortraitLayout(
     currentRoute: String?,
     showNav: Boolean,
     showMiniPlayer: Boolean,
-    miniPlayerViewModel: MiniPlayerViewModel
+    miniPlayerViewModel: MiniPlayerViewModel,
+    snackbarHostState: SnackbarHostState
 ) {
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            Column {
+            Column(
+                modifier = if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier
+            ) {
                 MiniPlayerContainer(
                     showMiniPlayer = showMiniPlayer,
                     miniPlayerViewModel = miniPlayerViewModel,
@@ -181,16 +210,20 @@ private fun LandscapeLayout(
     currentRoute: String?,
     showNav: Boolean,
     showMiniPlayer: Boolean,
-    miniPlayerViewModel: MiniPlayerViewModel
+    miniPlayerViewModel: MiniPlayerViewModel,
+    snackbarHostState: SnackbarHostState
 ) {
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            MiniPlayerContainer(
-                showMiniPlayer = showMiniPlayer,
-                miniPlayerViewModel = miniPlayerViewModel,
-                onQueue = { navController.navigate(Routes.QUEUE) { launchSingleTop = true } },
-                onClick = { navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true } }
-            )
+            Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                MiniPlayerContainer(
+                    showMiniPlayer = showMiniPlayer,
+                    miniPlayerViewModel = miniPlayerViewModel,
+                    onQueue = { navController.navigate(Routes.QUEUE) { launchSingleTop = true } },
+                    onClick = { navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true } }
+                )
+            }
         }
     ) { paddingValues ->
         Row(

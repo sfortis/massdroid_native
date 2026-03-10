@@ -16,6 +16,9 @@ interface PlayerRepository {
     /** Emits immediately when a playback command is issued, before server round-trip. */
     val playbackIntent: SharedFlow<Boolean>
 
+    /** Emits when an action requires a selected player but none is available. */
+    val noPlayerSelectedEvent: SharedFlow<Unit>
+
     /** Emits the queue ID whenever QUEUE_ITEMS_UPDATED or QUEUE_UPDATED fires for the selected player. */
     val queueItemsChanged: SharedFlow<String>
 
@@ -25,6 +28,7 @@ interface PlayerRepository {
         RADIO_SMART
     }
 
+    fun requireSelectedPlayerId(): String?
     suspend fun refreshPlayers()
     fun selectPlayer(playerId: String)
 

@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -32,6 +33,8 @@ class MiniPlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient
 ) : ViewModel() {
+
+    val noPlayerSelectedEvent: SharedFlow<Unit> = playerRepository.noPlayerSelectedEvent
 
     val miniPlayerUiState: StateFlow<MiniPlayerUiState> = combine(
         wsClient.connectionState,

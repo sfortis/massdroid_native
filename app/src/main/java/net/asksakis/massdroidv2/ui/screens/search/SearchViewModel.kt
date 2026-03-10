@@ -54,7 +54,7 @@ class SearchViewModel @Inject constructor(
     }
 
     fun playTrack(track: Track) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)

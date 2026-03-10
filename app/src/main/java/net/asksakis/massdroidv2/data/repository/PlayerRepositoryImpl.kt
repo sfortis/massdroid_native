@@ -56,6 +56,15 @@ class PlayerRepositoryImpl @Inject constructor(
     private val _queueItemsChanged = MutableSharedFlow<String>(extraBufferCapacity = 1)
     override val queueItemsChanged: SharedFlow<String> = _queueItemsChanged.asSharedFlow()
 
+    private val _noPlayerSelectedEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val noPlayerSelectedEvent: SharedFlow<Unit> = _noPlayerSelectedEvent.asSharedFlow()
+
+    override fun requireSelectedPlayerId(): String? {
+        val id = selectedPlayer.value?.playerId
+        if (id == null) _noPlayerSelectedEvent.tryEmit(Unit)
+        return id
+    }
+
     private var selectedPlayerId: String? = null
     private var pendingRestoredPlayerId: String? = null
 
@@ -168,11 +177,24 @@ class PlayerRepositoryImpl @Inject constructor(
                         list.map { if (it.playerId == player.playerId) player else it }
                     }
                     if (player.playerId == selectedPlayerId) {
-                        _selectedPlayer.value = player
-                        val wasPlaying = isPlaying
-                        isPlaying = player.state == PlaybackState.PLAYING
-                        if (isPlaying && !wasPlaying) startPositionTicker()
-                        else if (!isPlaying && wasPlaying) stopPositionTicker()
+                        if (!player.available) {
+                            Log.d(TAG, "Selected player became unavailable, deselecting: ${player.displayName}")
+                            selectedPlayerId = null
+                            _selectedPlayer.value = null
+                            _queueState.value = null
+                            _elapsedTime.value = 0.0
+                            trackDuration = 0.0
+                            favoriteOverride = null
+                            favoriteOverrideUri = null
+                            stopPositionTicker()
+                            scope.launch { settingsRepository.setSelectedPlayerId(null) }
+                        } else {
+                            _selectedPlayer.value = player
+                            val wasPlaying = isPlaying
+                            isPlaying = player.state == PlaybackState.PLAYING
+                            if (isPlaying && !wasPlaying) startPositionTicker()
+                            else if (!isPlaying && wasPlaying) stopPositionTicker()
+                        }
                     }
                 }
                 EventType.PLAYER_ADDED -> {

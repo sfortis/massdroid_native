@@ -713,7 +713,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     fun startGenreRadio(genre: String) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         val nowMs = System.currentTimeMillis()
         val strictCandidates = filteredGenreCandidateUris(strictGenreArtists[genre])
         val broadCandidates = filteredGenreCandidateUris(genreArtists[genre])
@@ -1213,7 +1213,7 @@ class DiscoverViewModel @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun logQueueContents(source: String, awaitQueueItems: Boolean = false) {
         try {
-            val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+            val queueId = playerRepository.requireSelectedPlayerId() ?: return
             val baselineTrackUri = playerRepository.queueState.value?.currentItem?.track?.uri
                 ?: playerRepository.selectedPlayer.value?.currentMedia?.uri
             val items = if (awaitQueueItems) {
@@ -1312,7 +1312,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     fun playTrack(track: Track) {
-        val queueId = playerRepository.selectedPlayer.value?.playerId ?: return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
