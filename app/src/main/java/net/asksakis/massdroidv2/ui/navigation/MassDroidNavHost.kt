@@ -33,11 +33,11 @@ object Routes {
     const val PLAYLIST_DETAIL = "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}"
 
     fun artistDetail(itemId: String, provider: String, name: String = "") =
-        "artist/$itemId/$provider?name=${android.net.Uri.encode(name)}"
+        "artist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
     fun albumDetail(itemId: String, provider: String, name: String = "") =
-        "album/$itemId/$provider?name=${android.net.Uri.encode(name)}"
+        "album/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
     fun playlistDetail(itemId: String, provider: String, name: String = "", uri: String = "", favorite: Boolean = false) =
-        "playlist/$itemId/$provider?name=${android.net.Uri.encode(name)}&uri=${android.net.Uri.encode(uri)}&favorite=$favorite"
+        "playlist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}&uri=${android.net.Uri.encode(uri)}&favorite=$favorite"
 }
 
 @Composable
