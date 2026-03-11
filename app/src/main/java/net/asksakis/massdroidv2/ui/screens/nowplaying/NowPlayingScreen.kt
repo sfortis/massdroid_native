@@ -1165,7 +1165,7 @@ private fun SwipeableAlbumArt(
     val sizeModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.75f).aspectRatio(1f)
     } else {
-        Modifier.fillMaxHeight().aspectRatio(1f)
+        Modifier.heightIn(max = 240.dp).aspectRatio(1f)
     }
 
     Box(
