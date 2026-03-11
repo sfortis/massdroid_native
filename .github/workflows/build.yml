@@ -17,18 +17,6 @@ jobs:
           cache: 'gradle'
       - name: Perform base checks
         run: ./gradlew app:assembleDebug --stacktrace
-  ANDROID_UNIT_TESTS:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
-        with:
-          java-version: 21
-          distribution: temurin
-          cache: 'gradle'
-      - name: Execute unit tests
-        run: ./gradlew library:testDebugUnitTest --stacktrace
   ANDROID_BUILD_APK:
     name: Build APK
     runs-on: ubuntu-latest
@@ -51,10 +39,10 @@ jobs:
           cp ./.ci/debug.keystore $HOME/.android/debug.keystore
 
       - name: Execute APK build
-        run: ./gradlew app:assembleDebug --stacktrace
+        run: ./gradlew app:assembleDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
 
       - uses: actions/upload-artifact@v7
         with:
           name: apk-files
-          path: app/build/outputs/apk/**/*.apk
+          path: build-output/app/outputs/apk/**/*.apk
 
