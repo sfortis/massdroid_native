@@ -137,6 +137,15 @@ private fun MassDroidApp(
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
+        if (!miniPlayerViewModel.isServerConfigured()) {
+            navController.navigate(Routes.PLAYERS) {
+                popUpTo(Routes.HOME)
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
         miniPlayerViewModel.noPlayerSelectedEvent.collect {
             navController.navigate(Routes.PLAYERS) {
                 popUpTo(Routes.HOME)
@@ -181,6 +190,7 @@ private fun PortraitLayout(
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(
                 modifier = if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier
@@ -215,6 +225,7 @@ private fun LandscapeLayout(
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
                 MiniPlayerContainer(

@@ -59,6 +59,7 @@ fun AlbumDetailScreen(
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text(albumName) },

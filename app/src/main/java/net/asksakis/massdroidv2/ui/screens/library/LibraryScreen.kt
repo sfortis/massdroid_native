@@ -72,7 +72,7 @@ fun LibraryScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         if (isLandscape) {
             // Compact landscape header: search + tabs + sort in minimal space
             Row(
