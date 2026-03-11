@@ -1,0 +1,33 @@
+name: Build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+jobs:
+  ANDROID_BUILD_APK:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: 'gradle'
+
+      # results in all CICD builds being signed with the same debug key, to ease installation and testing of the generated APKs
+      # this is not a security issue, as the debug key is not used for release builds and the generated APKs are not intended for distribution
+      - name: Setup custom keystore file
+        run: |
+          mkdir -p $HOME/.android
+          cp ./.ci/debug.keystore $HOME/.android/debug.keystore
+
+      - name: Execute APK build
+        run: ./gradlew app:assembleDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apk-files
+          path: build-output/app/outputs/apk/**/*.apk
+
