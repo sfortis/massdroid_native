@@ -10,6 +10,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
@@ -31,6 +33,11 @@ fun SearchScreen(
     val results by viewModel.results.collectAsStateWithLifecycle()
     val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         SearchBar(
@@ -41,6 +48,7 @@ fun SearchScreen(
                     onSearch = {},
                     expanded = false,
                     onExpandedChange = {},
+                    modifier = Modifier.focusRequester(focusRequester),
                     placeholder = { Text("Search music...") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {
