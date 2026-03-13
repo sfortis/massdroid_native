@@ -387,7 +387,8 @@ fun LibraryScreen(
                                 imageUrl = radio.imageUrl,
                                 favorite = radio.favorite,
                                 mediaType = MediaType.RADIO,
-                                itemId = radio.itemId
+                                itemId = radio.itemId,
+                                inLibrary = radio.inLibrary
                             )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
@@ -399,6 +400,8 @@ fun LibraryScreen(
 
     // Action sheet
     actionSheetItem?.let { target ->
+        val isRadio = target.mediaType == MediaType.RADIO
+            val isPlaylist = target.mediaType == MediaType.PLAYLIST
         val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
@@ -417,10 +420,72 @@ fun LibraryScreen(
             onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
                 { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
+            onViewInfo = when (target.mediaType) {
+                MediaType.ARTIST -> {
+                    { onArtistClick(Artist(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl
+                    )) }
+                }
+                MediaType.ALBUM -> {
+                    { onAlbumClick(Album(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl,
+                        artistNames = target.subtitle
+                    )) }
+                }
+                MediaType.TRACK -> target.primaryArtistUri?.let { artistUri ->
+                    {
+                        onArtistClick(Artist(
+                            itemId = artistUri.substringAfterLast("/"),
+                            provider = artistUri.substringBefore("://"),
+                            name = target.primaryArtistName.orEmpty(),
+                            uri = artistUri
+                        ))
+                    }
+                }
+                MediaType.PLAYLIST -> {
+                    { onPlaylistClick(Playlist(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl
+                    )) }
+                }
+                else -> null
+            },
+            inLibrary = target.inLibrary,
+            onToggleLibrary = if (isPlaylist) null else {
+                {
+                    if (isRadio && !target.inLibrary) {
+                        viewModel.addRadioToLibrary(
+                            Radio(
+                                itemId = target.itemId,
+                                provider = target.uri.substringBefore("://"),
+                                name = target.title,
+                                uri = target.uri,
+                                imageUrl = target.imageUrl,
+                                inLibrary = false
+                            )
+                        )
+                    } else {
+                        viewModel.removeFromLibrary(target.mediaType, target.itemId, target.uri)
+                    }
+                }
+            },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
-            onStartRadio = { viewModel.startRadio(target.uri) },
+            onStartRadio = if (isRadio) null else {
+                { viewModel.startRadio(target.uri) }
+            },
             onDismiss = { actionSheetItem = null }
         )
     }

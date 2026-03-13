@@ -73,7 +73,8 @@ data class Radio(
     val name: String,
     val uri: String,
     val imageUrl: String? = null,
-    val favorite: Boolean = false
+    val favorite: Boolean = false,
+    val inLibrary: Boolean = true
 )
 
 enum class MediaType(val apiValue: String) {

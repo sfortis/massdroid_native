@@ -222,6 +222,20 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun removeFromLibrary(mediaType: MediaType, libraryItemId: String) {
+        wsClient.sendCommand(
+            MaCommands.Music.LIBRARY_REMOVE_ITEM,
+            LibraryRemoveItemArgs(mediaType = mediaType.apiValue, libraryItemId = libraryItemId)
+        )
+    }
+
+    override suspend fun addToLibrary(uri: String) {
+        wsClient.sendCommand(
+            MaCommands.Music.LIBRARY_ADD_ITEM,
+            FavoriteAddArgs(item = uri)
+        )
+    }
+
     override suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
         wsClient.sendCommand(
             MaCommands.PlayerQueues.DONT_STOP_THE_MUSIC,

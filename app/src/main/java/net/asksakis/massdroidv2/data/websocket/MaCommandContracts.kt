@@ -35,6 +35,8 @@ object MaCommands {
         const val RECOMMENDATIONS = "music/recommendations"
         const val FAVORITES_ADD = "music/favorites/add_item"
         const val FAVORITES_REMOVE = "music/favorites/remove_item"
+        const val LIBRARY_ADD_ITEM = "music/library/add_item"
+        const val LIBRARY_REMOVE_ITEM = "music/library/remove_item"
         const val SYNC = "music/sync"
     }
 
@@ -260,6 +262,16 @@ data class FavoriteAddArgs(val item: String) : MaCommandArgs {
 }
 
 data class FavoriteRemoveArgs(
+    val mediaType: String,
+    val libraryItemId: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("media_type", mediaType)
+        put("library_item_id", libraryItemId)
+    }
+}
+
+data class LibraryRemoveItemArgs(
     val mediaType: String,
     val libraryItemId: String
 ) : MaCommandArgs {

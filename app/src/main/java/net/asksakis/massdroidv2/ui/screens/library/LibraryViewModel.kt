@@ -488,7 +488,13 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (searchResults.isNotEmpty()) {
                     val seenUris = libraryResults.map { it.uri }.toMutableSet()
-                    libraryResults + searchResults.filter { seenUris.add(it.uri) }
+                    val libraryNames = libraryResults.map { it.name.lowercase() }.toSet()
+                    libraryResults + searchResults
+                        .filter { seenUris.add(it.uri) }
+                        .map { radio ->
+                            val alreadyInLibrary = radio.name.lowercase() in libraryNames
+                            radio.copy(inLibrary = alreadyInLibrary)
+                        }
                 } else libraryResults
 
                 _radios.value = merged
@@ -617,6 +623,37 @@ class LibraryViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
+            }
+        }
+    }
+
+    fun removeFromLibrary(mediaType: MediaType, itemId: String, uri: String) {
+        viewModelScope.launch {
+            try {
+                val libraryItemId = Regex("^library://\\w+/(.+)$").find(uri)?.groupValues?.get(1) ?: itemId
+                musicRepository.removeFromLibrary(mediaType, libraryItemId)
+                when (mediaType) {
+                    MediaType.ARTIST -> _artists.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.ALBUM -> _albums.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.TRACK -> _tracks.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.PLAYLIST -> _playlists.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.RADIO -> _radios.update { list -> list.filter { it.itemId != itemId } }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "removeFromLibrary failed: ${e.message}")
+            }
+        }
+    }
+
+    fun addRadioToLibrary(radio: Radio) {
+        viewModelScope.launch {
+            try {
+                musicRepository.addToLibrary(radio.uri)
+                _radios.update { list ->
+                    list.map { if (it.uri == radio.uri) it.copy(inLibrary = true) else it }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "addRadioToLibrary failed: ${e.message}")
             }
         }
     }

@@ -49,6 +49,8 @@ interface MusicRepository {
     suspend fun requestLibrarySync(force: Boolean = false): Boolean
     suspend fun refreshItemByUri(uri: String): Boolean
     suspend fun setFavorite(uri: String, mediaType: MediaType, itemId: String, favorite: Boolean)
+    suspend fun removeFromLibrary(mediaType: MediaType, libraryItemId: String)
+    suspend fun addToLibrary(uri: String)
     suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean)
 }
 
