@@ -29,6 +29,7 @@ import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.ln
 import kotlin.math.pow
+import kotlin.math.min
 
 @Singleton
 class PlayHistoryRepositoryImpl @Inject constructor(
@@ -44,6 +45,9 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         private const val BLL_MIN_HOURS = 0.5
         private const val BLL_FLOOR = -100.0
         private const val ADJACENCY_CACHE_HOURS = 6L
+        private const val FEEDBACK_RETENTION_DAYS = 120L
+        private const val COMPLETION_FLOOR = 0.3
+        private const val COMPLETION_RANGE = 0.7
     }
 
     private var adjacencyCache: Map<String, Set<String>>? = null
@@ -173,9 +177,12 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         val timestamps = dao.getGenrePlayTimestamps(since)
         val grouped = timestamps.groupBy { it.genre }
         return grouped.map { (genre, plays) ->
+            val weighted = plays.map { p ->
+                WeightedPlay(p.playedAt, completionWeight(p.listenedMs, p.duration))
+            }
             GenreScore(
                 genre = genre,
-                score = computeBllScore(nowMs, plays.map { it.playedAt })
+                score = computeWeightedBllScore(nowMs, weighted)
             )
         }.sortedByDescending { it.score }.take(limit)
     }
@@ -184,12 +191,15 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
         val nowMs = System.currentTimeMillis()
         val timestamps = dao.getArtistPlayTimestamps(since)
-        val grouped = timestamps.groupBy { it.artistUri }
-        return grouped.map { (uri, plays) ->
+        val grouped = timestamps.groupBy { it.artistName }
+        return grouped.map { (name, plays) ->
+            val weighted = plays.map { p ->
+                WeightedPlay(p.playedAt, completionWeight(p.listenedMs, p.duration))
+            }
             ArtistScore(
-                artistUri = uri,
-                artistName = plays.first().artistName,
-                score = computeBllScore(nowMs, plays.map { it.playedAt })
+                artistUri = plays.minOf { it.artistUri },
+                artistName = name,
+                score = computeWeightedBllScore(nowMs, weighted)
             )
         }.sortedByDescending { it.score }.take(limit)
     }
@@ -200,8 +210,9 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         val timestamps = dao.getArtistPlayTimestamps(since)
         if (timestamps.isEmpty()) return emptyMap()
         return timestamps
-            .groupBy { it.artistUri }
-            .mapValues { (_, plays) ->
+            .groupBy { it.artistName }
+            .entries.associate { (name, plays) ->
+                val uri = plays.minOf { it.artistUri }
                 val avg = plays
                     .map { row ->
                         val playedHour = Instant.ofEpochMilli(row.playedAt)
@@ -212,7 +223,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                         kotlin.math.exp(-circular / 4.0)
                     }
                     .average()
-                avg.coerceIn(0.0, 1.0)
+                uri to avg.coerceIn(0.0, 1.0)
             }
     }
 
@@ -220,12 +231,13 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
         val rows = dao.getArtistDecadePlayCounts(since)
         return rows
-            .groupBy { it.artistUri }
-            .mapValues { (_, buckets) ->
-                buckets.maxWithOrNull(
-                    compareBy<net.asksakis.massdroidv2.data.database.ArtistDecadePlayCount> { it.playCount }
-                        .thenBy { it.decade }
-                )?.decade ?: 0
+            .groupBy { it.artistName }
+            .entries.associate { (_, buckets) ->
+                val canonicalUri = buckets.minOf { it.artistUri }
+                val totalByDecade = buckets
+                    .groupBy { it.decade }
+                    .mapValues { (_, b) -> b.sumOf { it.playCount } }
+                canonicalUri to (totalByDecade.maxByOrNull { it.value }?.key ?: 0)
             }
             .filterValues { it > 0 }
     }
@@ -255,8 +267,15 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getGenreArtistMap(): Map<String, List<String>> {
-        return dao.getGenreArtistUris()
-            .groupBy({ normalizeGenre(it.genre) }, { it.artistUri })
+        val rows = dao.getGenreArtistUris()
+        val canonicalUri = rows
+            .groupBy { it.artistName }
+            .mapValues { (_, entries) -> entries.minOf { it.artistUri } }
+        return rows
+            .groupBy { normalizeGenre(it.genre) }
+            .mapValues { (_, entries) ->
+                entries.map { canonicalUri[it.artistName] ?: it.artistUri }.distinct()
+            }
     }
 
     override suspend fun getRediscoverAlbums(limit: Int): List<RecentAlbum> {
@@ -306,15 +325,37 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun searchArtistUrisByGenre(query: String, limit: Int): List<String> =
         dao.searchArtistUrisByGenre(query, limit)
 
+    override suspend fun resolveLibraryArtistUri(name: String): String? =
+        dao.getArtistUrisByName(name).firstOrNull { it.startsWith("library://") }
+
+    override suspend fun getLibraryArtistUriMap(): Map<String, String> =
+        dao.getLibraryArtistUris().associate { it.name to it.uri }
+
+    override suspend fun enrichArtistGenres(artistName: String, genres: List<String>) {
+        val uris = dao.getArtistUrisByName(artistName)
+        if (uris.isEmpty()) return
+        val normalizedGenres = genres.mapNotNull { normalizeGenre(it).ifBlank { null } }
+        if (normalizedGenres.isEmpty()) return
+        for (genre in normalizedGenres) {
+            dao.insertGenre(GenreEntity(name = genre))
+            for (uri in uris) {
+                dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
+            }
+        }
+        Log.d(TAG, "Enriched artist genres: $artistName -> $normalizedGenres (${uris.size} URIs)")
+    }
+
     override suspend fun cleanup(retentionMonths: Int) {
         val cutoff = System.currentTimeMillis() - (retentionMonths * 30L * MILLIS_PER_DAY)
         dao.deleteOlderThan(cutoff)
+        val feedbackCutoff = System.currentTimeMillis() - (FEEDBACK_RETENTION_DAYS * MILLIS_PER_DAY)
+        dao.deleteOldSmartFeedback(feedbackCutoff)
         dao.deleteOrphanTracks()
         dao.deleteOrphanAlbums()
         dao.deleteOrphanArtists()
         dao.deleteOrphanArtistGenres()
         dao.deleteOrphanGenres()
-        Log.d(TAG, "Cleaned up play history older than $retentionMonths months + orphans")
+        Log.d(TAG, "Cleaned up play history older than $retentionMonths months + smart feedback older than $FEEDBACK_RETENTION_DAYS days + orphans")
     }
 
     override suspend fun clearRecommendationData() {
@@ -323,10 +364,18 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         Log.w(TAG, "Recommendation DB data cleared by user action")
     }
 
-    private fun computeBllScore(nowMs: Long, playTimestamps: List<Long>): Double {
-        val sum = playTimestamps.sumOf { playedAt ->
+    private data class WeightedPlay(val playedAt: Long, val weight: Double)
+
+    private fun completionWeight(listenedMs: Long?, durationSec: Double?): Double {
+        if (listenedMs == null || durationSec == null || durationSec <= 0.0) return 1.0
+        val ratio = min((listenedMs / 1000.0) / durationSec, 1.0)
+        return COMPLETION_FLOOR + COMPLETION_RANGE * ratio
+    }
+
+    private fun computeWeightedBllScore(nowMs: Long, plays: List<WeightedPlay>): Double {
+        val sum = plays.sumOf { (playedAt, weight) ->
             val hoursAgo = ((nowMs - playedAt).toDouble() / MILLIS_PER_HOUR).coerceAtLeast(BLL_MIN_HOURS)
-            hoursAgo.pow(BLL_DECAY)
+            hoursAgo.pow(BLL_DECAY) * weight
         }
         return if (sum > 0.0) ln(sum) else BLL_FLOOR
     }

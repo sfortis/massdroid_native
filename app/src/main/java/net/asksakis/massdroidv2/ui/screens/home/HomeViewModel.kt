@@ -169,6 +169,16 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                musicRepository.setDontStopTheMusic(queueId, enabled)
+            } catch (e: Exception) {
+                Log.w(TAG, "setDontStopTheMusic failed: ${e.message}")
+            }
+        }
+    }
+
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
             try {

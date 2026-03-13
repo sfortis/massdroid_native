@@ -26,7 +26,7 @@ class AppUpdateChecker @Inject constructor(
     companion object {
         private const val PREFS_NAME = "app_update_prefs"
         private const val KEY_LAST_CHECK = "last_check_ms"
-        private const val CHECK_INTERVAL_MS = 8 * 60 * 60 * 1000L
+        private const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
         private const val GITHUB_RELEASES_URL =
             "https://api.github.com/repos/sfortis/massdroid_native/releases"
     }

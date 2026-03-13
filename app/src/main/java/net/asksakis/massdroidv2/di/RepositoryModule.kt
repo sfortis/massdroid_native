@@ -68,6 +68,7 @@ object RepositoryModule {
     @Singleton
     fun provideMusicRepository(
         wsClient: MaWebSocketClient,
-        json: Json
-    ): MusicRepository = MusicRepositoryImpl(wsClient, json)
+        json: Json,
+        playerRepository: dagger.Lazy<PlayerRepository>
+    ): MusicRepository = MusicRepositoryImpl(wsClient, json, playerRepository)
 }

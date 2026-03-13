@@ -32,6 +32,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
@@ -49,6 +50,8 @@ import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.ui.MainActivity
+import net.asksakis.massdroidv2.ui.ShortcutAction
+import net.asksakis.massdroidv2.ui.ShortcutActionDispatcher
 import okhttp3.Request
 import javax.inject.Inject
 
@@ -69,6 +72,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -93,6 +97,7 @@ class PlaybackService : MediaLibraryService() {
         createSendspinController()
         observeSendspinEnabled()
         observeConnectionState()
+        observeShortcutActions()
     }
 
     private fun loadSendspinPlayerId() {
@@ -150,6 +155,32 @@ class PlaybackService : MediaLibraryService() {
                     }
                 }
             }
+        }
+    }
+
+    private fun observeShortcutActions() {
+        scope.launch {
+            shortcutDispatcher.pendingAction
+                .filterNotNull()
+                .collect { action ->
+                    if (action !is ShortcutAction.PlayNow) return@collect
+                    shortcutDispatcher.consume()
+                    Log.d(TAG, "PlayNow shortcut: sendspinActive=$sendspinActive")
+                    val sendspinOn = settingsRepository.sendspinEnabled.first()
+                    if (!sendspinOn) {
+                        settingsRepository.setSendspinEnabled(true)
+                    } else if (!sendspinActive) {
+                        val connected = wsClient.connectionState.value is ConnectionState.Connected
+                        if (connected) {
+                            sendspinActive = true
+                            sendspinController?.start()
+                        }
+                    }
+                    val id = sendspinPlayerId ?: settingsRepository.sendspinClientId.first()
+                    if (id != null) {
+                        sendspinController?.handlePlay()
+                    }
+                }
         }
     }
 

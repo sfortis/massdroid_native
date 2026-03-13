@@ -66,7 +66,8 @@ data class ServerQueue(
     @SerialName("shuffle_enabled") val shuffleEnabled: Boolean = false,
     @SerialName("repeat_mode") val repeatMode: String = "off",
     @SerialName("elapsed_time") val elapsedTime: Double = 0.0,
-    @SerialName("current_item") val currentItem: ServerQueueItem? = null
+    @SerialName("current_item") val currentItem: ServerQueueItem? = null,
+    @SerialName("dont_stop_the_music_enabled") val dontStopTheMusicEnabled: Boolean = false
 )
 
 @Serializable

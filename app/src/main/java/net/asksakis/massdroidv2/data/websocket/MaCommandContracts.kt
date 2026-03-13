@@ -48,6 +48,7 @@ object MaCommands {
         const val MOVE_ITEM = "player_queues/move_item"
         const val PLAY_INDEX = "player_queues/play_index"
         const val GET_ACTIVE_QUEUE = "player_queues/get_active_queue"
+        const val DONT_STOP_THE_MUSIC = "player_queues/dont_stop_the_music"
     }
 
     object Players {
@@ -224,6 +225,16 @@ data class PlayIndexArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("queue_id", queueId)
         put("index", index)
+    }
+}
+
+data class DontStopTheMusicArgs(
+    val queueId: String,
+    val enabled: Boolean
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("queue_id", queueId)
+        put("dont_stop_the_music_enabled", enabled)
     }
 }
 

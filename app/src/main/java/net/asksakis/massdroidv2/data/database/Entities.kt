@@ -40,7 +40,8 @@ data class TrackEntity(
     val name: String,
     @ColumnInfo(name = "album_uri") val albumUri: String? = null,
     val duration: Double? = null,
-    @ColumnInfo(name = "image_url") val imageUrl: String? = null
+    @ColumnInfo(name = "image_url") val imageUrl: String? = null,
+    val score: Double = 0.0
 )
 
 @Entity(

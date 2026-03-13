@@ -18,9 +18,10 @@ local.properties
 # Scripts (local helpers)
 /scripts/
 
-# Issue tracker (local)
-issues.md
+# Local docs
+*.md
+!README.md
+/internal_docs/
 
 # Claude Code
-CLAUDE.md
 .claude/

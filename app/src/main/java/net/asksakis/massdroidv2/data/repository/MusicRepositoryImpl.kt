@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,7 +19,8 @@ import javax.inject.Singleton
 @Singleton
 class MusicRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
-    private val json: Json
+    private val json: Json,
+    private val playerRepository: dagger.Lazy<PlayerRepository>
 ) : MusicRepository {
     companion object {
         private const val TAG = "MusicRepo"
@@ -146,6 +148,9 @@ class MusicRepositoryImpl @Inject constructor(
         radioMode: Boolean,
         awaitResponse: Boolean
     ) {
+        if (option == null || option == "play" || option == "replace") {
+            playerRepository.get().notifyQueueReplacement(queueId)
+        }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
@@ -161,6 +166,9 @@ class MusicRepositoryImpl @Inject constructor(
         awaitResponse: Boolean,
         timeoutMs: Long?
     ) {
+        if (option == null || option == "play" || option == "replace") {
+            playerRepository.get().notifyQueueReplacement(queueId)
+        }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = uris, option = option, radioMode = radioMode),
@@ -202,6 +210,13 @@ class MusicRepositoryImpl @Inject constructor(
         wsClient.sendCommand(
             MaCommands.PlayerQueues.REPEAT,
             RepeatArgs(queueId = queueId, repeatMode = mode.apiValue)
+        )
+    }
+
+    override suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.DONT_STOP_THE_MUSIC,
+            DontStopTheMusicArgs(queueId = queueId, enabled = enabled)
         )
     }
 

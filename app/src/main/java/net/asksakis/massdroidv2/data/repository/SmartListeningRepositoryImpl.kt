@@ -45,23 +45,27 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override val blockedArtistUris: Flow<Set<String>> =
         dao.observeBlockedArtistUris().map { it.toSet() }
 
-    override suspend fun recordSkip(track: Track, artists: List<Pair<String, String>>) {
+    override suspend fun recordSkip(track: Track, artists: List<Pair<String, String>>, listenedMs: Long?) {
         if (!settingsRepository.smartListeningEnabled.first()) return
+        val signal = scaleSkipSignal(listenedMs, track.duration)
         insertArtistSignals(
             track = track,
             artists = artists,
             action = "skip",
-            signalPerArtist = SKIP_ARTIST_SIGNAL
+            signalPerArtist = signal,
+            listenedMs = listenedMs
         )
     }
 
-    override suspend fun recordListen(track: Track, artists: List<Pair<String, String>>) {
+    override suspend fun recordListen(track: Track, artists: List<Pair<String, String>>, listenedMs: Long?) {
         if (!settingsRepository.smartListeningEnabled.first()) return
+        val signal = scaleListenSignal(listenedMs, track.duration)
         insertArtistSignals(
             track = track,
             artists = artists,
             action = "listen",
-            signalPerArtist = LISTEN_ARTIST_SIGNAL
+            signalPerArtist = signal,
+            listenedMs = listenedMs
         )
     }
 
@@ -128,11 +132,41 @@ class SmartListeningRepositoryImpl @Inject constructor(
             .keys
     }
 
+    override suspend fun getSuppressedTrackUris(): Set<String> =
+        dao.getSuppressedTrackUris().toSet()
+
+    private fun scaleSkipSignal(listenedMs: Long?, durationSec: Double?): Double {
+        if (listenedMs == null || durationSec == null || durationSec <= 0.0) return SKIP_ARTIST_SIGNAL
+        val listenedSec = listenedMs / 1000.0
+        val ratio = listenedSec / durationSec
+        return when {
+            listenedSec < 5.0 -> -0.60
+            listenedSec < 15.0 -> -0.45
+            ratio < 0.25 -> -0.35
+            ratio < 0.50 -> -0.20
+            ratio < 0.75 -> -0.08
+            else -> -0.03
+        }
+    }
+
+    private fun scaleListenSignal(listenedMs: Long?, durationSec: Double?): Double {
+        if (listenedMs == null || durationSec == null || durationSec <= 0.0) return LISTEN_ARTIST_SIGNAL
+        val ratio = (listenedMs / 1000.0 / durationSec).coerceIn(0.0, 1.0)
+        return when {
+            ratio < 0.15 -> -0.20
+            ratio < 0.30 -> -0.05
+            ratio < 0.50 -> 0.08
+            ratio < 0.75 -> 0.18
+            else -> 0.28
+        }
+    }
+
     private suspend fun insertArtistSignals(
         track: Track,
         artists: List<Pair<String, String>>,
         action: String,
-        signalPerArtist: Double
+        signalPerArtist: Double,
+        listenedMs: Long? = null
     ) {
         val now = System.currentTimeMillis()
         val trackKey = MediaIdentity.canonicalTrackKey(track.itemId, track.uri) ?: return
@@ -173,9 +207,29 @@ class SmartListeningRepositoryImpl @Inject constructor(
             dao.insertArtist(ArtistEntity(uri = artistUri, name = artistName.ifBlank { "Artist" }))
         }
         dao.insertSmartFeedback(feedback)
+        dao.adjustTrackScore(trackKey, signalPerArtist)
+        val artistNames = normalized.joinToString(", ") { it.second }
+        val label = when {
+            action == "skip" && signalPerArtist <= -0.45 -> "HARD SKIP"
+            action == "skip" -> "SOFT SKIP"
+            action == "listen" && signalPerArtist >= 0.18 -> "FULL LISTEN"
+            action == "listen" && signalPerArtist > 0.0 -> "PARTIAL LISTEN"
+            action == "listen" -> "LOW LISTEN"
+            action == "like" -> "LIKE"
+            action == "unlike" -> "UNLIKE"
+            else -> action.uppercase(Locale.US)
+        }
+        val listenInfo = if (listenedMs != null && track.duration != null && track.duration > 0) {
+            val listenedSec = listenedMs / 1000
+            val durationSec = track.duration.toInt()
+            val pct = ((listenedMs / 1000.0 / track.duration) * 100).toInt().coerceAtMost(100)
+            " | ${listenedSec}s/${durationSec}s ($pct%)"
+        } else {
+            ""
+        }
         Log.d(
             TAG,
-            "Recorded $action for $trackKey on ${feedback.size} artist(s), signal=${String.format(Locale.US, "%.2f", signalPerArtist)}"
+            "[$label] \"${track.name}\" by $artistNames | signal=${String.format(Locale.US, "%+.2f", signalPerArtist)}$listenInfo"
         )
     }
 
@@ -201,15 +255,16 @@ class SmartListeningRepositoryImpl @Inject constructor(
 
     private fun computeArtistMetrics(rows: List<ArtistFeedbackSignalRow>): Map<String, ArtistLearningMetrics> {
         val now = System.currentTimeMillis()
-        val grouped = rows.groupBy { it.artistUri }
-        return grouped.mapValues { (_, signals) ->
+        val grouped = rows.groupBy { it.artistName }
+        return grouped.entries.associate { (_, signals) ->
+            val canonicalUri = signals.minOf { it.artistUri }
             val score = signals.sumOf { row ->
                 val ageDays = ((now - row.createdAt).coerceAtLeast(0L)).toDouble() / MILLIS_PER_DAY
                 val decay = exp(-ageDays / DECAY_DAYS)
                 row.signal * decay
             }
             val negativeSignals = signals.count { it.signal < 0.0 }
-            ArtistLearningMetrics(
+            canonicalUri to ArtistLearningMetrics(
                 score = score,
                 negativeSignals = negativeSignals,
                 totalSignals = signals.size

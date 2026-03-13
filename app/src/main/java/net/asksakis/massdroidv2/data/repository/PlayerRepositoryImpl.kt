@@ -89,7 +89,9 @@ class PlayerRepositoryImpl @Inject constructor(
     )
     private val queueTracking = ConcurrentHashMap<String, QueueTrackingState>()
     private val artistGenreCache = ConcurrentHashMap<String, List<String>>()
+    private val libraryArtistUriCache = ConcurrentHashMap<String, String>()
     private val manualSkipByQueue = ConcurrentHashMap<String, String>()
+    private val queueReplacementByQueue = ConcurrentHashMap<String, String>()
     private val blockedAutoSkipByQueue = ConcurrentHashMap<String, Pair<String, Long>>()
     private val blockedQueueCleanupAtByQueue = ConcurrentHashMap<String, Long>()
     private val queueFilterModeByQueue = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
@@ -138,6 +140,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         queueTracking.clear()
                         artistGenreCache.clear()
                         manualSkipByQueue.clear()
+                        queueReplacementByQueue.clear()
                         blockedAutoSkipByQueue.clear()
                         blockedQueueCleanupAtByQueue.clear()
                         queueFilterModeByQueue.clear()
@@ -145,6 +148,11 @@ class PlayerRepositoryImpl @Inject constructor(
                         suppressedArtistUrisSnapshot = emptySet()
                     }
                     is ConnectionState.Connected -> {
+                        scope.launch {
+                            libraryArtistUriCache.putAll(
+                                playHistoryRepository.getLibraryArtistUriMap()
+                            )
+                        }
                         val restoredPlayerId = settingsRepository.selectedPlayerId.first()
                         pendingRestoredPlayerId = restoredPlayerId
                         selectedPlayerId = restoredPlayerId
@@ -292,10 +300,11 @@ class PlayerRepositoryImpl @Inject constructor(
 
         val prev = queueTracking[queueId]
         if (prev != null && prev.track.uri != trackUri) {
-            // Track changed: record previous if listened >30s and not manually skipped.
+            // Track changed: record previous if listened >30s, not manually skipped, and not queue replacement.
             val listenedMs = now - prev.startTime
             val wasManualSkip = manualSkipByQueue.remove(queueId) == prev.track.uri
-            if (listenedMs > 30_000L && !wasManualSkip) {
+            val wasQueueReplacement = queueReplacementByQueue.remove(queueId) == prev.track.uri
+            if (listenedMs > 30_000L && !wasManualSkip && !wasQueueReplacement) {
                 scope.launch {
                     try {
                         val enrichedTrack = enrichTrackGenresForHistory(prev.track, prev.artists)
@@ -304,7 +313,8 @@ class PlayerRepositoryImpl @Inject constructor(
                         )
                         smartListeningRepository.recordListen(
                             track = enrichedTrack,
-                            artists = prev.artists
+                            artists = prev.artists,
+                            listenedMs = listenedMs
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "Play history failed: ${e.message}")
@@ -314,12 +324,17 @@ class PlayerRepositoryImpl @Inject constructor(
         }
 
         if (prev == null || prev.track.uri != trackUri) {
-            Log.d(TAG, "New track: $trackUri, artists=${mediaItem.artists?.map {
-                "${it.name}(uri=${it.uri}, id=${it.itemId}, prov=${it.provider})"
-            }}")
+            Log.d(TAG, "New track: $trackUri")
             val artists = mediaItem.artists
                 ?.mapNotNull { a ->
-                    a.uri.takeIf { it.isNotBlank() }?.let { uri -> uri to a.name }
+                    val rawKey = MediaIdentity.canonicalArtistKey(itemId = a.itemId, uri = a.uri)
+                        ?: return@mapNotNull null
+                    val key = if (!rawKey.startsWith("library://")) {
+                        resolveLibraryArtistUri(a.name, rawKey)
+                    } else {
+                        rawKey
+                    }
+                    key to a.name
                 } ?: emptyList()
 
             // Start with track-level metadata genres when present, then enrich from artist cache.
@@ -533,6 +548,16 @@ class PlayerRepositoryImpl @Inject constructor(
         val itemId = path.substringAfterLast('/').trim()
         if (itemId.isEmpty()) return null
         return MaItemRef(itemId = itemId, provider = provider)
+    }
+
+    private fun resolveLibraryArtistUri(name: String, fallback: String): String {
+        libraryArtistUriCache[name]?.let { return it }
+        // Async resolve for next time
+        scope.launch {
+            val resolved = playHistoryRepository.resolveLibraryArtistUri(name)
+            if (resolved != null) libraryArtistUriCache[name] = resolved
+        }
+        return fallback
     }
 
     private fun normalizeGenres(genres: List<String>?): List<String> {
@@ -857,7 +882,10 @@ class PlayerRepositoryImpl @Inject constructor(
         playerCmd("next", playerId)
     }
 
-    override suspend fun previous(playerId: String) = playerCmd("previous", playerId)
+    override suspend fun previous(playerId: String) {
+        maybeRecordManualSkip(playerId)
+        playerCmd("previous", playerId)
+    }
 
     override suspend fun seek(playerId: String, position: Double) {
         sendPlayerCommandWithRetry(
@@ -977,13 +1005,20 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    override fun notifyQueueReplacement(queueId: String) {
+        val current = queueTracking[queueId] ?: return
+        queueReplacementByQueue[queueId] = current.track.uri
+        Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
+    }
+
     private fun maybeRecordManualSkip(playerId: String) {
         val current = queueTracking[playerId] ?: return
         if (!smartListeningEnabledSnapshot) return
         manualSkipByQueue[playerId] = current.track.uri
+        val listenedMs = System.currentTimeMillis() - current.startTime
         scope.launch {
             try {
-                smartListeningRepository.recordSkip(current.track, current.artists)
+                smartListeningRepository.recordSkip(current.track, current.artists, listenedMs)
             } catch (e: Exception) {
                 Log.w(TAG, "Skip signal failed: ${e.message}")
             }
@@ -1078,6 +1113,7 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
     shuffleEnabled = shuffleEnabled,
     repeatMode = RepeatMode.fromApi(repeatMode),
     elapsedTime = elapsedTime,
+    dontStopTheMusicEnabled = dontStopTheMusicEnabled,
     currentItem = currentItem?.let { item ->
         QueueItem(
             queueItemId = item.queueItemId,

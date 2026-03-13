@@ -7,12 +7,14 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -33,6 +35,7 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.model.Track
@@ -52,6 +55,8 @@ import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.ui.ShortcutAction
+import net.asksakis.massdroidv2.ui.ShortcutActionDispatcher
 import javax.inject.Inject
 import java.time.LocalTime
 import kotlin.math.abs
@@ -63,9 +68,9 @@ private const val RECENT_FAVORITE_TRACKS_TITLE = "Recent Favorite Tracks"
 private const val RECENT_TRACKS_QUERY_FACTOR = 5
 private const val BLL_ARTIST_SCORE_LIMIT = 500
 private const val MAX_GENRE_RADIO_ARTIST_URIS = 30
-private const val GENRE_MIX_ARTIST_LIMIT = 18
-private const val GENRE_MIX_TRACK_TARGET = 36
-private const val GENRE_MIX_MIN_QUEUE_SIZE = 12
+private const val GENRE_MIX_ARTIST_LIMIT = 30
+private const val GENRE_MIX_TRACK_TARGET = 30
+private const val GENRE_MIX_MIN_QUEUE_SIZE = 15
 private const val GENRE_RADIO_ATTEMPT_POOL_SIZE = 20
 private val GENRE_RADIO_BATCH_SIZES = listOf(12, 8, 4, 2, 1)
 private const val GENRE_RADIO_EXPLORATION_COUNT = 4
@@ -130,7 +135,9 @@ class DiscoverViewModel @Inject constructor(
     private val sectionBuilder: DiscoverSectionBuilder,
     private val lastFmSimilarResolver: net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver,
     private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
-    private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
+    private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver,
+    private val shortcutDispatcher: ShortcutActionDispatcher,
+    private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker
 ) : ViewModel() {
 
     private val sectionCoordinator = DiscoverSectionCoordinator(
@@ -174,6 +181,7 @@ class DiscoverViewModel @Inject constructor(
     private var artistByUri = emptyMap<String, Artist>()
     private var smartArtistScoreMap = emptyMap<String, Double>()
     private var excludedArtistUris = emptySet<String>()
+    private var excludedTrackUris = emptySet<String>()
     private var lastRadioStartAtMs = 0L
     private var lastRadioStartGenre: String? = null
     private var lastSmartMixSelection = emptyList<Track>()
@@ -186,6 +194,15 @@ class DiscoverViewModel @Inject constructor(
         }
         viewModelScope.launch {
             observeMediaEvents()
+        }
+        viewModelScope.launch {
+            shortcutDispatcher.pendingAction
+                .filterNotNull()
+                .filter { it is ShortcutAction.SmartMix }
+                .collect {
+                    shortcutDispatcher.consume()
+                    makePlaylistForMe()
+                }
         }
     }
 
@@ -345,12 +362,19 @@ class DiscoverViewModel @Inject constructor(
                     )
                     return@launch
                 }
+                val hadDstm = playerRepository.queueState.value?.dontStopTheMusicEnabled ?: false
+                if (hadDstm) {
+                    musicRepository.setDontStopTheMusic(queueId, false)
+                }
                 playerRepository.setQueueFilterMode(
                     queueId,
                     PlayerRepository.QueueFilterMode.SMART_GENERATED
                 )
                 lastSmartMixSelection = mixResult.tracks
                 musicRepository.playMedia(queueId, trackUris, option = "replace")
+                if (hadDstm) {
+                    musicRepository.setDontStopTheMusic(queueId, true)
+                }
                 logQueueContents("smartMix", awaitQueueItems = true)
                 val message = if (mixResult.genre != null) {
                     val displayGenre = mixResult.genre.replaceFirstChar { it.uppercase() }
@@ -457,9 +481,11 @@ class DiscoverViewModel @Inject constructor(
             val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
             val metrics = smartListeningRepository.getArtistMetrics(days = 120)
             excludedArtistUris = blocked + suppressed
+            excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
             smartArtistScoreMap = metrics.mapValues { it.value.score }
         } else {
             excludedArtistUris = emptySet()
+            excludedTrackUris = emptySet()
             smartArtistScoreMap = emptyMap()
         }
     }
@@ -590,6 +616,7 @@ class DiscoverViewModel @Inject constructor(
                 artistOrder = artistOrder,
                 tracksByArtist = tracksByArtist,
                 excludedArtistUris = excludedArtistUris,
+                excludedTrackUris = excludedTrackUris,
                 favoriteArtistUris = favoriteArtistUris,
                 favoriteAlbumUris = favoriteAlbumUris,
                 artistBaseScore = { uri ->
@@ -618,21 +645,24 @@ class DiscoverViewModel @Inject constructor(
         favoriteAlbumUris: Set<String>,
         mixSeed: Long
     ): List<Track> {
-        val filteredGenreArtists = mapOf(pickedGenre to (mixGenreArtists[pickedGenre] ?: emptyList()))
+        val genreArtistKeys = (mixGenreArtists[pickedGenre] ?: emptyList()).toSet()
+        val filteredGenreArtists = mapOf(pickedGenre to genreArtistKeys.toList())
         val filteredGenreScores = timeAwareGenreScores.filter { normalizeGenre(it.genre) == pickedGenre }
+        val filteredArtistScores = artistScores.filter { it.artistUri in genreArtistKeys }
 
         val smartMixMode = MixMode.SmartMix(
-            artistScores = artistScores,
+            artistScores = filteredArtistScores,
             genreScores = filteredGenreScores,
             genreArtists = filteredGenreArtists,
             recentArtistScoreMap = recentArtistScoreMap,
             daypartAffinityByArtist = daypartAffinity
         )
+        val genreFavorites = favoriteArtistUris.filter { it in genreArtistKeys }
         val artistOrder = mixEngine.buildArtistOrder(
             mode = smartMixMode,
             bllArtistScoreMap = bllArtistScoreMap,
             smartArtistScoreMap = smartArtistScoreMap,
-            favoriteArtistUris = favoriteArtistUris,
+            favoriteArtistUris = genreFavorites.toSet(),
             excludedArtistUris = excludedArtistUris,
             randomSeed = mixSeed
         )
@@ -650,7 +680,8 @@ class DiscoverViewModel @Inject constructor(
             artistOrder = artistOrder,
             tracksByArtist = tracksByArtist,
             excludedArtistUris = excludedArtistUris,
-            favoriteArtistUris = favoriteArtistUris,
+            excludedTrackUris = excludedTrackUris,
+            favoriteArtistUris = genreFavorites.toSet(),
             favoriteAlbumUris = favoriteAlbumUris,
             artistBaseScore = { uri ->
                 val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
@@ -701,6 +732,12 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private fun loadFromServer(isManualRefresh: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                val beta = settingsRepository.includeBetaUpdates.first()
+                appUpdateChecker.checkForUpdates(force = false, includePrerelease = beta)
+            } catch (_: Exception) { /* best-effort */ }
+        }
         if (!isManualRefresh && !cacheStale && _uiState.value.sections.isNotEmpty()) {
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
@@ -726,9 +763,11 @@ class DiscoverViewModel @Inject constructor(
                     val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
                     val metrics = smartListeningRepository.getArtistMetrics(days = 120)
                     excludedArtistUris = blocked + suppressed
+                    excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
                     smartArtistScoreMap = metrics.mapValues { it.value.score }
                 } else {
                     excludedArtistUris = emptySet()
+                    excludedTrackUris = emptySet()
                     smartArtistScoreMap = emptyMap()
                 }
                 val smartFilteredArtists = if (excludedArtistUris.isEmpty()) {
@@ -1156,6 +1195,7 @@ class DiscoverViewModel @Inject constructor(
             artistOrder = allArtistOrder,
             tracksByArtist = tracksByArtist,
             excludedArtistUris = excludedArtistUris,
+            excludedTrackUris = excludedTrackUris,
             favoriteArtistUris = favoriteArtistUris,
             favoriteAlbumUris = favoriteAlbumUris,
             artistBaseScore = { uri ->
@@ -1180,11 +1220,18 @@ class DiscoverViewModel @Inject constructor(
                 "trackPools=${tracksByArtist.size}, built=${trackUris.size}"
         )
 
+        val hadDstm = playerRepository.queueState.value?.dontStopTheMusicEnabled ?: false
+        if (hadDstm) {
+            musicRepository.setDontStopTheMusic(queueId, false)
+        }
         playerRepository.setQueueFilterMode(
             queueId,
             PlayerRepository.QueueFilterMode.RADIO_SMART
         )
         musicRepository.playMedia(queueId, trackUris, option = "replace")
+        if (hadDstm) {
+            musicRepository.setDontStopTheMusic(queueId, true)
+        }
         musicRepository.playQueueIndex(queueId, 0)
         return true
     }
@@ -1373,9 +1420,11 @@ class DiscoverViewModel @Inject constructor(
             val items = musicRepository.getQueueItems(queueId)
             if (items.size < 2) return
 
+            val artistGenreMap = resolveQueueArtistGenres(items)
             val seenTrackUris = mutableSetOf<String>()
             var previousArtistKeys = emptySet<String>()
             val removeQueueItemIds = mutableListOf<String>()
+            var offGenreCount = 0
 
             items.forEachIndexed { index, item ->
                 val track = item.track
@@ -1393,8 +1442,17 @@ class DiscoverViewModel @Inject constructor(
                     previousArtistKeys.isNotEmpty() &&
                     artistKeys.any { it in previousArtistKeys }
 
-                if (duplicateTrack || consecutiveSameArtist) {
+                val artistName = track?.artistNames?.split(",")?.firstOrNull()?.trim()
+                val artistGenres = artistName?.let { artistGenreMap[it.lowercase()] }
+                val offGenre = !artistGenres.isNullOrEmpty() &&
+                    artistGenres.none { isGenreRelated(it, genre) }
+
+                if (duplicateTrack || consecutiveSameArtist || offGenre) {
                     removeQueueItemIds += item.queueItemId
+                    if (offGenre) {
+                        offGenreCount++
+                        Log.d(TAG, "sanitize off-genre: ${track?.artistNames} - ${track?.name} genres=$artistGenres")
+                    }
                 } else if (artistKeys.isNotEmpty()) {
                     previousArtistKeys = artistKeys
                 }
@@ -1407,12 +1465,65 @@ class DiscoverViewModel @Inject constructor(
             }
             Log.d(
                 TAG,
-                "sanitizeGenreRadioQueue[$genre]: removed ${removeQueueItemIds.size} duplicate/consecutive items"
+                "sanitizeGenreRadioQueue[$genre]: removed ${removeQueueItemIds.size} items " +
+                    "($offGenreCount off-genre)"
             )
         } catch (e: Exception) {
             Log.w(TAG, "sanitizeGenreRadioQueue failed: ${e.message}")
         }
     }
+
+    private suspend fun resolveQueueArtistGenres(
+        items: List<QueueItem>
+    ): Map<String, List<String>> {
+        val artistNames = items.mapNotNull { item ->
+            item.track?.artistNames?.split(",")?.firstOrNull()?.trim()
+        }.distinct()
+        if (artistNames.isEmpty()) return emptyMap()
+
+        val trackGenresByArtist = mutableMapOf<String, List<String>>()
+        for (item in items) {
+            val name = item.track?.artistNames?.split(",")?.firstOrNull()?.trim() ?: continue
+            val genres = item.track.genres
+            if (genres.isNotEmpty() && name.lowercase() !in trackGenresByArtist) {
+                trackGenresByArtist[name.lowercase()] = genres
+            }
+        }
+
+        val needsLookup = artistNames.filter { it.lowercase() !in trackGenresByArtist }
+        val resolved = if (needsLookup.isNotEmpty()) {
+            coroutineScope {
+                needsLookup.map { name ->
+                    async {
+                        name.lowercase() to try {
+                            lastFmGenreResolver.resolve(name)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }
+                }.associate { it.await() }
+            }
+        } else {
+            emptyMap()
+        }
+
+        val allResolved = trackGenresByArtist + resolved
+        for ((nameLower, genres) in allResolved) {
+            if (genres.isNotEmpty()) {
+                try {
+                    val originalName = artistNames.firstOrNull { it.lowercase() == nameLower }
+                        ?: continue
+                    playHistoryRepository.enrichArtistGenres(originalName, genres)
+                } catch (_: Exception) { /* best-effort */ }
+            }
+        }
+        return allResolved
+    }
+
+    private fun isGenreRelated(artistGenre: String, targetGenre: String): Boolean =
+        artistGenre == targetGenre ||
+            artistGenre.contains(targetGenre) ||
+            targetGenre.contains(artistGenre)
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun logQueueContents(source: String, awaitQueueItems: Boolean = false) {
@@ -1544,22 +1655,37 @@ class DiscoverViewModel @Inject constructor(
         playHistoryRepository.getCachedArtistTracks(cacheKey, ARTIST_TRACK_CACHE_TTL_MS)?.let { cached ->
             if (cached.isNotEmpty()) {
                 Log.d(TAG, "Artist track cache hit: $cacheKey (${cached.size} tracks)")
-                return cached
+                return enrichTracksWithLastFmGenres(cached)
             }
         }
         for ((provider, itemId) in resolveArtistRefs(artistIdentity)) {
             try {
                 val tracks = musicRepository.getArtistTracks(itemId, provider)
                 if (tracks.isNotEmpty()) {
-                    playHistoryRepository.cacheArtistTracks(cacheKey, tracks)
-                    Log.d(TAG, "Artist track cache fill: $cacheKey (${tracks.size} tracks)")
-                    return tracks
+                    val enriched = enrichTracksWithLastFmGenres(tracks)
+                    playHistoryRepository.cacheArtistTracks(cacheKey, enriched)
+                    Log.d(TAG, "Artist track cache fill: $cacheKey (${enriched.size} tracks)")
+                    return enriched
                 }
             } catch (_: Exception) {
                 // Try next candidate ref.
             }
         }
         return emptyList()
+    }
+
+    private suspend fun enrichTracksWithLastFmGenres(tracks: List<Track>): List<Track> {
+        if (tracks.isEmpty()) return tracks
+        if (tracks.any { it.genres.isNotEmpty() }) return tracks
+        val artistName = tracks.first().artistNames.split(",").firstOrNull()?.trim()
+        if (artistName.isNullOrBlank()) return tracks
+        val genres = try {
+            lastFmGenreResolver.resolve(artistName)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (genres.isEmpty()) return tracks
+        return tracks.map { it.copy(genres = genres) }
     }
 
     private fun resolveArtistRefs(artistIdentity: String): List<Pair<String, String>> {

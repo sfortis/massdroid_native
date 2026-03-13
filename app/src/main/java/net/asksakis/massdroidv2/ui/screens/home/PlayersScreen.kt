@@ -524,8 +524,11 @@ private fun PlayerSettingsDialog(
     var name by remember { mutableStateOf(player.displayName) }
     var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember { mutableStateOf(false) }
+    var dontStopTheMusic by remember { mutableStateOf(false) }
+    val initialDstm = remember { viewModel.queueState.value?.dontStopTheMusicEnabled ?: false }
 
     LaunchedEffect(player.playerId) {
+        dontStopTheMusic = initialDstm
         val loaded = viewModel.getPlayerConfig(player.playerId)
         if (loaded != null) {
             config = loaded
@@ -582,6 +585,26 @@ private fun PlayerSettingsDialog(
                             onCheckedChange = { volumeNormalization = it }
                         )
                     }
+
+                    // Don't stop the music
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Don't stop the music")
+                            Text(
+                                "Auto-fill queue when it runs out",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = dontStopTheMusic,
+                            onCheckedChange = { dontStopTheMusic = it }
+                        )
+                    }
                 }
             }
         },
@@ -596,6 +619,9 @@ private fun PlayerSettingsDialog(
                         values["name"] = name.trim()
                     }
                     viewModel.savePlayerConfig(player.playerId, values)
+                    if (dontStopTheMusic != initialDstm) {
+                        viewModel.setDontStopTheMusic(player.playerId, dontStopTheMusic)
+                    }
                     onDismiss()
                 },
                 enabled = !isLoading

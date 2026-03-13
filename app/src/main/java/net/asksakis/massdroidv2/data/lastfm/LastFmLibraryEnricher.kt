@@ -13,6 +13,7 @@ import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
+import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import java.util.concurrent.ConcurrentLinkedQueue
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,6 +44,8 @@ class LastFmLibraryEnricher @Inject constructor(
     }
 
     private suspend fun processQueue() {
+        dao.backfillArtistGenres()
+        Log.d(TAG, "Backfill completed")
         var enriched = 0
         var total = 0
         while (true) {
@@ -74,12 +77,15 @@ class LastFmLibraryEnricher @Inject constructor(
     }
 
     private suspend fun writeArtistGenres(artist: Artist, genres: List<String>) {
-        val artistUri = artist.canonicalKey() ?: return
-        dao.insertArtist(ArtistEntity(uri = artistUri, name = artist.name))
-        for (genre in genres) {
-            if (genre.isNotBlank()) {
-                dao.insertGenre(GenreEntity(name = genre))
-                dao.insertArtistGenre(ArtistGenreEntity(artistUri = artistUri, genreName = genre))
+        val primaryUri = artist.canonicalKey() ?: return
+        dao.insertArtist(ArtistEntity(uri = primaryUri, name = artist.name))
+        val allUris = dao.getArtistUrisByName(artist.name).toMutableSet()
+        allUris += primaryUri
+        val normalizedGenres = genres.mapNotNull { normalizeGenre(it).ifBlank { null } }
+        for (genre in normalizedGenres) {
+            dao.insertGenre(GenreEntity(name = genre))
+            for (uri in allUris) {
+                dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
             }
         }
     }

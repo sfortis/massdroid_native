@@ -63,6 +63,7 @@ class MixEngine @Inject constructor() {
         artistOrder: List<String>,
         tracksByArtist: Map<String, List<Track>>,
         excludedArtistUris: Set<String>,
+        excludedTrackUris: Set<String> = emptySet(),
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
@@ -83,7 +84,7 @@ class MixEngine @Inject constructor() {
             is MixMode.GenreMix -> emptyMap()
         }
         val targetGenre = (mode as? MixMode.GenreMix)?.let { fuzzyNormalizeGenre(it.genre) }
-        val noGenreConf = if (mode is MixMode.GenreMix) 0.30 else 0.58
+        val noGenreConf = if (mode is MixMode.GenreMix) 0.0 else 0.58
 
         val seenTrackKeys = mutableSetOf<String>()
         val byArtistCount = mutableMapOf<String, Int>()
@@ -96,6 +97,7 @@ class MixEngine @Inject constructor() {
             val ranked = tracks
                 .asSequence()
                 .filter { it.uri.isNotBlank() && trackDedupeKey(it) !in seenTrackKeys }
+                .filterNot { it.uri in excludedTrackUris }
                 .filterNot { track ->
                     val trackArtistKeys = buildSet {
                         addAll(track.artistUris)
@@ -168,6 +170,7 @@ class MixEngine @Inject constructor() {
         artistOrder: List<String>,
         tracksByArtist: Map<String, List<Track>>,
         excludedArtistUris: Set<String>,
+        excludedTrackUris: Set<String> = emptySet(),
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
@@ -178,6 +181,7 @@ class MixEngine @Inject constructor() {
         artistOrder = artistOrder,
         tracksByArtist = tracksByArtist,
         excludedArtistUris = excludedArtistUris,
+        excludedTrackUris = excludedTrackUris,
         favoriteArtistUris = favoriteArtistUris,
         favoriteAlbumUris = favoriteAlbumUris,
         artistBaseScore = artistBaseScore,
@@ -509,17 +513,17 @@ class MixEngine @Inject constructor() {
 
     private fun maxTracksPerArtist(mode: MixMode): Int = when (mode) {
         is MixMode.SmartMix -> 2
-        is MixMode.GenreMix -> 1
+        is MixMode.GenreMix -> 2
     }
 
     private fun firstPassUnique(mode: MixMode): Int = when (mode) {
         is MixMode.SmartMix -> 20
-        is MixMode.GenreMix -> 12
+        is MixMode.GenreMix -> 20
     }
 
     private fun artistGap(mode: MixMode): Int = when (mode) {
         is MixMode.SmartMix -> 12
-        is MixMode.GenreMix -> 6
+        is MixMode.GenreMix -> 8
     }
 
     private fun trackJitter(mode: MixMode): Double = when (mode) {
