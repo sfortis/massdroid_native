@@ -935,57 +935,38 @@ class DiscoverViewModel @Inject constructor(
                 refreshSmartFiltersForMix()
                 ensureBllArtistScoresLoaded()
                 ensureArtistDecadesLoaded()
-                // Expand artist pool with adjacent genres
-                val adjGenres = try {
-                    playHistoryRepository.getGenreAdjacencyMap()[normalizeGenre(genre)] ?: emptySet()
-                } catch (_: Exception) { emptySet() }
-                val expandedUris = if (adjGenres.isNotEmpty()) {
-                    val adjacentArtists = adjGenres.flatMap { g ->
-                        filteredGenreCandidateUris(strictGenreArtists[g]) +
-                            filteredGenreCandidateUris(genreArtists[g])
-                    }
-                    (baseCandidateUris + adjacentArtists)
-                        .distinctBy { uri -> MediaIdentity.artistKeyFromUri(uri) ?: uri }
-                } else baseCandidateUris
                 _uiState.value = _uiState.value.copy(radioOverlayGenre = genre)
-                val usedLocalMix = startLocalGenreMix(
+                val focusDecade = loadGenreRadioFocusDecade(genre, baseCandidateUris)
+                val rankedUris = rankGenreRadioArtistUris(baseCandidateUris, focusDecade)
+                val libraryUris = prioritizeDecadeCoherentUris(rankedUris, focusDecade)
+                    .take(MAX_GENRE_RADIO_ARTIST_URIS)
+                if (libraryUris.isEmpty()) return@launch
+
+                val discoveryUris = resolveDiscoverySeeds(libraryUris, genre)
+                val allSeeds = (libraryUris + discoveryUris).distinct()
+
+                Log.d(
+                    TAG,
+                    "startGenreRadio: genre='$genre', strict=${strictCandidates.size}, " +
+                        "broad=${broadCandidates.size}, decadeFocus=$focusDecade, " +
+                        "library=${libraryUris.size}, discovery=${discoveryUris.size}"
+                )
+                allSeeds.forEachIndexed { i, uri ->
+                    val key = MediaIdentity.artistKeyFromUri(uri)
+                    val name = artistByUri[key]?.name ?: artistByUri[uri]?.name ?: uri
+                    val bll = bllArtistScoreMap[key ?: uri]?.let { String.format("%.2f", it) } ?: "-"
+                    val decade = artistDominantDecades[key ?: uri]?.toString() ?: "-"
+                    val tag = if (uri in discoveryUris) " [DISCOVERY]" else ""
+                    Log.d(TAG, "  seed #${i + 1}: $name (bll=$bll, decade=$decade)$tag $uri")
+                }
+                val requestAccepted = startGenreRadioWithFallback(
                     queueId = queueId,
                     genre = genre,
-                    candidateUris = expandedUris
+                    rankedUris = allSeeds
                 )
-                if (!usedLocalMix) {
-                    val focusDecade = loadGenreRadioFocusDecade(genre, expandedUris)
-                    val rankedUris = rankGenreRadioArtistUris(expandedUris, focusDecade)
-                    val libraryUris = prioritizeDecadeCoherentUris(rankedUris, focusDecade)
-                        .take(MAX_GENRE_RADIO_ARTIST_URIS)
-                    if (libraryUris.isEmpty()) return@launch
-
-                    val discoveryUris = resolveDiscoverySeeds(libraryUris, genre)
-                    val allSeeds = (libraryUris + discoveryUris).distinct()
-
-                    Log.d(
-                        TAG,
-                        "startGenreRadio fallback: genre='$genre', strict=${strictCandidates.size}, " +
-                            "broad=${broadCandidates.size}, decadeFocus=$focusDecade, " +
-                            "library=${libraryUris.size}, discovery=${discoveryUris.size}"
-                    )
-                    allSeeds.forEachIndexed { i, uri ->
-                        val key = MediaIdentity.artistKeyFromUri(uri)
-                        val name = artistByUri[key]?.name ?: artistByUri[uri]?.name ?: uri
-                        val bll = bllArtistScoreMap[key ?: uri]?.let { String.format("%.2f", it) } ?: "-"
-                        val decade = artistDominantDecades[key ?: uri]?.toString() ?: "-"
-                        val tag = if (uri in discoveryUris) " [DISCOVERY]" else ""
-                        Log.d(TAG, "  fallback seed #${i + 1}: $name (bll=$bll, decade=$decade)$tag $uri")
-                    }
-                    val requestAccepted = startGenreRadioWithFallback(
-                        queueId = queueId,
-                        genre = genre,
-                        rankedUris = allSeeds
-                    )
-                    if (!requestAccepted) {
-                        Log.w(TAG, "startGenreRadio: all seed attempts failed for genre='$genre'")
-                        return@launch
-                    }
+                if (!requestAccepted) {
+                    Log.w(TAG, "startGenreRadio: all seed attempts failed for genre='$genre'")
+                    return@launch
                 }
                 val started = waitForGenreRadioStart(
                     wasPlayingBefore = wasPlayingBefore,
@@ -994,12 +975,8 @@ class DiscoverViewModel @Inject constructor(
                 if (!started) {
                     Log.w(TAG, "startGenreRadio: start confirmation timeout for genre='$genre'")
                 }
-                if (usedLocalMix) {
-                    logQueueContents("genreMix[$genre]", awaitQueueItems = true)
-                } else {
-                    sanitizeGenreRadioQueue(queueId, genre)
-                    logQueueContents("genreRadio[fallback][$genre]", awaitQueueItems = true)
-                }
+                sanitizeGenreRadioQueue(queueId, genre)
+                logQueueContents("genreRadio[$genre]", awaitQueueItems = true)
                 _uiState.value = _uiState.value.copy(radioOverlayGenre = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start genre radio", e)
@@ -1457,6 +1434,7 @@ class DiscoverViewModel @Inject constructor(
             if (items.size < 2) return
 
             val artistGenreMap = resolveQueueArtistGenres(items)
+            val normalizedTarget = normalizeGenre(genre)
             val seenTrackUris = mutableSetOf<String>()
             var previousArtistKeys = emptySet<String>()
             val removeQueueItemIds = mutableListOf<String>()
@@ -1477,13 +1455,14 @@ class DiscoverViewModel @Inject constructor(
                     artistKeys.isNotEmpty() &&
                     previousArtistKeys.isNotEmpty() &&
                     artistKeys.any { it in previousArtistKeys }
+                val blockedArtist = artistKeys.any { it in excludedArtistUris }
 
                 val artistName = track?.artistNames?.split(",")?.firstOrNull()?.trim()
                 val artistGenres = artistName?.let { artistGenreMap[it.lowercase()] }
                 val offGenre = !artistGenres.isNullOrEmpty() &&
                     artistGenres.none { isGenreRelated(it, genre) }
 
-                if (duplicateTrack || consecutiveSameArtist || offGenre) {
+                if (duplicateTrack || consecutiveSameArtist || offGenre || blockedArtist) {
                     removeQueueItemIds += item.queueItemId
                     if (offGenre) {
                         offGenreCount++
@@ -1556,10 +1535,75 @@ class DiscoverViewModel @Inject constructor(
         return allResolved
     }
 
-    private fun isGenreRelated(artistGenre: String, targetGenre: String): Boolean =
-        artistGenre == targetGenre ||
-            artistGenre.contains(targetGenre) ||
-            targetGenre.contains(artistGenre)
+    private fun isGenreRelated(artistGenre: String, targetGenre: String): Boolean {
+        if (artistGenre == targetGenre) return true
+        if (artistGenre.contains(targetGenre) || targetGenre.contains(artistGenre)) return true
+        val normArtist = normalizeGenre(artistGenre)
+        val normTarget = normalizeGenre(targetGenre)
+        val artistFamilies = GENRE_FAMILIES.filter { normArtist in it }
+        val targetFamilies = GENRE_FAMILIES.filter { normTarget in it }
+        return artistFamilies.any { it in targetFamilies }
+    }
+
+    companion object {
+        private val GENRE_FAMILIES = listOf(
+            // Folk / Acoustic / Americana / Country
+            setOf("folk", "indie folk", "folk rock", "americana", "acoustic",
+                "singer songwriter", "country", "alt country", "neofolk"),
+            // Indie / Alternative
+            setOf("indie", "indie rock", "indie pop", "alternative",
+                "alternative rock", "dream pop", "shoegaze", "lo fi",
+                "britpop", "post rock"),
+            // Rock
+            setOf("rock", "alternative rock", "classic rock", "hard rock",
+                "garage rock", "grunge", "psychedelic rock", "progressive rock",
+                "stoner rock", "southern rock", "blues rock", "glam rock",
+                "noise rock", "space rock", "art rock", "soft rock", "rockabilly"),
+            // Pop / Electropop / Synthpop
+            setOf("pop", "pop rock", "electropop", "synthpop", "synth pop",
+                "indie pop", "new wave"),
+            // Electronic Dance (club)
+            setOf("house", "deep house", "tech house", "techno", "minimal",
+                "trance", "progressive trance", "dance", "drum and bass",
+                "dubstep", "breakbeat", "club", "disco", "electro", "psytrance"),
+            // Electronic (broad, bridges pop-electronic and dance-electronic)
+            setOf("electronic", "electronica", "electropop", "synthpop",
+                "synth pop", "house", "techno", "dance"),
+            // Ambient / Downtempo / Chill
+            setOf("ambient", "downtempo", "chillout", "trip hop", "lounge",
+                "new age", "idm", "electronica", "dark ambient", "drone"),
+            // Darkwave / Goth / Industrial
+            setOf("darkwave", "dark electro", "ebm", "goth", "gothic rock",
+                "gothic metal", "industrial", "industrial rock",
+                "industrial metal", "post punk", "new wave"),
+            // Hip Hop / R&B / Soul
+            setOf("hip hop", "rap", "rnb", "rhythm and blues", "soul", "funk",
+                "underground hip hop"),
+            // Metal
+            setOf("metal", "heavy metal", "death metal", "black metal",
+                "doom metal", "thrash metal", "progressive metal", "metalcore",
+                "post metal", "sludge", "symphonic metal", "power metal",
+                "speed metal", "industrial metal", "alternative metal",
+                "nu metal", "folk metal", "gothic metal", "viking metal",
+                "melodic death metal", "melodic metal", "deathcore",
+                "grindcore", "technical death metal", "brutal death metal",
+                "atmospheric black metal", "depressive black metal"),
+            // Punk / Hardcore
+            setOf("punk", "punk rock", "hardcore", "hardcore punk",
+                "post hardcore", "pop punk", "screamo", "emo",
+                "melodic hardcore"),
+            // Jazz / Blues
+            setOf("jazz", "blues", "smooth jazz", "acid jazz", "jazz fusion",
+                "fusion", "swing", "nu jazz", "soul", "funk"),
+            // Classical
+            setOf("classical", "soundtrack", "instrumental",
+                "contemporary classical", "neoclassical", "baroque"),
+            // Reggae / Ska
+            setOf("reggae", "ska", "dub"),
+            // World / Latin
+            setOf("world", "celtic", "latin", "mpb")
+        )
+    }
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun logQueueContents(source: String, awaitQueueItems: Boolean = false) {
