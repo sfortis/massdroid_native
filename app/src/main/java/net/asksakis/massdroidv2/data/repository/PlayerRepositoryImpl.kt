@@ -65,13 +65,13 @@ class PlayerRepositoryImpl @Inject constructor(
         return id
     }
 
-    private var selectedPlayerId: String? = null
-    private var pendingRestoredPlayerId: String? = null
+    @Volatile private var selectedPlayerId: String? = null
+    @Volatile private var pendingRestoredPlayerId: String? = null
 
     // Position tracking for smooth seek bar updates
-    private var positionBaseTime = 0.0
-    private var positionBaseTimestamp = 0L
-    private var isPlaying = false
+    @Volatile private var positionBaseTime = 0.0
+    @Volatile private var positionBaseTimestamp = 0L
+    @Volatile private var isPlaying = false
     private var trackDuration = 0.0
     private var positionTickJob: Job? = null
     private var favoriteOverride: Boolean? = null

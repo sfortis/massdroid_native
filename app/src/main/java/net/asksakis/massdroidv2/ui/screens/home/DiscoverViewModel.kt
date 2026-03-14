@@ -7,7 +7,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -516,6 +515,11 @@ class DiscoverViewModel @Inject constructor(
             emptyList()
         }
         if (artistScores.isEmpty() && genreScores.isEmpty()) return SmartMixResult(emptyList(), null)
+        val genreAdjacencyMap = try {
+            playHistoryRepository.getGenreAdjacencyMap()
+        } catch (_: Exception) {
+            emptyMap()
+        }
         val artistScoreMap = artistScores.toScoreMap()
         val recentArtistScoreMap = recentArtistScores.toScoreMap()
         val daypartAffinity = try {
@@ -567,6 +571,9 @@ class DiscoverViewModel @Inject constructor(
             }
             triedGenres.add(pickedGenre)
 
+            val adjacentGenres = genreAdjacencyMap[pickedGenre]?.map {
+                normalizeGenre(it)
+            }?.toSet() ?: emptySet()
             val result = buildTracksForGenre(
                 pickedGenre = pickedGenre,
                 artistScores = artistScores,
@@ -577,7 +584,8 @@ class DiscoverViewModel @Inject constructor(
                 timeAwareGenreScores = timeAwareGenreScores,
                 favoriteArtistUris = favoriteArtistUris,
                 favoriteAlbumUris = favoriteAlbumUris,
-                mixSeed = mixSeed
+                mixSeed = mixSeed,
+                adjacentGenres = adjacentGenres
             )
             if (result.size >= SMART_MIX_MIN_TRACKS) {
                 Log.d(TAG, "Smart mix: picked genre '$pickedGenre' -> ${result.size} tracks")
@@ -645,11 +653,17 @@ class DiscoverViewModel @Inject constructor(
         timeAwareGenreScores: List<GenreScore>,
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
-        mixSeed: Long
+        mixSeed: Long,
+        adjacentGenres: Set<String> = emptySet()
     ): List<Track> {
-        val genreArtistKeys = (mixGenreArtists[pickedGenre] ?: emptyList()).toSet()
+        val exactArtists = mixGenreArtists[pickedGenre] ?: emptyList()
+        val adjacentArtists = adjacentGenres.flatMap { mixGenreArtists[it] ?: emptyList() }
+        val genreArtistKeys = (exactArtists + adjacentArtists).distinct().toSet()
         val filteredGenreArtists = mapOf(pickedGenre to genreArtistKeys.toList())
-        val filteredGenreScores = timeAwareGenreScores.filter { normalizeGenre(it.genre) == pickedGenre }
+        val filteredGenreScores = timeAwareGenreScores.filter {
+            val g = normalizeGenre(it.genre)
+            g == pickedGenre || g in adjacentGenres
+        }
         val filteredArtistScores = artistScores.filter { it.artistUri in genreArtistKeys }
 
         val smartMixMode = MixMode.SmartMix(
@@ -693,7 +707,8 @@ class DiscoverViewModel @Inject constructor(
                     daypartTrackBias(daypartAffinity[key])
             },
             target = SMART_MIX_TRACK_TARGET,
-            randomSeed = mixSeed + 17L
+            randomSeed = mixSeed + 17L,
+            adjacentGenres = adjacentGenres
         )
     }
 
@@ -1192,6 +1207,12 @@ class DiscoverViewModel @Inject constructor(
             allArtistOrder.add(uri)
         }
 
+        val adjacentGenres = try {
+            playHistoryRepository.getGenreAdjacencyMap()[normalizeGenre(genre)]
+                ?.map { normalizeGenre(it) }?.toSet() ?: emptySet()
+        } catch (_: Exception) {
+            emptySet()
+        }
         val trackUris = mixEngine.buildTrackUris(
             mode = genreMixMode,
             artistOrder = allArtistOrder,
@@ -1208,7 +1229,8 @@ class DiscoverViewModel @Inject constructor(
                     daypartTrackBias(daypartAffinity[key])
             },
             target = GENRE_MIX_TRACK_TARGET,
-            randomSeed = System.currentTimeMillis() + 37L
+            randomSeed = System.currentTimeMillis() + 37L,
+            adjacentGenres = adjacentGenres
         )
 
         if (trackUris.size < GENRE_MIX_MIN_QUEUE_SIZE) {
@@ -1678,7 +1700,7 @@ class DiscoverViewModel @Inject constructor(
 
     private suspend fun enrichTracksWithLastFmGenres(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return tracks
-        if (tracks.any { it.genres.isNotEmpty() }) return tracks
+        if (tracks.all { it.genres.isNotEmpty() }) return tracks
         val artistName = tracks.first().artistNames.split(",").firstOrNull()?.trim()
         if (artistName.isNullOrBlank()) return tracks
         val genres = try {
@@ -1687,7 +1709,7 @@ class DiscoverViewModel @Inject constructor(
             emptyList()
         }
         if (genres.isEmpty()) return tracks
-        return tracks.map { it.copy(genres = genres) }
+        return tracks.map { if (it.genres.isEmpty()) it.copy(genres = genres) else it }
     }
 
     private fun resolveArtistRefs(artistIdentity: String): List<Pair<String, String>> {

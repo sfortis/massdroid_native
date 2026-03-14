@@ -68,7 +68,8 @@ class MixEngine @Inject constructor() {
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        adjacentGenres: Set<String> = emptySet()
     ): List<Track> {
         if (target <= 0 || artistOrder.isEmpty()) return emptyList()
         val random = Random(randomSeed)
@@ -109,7 +110,7 @@ class MixEngine @Inject constructor() {
                 }
                 .mapNotNull { track ->
                     val genreScore = if (targetGenre != null) {
-                        val confidence = genreConfidence(targetGenre, track, noGenreConf)
+                        val confidence = genreConfidence(targetGenre, track, noGenreConf, adjacentGenres)
                         if (confidence <= 0.0) return@mapNotNull null
                         confidence * 1.25
                     } else {
@@ -175,7 +176,8 @@ class MixEngine @Inject constructor() {
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        adjacentGenres: Set<String> = emptySet()
     ): List<String> = buildTracks(
         mode = mode,
         artistOrder = artistOrder,
@@ -186,7 +188,8 @@ class MixEngine @Inject constructor() {
         favoriteAlbumUris = favoriteAlbumUris,
         artistBaseScore = artistBaseScore,
         target = target,
-        randomSeed = randomSeed
+        randomSeed = randomSeed,
+        adjacentGenres = adjacentGenres
     ).map { it.uri }
 
     // --- SmartMix artist ordering ---
@@ -400,11 +403,13 @@ class MixEngine @Inject constructor() {
     private fun genreConfidence(
         targetGenre: String,
         track: Track,
-        noGenreConfidence: Double = 0.58
+        noGenreConfidence: Double = 0.58,
+        adjacentGenres: Set<String> = emptySet()
     ): Double {
         val trackGenres = track.genres.map(::fuzzyNormalizeGenre).filter { it.isNotBlank() }
         return when {
             trackGenres.any { genreMatches(targetGenre, it) } -> 1.0
+            trackGenres.any { it in adjacentGenres } -> 0.6
             trackGenres.isEmpty() -> noGenreConfidence
             else -> 0.0
         }

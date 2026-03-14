@@ -288,7 +288,7 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val existingUris = apiResults.map { it.uri }.toSet()
-                    val newUris = genreUris.filter { it !in existingUris }.take(20)
+                    val newUris = genreUris.filter { it !in existingUris }
                     val genreArtists = if (newUris.isNotEmpty()) {
                         supervisorScope {
                             newUris.map { uri -> async { runCatching { parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtist(id, prov) } }.getOrNull() } }.awaitAll().filterNotNull()
@@ -343,7 +343,7 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val genreAlbums: List<Album> = supervisorScope {
-                        genreUris.take(10).map { uri ->
+                        genreUris.map { uri ->
                             async {
                                 runCatching {
                                     parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtistAlbums(id, prov) }
@@ -398,7 +398,7 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val genreTracks: List<Track> = supervisorScope {
-                        genreUris.take(10).map { uri ->
+                        genreUris.map { uri ->
                             async {
                                 runCatching {
                                     parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtistTracks(id, prov) }
@@ -742,6 +742,19 @@ class ArtistDetailViewModel @Inject constructor(
                     _tracks.value.firstOrNull()?.artistNames?.let { _artistName.value = it }
                 }
             }
+
+            // Auto-refresh if artist has no real image (only imageproxy fallback)
+            val hasRealImage = _artist.value?.imageUrl?.let {
+                !it.contains("imageproxy") || it.contains("path=http")
+            } ?: false
+            if (lazy && !hasRealImage) {
+                kotlinx.coroutines.delay(500)
+                val refreshed = musicRepository.getArtist(itemId, provider, lazy = false)
+                if (refreshed != null) {
+                    _artist.value = refreshed
+                    if (refreshed.name.isNotBlank()) _artistName.value = refreshed.name
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Load artist detail failed: ${e.message}")
         }
@@ -752,9 +765,7 @@ class ArtistDetailViewModel @Inject constructor(
             if (_artist.value?.description.isNullOrBlank()) {
                 viewModelScope.launch { loadLastFmBio(name) }
             }
-            if (_artist.value?.genres.isNullOrEmpty()) {
-                viewModelScope.launch { loadLastFmArtistGenres(name) }
-            }
+            viewModelScope.launch { enrichArtistGenresFromLastFm(name) }
         }
     }
 
@@ -814,14 +825,17 @@ class ArtistDetailViewModel @Inject constructor(
         }
     }
 
-    private suspend fun loadLastFmArtistGenres(artistName: String) {
+    private suspend fun enrichArtistGenresFromLastFm(artistName: String) {
         try {
-            val genres = lastFmGenreResolver.resolve(artistName)
-            if (genres.isNotEmpty()) {
-                _artist.update { it?.copy(genres = genres) }
+            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            if (lastFmGenres.isNotEmpty()) {
+                _artist.update { current ->
+                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinct()
+                    current?.copy(genres = merged)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm artist genres failed: ${e.message}")
+            Log.w(TAG, "Enrich artist genres failed: ${e.message}")
         }
     }
 
@@ -1030,6 +1044,19 @@ class AlbumDetailViewModel @Inject constructor(
                     }
                 }
             }
+
+            // Auto-refresh if album has no real image (only imageproxy fallback)
+            val hasRealImage = _album.value?.imageUrl?.let {
+                !it.contains("imageproxy") || it.contains("path=http")
+            } ?: false
+            if (lazy && !hasRealImage) {
+                val refreshed = musicRepository.getAlbum(itemId, provider, lazy = false)
+                if (refreshed != null) {
+                    _album.value = refreshed
+                    if (refreshed.name.isNotBlank()) _albumName.value = refreshed.name
+                    _tracks.value = musicRepository.getAlbumTracks(itemId, provider)
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Load album detail failed: ${e.message}")
         }
@@ -1042,9 +1069,21 @@ class AlbumDetailViewModel @Inject constructor(
             if (needsBio || needsYear) {
                 viewModelScope.launch { loadLastFmAlbumInfo(artistName, album.name, needsBio, needsYear) }
             }
-            if (album.genres.isEmpty()) {
-                viewModelScope.launch { loadLastFmGenres(artistName) }
+            viewModelScope.launch { enrichGenresFromLastFm(artistName) }
+        }
+    }
+
+    private suspend fun enrichGenresFromLastFm(artistName: String) {
+        try {
+            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            if (lastFmGenres.isNotEmpty()) {
+                _album.update { current ->
+                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinct()
+                    current?.copy(genres = merged)
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Enrich genres failed: ${e.message}")
         }
     }
 
@@ -1064,17 +1103,6 @@ class AlbumDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Load Last.fm album info failed: ${e.message}")
-        }
-    }
-
-    private suspend fun loadLastFmGenres(artistName: String) {
-        try {
-            val genres = lastFmGenreResolver.resolve(artistName)
-            if (genres.isNotEmpty()) {
-                _album.update { it?.copy(genres = genres) }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm genres failed: ${e.message}")
         }
     }
 

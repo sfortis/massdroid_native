@@ -47,7 +47,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         private const val BLL_DECAY = -1.5
         private const val BLL_MIN_HOURS = 0.5
         private const val BLL_FLOOR = -100.0
-        private const val ADJACENCY_CACHE_HOURS = 6L
+        private const val ADJACENCY_CACHE_HOURS = 48L
+        private const val MIN_ADJACENCY_RATIO = 0.25
         private const val FEEDBACK_RETENTION_DAYS = 120L
         private const val COMPLETION_FLOOR = 0.3
         private const val COMPLETION_RANGE = 0.7
@@ -262,8 +263,18 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             return cached
         }
         val coOccurrences = dao.getGenreCoOccurrences()
+        // Build genre artist counts for relative threshold
+        val genreCounts = mutableMapOf<String, Int>()
+        for (row in coOccurrences) {
+            genreCounts[row.genre1] = (genreCounts[row.genre1] ?: 0) + row.coCount
+            genreCounts[row.genre2] = (genreCounts[row.genre2] ?: 0) + row.coCount
+        }
         val result = mutableMapOf<String, MutableSet<String>>()
         for (row in coOccurrences) {
+            val minCount = minOf(genreCounts[row.genre1] ?: 0, genreCounts[row.genre2] ?: 0)
+            if (minCount <= 0) continue
+            val ratio = row.coCount.toDouble() / minCount
+            if (ratio < MIN_ADJACENCY_RATIO) continue
             result.getOrPut(row.genre1) { mutableSetOf() }.add(row.genre2)
             result.getOrPut(row.genre2) { mutableSetOf() }.add(row.genre1)
         }
@@ -328,8 +339,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         dao.deleteExpiredArtistTrackCache(now - (14 * MILLIS_PER_DAY))
     }
 
-    override suspend fun searchArtistUrisByGenre(query: String, limit: Int): List<String> =
-        dao.searchArtistUrisByGenre(query, limit)
+    override suspend fun searchArtistUrisByGenre(query: String): List<String> =
+        dao.searchArtistUrisByGenre(query)
 
     override suspend fun resolveLibraryArtistUri(name: String): String? =
         dao.getArtistUrisByName(name).firstOrNull { it.startsWith("library://") }

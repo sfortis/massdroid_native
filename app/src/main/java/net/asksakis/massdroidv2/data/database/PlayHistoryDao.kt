@@ -63,9 +63,9 @@ interface PlayHistoryDao {
     @Query("""
         SELECT DISTINCT ag.artist_uri FROM artist_genres ag
         WHERE ag.genre_name LIKE '%' || :query || '%'
-        LIMIT :limit
+          AND ag.artist_uri LIKE 'library://%'
     """)
-    suspend fun searchArtistUrisByGenre(query: String, limit: Int = 30): List<String>
+    suspend fun searchArtistUrisByGenre(query: String): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertLastFmTags(tags: LastFmArtistTagsEntity)
@@ -145,7 +145,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT
-            MIN(sf.artist_uri) AS artistUri,
+            sf.artist_uri AS artistUri,
             a.name AS artistName,
             sf.signal,
             sf.created_at AS createdAt
@@ -153,7 +153,6 @@ interface PlayHistoryDao {
         JOIN artists a ON a.uri = sf.artist_uri
         WHERE sf.artist_uri IS NOT NULL
           AND sf.created_at > :since
-        GROUP BY a.name, sf.id
         """
     )
     suspend fun getArtistFeedbackSignals(since: Long): List<ArtistFeedbackSignalRow>
