@@ -14,6 +14,8 @@ import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,7 +27,7 @@ class LastFmLibraryEnricher @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var enrichJob: Job? = null
-    private val enrichedNames = mutableSetOf<String>()
+    private val enrichedNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val pendingQueue = ConcurrentLinkedQueue<Artist>()
 
     @Suppress("TooGenericExceptionCaught")

@@ -55,12 +55,13 @@ class LastFmArtistInfoResolver @Inject constructor(
 
             val request = Request.Builder().url(url).build()
             val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "API error ${response.code} for $artistName")
-                return@withContext null
+            val body = response.use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "API error ${resp.code} for $artistName")
+                    return@withContext null
+                }
+                resp.body?.string() ?: return@withContext null
             }
-
-            val body = response.body?.string() ?: return@withContext null
             val root = json.parseToJsonElement(body).jsonObject
             val bio = root["artist"]?.jsonObject?.get("bio")?.jsonObject ?: return@withContext null
             val summary = bio["summary"]?.jsonPrimitive?.content?.trim()

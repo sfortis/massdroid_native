@@ -1,7 +1,9 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
+import androidx.room.withTransaction
 import net.asksakis.massdroidv2.data.database.AlbumEntity
+import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.ArtistTrackCacheEntity
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
@@ -34,7 +36,8 @@ import kotlin.math.min
 @Singleton
 class PlayHistoryRepositoryImpl @Inject constructor(
     private val dao: PlayHistoryDao,
-    private val json: Json
+    private val json: Json,
+    private val appDatabase: AppDatabase
 ) : PlayHistoryRepository {
 
     companion object {
@@ -61,27 +64,6 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     ): Long {
         val trackKey = MediaIdentity.canonicalTrackKey(track.itemId, track.uri) ?: return -1L
         val albumKey = MediaIdentity.canonicalAlbumKey(track.albumItemId, track.albumUri)
-        if (!albumKey.isNullOrBlank()) {
-            dao.insertAlbum(
-                AlbumEntity(
-                    uri = albumKey,
-                    name = track.albumName,
-                    imageUrl = track.imageUrl,
-                    year = sanitizeYear(track.year)
-                )
-            )
-        }
-
-        dao.insertTrack(
-            TrackEntity(
-                uri = trackKey,
-                name = track.name,
-                albumUri = albumKey,
-                duration = track.duration,
-                imageUrl = track.imageUrl
-            )
-        )
-
         val normalizedArtists = artists.mapNotNull { (uri, name) ->
             MediaIdentity.canonicalArtistKey(uri = uri)?.let { it to name }
         }.distinctBy { it.first }
@@ -98,29 +80,53 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             fallbackArtistKey?.let { listOf(it to fallbackArtistName) } ?: emptyList()
         }
 
-        for ((artistKey, name) in artistsToPersist) {
-            dao.insertArtist(ArtistEntity(uri = artistKey, name = name))
-            dao.insertTrackArtist(TrackArtistEntity(trackUri = trackKey, artistUri = artistKey))
-        }
+        val id = appDatabase.withTransaction {
+            if (!albumKey.isNullOrBlank()) {
+                dao.insertAlbum(
+                    AlbumEntity(
+                        uri = albumKey,
+                        name = track.albumName,
+                        imageUrl = track.imageUrl,
+                        year = sanitizeYear(track.year)
+                    )
+                )
+            }
 
-        for (genre in track.genres) {
-            val normalized = normalizeGenre(genre)
-            if (normalized.isNotBlank()) {
-                dao.insertGenre(GenreEntity(name = normalized))
-                dao.insertTrackGenre(TrackGenreEntity(trackUri = trackKey, genreName = normalized))
-                for ((artistKey, _) in artistsToPersist) {
-                    dao.insertArtistGenre(ArtistGenreEntity(artistUri = artistKey, genreName = normalized))
+            dao.insertTrack(
+                TrackEntity(
+                    uri = trackKey,
+                    name = track.name,
+                    albumUri = albumKey,
+                    duration = track.duration,
+                    imageUrl = track.imageUrl
+                )
+            )
+
+            for ((artistKey, name) in artistsToPersist) {
+                dao.insertArtist(ArtistEntity(uri = artistKey, name = name))
+                dao.insertTrackArtist(TrackArtistEntity(trackUri = trackKey, artistUri = artistKey))
+            }
+
+            for (genre in track.genres) {
+                val normalized = normalizeGenre(genre)
+                if (normalized.isNotBlank()) {
+                    dao.insertGenre(GenreEntity(name = normalized))
+                    dao.insertTrackGenre(TrackGenreEntity(trackUri = trackKey, genreName = normalized))
+                    for ((artistKey, _) in artistsToPersist) {
+                        dao.insertArtistGenre(ArtistGenreEntity(artistUri = artistKey, genreName = normalized))
+                    }
                 }
             }
-        }
 
-        val play = PlayHistoryEntity(
-            trackUri = trackKey,
-            queueId = queueId,
-            playedAt = System.currentTimeMillis(),
-            listenedMs = listenedMs
-        )
-        val id = dao.insertPlay(play)
+            dao.insertPlay(
+                PlayHistoryEntity(
+                    trackUri = trackKey,
+                    queueId = queueId,
+                    playedAt = System.currentTimeMillis(),
+                    listenedMs = listenedMs
+                )
+            )
+        }
         adjacencyCache = null
         val listenSec = listenedMs?.let { "${it / 1000}s" } ?: "?"
         Log.d(TAG, "Recorded play: ${track.name} ($listenSec, ${artists.size} artists, ${track.genres.size} genres)")
@@ -347,14 +353,16 @@ class PlayHistoryRepositoryImpl @Inject constructor(
 
     override suspend fun cleanup(retentionMonths: Int) {
         val cutoff = System.currentTimeMillis() - (retentionMonths * 30L * MILLIS_PER_DAY)
-        dao.deleteOlderThan(cutoff)
         val feedbackCutoff = System.currentTimeMillis() - (FEEDBACK_RETENTION_DAYS * MILLIS_PER_DAY)
-        dao.deleteOldSmartFeedback(feedbackCutoff)
-        dao.deleteOrphanTracks()
-        dao.deleteOrphanAlbums()
-        dao.deleteOrphanArtists()
-        dao.deleteOrphanArtistGenres()
-        dao.deleteOrphanGenres()
+        appDatabase.withTransaction {
+            dao.deleteOlderThan(cutoff)
+            dao.deleteOldSmartFeedback(feedbackCutoff)
+            dao.deleteOrphanTracks()
+            dao.deleteOrphanAlbums()
+            dao.deleteOrphanArtists()
+            dao.deleteOrphanArtistGenres()
+            dao.deleteOrphanGenres()
+        }
         Log.d(TAG, "Cleaned up play history older than $retentionMonths months + smart feedback older than $FEEDBACK_RETENTION_DAYS days + orphans")
     }
 

@@ -28,9 +28,11 @@ class LastFmGenreResolver @Inject constructor(
     companion object {
         private const val TAG = "LastFmGenreResolver"
         private const val CACHE_DAYS = 30
+        private const val EMPTY_CACHE_HOURS = 48
         private const val MIN_TAG_COUNT = 10
         private const val MAX_TAGS = 3
         private const val CACHE_MS = CACHE_DAYS * 86_400_000L
+        private const val EMPTY_CACHE_MS = EMPTY_CACHE_HOURS * 3_600_000L
 
         private val ALLOWED_GENRES: Set<String> = setOf(
             "acid jazz", "acoustic", "alt country", "alternative",
@@ -86,7 +88,8 @@ class LastFmGenreResolver @Inject constructor(
         val cached = dao.getLastFmTags(artistName)
         if (cached != null) {
             val age = System.currentTimeMillis() - cached.fetchedAt
-            if (age < CACHE_MS) {
+            val ttl = if (cached.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
+            if (age < ttl) {
                 return cached.tags.split(",").filter { it.isNotBlank() }
             }
         }
@@ -105,10 +108,10 @@ class LastFmGenreResolver @Inject constructor(
                 ?.build() ?: return@withContext false
 
             val request = Request.Builder().url(url).build()
-            val response = okHttpClient.newCall(request).execute()
-            val valid = response.isSuccessful
-            Log.d(TAG, "API key validation: ${response.code}")
-            valid
+            okHttpClient.newCall(request).execute().use { response ->
+                Log.d(TAG, "API key validation: ${response.code}")
+                response.isSuccessful
+            }
         } catch (e: Exception) {
             Log.w(TAG, "API key validation failed: ${e.message}")
             false
@@ -128,12 +131,13 @@ class LastFmGenreResolver @Inject constructor(
 
                 val request = Request.Builder().url(url).build()
                 val response = okHttpClient.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "Last.fm API error ${response.code} for $artistName")
-                    return@withContext emptyList()
+                val body = response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        Log.w(TAG, "Last.fm API error ${resp.code} for $artistName")
+                        return@withContext emptyList()
+                    }
+                    resp.body?.string() ?: return@withContext emptyList()
                 }
-
-                val body = response.body?.string() ?: return@withContext emptyList()
                 val root = json.parseToJsonElement(body).jsonObject
                 val toptags = root["toptags"]?.jsonObject ?: return@withContext emptyList()
                 val tagArray = toptags["tag"]?.jsonArray ?: return@withContext emptyList()

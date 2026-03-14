@@ -68,12 +68,13 @@ class LastFmSimilarResolver @Inject constructor(
 
             val request = Request.Builder().url(url).build()
             val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "API error ${response.code} for $artistName")
-                return@withContext emptyList()
+            val body = response.use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "API error ${resp.code} for $artistName")
+                    return@withContext emptyList()
+                }
+                resp.body?.string() ?: return@withContext emptyList()
             }
-
-            val body = response.body?.string() ?: return@withContext emptyList()
             val root = json.parseToJsonElement(body).jsonObject
             val similarArtists = root["similarartists"]?.jsonObject
                 ?: return@withContext emptyList()

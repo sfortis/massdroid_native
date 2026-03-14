@@ -4,7 +4,9 @@ import android.util.Log
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
+import androidx.room.withTransaction
 import net.asksakis.massdroidv2.data.database.AlbumEntity
+import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.ArtistFeedbackSignalRow
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
@@ -25,7 +27,8 @@ import kotlin.math.exp
 @Singleton
 class SmartListeningRepositoryImpl @Inject constructor(
     private val dao: PlayHistoryDao,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val appDatabase: AppDatabase
 ) : SmartListeningRepository {
 
     companion object {
@@ -174,17 +177,6 @@ class SmartListeningRepositoryImpl @Inject constructor(
         val normalized = normalizeArtists(track, artists)
         if (normalized.isEmpty()) return
 
-        if (!albumKey.isNullOrBlank()) {
-            dao.insertAlbum(
-                AlbumEntity(
-                    uri = albumKey,
-                    name = track.albumName,
-                    imageUrl = track.imageUrl,
-                    year = sanitizeYear(track.year)
-                )
-            )
-        }
-
         val feedback = normalized.map { (artistUri, _) ->
             SmartFeedbackEntity(
                 trackUri = trackKey,
@@ -194,20 +186,32 @@ class SmartListeningRepositoryImpl @Inject constructor(
                 createdAt = now
             )
         }
-        dao.insertTrack(
-            TrackEntity(
-                uri = trackKey,
-                name = track.name,
-                albumUri = albumKey,
-                duration = track.duration,
-                imageUrl = track.imageUrl
+        appDatabase.withTransaction {
+            if (!albumKey.isNullOrBlank()) {
+                dao.insertAlbum(
+                    AlbumEntity(
+                        uri = albumKey,
+                        name = track.albumName,
+                        imageUrl = track.imageUrl,
+                        year = sanitizeYear(track.year)
+                    )
+                )
+            }
+            dao.insertTrack(
+                TrackEntity(
+                    uri = trackKey,
+                    name = track.name,
+                    albumUri = albumKey,
+                    duration = track.duration,
+                    imageUrl = track.imageUrl
+                )
             )
-        )
-        normalized.forEach { (artistUri, artistName) ->
-            dao.insertArtist(ArtistEntity(uri = artistUri, name = artistName.ifBlank { "Artist" }))
+            normalized.forEach { (artistUri, artistName) ->
+                dao.insertArtist(ArtistEntity(uri = artistUri, name = artistName.ifBlank { "Artist" }))
+            }
+            dao.insertSmartFeedback(feedback)
+            dao.adjustTrackScore(trackKey, signalPerArtist)
         }
-        dao.insertSmartFeedback(feedback)
-        dao.adjustTrackScore(trackKey, signalPerArtist)
         val artistNames = normalized.joinToString(", ") { it.second }
         val label = when {
             action == "skip" && signalPerArtist <= -0.45 -> "HARD SKIP"

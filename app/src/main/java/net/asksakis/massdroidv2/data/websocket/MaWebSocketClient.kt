@@ -61,6 +61,7 @@ class MaWebSocketClient(
     private var reconnectJob: Job? = null
     private var currentBackoffMs = INITIAL_BACKOFF_MS
     private var reconnectAttempts = 0
+    @Volatile
     private var connectionGeneration = 0
     private var lastAuthenticatedAtMs = 0L
 

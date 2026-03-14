@@ -59,6 +59,7 @@ class SendspinClient(
     private var errorMessage: String? = null
     private var shouldReconnect = false
     private var reconnectAttempt = 0
+    @Volatile
     private var connectionGeneration = 0
     private var droppedBinaryFrames = 0
 

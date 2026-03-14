@@ -7,6 +7,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
+import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
@@ -36,15 +37,17 @@ object RepositoryModule {
     @Singleton
     fun providePlayHistoryRepository(
         dao: PlayHistoryDao,
-        json: Json
-    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao, json)
+        json: Json,
+        appDatabase: AppDatabase
+    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao, json, appDatabase)
 
     @Provides
     @Singleton
     fun provideSmartListeningRepository(
         dao: PlayHistoryDao,
-        settingsRepository: SettingsRepository
-    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository)
+        settingsRepository: SettingsRepository,
+        appDatabase: AppDatabase
+    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository, appDatabase)
 
     @Provides
     @Singleton
