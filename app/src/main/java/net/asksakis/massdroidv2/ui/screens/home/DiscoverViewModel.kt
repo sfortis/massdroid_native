@@ -910,13 +910,13 @@ class DiscoverViewModel @Inject constructor(
         val nowMs = System.currentTimeMillis()
         val strictCandidates = filteredGenreCandidateUris(strictGenreArtists[genre])
         val broadCandidates = filteredGenreCandidateUris(genreArtists[genre])
-        val candidateUris = when {
+        val baseCandidateUris = when {
             strictCandidates.size >= 4 -> strictCandidates
             strictCandidates.isNotEmpty() -> (strictCandidates + broadCandidates)
                 .distinctBy { uri -> MediaIdentity.artistKeyFromUri(uri) ?: uri }
             else -> broadCandidates
         }
-        if (candidateUris.isEmpty()) return
+        if (baseCandidateUris.isEmpty()) return
         if (radioStartJob?.isActive == true) {
             Log.d(TAG, "startGenreRadio ignored: request already in flight")
             return
@@ -935,15 +935,27 @@ class DiscoverViewModel @Inject constructor(
                 refreshSmartFiltersForMix()
                 ensureBllArtistScoresLoaded()
                 ensureArtistDecadesLoaded()
+                // Expand artist pool with adjacent genres
+                val adjGenres = try {
+                    playHistoryRepository.getGenreAdjacencyMap()[normalizeGenre(genre)] ?: emptySet()
+                } catch (_: Exception) { emptySet() }
+                val expandedUris = if (adjGenres.isNotEmpty()) {
+                    val adjacentArtists = adjGenres.flatMap { g ->
+                        filteredGenreCandidateUris(strictGenreArtists[g]) +
+                            filteredGenreCandidateUris(genreArtists[g])
+                    }
+                    (baseCandidateUris + adjacentArtists)
+                        .distinctBy { uri -> MediaIdentity.artistKeyFromUri(uri) ?: uri }
+                } else baseCandidateUris
                 _uiState.value = _uiState.value.copy(radioOverlayGenre = genre)
                 val usedLocalMix = startLocalGenreMix(
                     queueId = queueId,
                     genre = genre,
-                    candidateUris = candidateUris
+                    candidateUris = expandedUris
                 )
                 if (!usedLocalMix) {
-                    val focusDecade = loadGenreRadioFocusDecade(genre, candidateUris)
-                    val rankedUris = rankGenreRadioArtistUris(candidateUris, focusDecade)
+                    val focusDecade = loadGenreRadioFocusDecade(genre, expandedUris)
+                    val rankedUris = rankGenreRadioArtistUris(expandedUris, focusDecade)
                     val libraryUris = prioritizeDecadeCoherentUris(rankedUris, focusDecade)
                         .take(MAX_GENRE_RADIO_ARTIST_URIS)
                     if (libraryUris.isEmpty()) return@launch

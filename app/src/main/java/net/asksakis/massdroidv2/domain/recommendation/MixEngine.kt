@@ -517,8 +517,8 @@ class MixEngine @Inject constructor() {
     // --- Mode-dependent constants ---
 
     private fun maxTracksPerArtist(mode: MixMode): Int = when (mode) {
-        is MixMode.SmartMix -> 2
-        is MixMode.GenreMix -> 2
+        is MixMode.SmartMix -> 5
+        is MixMode.GenreMix -> 3
     }
 
     private fun firstPassUnique(mode: MixMode): Int = when (mode) {
@@ -532,23 +532,23 @@ class MixEngine @Inject constructor() {
     }
 
     private fun trackJitter(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.28
-        is MixMode.GenreMix -> 0.12
+        is MixMode.SmartMix -> 0.6
+        is MixMode.GenreMix -> 0.4
     }
 
     private fun favArtistBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.35
-        is MixMode.GenreMix -> 0.45
+        is MixMode.SmartMix -> 0.8
+        is MixMode.GenreMix -> 0.6
     }
 
     private fun favAlbumBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.40
-        is MixMode.GenreMix -> 0.25
+        is MixMode.SmartMix -> 0.7
+        is MixMode.GenreMix -> 0.4
     }
 
     private fun favTrackBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.25
-        is MixMode.GenreMix -> 0.35
+        is MixMode.SmartMix -> 0.5
+        is MixMode.GenreMix -> 0.45
     }
 
     private fun modeTag(mode: MixMode): String = when (mode) {
@@ -563,7 +563,7 @@ class MixEngine @Inject constructor() {
     )
 
     companion object {
-        private const val SM_FAV_ARTIST_BONUS = 0.35
+        private const val SM_FAV_ARTIST_BONUS = 0.8
         private const val GM_FAV_ARTIST_BONUS = 0.45
     }
 }

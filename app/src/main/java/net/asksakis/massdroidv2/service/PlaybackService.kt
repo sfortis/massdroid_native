@@ -85,6 +85,7 @@ class PlaybackService : MediaLibraryService() {
     private var volumeOverrideUntil: Long = 0
     private var sendspinController: SendspinAudioController? = null
     private var sendspinActive = false
+    @Volatile private var notificationAction = false
 
     override fun onCreate() {
         super.onCreate()
@@ -264,25 +265,53 @@ class PlaybackService : MediaLibraryService() {
         return RemoteControlPlayer(
             Looper.getMainLooper(),
             onPlay = {
-                Log.d(TAG, "RemotePlayer onPlay")
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.play(id) }
+                val fromNotification = notificationAction.also { notificationAction = false }
+                val routeToSendspin = sendspinActive && !fromNotification
+                Log.d(TAG, "RemotePlayer onPlay (sendspin=$routeToSendspin, notification=$fromNotification)")
+                if (routeToSendspin) {
+                    sendspinController?.handlePlay()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.play(id) }
+                }
             },
             onPause = {
-                Log.d(TAG, "RemotePlayer onPause")
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.pause(id) }
+                val fromNotification = notificationAction.also { notificationAction = false }
+                val routeToSendspin = sendspinActive && !fromNotification
+                if (routeToSendspin) {
+                    sendspinController?.handlePause()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.pause(id) }
+                }
             },
             onNext = {
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.next(id) }
+                val fromNotification = notificationAction.also { notificationAction = false }
+                val routeToSendspin = sendspinActive && !fromNotification
+                if (routeToSendspin) {
+                    sendspinController?.handleNext()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.next(id) }
+                }
             },
             onPrevious = {
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.previous(id) }
+                val fromNotification = notificationAction.also { notificationAction = false }
+                val routeToSendspin = sendspinActive && !fromNotification
+                if (routeToSendspin) {
+                    sendspinController?.handlePrev()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.previous(id) }
+                }
             },
             onSeek = { positionMs ->
-                val id = activePlayerId() ?: return@RemoteControlPlayer
+                val fromNotification = notificationAction.also { notificationAction = false }
+                val id = if (sendspinActive && !fromNotification) {
+                    sendspinController?.sendspinPlayerId
+                } else {
+                    activePlayerId()
+                } ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
             },
             onVolumeUp = {
@@ -528,7 +557,10 @@ class PlaybackService : MediaLibraryService() {
             intent: Intent
         ): Boolean {
             // Notification buttons -> normal flow (controls selected player)
-            if (session.isMediaNotificationController(controllerInfo)) return false
+            if (session.isMediaNotificationController(controllerInfo)) {
+                notificationAction = true
+                return false
+            }
 
             // BT/hardware buttons: route to sendspin when active, consume otherwise
             // (prevent accidental playback on remote players from BT auto-play)
