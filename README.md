@@ -10,6 +10,9 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Inline Volume Controls** : Adjust volume on any player without switching, right from the player list
 - **Library Actions** : Long-press any item for quick actions like play, queue, add to favorites, or view details
 - **App Shortcuts** : Long-press the app icon for quick access to Smart Mix and more
+- **Lyrics** : Synced and plain text lyrics in the Now Playing screen
+- **Genre Search** : Find artists, albums, and tracks by genre across your enriched library
+- **Similar Artists** : Discover related artists from Last.fm, resolved against your music providers with genre validation
 
 ## Screenshots
 
