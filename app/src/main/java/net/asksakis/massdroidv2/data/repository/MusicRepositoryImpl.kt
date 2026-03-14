@@ -243,6 +243,26 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun browse(path: String?): List<BrowseItem> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.BROWSE,
+            BrowseArgs(path)
+        )
+        return parseMediaItems(result).map { it.toBrowseItem() }
+    }
+
+    private fun ServerMediaItem.toBrowseItem(): BrowseItem = BrowseItem(
+        itemId = itemId,
+        provider = provider,
+        name = name.ifBlank { translationKey?.replaceFirstChar { it.uppercase() } ?: itemId },
+        uri = uri,
+        path = path ?: uri.ifBlank { null },
+        imageUrl = resolveImageUrl(wsClient),
+        isFolder = mediaType == "folder",
+        mediaType = mediaType,
+        isPlayable = isPlayable ?: (uri.isNotBlank() && mediaType != "folder")
+    )
+
     override suspend fun clearQueue(queueId: String) {
         wsClient.sendCommand(MaCommands.PlayerQueues.CLEAR, QueueIdArgs(queueId))
     }

@@ -60,6 +60,13 @@ class LibraryViewModel @Inject constructor(
     private val _radios = MutableStateFlow<List<Radio>>(emptyList())
     val radios: StateFlow<List<Radio>> = _radios.asStateFlow()
 
+    private val _browseItemsRaw = MutableStateFlow<List<BrowseItem>>(emptyList())
+    private val _browseItems = MutableStateFlow<List<BrowseItem>>(emptyList())
+    val browseItems: StateFlow<List<BrowseItem>> = _browseItems.asStateFlow()
+    private val _browsePath = MutableStateFlow<String?>(null)
+    val browsePath: StateFlow<String?> = _browsePath.asStateFlow()
+    private val browsePathStack = mutableListOf<String?>()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -264,6 +271,7 @@ class LibraryViewModel @Inject constructor(
             2 -> loadTracks()
             3 -> loadPlaylists()
             4 -> loadRadios()
+            5 -> applyBrowseFilterSort()
         }
     }
 
@@ -525,6 +533,45 @@ class LibraryViewModel @Inject constructor(
                 _isLoadingMore.value = false
             }
         }
+    }
+
+    fun loadBrowse(path: String? = null) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                _browseItemsRaw.value = musicRepository.browse(path)
+                    .filter { it.name != ".." }
+                _browsePath.value = path
+                applyBrowseFilterSort()
+            } catch (_: Exception) {}
+            _isLoading.value = false
+        }
+    }
+
+    private fun applyBrowseFilterSort() {
+        var items = _browseItemsRaw.value
+        val query = _searchQuery.value.trim()
+        if (query.isNotEmpty()) {
+            items = items.filter { it.name.contains(query, ignoreCase = true) }
+        }
+        val sort = sortOption.value
+        if (sort == SortOption.NAME) {
+            items = if (sortDescending.value) items.sortedByDescending { it.name.lowercase() }
+                    else items.sortedBy { it.name.lowercase() }
+        }
+        _browseItems.value = items
+    }
+
+    fun browseTo(path: String) {
+        browsePathStack.add(_browsePath.value)
+        loadBrowse(path)
+    }
+
+    fun browseBack(): Boolean {
+        if (browsePathStack.isEmpty()) return false
+        val prev = browsePathStack.removeAt(browsePathStack.lastIndex)
+        loadBrowse(prev)
+        return true
     }
 
     fun playTrack(track: Track) {

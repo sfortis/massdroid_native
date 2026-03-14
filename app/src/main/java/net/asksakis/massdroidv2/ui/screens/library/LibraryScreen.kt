@@ -11,8 +11,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -40,13 +47,15 @@ fun LibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val selectedTab by viewModel.currentTab.collectAsStateWithLifecycle()
-    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists", "Radios")
+    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists", "Radios", "Browse")
 
     val artists by viewModel.artists.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val radios by viewModel.radios.collectAsStateWithLifecycle()
+    val browseItems by viewModel.browseItems.collectAsStateWithLifecycle()
+    val browsePath by viewModel.browsePath.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -83,11 +92,13 @@ fun LibraryScreen(
             2 -> if (tracks.isEmpty()) viewModel.loadTracks()
             3 -> if (playlists.isEmpty()) viewModel.loadPlaylists()
             4 -> if (radios.isEmpty()) viewModel.loadRadios()
+            5 -> if (browseItems.isEmpty()) viewModel.loadBrowse()
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         if (isLandscape) {
+            val isBrowseTab = selectedTab == 5
             // Compact landscape header: search + tabs + sort in minimal space
             Row(
                 modifier = Modifier
@@ -123,7 +134,11 @@ fun LibraryScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 // Sort + display mode controls
-                SortDropdown(selected = sortOption, onSelect = { viewModel.updateSort(it) })
+                SortDropdown(
+                    selected = sortOption,
+                    onSelect = { viewModel.updateSort(it) },
+                    options = if (isBrowseTab) listOf(SortOption.NAME) else SortOption.entries
+                )
                 IconButton(onClick = { viewModel.toggleSortDirection() }, modifier = Modifier.size(32.dp)) {
                     Icon(
                         if (sortDescending) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
@@ -131,21 +146,23 @@ fun LibraryScreen(
                         modifier = Modifier.size(18.dp)
                     )
                 }
-                IconButton(onClick = { viewModel.toggleFavoritesFilter() }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Filter favorites",
-                        modifier = Modifier.size(18.dp),
-                        tint = if (favoritesOnly) MaterialTheme.colorScheme.error
-                               else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
-                        contentDescription = "Toggle view",
-                        modifier = Modifier.size(18.dp)
-                    )
+                if (!isBrowseTab) {
+                    IconButton(onClick = { viewModel.toggleFavoritesFilter() }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "Filter favorites",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (favoritesOnly) MaterialTheme.colorScheme.error
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = "Toggle view",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
             // Compact tabs
@@ -165,7 +182,9 @@ fun LibraryScreen(
             }
         } else {
             // Portrait: full-size header
-            // Search bar at top
+            val isBrowseTab = selectedTab == 5
+
+            // Search bar
             TextField(
                 value = searchQuery,
                 onValueChange = { viewModel.updateSearch(it) },
@@ -179,7 +198,7 @@ fun LibraryScreen(
                         2 -> "Search tracks..."
                         3 -> "Search playlists..."
                         4 -> "Search radios..."
-                        else -> "Search library..."
+                        else -> "Search..."
                     })
                 },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
@@ -222,7 +241,8 @@ fun LibraryScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SortDropdown(
                         selected = sortOption,
-                        onSelect = { viewModel.updateSort(it) }
+                        onSelect = { viewModel.updateSort(it) },
+                        options = if (isBrowseTab) listOf(SortOption.NAME) else SortOption.entries
                     )
                     IconButton(onClick = { viewModel.toggleSortDirection() }) {
                         Icon(
@@ -231,22 +251,26 @@ fun LibraryScreen(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
-                        Icon(
-                            if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Filter favorites",
-                            modifier = Modifier.size(20.dp),
-                            tint = if (favoritesOnly) MaterialTheme.colorScheme.error
-                                   else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    if (!isBrowseTab) {
+                        IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
+                            Icon(
+                                if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Filter favorites",
+                                modifier = Modifier.size(20.dp),
+                                tint = if (favoritesOnly) MaterialTheme.colorScheme.error
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
-                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
-                    Icon(
-                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
-                        contentDescription = "Toggle view"
-                    )
+                if (!isBrowseTab) {
+                    IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
+                        Icon(
+                            if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = "Toggle view"
+                        )
+                    }
                 }
             }
         }
@@ -405,6 +429,43 @@ fun LibraryScreen(
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) }
                     )
+                    5 -> BrowseList(
+                        items = browseItems,
+                        isLoading = isLoading,
+                        browsePath = browsePath,
+                        onFolderClick = { viewModel.browseTo(it.path ?: it.uri) },
+                        onItemClick = { item ->
+                            when (item.mediaType) {
+                                "artist" -> onArtistClick(Artist(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                "album" -> onAlbumClick(Album(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                "playlist" -> onPlaylistClick(Playlist(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                else -> viewModel.quickPlay(item.uri)
+                            }
+                        },
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        onLongClick = { item ->
+                            MediaType.fromApi(item.mediaType)?.let { type ->
+                                actionSheetItem = ActionSheetItem(
+                                    title = item.name,
+                                    uri = item.uri,
+                                    imageUrl = item.imageUrl,
+                                    favorite = false,
+                                    mediaType = type,
+                                    itemId = item.itemId
+                                )
+                            }
+                        },
+                        onBack = { viewModel.browseBack() }
+                    )
                 }
             }
         }
@@ -506,7 +567,8 @@ fun LibraryScreen(
 @Composable
 private fun SortDropdown(
     selected: SortOption,
-    onSelect: (SortOption) -> Unit
+    onSelect: (SortOption) -> Unit,
+    options: List<SortOption> = SortOption.entries
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -518,7 +580,7 @@ private fun SortDropdown(
             leadingIcon = { Icon(Icons.Default.Sort, contentDescription = null, modifier = Modifier.size(18.dp)) }
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SortOption.entries.forEach { option ->
+            options.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(option.label) },
                     onClick = {
@@ -656,5 +718,99 @@ private fun LoadingIndicator() {
         contentAlignment = Alignment.Center
     ) {
         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun BrowseList(
+    items: List<BrowseItem>,
+    isLoading: Boolean,
+    browsePath: String?,
+    onFolderClick: (BrowseItem) -> Unit,
+    onItemClick: (BrowseItem) -> Unit,
+    onPlayClick: (BrowseItem) -> Unit,
+    onLongClick: (BrowseItem) -> Unit,
+    onBack: () -> Unit
+) {
+    BackHandler(enabled = browsePath != null) { onBack() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (browsePath != null) {
+            ListItem(
+                headlineContent = { Text("..") },
+                leadingContent = {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back"
+                    )
+                },
+                modifier = Modifier.clickable { onBack() }
+            )
+        }
+        if (isLoading && items.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else {
+            LazyColumn {
+                items(items, key = { it.uri.ifBlank { it.name } }) { item ->
+                    ListItem(
+                        headlineContent = {
+                            Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                        leadingContent = {
+                            if (item.isFolder) {
+                                Icon(Icons.Default.Folder, contentDescription = null)
+                            } else if (item.imageUrl != null) {
+                                coil.compose.AsyncImage(
+                                    model = item.imageUrl,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(MaterialTheme.shapes.small),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(
+                                    when (item.mediaType) {
+                                        "artist" -> Icons.Default.Person
+                                        "album" -> Icons.Default.Album
+                                        "track" -> Icons.Default.MusicNote
+                                        "playlist" -> Icons.Default.QueueMusic
+                                        "radio" -> Icons.Default.Radio
+                                        else -> Icons.Default.MusicNote
+                                    },
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (item.isPlayable) {
+                                    IconButton(onClick = { onPlayClick(item) }) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play")
+                                    }
+                                }
+                                if (item.isFolder) {
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null)
+                                }
+                            }
+                        },
+                        modifier = Modifier.combinedClickable(
+                            onClick = {
+                                if (item.isFolder) onFolderClick(item) else onItemClick(item)
+                            },
+                            onLongClick = if (!item.isFolder && item.isPlayable) {
+                                { onLongClick(item) }
+                            } else null
+                        )
+                    )
+                }
+            }
+        }
     }
 }

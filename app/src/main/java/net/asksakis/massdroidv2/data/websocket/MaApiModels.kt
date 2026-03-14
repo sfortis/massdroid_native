@@ -112,7 +112,10 @@ data class ServerMediaItem(
     val position: Int? = null,
     val year: Int? = null,
     @SerialName("is_editable") val isEditable: Boolean? = null,
-    @SerialName("album_type") val albumType: String? = null
+    @SerialName("album_type") val albumType: String? = null,
+    @SerialName("is_playable") val isPlayable: Boolean? = null,
+    val path: String? = null,
+    @SerialName("translation_key") val translationKey: String? = null
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images. */
     fun resolveImageUrl(wsClient: MaWebSocketClient): String? {

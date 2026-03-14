@@ -77,6 +77,19 @@ data class Radio(
     val inLibrary: Boolean = true
 )
 
+@Serializable
+data class BrowseItem(
+    val itemId: String,
+    val provider: String,
+    val name: String,
+    val uri: String,
+    val path: String? = null,
+    val imageUrl: String? = null,
+    val isFolder: Boolean = false,
+    val mediaType: String = "",
+    val isPlayable: Boolean = false
+)
+
 enum class MediaType(val apiValue: String) {
     TRACK("track"),
     ALBUM("album"),

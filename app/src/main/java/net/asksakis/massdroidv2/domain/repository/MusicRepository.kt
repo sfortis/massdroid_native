@@ -52,6 +52,7 @@ interface MusicRepository {
     suspend fun removeFromLibrary(mediaType: MediaType, libraryItemId: String)
     suspend fun addToLibrary(uri: String)
     suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean)
+    suspend fun browse(path: String? = null): List<BrowseItem>
 }
 
 data class SearchResult(

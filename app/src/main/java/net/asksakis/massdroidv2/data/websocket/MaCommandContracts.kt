@@ -37,6 +37,7 @@ object MaCommands {
         const val FAVORITES_REMOVE = "music/favorites/remove_item"
         const val LIBRARY_ADD_ITEM = "music/library/add_item"
         const val LIBRARY_REMOVE_ITEM = "music/library/remove_item"
+        const val BROWSE = "music/browse"
         const val SYNC = "music/sync"
     }
 
@@ -378,6 +379,14 @@ data class SyncArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         mediaTypes?.let { put("media_types", JsonArray(it.map(::JsonPrimitive))) }
         providers?.let { put("providers", JsonArray(it.map(::JsonPrimitive))) }
+    }
+}
+
+data class BrowseArgs(
+    val path: String? = null
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        path?.let { put("path", it) }
     }
 }
 
