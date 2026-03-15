@@ -1,10 +1,13 @@
 package net.asksakis.massdroidv2.ui.screens.search
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +21,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
+import net.asksakis.massdroidv2.ui.components.ProviderBadges
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 
@@ -35,8 +40,33 @@ fun SearchScreen(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val focusRequester = remember { FocusRequester() }
 
+    val providerCache = LocalProviderManifestCache.current
+    val allProviders by providerCache.musicProvidersFlow.collectAsStateWithLifecycle()
+    var selectedProviders by remember { mutableStateOf(emptySet<String>()) }
+    val dark = isSystemInDarkTheme()
+
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+    }
+
+    // Client-side provider filtering
+    val filteredResults = if (selectedProviders.isEmpty()) results else {
+        fun <T> filterByProvider(items: List<T>, domains: (T) -> List<String>): List<T> =
+            items.filter { item ->
+                val d = domains(item)
+                d.isEmpty() || d.any { domain ->
+                    selectedProviders.any { instanceId ->
+                        instanceId.startsWith(domain) || domain == instanceId
+                    }
+                }
+            }
+        results.copy(
+            artists = filterByProvider(results.artists) { it.providerDomains },
+            albums = filterByProvider(results.albums) { it.providerDomains },
+            tracks = filterByProvider(results.tracks) { it.providerDomains },
+            playlists = filterByProvider(results.playlists) { it.providerDomains },
+            radios = filterByProvider(results.radios) { it.providerDomains }
+        )
     }
 
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
@@ -70,13 +100,31 @@ fun SearchScreen(
                 )
         ) {}
 
+        // Provider filter dropdown
+        if (allProviders.size > 1) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                SearchProviderFilterDropdown(
+                    providers = allProviders,
+                    selectedIds = selectedProviders,
+                    cache = providerCache,
+                    onToggle = { id ->
+                        selectedProviders = if (id in selectedProviders)
+                            selectedProviders - id else selectedProviders + id
+                    },
+                    onClear = { selectedProviders = emptySet() }
+                )
+            }
+        }
+
         if (isSearching) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
         } else {
             LazyColumn {
-                if (results.artists.isNotEmpty()) {
+                if (filteredResults.artists.isNotEmpty()) {
                     item {
                         Text(
                             "Artists",
@@ -84,17 +132,19 @@ fun SearchScreen(
                             modifier = Modifier.padding(16.dp)
                         )
                     }
-                    items(results.artists) { artist ->
+                    items(filteredResults.artists) { artist ->
                         MediaItemRow(
                             title = artist.name,
                             subtitle = "",
                             imageUrl = artist.imageUrl,
-                            onClick = { onArtistClick(artist) }
+                            onClick = { onArtistClick(artist) },
+                            providerDomains = artist.providerDomains,
+                            providerCache = providerCache
                         )
                     }
                 }
 
-                if (results.albums.isNotEmpty()) {
+                if (filteredResults.albums.isNotEmpty()) {
                     item {
                         Text(
                             "Albums",
@@ -102,18 +152,20 @@ fun SearchScreen(
                             modifier = Modifier.padding(16.dp)
                         )
                     }
-                    items(results.albums) { album ->
+                    items(filteredResults.albums) { album ->
                         MediaItemRow(
                             title = album.name,
                             subtitle = formatAlbumTypeYear(album.albumType, album.year)
                                 .ifBlank { album.artistNames },
                             imageUrl = album.imageUrl,
-                            onClick = { onAlbumClick(album) }
+                            onClick = { onAlbumClick(album) },
+                            providerDomains = album.providerDomains,
+                            providerCache = providerCache
                         )
                     }
                 }
 
-                if (results.tracks.isNotEmpty()) {
+                if (filteredResults.tracks.isNotEmpty()) {
                     item {
                         Text(
                             "Tracks",
@@ -121,17 +173,19 @@ fun SearchScreen(
                             modifier = Modifier.padding(16.dp)
                         )
                     }
-                    items(results.tracks) { track ->
+                    items(filteredResults.tracks) { track ->
                         MediaItemRow(
                             title = track.name,
                             subtitle = track.artistNames,
                             imageUrl = track.imageUrl,
-                            onClick = { viewModel.playTrack(track) }
+                            onClick = { viewModel.playTrack(track) },
+                            providerDomains = track.providerDomains,
+                            providerCache = providerCache
                         )
                     }
                 }
 
-                if (results.playlists.isNotEmpty()) {
+                if (filteredResults.playlists.isNotEmpty()) {
                     item {
                         Text(
                             "Playlists",
@@ -139,15 +193,95 @@ fun SearchScreen(
                             modifier = Modifier.padding(16.dp)
                         )
                     }
-                    items(results.playlists) { playlist ->
+                    items(filteredResults.playlists) { playlist ->
                         MediaItemRow(
                             title = playlist.name,
                             subtitle = "",
                             imageUrl = playlist.imageUrl,
-                            onClick = { onPlaylistClick(playlist) }
+                            onClick = { onPlaylistClick(playlist) },
+                            providerDomains = playlist.providerDomains,
+                            providerCache = providerCache
                         )
                     }
                 }
+
+                if (filteredResults.radios.isNotEmpty()) {
+                    item {
+                        Text(
+                            "Radios",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                    items(filteredResults.radios) { radio ->
+                        MediaItemRow(
+                            title = radio.name,
+                            subtitle = "",
+                            imageUrl = radio.imageUrl,
+                            onClick = { viewModel.playRadio(radio) },
+                            providerDomains = radio.providerDomains,
+                            providerCache = providerCache
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchProviderFilterDropdown(
+    providers: List<net.asksakis.massdroidv2.data.provider.MusicProvider>,
+    selectedIds: Set<String>,
+    cache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
+    onToggle: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val hasFilter = selectedIds.isNotEmpty()
+    val dark = isSystemInDarkTheme()
+
+    Box {
+        FilterChip(
+            selected = hasFilter,
+            onClick = { expanded = true },
+            label = {
+                Text(if (hasFilter) "${selectedIds.size} selected" else "All providers")
+            },
+            leadingIcon = {
+                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (hasFilter) {
+                DropdownMenuItem(
+                    text = { Text("Show all") },
+                    onClick = {
+                        onClear()
+                        expanded = false
+                    }
+                )
+                HorizontalDivider()
+            }
+            providers.forEach { provider ->
+                val isSelected = provider.instanceId in selectedIds
+                DropdownMenuItem(
+                    text = { Text(provider.name) },
+                    onClick = { onToggle(provider.instanceId) },
+                    leadingIcon = {
+                        ProviderBadges(
+                            providerDomains = listOf(provider.domain),
+                            cache = cache,
+                            iconSize = 20.dp,
+                            maxIcons = 1
+                        )
+                    },
+                    trailingIcon = {
+                        if (isSelected) {
+                            Icon(Icons.Default.Check, contentDescription = null)
+                        }
+                    }
+                )
             }
         }
     }

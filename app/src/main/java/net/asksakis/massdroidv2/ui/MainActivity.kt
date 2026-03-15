@@ -50,6 +50,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
+import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
 import javax.inject.Inject
 import net.asksakis.massdroidv2.ui.navigation.MassDroidNavHost
@@ -74,6 +75,7 @@ private val navItems = listOf(
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
+    @Inject lateinit var providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -86,8 +88,12 @@ class MainActivity : ComponentActivity() {
         checkBatteryOptimization()
         handleShortcutIntent(intent)
         setContent {
-            MassDroidTheme {
-                MassDroidApp()
+            androidx.compose.runtime.CompositionLocalProvider(
+                LocalProviderManifestCache provides providerManifestCache
+            ) {
+                MassDroidTheme {
+                    MassDroidApp()
+                }
             }
         }
     }

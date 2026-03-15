@@ -115,7 +115,8 @@ data class ServerMediaItem(
     @SerialName("album_type") val albumType: String? = null,
     @SerialName("is_playable") val isPlayable: Boolean? = null,
     val path: String? = null,
-    @SerialName("translation_key") val translationKey: String? = null
+    @SerialName("translation_key") val translationKey: String? = null,
+    @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images. */
     fun resolveImageUrl(wsClient: MaWebSocketClient): String? {
@@ -170,6 +171,31 @@ fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
     if (remotelyAccessible) return p
     return wsClient.getImageUrl(p, provider = imageProvider) ?: p
 }
+
+@Serializable
+data class ProviderMapping(
+    @SerialName("provider_domain") val providerDomain: String,
+    @SerialName("provider_instance") val providerInstance: String = "",
+    val available: Boolean = true
+)
+
+@Serializable
+data class ProviderInstance(
+    @SerialName("instance_id") val instanceId: String,
+    val domain: String,
+    val name: String,
+    val type: String = "",
+    @SerialName("supported_features") val supportedFeatures: List<String> = emptyList()
+)
+
+@Serializable
+data class ProviderManifest(
+    val domain: String,
+    val name: String,
+    val icon: String? = null,
+    @SerialName("icon_svg") val iconSvg: String? = null,
+    @SerialName("icon_svg_dark") val iconSvgDark: String? = null
+)
 
 object EventType {
     const val PLAYER_UPDATED = "player_updated"

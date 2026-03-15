@@ -22,7 +22,8 @@ data class Track(
     val artistUris: List<String> = emptyList(),
     val albumUri: String? = null,
     val genres: List<String> = emptyList(),
-    val year: Int? = null
+    val year: Int? = null,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -40,7 +41,8 @@ data class Album(
     val genres: List<String> = emptyList(),
     val label: String? = null,
     val artists: List<Artist> = emptyList(),
-    val albumType: String? = null
+    val albumType: String? = null,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -52,7 +54,8 @@ data class Artist(
     val imageUrl: String? = null,
     val favorite: Boolean = false,
     val description: String? = null,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -63,7 +66,8 @@ data class Playlist(
     val uri: String,
     val imageUrl: String? = null,
     val favorite: Boolean = false,
-    val isEditable: Boolean = true
+    val isEditable: Boolean = true,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -74,7 +78,8 @@ data class Radio(
     val uri: String,
     val imageUrl: String? = null,
     val favorite: Boolean = false,
-    val inLibrary: Boolean = true
+    val inLibrary: Boolean = true,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable

@@ -4,11 +4,11 @@ import net.asksakis.massdroidv2.domain.model.*
 
 interface MusicRepository {
     suspend fun getRecommendations(): List<RecommendationFolder>
-    suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Artist>
-    suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Album>
-    suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Track>
-    suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Playlist>
-    suspend fun getRadios(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Radio>
+    suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Artist>
+    suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Album>
+    suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Track>
+    suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Playlist>
+    suspend fun getRadios(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Radio>
 
     suspend fun getArtist(itemId: String, provider: String, lazy: Boolean = true): Artist?
     suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean = true): Album?

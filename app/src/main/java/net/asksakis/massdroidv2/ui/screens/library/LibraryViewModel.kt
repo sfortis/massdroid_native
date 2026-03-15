@@ -42,7 +42,8 @@ class LibraryViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val playHistoryRepository: PlayHistoryRepository,
-    private val lastFmLibraryEnricher: LastFmLibraryEnricher
+    private val lastFmLibraryEnricher: LastFmLibraryEnricher,
+    val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 ) : ViewModel() {
 
     private val _artists = MutableStateFlow<List<Artist>>(emptyList())
@@ -66,6 +67,9 @@ class LibraryViewModel @Inject constructor(
     private val _browsePath = MutableStateFlow<String?>(null)
     val browsePath: StateFlow<String?> = _browsePath.asStateFlow()
     private val browsePathStack = mutableListOf<String?>()
+
+    private val _selectedProviders = MutableStateFlow<Set<String>>(emptySet())
+    val selectedProviders: StateFlow<Set<String>> = _selectedProviders.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -252,6 +256,20 @@ class LibraryViewModel @Inject constructor(
         reloadCurrentTab()
     }
 
+    fun toggleProviderFilter(instanceId: String) {
+        val current = _selectedProviders.value
+        _selectedProviders.value = if (instanceId in current) current - instanceId else current + instanceId
+        reloadCurrentTab()
+    }
+
+    fun clearProviderFilter() {
+        _selectedProviders.value = emptySet()
+        reloadCurrentTab()
+    }
+
+    private fun providerFilterArgs(): List<String>? =
+        _selectedProviders.value.takeIf { it.isNotEmpty() }?.toList()
+
     fun toggleLibraryDisplayMode() {
         val current = _displayModes.value[_currentTab.value] ?: LibraryDisplayMode.LIST
         val newMode = when (current) {
@@ -290,7 +308,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getArtists(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -345,7 +364,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getAlbums(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -400,7 +420,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getTracks(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -486,7 +507,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val libraryDeferred = async {
                     musicRepository.getRadios(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val searchDeferred = if (query != null && query.length >= 2) {

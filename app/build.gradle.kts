@@ -111,6 +111,8 @@ dependencies {
 
     // Image loading
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-svg:2.7.0")
+    implementation("com.caverock:androidsvg-aar:1.4")
 
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")

@@ -53,6 +53,18 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    fun playRadio(radio: net.asksakis.massdroidv2.domain.model.Radio) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, radio.uri)
+            } catch (e: Exception) {
+                Log.w(TAG, "playRadio failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
     fun playTrack(track: Track) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {

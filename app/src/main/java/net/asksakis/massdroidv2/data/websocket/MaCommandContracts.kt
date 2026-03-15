@@ -41,6 +41,11 @@ object MaCommands {
         const val SYNC = "music/sync"
     }
 
+    object Providers {
+        const val MANIFESTS = "providers/manifests"
+        const val LIST = "providers"
+    }
+
     object PlayerQueues {
         const val ITEMS = "player_queues/items"
         const val PLAY_MEDIA = "player_queues/play_media"
@@ -89,7 +94,8 @@ data class LibraryItemsArgs(
     val limit: Int,
     val offset: Int,
     val orderBy: String? = null,
-    val favoriteOnly: Boolean = false
+    val favoriteOnly: Boolean = false,
+    val provider: List<String>? = null
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         search?.let { put("search", it) }
@@ -97,6 +103,7 @@ data class LibraryItemsArgs(
         put("offset", offset)
         orderBy?.let { put("order_by", it) }
         if (favoriteOnly) put("favorite", true)
+        provider?.let { put("provider", JsonArray(it.map { id -> JsonPrimitive(id) })) }
     }
 }
 

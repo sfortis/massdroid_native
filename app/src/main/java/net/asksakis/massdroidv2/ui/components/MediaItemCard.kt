@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.CachePolicy
+import net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -40,7 +42,9 @@ fun MediaItemRow(
     onMoreClick: (() -> Unit)? = null,
     onPlayClick: (() -> Unit)? = null,
     dragHandle: (@Composable () -> Unit)? = null,
-    showEqualizer: Boolean = false
+    showEqualizer: Boolean = false,
+    providerDomains: List<String> = emptyList(),
+    providerCache: ProviderManifestCache? = null
 ) {
     val context = LocalContext.current
     val imageModel = remember(imageUrl, context) {
@@ -63,13 +67,28 @@ fun MediaItemRow(
             )
         },
         supportingContent = {
-            if (subtitle.isNotBlank()) {
-                Text(
-                    text = subtitle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            if (subtitle.isNotBlank() || (providerDomains.isNotEmpty() && providerCache != null)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (providerCache != null && providerDomains.isNotEmpty()) {
+                        ProviderBadges(
+                            providerDomains = providerDomains,
+                            cache = providerCache,
+                            iconSize = 14.dp
+                        )
+                    }
+                    if (subtitle.isNotBlank()) {
+                        Text(
+                            text = subtitle,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                }
             }
         },
         leadingContent = {
@@ -157,7 +176,9 @@ fun MediaItemGrid(
     imageUrl: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    providerDomains: List<String> = emptyList(),
+    providerCache: ProviderManifestCache? = null
 ) {
     val context = LocalContext.current
     val imageModel = remember(imageUrl, context) {
@@ -176,15 +197,26 @@ fun MediaItemGrid(
             onLongClick = onLongClick
         )
     ) {
-        AsyncImage(
-            model = imageModel,
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(MaterialTheme.shapes.medium),
-            contentScale = ContentScale.Crop
-        )
+        Box {
+            AsyncImage(
+                model = imageModel,
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(MaterialTheme.shapes.medium),
+                contentScale = ContentScale.Crop
+            )
+            if (providerCache != null && providerDomains.isNotEmpty()) {
+                ProviderBadges(
+                    providerDomains = providerDomains,
+                    cache = providerCache,
+                    iconSize = 14.dp,
+                    withShadow = true,
+                    modifier = Modifier.padding(4.dp)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = title,
