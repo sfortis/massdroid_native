@@ -6,36 +6,27 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- **Internet Radio** : Browse and search thousands of radio stations directly from the Library
-- **Inline Volume Controls** : Adjust volume on any player without switching, right from the player list
-- **Library Actions** : Long-press any item for quick actions like play, queue, add to favorites, or view details
-- **App Shortcuts** : Long-press the app icon for quick access to Smart Mix and more
+- **Browse Tab** : Navigate your music providers by folder structure with play buttons and action sheets
+- **Provider Icons and Filtering** : See which provider each item comes from, filter Library and Search results by provider
+- **Search Redesign** : Provider filter chips with result counts, grid/list toggle, fallback icons for missing artwork
+- **Settings Reorganization** : Split into Connection, Recommendations, and About sub-screens
+- **Genre Radio Improvements** : Provider-based recommendations with data-driven genre families for better coherence
 - **Lyrics** : Synced and plain text lyrics in the Now Playing screen
-- **Genre Search** : Find artists, albums, and tracks by genre across your enriched library
 - **Similar Artists** : Discover related artists from Last.fm, resolved against your music providers with genre validation
+- **Internet Radio** : Browse and search thousands of radio stations directly from the Library
 
 ## Screenshots
 
 <table align="center">
   <tr>
-    <td align="center"><img src="screenshots/home.png" width="180" /><br/><sub>Discover Home</sub></td>
+    <td align="center"><img src="screenshots/home.png" width="180" /><br/><sub>Discover</sub></td>
     <td align="center"><img src="screenshots/nowplaying.png" width="180" /><br/><sub>Now Playing</sub></td>
-    <td align="center"><img src="screenshots/library.png" width="180" /><br/><sub>Library</sub></td>
+    <td align="center"><img src="screenshots/library_providers.png" width="180" /><br/><sub>Library</sub></td>
   </tr>
   <tr>
+    <td align="center"><img src="screenshots/search_providers.png" width="180" /><br/><sub>Search</sub></td>
     <td align="center"><img src="screenshots/players.png" width="180" /><br/><sub>Players</sub></td>
-    <td align="center"><img src="screenshots/queue.png" width="180" /><br/><sub>Queue</sub></td>
-    <td align="center"><img src="screenshots/recommendation_insights.png" width="180" /><br/><sub>Smart Listening</sub></td>
-  </tr>
-  <tr>
     <td align="center"><img src="screenshots/artist_detail.png" width="180" /><br/><sub>Artist Detail</sub></td>
-    <td align="center"><img src="screenshots/album_detail.png" width="180" /><br/><sub>Album Detail</sub></td>
-    <td align="center"><img src="screenshots/connection_status.png" width="180" /><br/><sub>Connection Diagnostics</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/radio_library.png" width="180" /><br/><sub>Radio Library</sub></td>
-    <td align="center"><img src="screenshots/radio_search.png" width="180" /><br/><sub>Radio Search</sub></td>
-    <td align="center"><img src="screenshots/lyrics.png" width="180" /><br/><sub>Lyrics</sub></td>
   </tr>
 </table>
 
@@ -63,7 +54,7 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 ## Features
 
 - **Discover Home** : Dynamic recommendation sections with recently played, top picks, genre radio, and Smart Mix
-- **Library Browsing** : Artists, Albums, Tracks, Playlists, and Radio with search, sort, and grid/list views. Genre-based search finds artists, albums, and tracks by genre when your library has been enriched with Last.fm tags.
+- **Library Browsing** : Artists, Albums, Tracks, Playlists, Radio, and Browse with search, sort, grid/list views, and provider filtering. Genre-based search finds artists, albums, and tracks by genre when your library has been enriched with Last.fm tags.
 - **Artist & Album Detail** : Rich detail views with descriptions, genres, similar artists, and now-playing indicators
 - **Player Controls** : Play, pause, skip, seek, volume, shuffle, repeat across all MA players
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, lyrics, and artist blocking
