@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,7 +19,8 @@ import javax.inject.Singleton
 @Singleton
 class MusicRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
-    private val json: Json
+    private val json: Json,
+    private val playerRepository: dagger.Lazy<PlayerRepository>
 ) : MusicRepository {
     companion object {
         private const val TAG = "MusicRepo"
@@ -31,36 +33,44 @@ class MusicRepositoryImpl @Inject constructor(
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
 
-    override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Artist> {
+    override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Artist> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ARTISTS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
         )
         return parseMediaItems(result).mapNotNull { it.toArtist() }
     }
 
-    override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Album> {
+    override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Album> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ALBUMS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
         )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }
 
-    override suspend fun getTracks(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Track> {
+    override suspend fun getTracks(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Track> {
         val result = wsClient.sendCommand(
             MaCommands.Music.TRACKS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
         )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
-    override suspend fun getPlaylists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean): List<Playlist> {
+    override suspend fun getPlaylists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Playlist> {
         val result = wsClient.sendCommand(
             MaCommands.Music.PLAYLISTS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
         )
         return parseMediaItems(result).mapNotNull { it.toPlaylist() }
+    }
+
+    override suspend fun getRadios(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Radio> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.RADIOS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
+        )
+        return parseMediaItems(result).mapNotNull { it.toRadio() }
     }
 
     override suspend fun getArtist(itemId: String, provider: String, lazy: Boolean): Artist? {
@@ -126,7 +136,8 @@ class MusicRepositoryImpl @Inject constructor(
             artists = obj["artists"]?.let { parseMediaItems(it) }?.mapNotNull { it.toArtist() } ?: emptyList(),
             albums = obj["albums"]?.let { parseMediaItems(it) }?.mapNotNull { it.toAlbum() } ?: emptyList(),
             tracks = obj["tracks"]?.let { parseMediaItems(it) }?.mapNotNull { it.toTrack() } ?: emptyList(),
-            playlists = obj["playlists"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPlaylist() } ?: emptyList()
+            playlists = obj["playlists"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPlaylist() } ?: emptyList(),
+            radios = obj["radio"]?.let { parseMediaItems(it) }?.mapNotNull { it.toRadio() } ?: emptyList()
         )
     }
 
@@ -146,6 +157,9 @@ class MusicRepositoryImpl @Inject constructor(
         radioMode: Boolean,
         awaitResponse: Boolean
     ) {
+        if (option == null || option == "play" || option == "replace") {
+            playerRepository.get().notifyQueueReplacement(queueId)
+        }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
@@ -161,6 +175,9 @@ class MusicRepositoryImpl @Inject constructor(
         awaitResponse: Boolean,
         timeoutMs: Long?
     ) {
+        if (option == null || option == "play" || option == "replace") {
+            playerRepository.get().notifyQueueReplacement(queueId)
+        }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = uris, option = option, radioMode = radioMode),
@@ -204,6 +221,47 @@ class MusicRepositoryImpl @Inject constructor(
             RepeatArgs(queueId = queueId, repeatMode = mode.apiValue)
         )
     }
+
+    override suspend fun removeFromLibrary(mediaType: MediaType, libraryItemId: String) {
+        wsClient.sendCommand(
+            MaCommands.Music.LIBRARY_REMOVE_ITEM,
+            LibraryRemoveItemArgs(mediaType = mediaType.apiValue, libraryItemId = libraryItemId)
+        )
+    }
+
+    override suspend fun addToLibrary(uri: String) {
+        wsClient.sendCommand(
+            MaCommands.Music.LIBRARY_ADD_ITEM,
+            FavoriteAddArgs(item = uri)
+        )
+    }
+
+    override suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.DONT_STOP_THE_MUSIC,
+            DontStopTheMusicArgs(queueId = queueId, enabled = enabled)
+        )
+    }
+
+    override suspend fun browse(path: String?): List<BrowseItem> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.BROWSE,
+            BrowseArgs(path)
+        )
+        return parseMediaItems(result).map { it.toBrowseItem() }
+    }
+
+    private fun ServerMediaItem.toBrowseItem(): BrowseItem = BrowseItem(
+        itemId = itemId,
+        provider = provider,
+        name = name.ifBlank { translationKey?.replaceFirstChar { it.uppercase() } ?: itemId },
+        uri = uri,
+        path = path ?: uri.ifBlank { null },
+        imageUrl = resolveImageUrl(wsClient),
+        isFolder = mediaType == "folder",
+        mediaType = mediaType,
+        isPlayable = isPlayable ?: (uri.isNotBlank() && mediaType != "folder")
+    )
 
     override suspend fun clearQueue(queueId: String) {
         wsClient.sendCommand(MaCommands.PlayerQueues.CLEAR, QueueIdArgs(queueId))
@@ -399,6 +457,9 @@ class MusicRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun ServerMediaItem.extractProviderDomains(): List<String> =
+        providerMappings.filter { it.available }.map { it.providerDomain }.distinct()
+
     private fun ServerMediaItem.toArtist(): Artist? {
         if (mediaType.isNotEmpty() && mediaType != "artist") return null
         return Artist(
@@ -406,10 +467,11 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient) ?: wsClient.getImageUrl(uri),
+            imageUrl = resolveImageWithUriFallback(wsClient),
             favorite = favorite,
             description = metadata?.description,
-            genres = metadata?.genres ?: emptyList()
+            genres = metadata?.genres ?: emptyList(),
+            providerDomains = extractProviderDomains()
         )
     }
 
@@ -421,7 +483,7 @@ class MusicRepositoryImpl @Inject constructor(
             name = name,
             uri = uri,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
-            imageUrl = resolveImageUrl(wsClient) ?: wsClient.getImageUrl(uri),
+            imageUrl = resolveImageWithUriFallback(wsClient),
             favorite = favorite,
             version = version,
             year = sanitizeYear(year),
@@ -429,7 +491,8 @@ class MusicRepositoryImpl @Inject constructor(
             genres = metadata?.genres ?: emptyList(),
             label = metadata?.label,
             artists = artists?.mapNotNull { it.toArtist() } ?: emptyList(),
-            albumType = albumType
+            albumType = albumType,
+            providerDomains = extractProviderDomains()
         )
     }
 
@@ -443,9 +506,7 @@ class MusicRepositoryImpl @Inject constructor(
             duration = duration,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
             albumName = album?.name ?: "",
-            imageUrl = resolveImageUrl(wsClient)
-                ?: album?.resolveImageUrl(wsClient)
-                ?: wsClient.getImageUrl(uri),
+            imageUrl = resolveImageWithUriFallback(wsClient),
             favorite = favorite,
             position = position,
             artistItemId = artists?.firstOrNull()?.itemId,
@@ -467,7 +528,8 @@ class MusicRepositoryImpl @Inject constructor(
                 uri = album?.uri
             ),
             genres = metadata?.genres ?: emptyList(),
-            year = sanitizeYear(album?.year ?: year)
+            year = sanitizeYear(album?.year ?: year),
+            providerDomains = extractProviderDomains()
         )
     }
 
@@ -480,7 +542,21 @@ class MusicRepositoryImpl @Inject constructor(
             uri = uri,
             imageUrl = resolveImageUrl(wsClient),
             favorite = favorite,
-            isEditable = isEditable != false
+            isEditable = isEditable != false,
+            providerDomains = extractProviderDomains()
+        )
+    }
+
+    private fun ServerMediaItem.toRadio(): Radio? {
+        if (mediaType.isNotEmpty() && mediaType != "radio") return null
+        return Radio(
+            itemId = itemId,
+            provider = provider,
+            name = name,
+            uri = uri,
+            imageUrl = resolveImageUrl(wsClient),
+            favorite = favorite,
+            providerDomains = extractProviderDomains()
         )
     }
 
@@ -497,7 +573,7 @@ class MusicRepositoryImpl @Inject constructor(
         duration = duration,
         track = mediaItem?.toTrack(),
         imageUrl = mediaItem?.resolveImageUrl(wsClient)
-            ?: image?.let { if (it.remotelyAccessible) it.path else wsClient.getImageUrl(it.path, provider = it.imageProvider) }
+            ?: image?.resolveUrl(wsClient)
     )
 
     private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }

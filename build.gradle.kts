@@ -8,8 +8,12 @@ plugins {
     id("io.gitlab.arturbosch.detekt") version "1.23.7"
 }
 
-// Redirect build output to local filesystem (source lives on S3 remote mount)
-val localBuildRoot = file(System.getProperty("user.home") + "/massdroid-native-build")
+// Redirect build output to local filesystem (source lives on S3 remote mount).
+// Override with: -PmassdroidBuildRoot=/custom/path or MASSDROID_BUILD_ROOT env var.
+val configuredBuildRoot = providers.gradleProperty("massdroidBuildRoot").orNull
+    ?: System.getenv("MASSDROID_BUILD_ROOT")
+    ?: (System.getProperty("user.home") + "/massdroid-native-build")
+val localBuildRoot = file(configuredBuildRoot)
 allprojects {
     val subDir = if (path == ":") "root" else path.removePrefix(":").replace(":", "/")
     layout.buildDirectory = localBuildRoot.resolve(subDir)

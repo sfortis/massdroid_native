@@ -61,6 +61,7 @@ class MaWebSocketClient(
     private var reconnectJob: Job? = null
     private var currentBackoffMs = INITIAL_BACKOFF_MS
     private var reconnectAttempts = 0
+    @Volatile
     private var connectionGeneration = 0
     private var lastAuthenticatedAtMs = 0L
 
@@ -503,6 +504,13 @@ class MaWebSocketClient(
         return "${base}/imageproxy?path=$encodedPath&size=$size$providerParam"
     }
 
+    fun rewriteImageProxyUrl(url: String): String {
+        val proxyIdx = url.indexOf("/imageproxy?")
+        if (proxyIdx < 0) return url
+        val base = serverUrl?.trimEnd('/') ?: return url
+        return base + url.substring(proxyIdx)
+    }
+
     /** Expose current OkHttpClient so Coil can use same mTLS config */
     fun getHttpClient(): OkHttpClient = okHttpClient
 
@@ -513,7 +521,7 @@ class MaWebSocketClient(
         .build()
 
     private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host.endsWith(".local")) return true
+        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".ts.net")) return true
         val parts = host.split(".")
         if (parts.size != 4) return false
         val nums = parts.mapNotNull { it.toIntOrNull() }
@@ -523,6 +531,7 @@ class MaWebSocketClient(
             nums[0] == 172 && nums[1] in 16..31 -> true
             nums[0] == 192 && nums[1] == 168 -> true
             nums[0] == 127 -> true
+            nums[0] == 100 && nums[1] in 64..127 -> true // CGNAT / Tailscale
             else -> false
         }
     }

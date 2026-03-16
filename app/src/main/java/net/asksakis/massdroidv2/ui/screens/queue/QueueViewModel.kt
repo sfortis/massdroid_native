@@ -4,13 +4,16 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 private const val TAG = "QueueVM"
@@ -18,7 +21,8 @@ private const val TAG = "QueueVM"
 @HiltViewModel
 class QueueViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
-    private val playerRepository: PlayerRepository
+    private val playerRepository: PlayerRepository,
+    private val settingsRepository: SettingsRepository
 ) : ViewModel() {
 
     private val _queueItems = MutableStateFlow<List<QueueItem>>(emptyList())
@@ -36,6 +40,7 @@ class QueueViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val players: StateFlow<List<Player>> = playerRepository.players
+    val sendspinClientId = settingsRepository.sendspinClientId
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -203,11 +208,14 @@ class QueueViewModel @Inject constructor(
     fun transferQueue(targetId: String) {
         val id = queueId ?: return
         viewModelScope.launch {
-            try {
-                musicRepository.transferQueue(id, targetId)
-            } catch (e: Exception) {
-                Log.w(TAG, "transferQueue failed: ${e.message}")
-                _error.tryEmit("Transfer failed")
+            withContext(NonCancellable) {
+                try {
+                    musicRepository.transferQueue(id, targetId)
+                    playerRepository.selectPlayer(targetId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "transferQueue failed: ${e.message}")
+                    _error.tryEmit("Transfer failed")
+                }
             }
         }
     }

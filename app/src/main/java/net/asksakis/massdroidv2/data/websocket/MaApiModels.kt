@@ -66,7 +66,8 @@ data class ServerQueue(
     @SerialName("shuffle_enabled") val shuffleEnabled: Boolean = false,
     @SerialName("repeat_mode") val repeatMode: String = "off",
     @SerialName("elapsed_time") val elapsedTime: Double = 0.0,
-    @SerialName("current_item") val currentItem: ServerQueueItem? = null
+    @SerialName("current_item") val currentItem: ServerQueueItem? = null,
+    @SerialName("dont_stop_the_music_enabled") val dontStopTheMusicEnabled: Boolean = false
 )
 
 @Serializable
@@ -111,7 +112,11 @@ data class ServerMediaItem(
     val position: Int? = null,
     val year: Int? = null,
     @SerialName("is_editable") val isEditable: Boolean? = null,
-    @SerialName("album_type") val albumType: String? = null
+    @SerialName("album_type") val albumType: String? = null,
+    @SerialName("is_playable") val isPlayable: Boolean? = null,
+    val path: String? = null,
+    @SerialName("translation_key") val translationKey: String? = null,
+    @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images. */
     fun resolveImageUrl(wsClient: MaWebSocketClient): String? {
@@ -124,6 +129,16 @@ data class ServerMediaItem(
             ?: return null
         return thumb.resolveUrl(wsClient)
     }
+
+    /** Image with album fallback (for tracks). */
+    fun resolveImageWithAlbumFallback(wsClient: MaWebSocketClient): String? =
+        resolveImageUrl(wsClient) ?: album?.resolveImageUrl(wsClient)
+
+    /** Image with album fallback, then URI-based imageproxy as last resort. */
+    fun resolveImageWithUriFallback(wsClient: MaWebSocketClient): String? =
+        resolveImageUrl(wsClient)
+            ?: album?.resolveImageUrl(wsClient)
+            ?: wsClient.getImageUrl(uri)
 }
 
 @Serializable
@@ -149,13 +164,38 @@ data class MediaItemImage(
     @SerialName("remotely_accessible") val remotelyAccessible: Boolean = false
 )
 
-private fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
+fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
     val p = path.trim()
     if (p.isEmpty()) return null
     if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
     if (remotelyAccessible) return p
     return wsClient.getImageUrl(p, provider = imageProvider) ?: p
 }
+
+@Serializable
+data class ProviderMapping(
+    @SerialName("provider_domain") val providerDomain: String,
+    @SerialName("provider_instance") val providerInstance: String = "",
+    val available: Boolean = true
+)
+
+@Serializable
+data class ProviderInstance(
+    @SerialName("instance_id") val instanceId: String,
+    val domain: String,
+    val name: String,
+    val type: String = "",
+    @SerialName("supported_features") val supportedFeatures: List<String> = emptyList()
+)
+
+@Serializable
+data class ProviderManifest(
+    val domain: String,
+    val name: String,
+    val icon: String? = null,
+    @SerialName("icon_svg") val iconSvg: String? = null,
+    @SerialName("icon_svg_dark") val iconSvgDark: String? = null
+)
 
 object EventType {
     const val PLAYER_UPDATED = "player_updated"

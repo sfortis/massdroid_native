@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
-import net.asksakis.massdroidv2.domain.model.PlayerType
+import net.asksakis.massdroidv2.ui.screens.home.PlayerIcon
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,17 +56,20 @@ fun PlayerSelector(
                         )
                     },
                     leadingContent = {
-                        Icon(
-                            imageVector = when (player.type) {
-                                PlayerType.GROUP -> Icons.Default.SpeakerGroup
-                                PlayerType.STEREO_PAIR -> Icons.Default.Speaker
-                                PlayerType.PLAYER -> Icons.Default.Speaker
-                            },
-                            contentDescription = null,
-                            tint = if (player.playerId == selectedPlayerId)
-                                MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        val isPlaying = player.state == PlaybackState.PLAYING
+                        val iconTint = if (isPlaying || player.playerId == selectedPlayerId)
+                            MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        SoundWaveIcon(
+                            isPlaying = isPlaying,
+                            waveColor = iconTint
+                        ) {
+                            PlayerIcon(
+                                player = player,
+                                modifier = Modifier.size(32.dp),
+                                tint = iconTint
+                            )
+                        }
                     },
                     trailingContent = {
                         if (player.playerId == selectedPlayerId) {

@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.ui.screens.queue
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -70,8 +71,12 @@ import coil.compose.AsyncImage
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerType
+import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
+import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.ui.components.SoundWaveIcon
+import net.asksakis.massdroidv2.ui.screens.home.PlayerIcon
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -94,6 +99,7 @@ fun QueueScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val currentQueueItemId by viewModel.currentQueueItemId.collectAsStateWithLifecycle()
     val players by viewModel.players.collectAsStateWithLifecycle()
+    val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
     var actionSheetItem by remember { mutableStateOf<QueueActionItem?>(null) }
     var showQueueMenu by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -141,6 +147,7 @@ fun QueueScreen(
     )
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = {
@@ -396,7 +403,7 @@ fun QueueScreen(
             Column(modifier = Modifier.padding(bottom = 24.dp)) {
                 Column {
                     SheetDefaults.HeaderTitle(
-                        text = "Transfer Queue To",
+                        text = "Transfer queue to",
                         modifier = Modifier.padding(
                             horizontal = SheetDefaults.HeaderHorizontalPadding,
                             vertical = SheetDefaults.HeaderVerticalPadding
@@ -405,15 +412,28 @@ fun QueueScreen(
                     HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
                 }
                 otherPlayers.forEach { target ->
+                    val isPlaying = target.state == PlaybackState.PLAYING
+                    val iconTint = if (isPlaying) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     ListItem(
                         colors = SheetDefaults.listItemColors(),
-                        headlineContent = { Text(target.displayName) },
-                        leadingContent = {
-                            Icon(
-                                imageVector = queueTransferIcon(target),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        headlineContent = {
+                            PlayerNameWithBadge(
+                                name = target.displayName,
+                                isLocalPlayer = sendspinClientId != null && target.playerId == sendspinClientId
                             )
+                        },
+                        leadingContent = {
+                            SoundWaveIcon(
+                                isPlaying = isPlaying,
+                                waveColor = iconTint
+                            ) {
+                                PlayerIcon(
+                                    player = target,
+                                    modifier = Modifier.size(32.dp),
+                                    tint = iconTint
+                                )
+                            }
                         },
                         modifier = Modifier.clickable {
                             viewModel.transferQueue(target.playerId)

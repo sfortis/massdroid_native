@@ -2,9 +2,39 @@
 set -e
 
 cd "$(dirname "$0")"
-APK="$HOME/massdroid-native-build/app/outputs/apk/debug/app-debug.apk"
+BUILD_ROOT="${MASSDROID_BUILD_DIR:-$HOME/massdroid-native-build}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--build-root)
+      [[ $# -lt 2 ]] && { echo "Missing value for $1"; exit 1; }
+      BUILD_ROOT="$2"
+      shift 2
+      ;;
+    --build-root=*)
+      BUILD_ROOT="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: ./build-install.sh [--build-root <path>]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      echo "Usage: ./build-install.sh [--build-root <path>]"
+      exit 1
+      ;;
+  esac
+done
+
+APK="$BUILD_ROOT/app/outputs/apk/debug/app-debug.apk"
+LOCAL_APK="$(pwd)/app/build/outputs/apk/debug/app-debug.apk"
 
 declare -a ADB_CANDIDATES=()
+
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+  grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null
+}
 
 add_adb_candidate() {
   local candidate="$1"
@@ -27,11 +57,13 @@ if [[ -n "${ADB:-}" ]]; then
   add_adb_candidate "$ADB"
 fi
 
-shopt -s nullglob
-for candidate in /mnt/c/Users/*/AppData/Local/Android/Sdk/platform-tools/adb.exe; do
-  add_adb_candidate "$candidate"
-done
-shopt -u nullglob
+if is_wsl; then
+  shopt -s nullglob
+  for candidate in /mnt/c/Users/*/AppData/Local/Android/Sdk/platform-tools/adb.exe; do
+    add_adb_candidate "$candidate"
+  done
+  shopt -u nullglob
+fi
 
 add_adb_candidate "${ANDROID_SDK_ROOT:-}/platform-tools/adb"
 add_adb_candidate "${ANDROID_HOME:-}/platform-tools/adb"
@@ -58,10 +90,19 @@ if [[ -z "$ADB_BIN" ]]; then
 fi
 
 echo "=== Detekt ==="
-bash gradlew detekt
+bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" detekt
 
 echo "=== Build ==="
-bash gradlew assembleDebug
+bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" assembleDebug
+
+if [[ ! -f "$APK" && -f "$LOCAL_APK" ]]; then
+  APK="$LOCAL_APK"
+fi
+
+if [[ ! -f "$APK" ]]; then
+  echo "APK not found: $APK"
+  exit 1
+fi
 
 echo "=== Install ==="
 echo "Using adb: $ADB_BIN"

@@ -15,6 +15,8 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
 private const val TAG = "MiniPlayerVM"
@@ -31,8 +33,12 @@ data class MiniPlayerUiState(
 @HiltViewModel
 class MiniPlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
-    private val wsClient: MaWebSocketClient
+    private val wsClient: MaWebSocketClient,
+    private val settingsRepository: SettingsRepository
 ) : ViewModel() {
+
+    suspend fun isServerConfigured(): Boolean =
+        settingsRepository.serverUrl.first().isNotBlank()
 
     val noPlayerSelectedEvent: SharedFlow<Unit> = playerRepository.noPlayerSelectedEvent
 

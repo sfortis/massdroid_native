@@ -20,6 +20,7 @@ object MaCommands {
         const val TRACKS_LIBRARY_ITEMS = "music/tracks/library_items"
         const val TRACKS_GET = "music/tracks/get"
         const val PLAYLISTS_LIBRARY_ITEMS = "music/playlists/library_items"
+        const val RADIOS_LIBRARY_ITEMS = "music/radios/library_items"
         const val PLAYLISTS_ADD_TRACKS = "music/playlists/add_playlist_tracks"
         const val PLAYLISTS_REMOVE_TRACKS = "music/playlists/remove_playlist_tracks"
         const val ARTISTS_GET = "music/artists/get"
@@ -34,7 +35,15 @@ object MaCommands {
         const val RECOMMENDATIONS = "music/recommendations"
         const val FAVORITES_ADD = "music/favorites/add_item"
         const val FAVORITES_REMOVE = "music/favorites/remove_item"
+        const val LIBRARY_ADD_ITEM = "music/library/add_item"
+        const val LIBRARY_REMOVE_ITEM = "music/library/remove_item"
+        const val BROWSE = "music/browse"
         const val SYNC = "music/sync"
+    }
+
+    object Providers {
+        const val MANIFESTS = "providers/manifests"
+        const val LIST = "providers"
     }
 
     object PlayerQueues {
@@ -48,6 +57,7 @@ object MaCommands {
         const val MOVE_ITEM = "player_queues/move_item"
         const val PLAY_INDEX = "player_queues/play_index"
         const val GET_ACTIVE_QUEUE = "player_queues/get_active_queue"
+        const val DONT_STOP_THE_MUSIC = "player_queues/dont_stop_the_music"
     }
 
     object Players {
@@ -84,7 +94,8 @@ data class LibraryItemsArgs(
     val limit: Int,
     val offset: Int,
     val orderBy: String? = null,
-    val favoriteOnly: Boolean = false
+    val favoriteOnly: Boolean = false,
+    val provider: List<String>? = null
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         search?.let { put("search", it) }
@@ -92,6 +103,7 @@ data class LibraryItemsArgs(
         put("offset", offset)
         orderBy?.let { put("order_by", it) }
         if (favoriteOnly) put("favorite", true)
+        provider?.let { put("provider", JsonArray(it.map { id -> JsonPrimitive(id) })) }
     }
 }
 
@@ -227,6 +239,16 @@ data class PlayIndexArgs(
     }
 }
 
+data class DontStopTheMusicArgs(
+    val queueId: String,
+    val enabled: Boolean
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("queue_id", queueId)
+        put("dont_stop_the_music_enabled", enabled)
+    }
+}
+
 data class ItemByUriArgs(val uri: String) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("uri", uri)
@@ -248,6 +270,16 @@ data class FavoriteAddArgs(val item: String) : MaCommandArgs {
 }
 
 data class FavoriteRemoveArgs(
+    val mediaType: String,
+    val libraryItemId: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("media_type", mediaType)
+        put("library_item_id", libraryItemId)
+    }
+}
+
+data class LibraryRemoveItemArgs(
     val mediaType: String,
     val libraryItemId: String
 ) : MaCommandArgs {
@@ -354,6 +386,14 @@ data class SyncArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         mediaTypes?.let { put("media_types", JsonArray(it.map(::JsonPrimitive))) }
         providers?.let { put("providers", JsonArray(it.map(::JsonPrimitive))) }
+    }
+}
+
+data class BrowseArgs(
+    val path: String? = null
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        path?.let { put("path", it) }
     }
 }
 

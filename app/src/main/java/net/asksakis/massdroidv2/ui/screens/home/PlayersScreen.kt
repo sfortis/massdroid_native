@@ -24,6 +24,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
+import net.asksakis.massdroidv2.ui.components.SoundWaveIcon
+import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -52,23 +54,13 @@ fun PlayersScreen(
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
-    var volumeSliderValue by remember { mutableFloatStateOf(selectedPlayer?.volumeLevel?.toFloat() ?: 0f) }
+    val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val topTitle = selectedPlayer?.displayName ?: "All Players"
-
-    // Sync slider when server updates volume
-    LaunchedEffect(selectedPlayer?.volumeLevel) {
-        selectedPlayer?.volumeLevel?.let { volumeSliderValue = it.toFloat() }
-    }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            if (!isLandscape) {
-                TopAppBar(
-                    title = { Text(topTitle) },
-                    actions = {}
-                )
-            }
+            Spacer(modifier = Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
         }
     ) { paddingValues ->
         Column(
@@ -76,17 +68,6 @@ fun PlayersScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            if (isLandscape) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(topTitle, style = MaterialTheme.typography.titleMedium)
-                }
-            }
             if (isInitializing || connectionState is ConnectionState.Connecting || suppressConnectionPrompt) {
                 ConnectingIndicator()
             } else when (connectionState) {
@@ -99,127 +80,30 @@ fun PlayersScreen(
                 }
                 is ConnectionState.Connecting -> { /* handled above */ }
                 is ConnectionState.Connected -> {
-                    // Selected player header with volume
-                    selectedPlayer?.let { player ->
-                        if (isLandscape) {
-                            // Compact single-row layout for landscape
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                PlayerIcon(
-                                    player = player,
-                                    modifier = Modifier.size(22.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = player.displayName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 120.dp)
-                                )
-                                Slider(
-                                    value = volumeSliderValue,
-                                    onValueChange = { volumeSliderValue = it },
-                                    onValueChangeFinished = {
-                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
-                                    },
-                                    valueRange = 0f..100f,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(horizontal = 8.dp),
-                                    thumb = {},
-                                    track = { sliderState ->
-                                        SliderDefaults.Track(
-                                            sliderState = sliderState,
-                                            drawStopIndicator = null,
-                                            thumbTrackGapSize = 0.dp
-                                        )
-                                    }
-                                )
-                                Text(
-                                    text = "${volumeSliderValue.toInt()}%",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    PlayerIcon(
-                                        player = player,
-                                        modifier = Modifier.size(28.dp),
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = player.displayName,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                    Spacer(modifier = Modifier.weight(1f))
-                                    Text(
-                                        text = "${volumeSliderValue.toInt()}%",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                }
-                                Slider(
-                                    value = volumeSliderValue,
-                                    onValueChange = { volumeSliderValue = it },
-                                    onValueChangeFinished = {
-                                        viewModel.setVolume(player.playerId, volumeSliderValue.toInt())
-                                    },
-                                    valueRange = 0f..100f,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 0.dp),
-                                    thumb = {},
-                                    track = { sliderState ->
-                                        SliderDefaults.Track(
-                                            sliderState = sliderState,
-                                            drawStopIndicator = null,
-                                            thumbTrackGapSize = 0.dp
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // Players list
-                    Text(
-                        text = "All Players",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
 
                     LazyColumn(
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 8.dp)
                     ) {
-                        items(players.filter { it.available }.sortedBy { it.displayName.lowercase() }) { player ->
+                        items(
+                            players.filter { it.available }.sortedBy { it.displayName.lowercase() },
+                            key = { it.playerId }
+                        ) { player ->
                             PlayerListItem(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
+                                isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
-                                onQueueMenuClick = { queueMenuPlayer = player }
+                                onQueueMenuClick = { queueMenuPlayer = player },
+                                onVolumeChange = { volume ->
+                                    viewModel.setVolume(player.playerId, volume)
+                                }
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
                         }
                     }
 
@@ -239,6 +123,7 @@ fun PlayersScreen(
                         PlayerQueueSheet(
                             player = player,
                             allPlayers = players.filter { it.available },
+                            sendspinClientId = sendspinClientId,
                             onPlayerSettings = {
                                 settingsPlayer = player
                                 queueMenuPlayer = null
@@ -270,62 +155,112 @@ fun PlayersScreen(
 
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerListItem(
     player: Player,
     isSelected: Boolean,
+    isLocalPlayer: Boolean = false,
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
-    onQueueMenuClick: () -> Unit
+    onQueueMenuClick: () -> Unit,
+    onVolumeChange: (Int) -> Unit
 ) {
+    var volumeSliderValue by remember { mutableFloatStateOf(player.volumeLevel.toFloat()) }
+
+    LaunchedEffect(player.volumeLevel) {
+        volumeSliderValue = player.volumeLevel.toFloat()
+    }
+
+    val containerColor = if (isSelected)
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+    else
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+
     ListItem(
-        headlineContent = { Text(player.displayName) },
+        colors = ListItemDefaults.colors(containerColor = containerColor),
+        headlineContent = {
+            PlayerNameWithBadge(
+                name = player.displayName,
+                isLocalPlayer = isLocalPlayer,
+                fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.Bold else null
+            )
+        },
         supportingContent = {
-            val stateText = when (player.state) {
-                PlaybackState.PLAYING -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Playing"
-                PlaybackState.PAUSED -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Paused"
-                PlaybackState.IDLE -> "Idle"
+            Column {
+                val stateText = when (player.state) {
+                    PlaybackState.PLAYING -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Playing"
+                    PlaybackState.PAUSED -> player.currentMedia?.let { "${it.title} - ${it.artist}" } ?: "Paused"
+                    PlaybackState.IDLE -> "Idle"
+                }
+                Text(
+                    text = stateText,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = volumeSliderValue,
+                        onValueChange = { volumeSliderValue = it },
+                        onValueChangeFinished = { onVolumeChange(volumeSliderValue.toInt()) },
+                        valueRange = 0f..100f,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(24.dp),
+                        thumb = {},
+                        track = { sliderState ->
+                            SliderDefaults.Track(
+                                sliderState = sliderState,
+                                drawStopIndicator = null,
+                                thumbTrackGapSize = 0.dp
+                            )
+                        }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${volumeSliderValue.toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Text(stateText)
         },
         leadingContent = {
             val iconTint = if (isSelected) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant
-            Box(modifier = Modifier.combinedClickable(
-                onClick = {},
-                onLongClick = onIconLongPress
-            )) {
+            SoundWaveIcon(
+                isPlaying = player.state == PlaybackState.PLAYING,
+                waveColor = iconTint,
+                modifier = Modifier
+                    .padding(top = 10.dp)
+                    .combinedClickable(
+                    onClick = {},
+                    onLongClick = onIconLongPress
+                )
+            ) {
                 PlayerIcon(
                     player = player,
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(40.dp),
                     tint = iconTint
                 )
             }
         },
         trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (player.state == PlaybackState.PLAYING) {
-                    EqualizerBars(
-                        modifier = Modifier.height(18.dp),
-                        barWidth = 3.dp,
-                        spacing = 2.dp,
-                        barCount = 4,
-                        bpm = 90
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                }
-                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "Queue options",
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "Queue options",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
-        modifier = Modifier.clickable(onClick = onClick)
+        modifier = Modifier
+            .padding(horizontal = 8.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick)
     )
 }
 
@@ -334,6 +269,7 @@ private fun PlayerListItem(
 private fun PlayerQueueSheet(
     player: Player,
     allPlayers: List<Player>,
+    sendspinClientId: String?,
     onPlayerSettings: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
@@ -370,14 +306,7 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onPlayerSettings)
                 )
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Clear Queue") },
-                    leadingContent = {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = null)
-                    },
-                    modifier = Modifier.clickable(onClick = onClearQueue)
-                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 if (otherPlayers.isNotEmpty()) {
                     ListItem(
                         colors = SheetDefaults.listItemColors(),
@@ -391,11 +320,19 @@ private fun PlayerQueueSheet(
                         modifier = Modifier.clickable { showTransferList = true }
                     )
                 }
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Clear Queue") },
+                    leadingContent = {
+                        Icon(Icons.Default.DeleteSweep, contentDescription = null)
+                    },
+                    modifier = Modifier.clickable(onClick = onClearQueue)
+                )
             } else {
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
                     headlineContent = {
-                        Text("Transfer queue to:", style = MaterialTheme.typography.labelMedium)
+                        Text("Transfer queue to", style = MaterialTheme.typography.labelMedium)
                     },
                     leadingContent = {
                         IconButton(onClick = { showTransferList = false }) {
@@ -404,15 +341,28 @@ private fun PlayerQueueSheet(
                     }
                 )
                 otherPlayers.forEach { target ->
+                    val isPlaying = target.state == PlaybackState.PLAYING
+                    val iconTint = if (isPlaying) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     ListItem(
                         colors = SheetDefaults.listItemColors(),
-                        headlineContent = { Text(target.displayName) },
-                        leadingContent = {
-                            PlayerIcon(
-                                player = target,
-                                modifier = Modifier.size(32.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        headlineContent = {
+                            PlayerNameWithBadge(
+                                name = target.displayName,
+                                isLocalPlayer = sendspinClientId != null && target.playerId == sendspinClientId
                             )
+                        },
+                        leadingContent = {
+                            SoundWaveIcon(
+                                isPlaying = isPlaying,
+                                waveColor = iconTint
+                            ) {
+                                PlayerIcon(
+                                    player = target,
+                                    modifier = Modifier.size(32.dp),
+                                    tint = iconTint
+                                )
+                            }
                         },
                         modifier = Modifier.clickable { onTransferQueue(target.playerId) }
                     )
@@ -510,8 +460,11 @@ private fun PlayerSettingsDialog(
     var name by remember { mutableStateOf(player.displayName) }
     var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember { mutableStateOf(false) }
+    var dontStopTheMusic by remember { mutableStateOf(false) }
+    val initialDstm = remember { viewModel.queueState.value?.dontStopTheMusicEnabled ?: false }
 
     LaunchedEffect(player.playerId) {
+        dontStopTheMusic = initialDstm
         val loaded = viewModel.getPlayerConfig(player.playerId)
         if (loaded != null) {
             config = loaded
@@ -568,6 +521,26 @@ private fun PlayerSettingsDialog(
                             onCheckedChange = { volumeNormalization = it }
                         )
                     }
+
+                    // Don't stop the music
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Don't stop the music")
+                            Text(
+                                "Auto-fill queue when it runs out",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = dontStopTheMusic,
+                            onCheckedChange = { dontStopTheMusic = it }
+                        )
+                    }
                 }
             }
         },
@@ -582,6 +555,9 @@ private fun PlayerSettingsDialog(
                         values["name"] = name.trim()
                     }
                     viewModel.savePlayerConfig(player.playerId, values)
+                    if (dontStopTheMusic != initialDstm) {
+                        viewModel.setDontStopTheMusic(player.playerId, dontStopTheMusic)
+                    }
                     onDismiss()
                 },
                 enabled = !isLoading
@@ -657,7 +633,7 @@ private fun ConnectionPrompt(
 }
 
 @Composable
-private fun PlayerIcon(
+internal fun PlayerIcon(
     player: Player,
     modifier: Modifier = Modifier,
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant

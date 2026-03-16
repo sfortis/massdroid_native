@@ -3,10 +3,7 @@ package net.asksakis.massdroidv2.ui.screens.home
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
@@ -19,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -61,10 +59,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
@@ -151,6 +149,7 @@ fun HomeScreen(
     var showConnectionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
             SmartMixFab(
                 isBusy = isBuildingSmartMix,
@@ -161,14 +160,19 @@ fun HomeScreen(
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            painter = painterResource(id = R.mipmap.ic_launcher_foreground),
-                            contentDescription = null,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .size(60.dp)
-                                .aspectRatio(1f)
-                        )
+                        Box(
+                            modifier = Modifier.size(48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clip(MaterialTheme.shapes.small)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("MassDroid")
                     }
@@ -211,8 +215,8 @@ fun HomeScreen(
                 ) {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        contentPadding = PaddingValues(bottom = 8.dp)
+                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
                     ) {
                         itemsIndexed(
                             items = sections,
@@ -342,25 +346,28 @@ private fun SmartMixFab(
     isBusy: Boolean,
     onClick: () -> Unit
 ) {
-    val sparkleTransition = rememberInfiniteTransition(label = "sparkle")
-    val sparkleScale by sparkleTransition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "sparkle_scale"
-    )
-    val sparkleAlpha by sparkleTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "sparkle_alpha"
-    )
+    val sparkleScale = remember { Animatable(1f) }
+
+    LaunchedEffect(isBusy) {
+        if (!isBusy) {
+            val framesPerPulse = 24          // 24 * 50ms = 1.2s per pulse
+            val pi = Math.PI.toFloat()
+            while (true) {
+                repeat(2) {                  // 2 magnify pulses
+                    repeat(framesPerPulse) { i ->
+                        delay(50)            // ~20fps, Choreographer-independent
+                        val t = kotlin.math.sin(pi * i / framesPerPulse)
+                        sparkleScale.snapTo(1f + t * 0.15f)  // 1.0 → 1.15 → 1.0
+                    }
+                }
+                sparkleScale.snapTo(1f)
+                delay(3000)
+            }
+        } else {
+            sparkleScale.snapTo(1f)
+        }
+    }
+
     ExtendedFloatingActionButton(
         onClick = { if (!isBusy) onClick() },
         shape = CircleShape,
@@ -380,12 +387,10 @@ private fun SmartMixFab(
                 Icon(
                     Icons.Default.AutoAwesome,
                     contentDescription = null,
-                    modifier = Modifier
-                        .graphicsLayer {
-                            scaleX = sparkleScale
-                            scaleY = sparkleScale
-                            alpha = sparkleAlpha
-                        }
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = sparkleScale.value
+                        scaleY = sparkleScale.value
+                    }
                 )
             }
         },
@@ -654,8 +659,7 @@ private fun SmartMixOverlay() {
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.titleMedium,
         modifier = Modifier.padding(horizontal = 16.dp)
     )
 }

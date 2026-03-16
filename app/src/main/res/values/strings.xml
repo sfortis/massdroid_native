@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MassDroid</string>
+    <string name="shortcut_smart_mix">Smart Mix</string>
+    <string name="shortcut_smart_mix_long">Generate Smart Mix</string>
+    <string name="shortcut_play_now">Play Now</string>
+    <string name="shortcut_play_now_long">Play on Phone Speaker</string>
 </resources>

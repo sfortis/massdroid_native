@@ -44,12 +44,28 @@ interface PlayHistoryDao {
     @Query("SELECT genre_name FROM artist_genres WHERE artist_uri = :artistUri")
     suspend fun getGenresForArtist(artistUri: String): List<String>
 
+    @Query("SELECT uri FROM artists WHERE name = :name")
+    suspend fun getArtistUrisByName(name: String): List<String>
+
+    @Query("SELECT name, uri FROM artists WHERE uri LIKE 'library://%'")
+    suspend fun getLibraryArtistUris(): List<ArtistNameUri>
+
+    @Query("""
+        INSERT OR IGNORE INTO artist_genres (artist_uri, genre_name)
+        SELECT a2.uri, ag.genre_name
+        FROM artist_genres ag
+        JOIN artists a1 ON a1.uri = ag.artist_uri
+        JOIN artists a2 ON a2.name = a1.name
+        WHERE a2.uri != ag.artist_uri
+    """)
+    suspend fun backfillArtistGenres()
+
     @Query("""
         SELECT DISTINCT ag.artist_uri FROM artist_genres ag
         WHERE ag.genre_name LIKE '%' || :query || '%'
-        LIMIT :limit
+          AND ag.artist_uri LIKE 'library://%'
     """)
-    suspend fun searchArtistUrisByGenre(query: String, limit: Int = 30): List<String>
+    suspend fun searchArtistUrisByGenre(query: String): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertLastFmTags(tags: LastFmArtistTagsEntity)
@@ -120,15 +136,23 @@ interface PlayHistoryDao {
     )
     suspend fun getBlockedArtists(): List<BlockedArtistRow>
 
+    @Query("UPDATE tracks SET score = score + :delta WHERE uri = :trackUri")
+    suspend fun adjustTrackScore(trackUri: String, delta: Double)
+
+    @Query("SELECT uri FROM tracks WHERE score < :threshold")
+    suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
+
     @Query(
         """
         SELECT
-            artist_uri AS artistUri,
-            signal,
-            created_at AS createdAt
-        FROM smart_feedback
-        WHERE artist_uri IS NOT NULL
-          AND created_at > :since
+            sf.artist_uri AS artistUri,
+            a.name AS artistName,
+            sf.signal,
+            sf.created_at AS createdAt
+        FROM smart_feedback sf
+        JOIN artists a ON a.uri = sf.artist_uri
+        WHERE sf.artist_uri IS NOT NULL
+          AND sf.created_at > :since
         """
     )
     suspend fun getArtistFeedbackSignals(since: Long): List<ArtistFeedbackSignalRow>
@@ -162,18 +186,18 @@ interface PlayHistoryDao {
     )
     suspend fun getTopGenres(since: Long, limit: Int): List<GenrePlayCount>
 
-    // Top artists by play count
+    // Top artists by play count (grouped by name to merge cross-provider URIs)
     @Query(
         """
         SELECT
-            a.uri AS artistUri,
-            MIN(a.name) AS artistName,
+            MIN(a.uri) AS artistUri,
+            a.name AS artistName,
             COUNT(*) AS playCount
         FROM play_history ph
         JOIN track_artists ta ON ta.track_uri = ph.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
-        GROUP BY artistUri
+        GROUP BY a.name
         ORDER BY playCount DESC
         LIMIT :limit
         """
@@ -288,15 +312,19 @@ interface PlayHistoryDao {
     // Genre play timestamps for BLL scoring (track_genres + artist_genres)
     @Query(
         """
-        SELECT genre, playedAt FROM (
-            SELECT g.name AS genre, ph.played_at AS playedAt
+        SELECT genre, playedAt, listenedMs, duration FROM (
+            SELECT g.name AS genre, ph.played_at AS playedAt,
+                   ph.listened_ms AS listenedMs, t.duration
             FROM play_history ph
+            JOIN tracks t ON t.uri = ph.track_uri
             JOIN track_genres tg ON tg.track_uri = ph.track_uri
             JOIN genres g ON g.name = tg.genre_name
             WHERE ph.played_at > :since
             UNION ALL
-            SELECT g.name AS genre, ph.played_at AS playedAt
+            SELECT g.name AS genre, ph.played_at AS playedAt,
+                   ph.listened_ms AS listenedMs, t.duration
             FROM play_history ph
+            JOIN tracks t ON t.uri = ph.track_uri
             JOIN track_artists ta ON ta.track_uri = ph.track_uri
             JOIN artist_genres ag ON ag.artist_uri = ta.artist_uri
             JOIN genres g ON g.name = ag.genre_name
@@ -309,35 +337,39 @@ interface PlayHistoryDao {
     )
     suspend fun getGenrePlayTimestamps(since: Long): List<GenrePlayTimestamp>
 
-    // Artist play timestamps for BLL scoring
+    // Artist play timestamps for BLL scoring (grouped by name to merge cross-provider URIs)
     @Query(
         """
         SELECT
-            a.uri AS artistUri,
-            MIN(a.name) AS artistName,
-            ph.played_at AS playedAt
+            MIN(a.uri) AS artistUri,
+            a.name AS artistName,
+            ph.played_at AS playedAt,
+            ph.listened_ms AS listenedMs,
+            t.duration
         FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
         JOIN track_artists ta ON ta.track_uri = ph.track_uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
-        GROUP BY ph.id, artistUri
+        GROUP BY ph.id, a.name
         """
     )
     suspend fun getArtistPlayTimestamps(since: Long): List<ArtistPlayTimestamp>
 
-    // Genre -> artist URI mappings (for genre radio), includes artist_genres from Last.fm
+    // Genre -> artist URI mappings (for genre radio), merged by artist name
     @Query(
         """
-        SELECT genre, artistUri FROM (
-            SELECT tg.genre_name AS genre, a.uri AS artistUri
+        SELECT genre, MIN(artistUri) AS artistUri, artistName FROM (
+            SELECT tg.genre_name AS genre, a.uri AS artistUri, a.name AS artistName
             FROM track_genres tg
             JOIN track_artists ta ON ta.track_uri = tg.track_uri
             JOIN artists a ON a.uri = ta.artist_uri
             UNION
-            SELECT ag.genre_name AS genre, ag.artist_uri AS artistUri
+            SELECT ag.genre_name AS genre, ag.artist_uri AS artistUri, a2.name AS artistName
             FROM artist_genres ag
+            JOIN artists a2 ON a2.uri = ag.artist_uri
         )
-        GROUP BY genre, artistUri
+        GROUP BY genre, artistName
         """
     )
     suspend fun getGenreArtistUris(): List<GenreArtistUri>
@@ -364,21 +396,23 @@ interface PlayHistoryDao {
     )
     suspend fun getGenreCoOccurrences(): List<GenreCoOccurrence>
 
-    // Artist -> decade play counts (for decade-coherent radio seeding)
+    // Artist -> decade play counts (merged by artist name)
     @Query(
         """
         SELECT
-               ta.artist_uri AS artistUri,
+               MIN(ta.artist_uri) AS artistUri,
+               a.name AS artistName,
                ((al.year / 10) * 10) AS decade,
                COUNT(*) AS playCount
         FROM play_history ph
         JOIN tracks t ON t.uri = ph.track_uri
         JOIN albums al ON al.uri = t.album_uri
         JOIN track_artists ta ON ta.track_uri = t.uri
+        JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
           AND al.year IS NOT NULL
           AND al.year > 0
-        GROUP BY artistUri, decade
+        GROUP BY a.name, decade
         """
     )
     suspend fun getArtistDecadePlayCounts(since: Long): List<ArtistDecadePlayCount>
@@ -426,7 +460,7 @@ interface PlayHistoryDao {
     @Query("DELETE FROM play_history WHERE played_at < :before")
     suspend fun deleteOlderThan(before: Long)
 
-    @Query("DELETE FROM tracks WHERE uri NOT IN (SELECT DISTINCT track_uri FROM play_history)")
+    @Query("DELETE FROM tracks WHERE uri NOT IN (SELECT DISTINCT track_uri FROM play_history) AND score = 0.0")
     suspend fun deleteOrphanTracks()
 
     @Query("DELETE FROM albums WHERE uri NOT IN (SELECT DISTINCT album_uri FROM tracks WHERE album_uri IS NOT NULL)")
@@ -562,18 +596,28 @@ data class TrackArtistRow(
 
 data class GenrePlayTimestamp(
     val genre: String,
-    @ColumnInfo(name = "playedAt") val playedAt: Long
+    @ColumnInfo(name = "playedAt") val playedAt: Long,
+    @ColumnInfo(name = "listenedMs") val listenedMs: Long?,
+    val duration: Double?
 )
 
 data class ArtistPlayTimestamp(
     @ColumnInfo(name = "artistUri") val artistUri: String,
     @ColumnInfo(name = "artistName") val artistName: String,
-    @ColumnInfo(name = "playedAt") val playedAt: Long
+    @ColumnInfo(name = "playedAt") val playedAt: Long,
+    @ColumnInfo(name = "listenedMs") val listenedMs: Long?,
+    val duration: Double?
+)
+
+data class ArtistNameUri(
+    val name: String,
+    val uri: String
 )
 
 data class GenreArtistUri(
     val genre: String,
-    @ColumnInfo(name = "artistUri") val artistUri: String
+    @ColumnInfo(name = "artistUri") val artistUri: String,
+    @ColumnInfo(name = "artistName") val artistName: String
 )
 
 data class GenreCoOccurrence(
@@ -584,6 +628,7 @@ data class GenreCoOccurrence(
 
 data class ArtistDecadePlayCount(
     @ColumnInfo(name = "artistUri") val artistUri: String,
+    @ColumnInfo(name = "artistName") val artistName: String,
     val decade: Int,
     val playCount: Int
 )
@@ -595,6 +640,7 @@ data class DecadePlayCount(
 
 data class ArtistFeedbackSignalRow(
     @ColumnInfo(name = "artistUri") val artistUri: String,
+    @ColumnInfo(name = "artistName") val artistName: String,
     val signal: Double,
     @ColumnInfo(name = "createdAt") val createdAt: Long
 )

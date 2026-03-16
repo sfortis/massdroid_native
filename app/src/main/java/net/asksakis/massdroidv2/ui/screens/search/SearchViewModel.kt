@@ -29,6 +29,11 @@ class SearchViewModel @Inject constructor(
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
+    private val _gridMode = MutableStateFlow(false)
+    val gridMode: StateFlow<Boolean> = _gridMode.asStateFlow()
+
+    fun toggleGridMode() { _gridMode.value = !_gridMode.value }
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
 
@@ -50,6 +55,18 @@ class SearchViewModel @Inject constructor(
                 Log.w(TAG, "search failed: ${e.message}")
             }
             _isSearching.value = false
+        }
+    }
+
+    fun playRadio(radio: net.asksakis.massdroidv2.domain.model.Radio) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, radio.uri)
+            } catch (e: Exception) {
+                Log.w(TAG, "playRadio failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
         }
     }
 

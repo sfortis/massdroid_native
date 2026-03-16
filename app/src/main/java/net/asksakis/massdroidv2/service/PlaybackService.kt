@@ -32,6 +32,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
@@ -49,6 +50,8 @@ import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.ui.MainActivity
+import net.asksakis.massdroidv2.ui.ShortcutAction
+import net.asksakis.massdroidv2.ui.ShortcutActionDispatcher
 import okhttp3.Request
 import javax.inject.Inject
 
@@ -69,6 +72,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -93,6 +97,7 @@ class PlaybackService : MediaLibraryService() {
         createSendspinController()
         observeSendspinEnabled()
         observeConnectionState()
+        observeShortcutActions()
     }
 
     private fun loadSendspinPlayerId() {
@@ -153,6 +158,32 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun observeShortcutActions() {
+        scope.launch {
+            shortcutDispatcher.pendingAction
+                .filterNotNull()
+                .collect { action ->
+                    if (action !is ShortcutAction.PlayNow) return@collect
+                    shortcutDispatcher.consume()
+                    Log.d(TAG, "PlayNow shortcut: sendspinActive=$sendspinActive")
+                    val sendspinOn = settingsRepository.sendspinEnabled.first()
+                    if (!sendspinOn) {
+                        settingsRepository.setSendspinEnabled(true)
+                    } else if (!sendspinActive) {
+                        val connected = wsClient.connectionState.value is ConnectionState.Connected
+                        if (connected) {
+                            sendspinActive = true
+                            sendspinController?.start()
+                        }
+                    }
+                    val id = sendspinPlayerId ?: settingsRepository.sendspinClientId.first()
+                    if (id != null) {
+                        sendspinController?.handlePlay()
+                    }
+                }
+        }
+    }
+
     // region Connection state notification
 
     private fun createConnectionNotificationChannel() {
@@ -188,7 +219,9 @@ class PlaybackService : MediaLibraryService() {
 
         val contentIntent = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -231,12 +264,11 @@ class PlaybackService : MediaLibraryService() {
         return RemoteControlPlayer(
             Looper.getMainLooper(),
             onPlay = {
-                Log.d(TAG, "RemotePlayer onPlay")
+                Log.d(TAG, "RemotePlayer onPlay -> selected player")
                 val id = activePlayerId() ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.play(id) }
             },
             onPause = {
-                Log.d(TAG, "RemotePlayer onPause")
                 val id = activePlayerId() ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.pause(id) }
             },
@@ -292,7 +324,9 @@ class PlaybackService : MediaLibraryService() {
     private fun createMediaSession() {
         val pendingIntent = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         mediaLibrarySession = MediaLibrarySession.Builder(this, remotePlayer!!, libraryCallback)
@@ -360,7 +394,6 @@ class PlaybackService : MediaLibraryService() {
                     isMuted = player.volumeMuted,
                     isRemotePlayback = !isSendspinPlayer
                 )
-                updateConnectionNotification()
             }
         }
     }

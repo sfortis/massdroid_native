@@ -48,8 +48,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
+import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
+import javax.inject.Inject
 import net.asksakis.massdroidv2.ui.navigation.MassDroidNavHost
 import net.asksakis.massdroidv2.ui.navigation.Routes
 import net.asksakis.massdroidv2.ui.screens.home.MiniPlayerViewModel
@@ -71,6 +74,9 @@ private val navItems = listOf(
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
+    @Inject lateinit var providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* granted or not, nothing to do */ }
@@ -80,11 +86,38 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNotificationPermission()
         checkBatteryOptimization()
+        handleShortcutIntent(intent)
         setContent {
-            MassDroidTheme {
-                MassDroidApp()
+            androidx.compose.runtime.CompositionLocalProvider(
+                LocalProviderManifestCache provides providerManifestCache
+            ) {
+                MassDroidTheme {
+                    MassDroidApp()
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShortcutIntent(intent)
+    }
+
+    private fun handleShortcutIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        val shortcutAction = when (action) {
+            ACTION_SMART_MIX -> ShortcutAction.SmartMix
+            ACTION_PLAY_NOW -> ShortcutAction.PlayNow
+            else -> return
+        }
+        Log.d("MainActivity", "Shortcut action: $action")
+        shortcutDispatcher.dispatch(shortcutAction)
+        intent.action = null
+    }
+
+    companion object {
+        private const val ACTION_SMART_MIX = "net.asksakis.massdroidv2.action.SMART_MIX"
+        private const val ACTION_PLAY_NOW = "net.asksakis.massdroidv2.action.PLAY_NOW"
     }
 
     private fun requestNotificationPermission() {
@@ -137,6 +170,15 @@ private fun MassDroidApp(
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
+        if (!miniPlayerViewModel.isServerConfigured()) {
+            navController.navigate(Routes.PLAYERS) {
+                popUpTo(Routes.HOME)
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
         miniPlayerViewModel.noPlayerSelectedEvent.collect {
             navController.navigate(Routes.PLAYERS) {
                 popUpTo(Routes.HOME)
@@ -181,6 +223,7 @@ private fun PortraitLayout(
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(
                 modifier = if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier
@@ -215,6 +258,7 @@ private fun LandscapeLayout(
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
                 MiniPlayerContainer(

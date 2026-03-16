@@ -231,6 +231,17 @@ class SettingsViewModel @Inject constructor(
                         downloadProgress = null
                     )
                 }
+                if (!appContext.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        android.net.Uri.parse("package:${appContext.packageName}")
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    appContext.startActivity(settingsIntent)
+                    _updateUiState.update { state ->
+                        state.copy(message = "Allow app installs, then check for updates again")
+                    }
+                    return@onSuccess
+                }
                 appContext.startActivity(appUpdateChecker.buildInstallIntent(file))
             }.onFailure { error ->
                 _updateUiState.update {

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="smart_mix"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_smart_mix"
+        android:shortcutShortLabel="@string/shortcut_smart_mix"
+        android:shortcutLongLabel="@string/shortcut_smart_mix_long">
+        <intent
+            android:action="net.asksakis.massdroidv2.action.SMART_MIX"
+            android:targetPackage="net.asksakis.massdroidv2.debug"
+            android:targetClass="net.asksakis.massdroidv2.ui.MainActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="play_now"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_play"
+        android:shortcutShortLabel="@string/shortcut_play_now"
+        android:shortcutLongLabel="@string/shortcut_play_now_long">
+        <intent
+            android:action="net.asksakis.massdroidv2.action.PLAY_NOW"
+            android:targetPackage="net.asksakis.massdroidv2.debug"
+            android:targetClass="net.asksakis.massdroidv2.ui.MainActivity" />
+    </shortcut>
+
+</shortcuts>

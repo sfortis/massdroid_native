@@ -22,7 +22,8 @@ data class Track(
     val artistUris: List<String> = emptyList(),
     val albumUri: String? = null,
     val genres: List<String> = emptyList(),
-    val year: Int? = null
+    val year: Int? = null,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -40,7 +41,8 @@ data class Album(
     val genres: List<String> = emptyList(),
     val label: String? = null,
     val artists: List<Artist> = emptyList(),
-    val albumType: String? = null
+    val albumType: String? = null,
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -52,7 +54,8 @@ data class Artist(
     val imageUrl: String? = null,
     val favorite: Boolean = false,
     val description: String? = null,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    val providerDomains: List<String> = emptyList()
 )
 
 @Serializable
@@ -63,14 +66,41 @@ data class Playlist(
     val uri: String,
     val imageUrl: String? = null,
     val favorite: Boolean = false,
-    val isEditable: Boolean = true
+    val isEditable: Boolean = true,
+    val providerDomains: List<String> = emptyList()
+)
+
+@Serializable
+data class Radio(
+    val itemId: String,
+    val provider: String,
+    val name: String,
+    val uri: String,
+    val imageUrl: String? = null,
+    val favorite: Boolean = false,
+    val inLibrary: Boolean = true,
+    val providerDomains: List<String> = emptyList()
+)
+
+@Serializable
+data class BrowseItem(
+    val itemId: String,
+    val provider: String,
+    val name: String,
+    val uri: String,
+    val path: String? = null,
+    val imageUrl: String? = null,
+    val isFolder: Boolean = false,
+    val mediaType: String = "",
+    val isPlayable: Boolean = false
 )
 
 enum class MediaType(val apiValue: String) {
     TRACK("track"),
     ALBUM("album"),
     ARTIST("artist"),
-    PLAYLIST("playlist");
+    PLAYLIST("playlist"),
+    RADIO("radio");
 
     companion object {
         fun fromApi(value: String): MediaType? = entries.find { it.apiValue == value }

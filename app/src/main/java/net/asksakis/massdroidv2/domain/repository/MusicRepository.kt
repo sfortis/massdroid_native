@@ -4,10 +4,11 @@ import net.asksakis.massdroidv2.domain.model.*
 
 interface MusicRepository {
     suspend fun getRecommendations(): List<RecommendationFolder>
-    suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Artist>
-    suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Album>
-    suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Track>
-    suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false): List<Playlist>
+    suspend fun getArtists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Artist>
+    suspend fun getAlbums(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Album>
+    suspend fun getTracks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Track>
+    suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Playlist>
+    suspend fun getRadios(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Radio>
 
     suspend fun getArtist(itemId: String, provider: String, lazy: Boolean = true): Artist?
     suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean = true): Album?
@@ -48,11 +49,16 @@ interface MusicRepository {
     suspend fun requestLibrarySync(force: Boolean = false): Boolean
     suspend fun refreshItemByUri(uri: String): Boolean
     suspend fun setFavorite(uri: String, mediaType: MediaType, itemId: String, favorite: Boolean)
+    suspend fun removeFromLibrary(mediaType: MediaType, libraryItemId: String)
+    suspend fun addToLibrary(uri: String)
+    suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean)
+    suspend fun browse(path: String? = null): List<BrowseItem>
 }
 
 data class SearchResult(
     val artists: List<Artist> = emptyList(),
     val albums: List<Album> = emptyList(),
     val tracks: List<Track> = emptyList(),
-    val playlists: List<Playlist> = emptyList()
+    val playlists: List<Playlist> = emptyList(),
+    val radios: List<Radio> = emptyList()
 )

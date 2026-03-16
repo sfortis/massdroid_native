@@ -5,9 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.Player
@@ -32,6 +34,7 @@ class HomeViewModel @Inject constructor(
     val connectionState = wsClient.connectionState
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
+    val sendspinClientId = settingsRepository.sendspinClientId
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()
@@ -166,6 +169,16 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                musicRepository.setDontStopTheMusic(queueId, enabled)
+            } catch (e: Exception) {
+                Log.w(TAG, "setDontStopTheMusic failed: ${e.message}")
+            }
+        }
+    }
+
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
             try {
@@ -205,10 +218,13 @@ class HomeViewModel @Inject constructor(
 
     fun transferQueue(sourceId: String, targetId: String) {
         viewModelScope.launch {
-            try {
-                musicRepository.transferQueue(sourceId, targetId)
-            } catch (e: Exception) {
-                Log.w(TAG, "transferQueue failed: ${e.message}")
+            withContext(NonCancellable) {
+                try {
+                    musicRepository.transferQueue(sourceId, targetId)
+                    playerRepository.selectPlayer(targetId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "transferQueue failed: ${e.message}")
+                }
             }
         }
     }

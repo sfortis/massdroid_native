@@ -18,8 +18,8 @@ data class BlockedArtistInfo(
 interface SmartListeningRepository {
     val blockedArtistUris: Flow<Set<String>>
 
-    suspend fun recordSkip(track: Track, artists: List<Pair<String, String>>)
-    suspend fun recordListen(track: Track, artists: List<Pair<String, String>>)
+    suspend fun recordSkip(track: Track, artists: List<Pair<String, String>>, listenedMs: Long? = null)
+    suspend fun recordListen(track: Track, artists: List<Pair<String, String>>, listenedMs: Long? = null)
     suspend fun recordLike(track: Track, artists: List<Pair<String, String>>)
     suspend fun recordUnlike(track: Track, artists: List<Pair<String, String>>)
 
@@ -28,4 +28,5 @@ interface SmartListeningRepository {
     suspend fun getBlockedArtists(): List<BlockedArtistInfo>
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>
     suspend fun getSuppressedArtistUris(days: Int = 120): Set<String>
+    suspend fun getSuppressedTrackUris(): Set<String>
 }

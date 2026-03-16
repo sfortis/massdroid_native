@@ -29,10 +29,6 @@ sealed class MixMode {
         val daypartAffinityByArtist: Map<String, Double>,
     ) : MixMode()
 
-    data class GenreMix(
-        val genre: String,
-        val artistUris: List<String>,
-    ) : MixMode()
 }
 
 @Singleton
@@ -45,27 +41,23 @@ class MixEngine @Inject constructor() {
         favoriteArtistUris: Set<String>,
         excludedArtistUris: Set<String>,
         randomSeed: Long = System.currentTimeMillis()
-    ): List<String> = when (mode) {
-        is MixMode.SmartMix -> buildSmartMixArtistOrder(
-            mode, bllArtistScoreMap, smartArtistScoreMap,
-            favoriteArtistUris, excludedArtistUris, randomSeed
-        )
-        is MixMode.GenreMix -> buildGenreMixArtistOrder(
-            mode, bllArtistScoreMap, smartArtistScoreMap,
-            favoriteArtistUris, randomSeed
-        )
-    }
+    ): List<String> = buildSmartMixArtistOrder(
+        mode as MixMode.SmartMix, bllArtistScoreMap, smartArtistScoreMap,
+        favoriteArtistUris, excludedArtistUris, randomSeed
+    )
 
     fun buildTracks(
         mode: MixMode,
         artistOrder: List<String>,
         tracksByArtist: Map<String, List<Track>>,
         excludedArtistUris: Set<String>,
+        excludedTrackUris: Set<String> = emptySet(),
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        adjacentGenres: Set<String> = emptySet()
     ): List<Track> {
         if (target <= 0 || artistOrder.isEmpty()) return emptyList()
         val random = Random(randomSeed)
@@ -76,11 +68,8 @@ class MixEngine @Inject constructor() {
         val favTrack = favTrackBonus(mode)
         val modeTag = modeTag(mode)
 
-        val genreScoreMap = when (mode) {
-            is MixMode.SmartMix -> mode.genreScores.toScoreMap()
-            is MixMode.GenreMix -> emptyMap()
-        }
-        val targetGenre = (mode as? MixMode.GenreMix)?.let { fuzzyNormalizeGenre(it.genre) }
+        val smartMode = mode as MixMode.SmartMix
+        val genreScoreMap = smartMode.genreScores.toScoreMap()
 
         val seenTrackKeys = mutableSetOf<String>()
         val byArtistCount = mutableMapOf<String, Int>()
@@ -93,6 +82,7 @@ class MixEngine @Inject constructor() {
             val ranked = tracks
                 .asSequence()
                 .filter { it.uri.isNotBlank() && trackDedupeKey(it) !in seenTrackKeys }
+                .filterNot { it.uri in excludedTrackUris }
                 .filterNot { track ->
                     val trackArtistKeys = buildSet {
                         addAll(track.artistUris)
@@ -103,13 +93,8 @@ class MixEngine @Inject constructor() {
                     trackArtistKeys.any { it in excludedArtistUris }
                 }
                 .mapNotNull { track ->
-                    val genreScore = if (targetGenre != null) {
-                        val confidence = genreConfidence(targetGenre, track)
-                        if (confidence <= 0.0) return@mapNotNull null
-                        confidence * 1.25
-                    } else {
+                    val genreScore =
                         track.genres.sumOf { g -> genreScoreMap[normalizeGenre(g)] ?: 0.0 } * 0.6
-                    }
 
                     val trackAlbumKey = MediaIdentity.canonicalAlbumKey(track.albumItemId, track.albumUri)
                     val score = artistBaseScore(artistUri) +
@@ -165,21 +150,25 @@ class MixEngine @Inject constructor() {
         artistOrder: List<String>,
         tracksByArtist: Map<String, List<Track>>,
         excludedArtistUris: Set<String>,
+        excludedTrackUris: Set<String> = emptySet(),
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        adjacentGenres: Set<String> = emptySet()
     ): List<String> = buildTracks(
         mode = mode,
         artistOrder = artistOrder,
         tracksByArtist = tracksByArtist,
         excludedArtistUris = excludedArtistUris,
+        excludedTrackUris = excludedTrackUris,
         favoriteArtistUris = favoriteArtistUris,
         favoriteAlbumUris = favoriteAlbumUris,
         artistBaseScore = artistBaseScore,
         target = target,
-        randomSeed = randomSeed
+        randomSeed = randomSeed,
+        adjacentGenres = adjacentGenres
     ).map { it.uri }
 
     // --- SmartMix artist ordering ---
@@ -276,28 +265,6 @@ class MixEngine @Inject constructor() {
         return sorted
     }
 
-    // --- GenreMix artist ordering ---
-
-    private fun buildGenreMixArtistOrder(
-        mode: MixMode.GenreMix,
-        bllArtistScoreMap: Map<String, Double>,
-        smartArtistScoreMap: Map<String, Double>,
-        favoriteArtistUris: Set<String>,
-        randomSeed: Long
-    ): List<String> {
-        val random = Random(randomSeed)
-        val sorted = mode.artistUris
-            .distinct()
-            .sortedByDescending { artistUri ->
-                val base = (bllArtistScoreMap[artistUri] ?: 0.0) +
-                    (smartArtistScoreMap[artistUri] ?: 0.0) * 0.6 +
-                    (if (artistUri in favoriteArtistUris) GM_FAV_ARTIST_BONUS else 0.0)
-                base + random.nextDouble(-0.10, 0.10)
-            }
-        Log.d(TAG, "GenreMix artistOrder: ${sorted.size} artists for genre='${mode.genre}'")
-        return sorted
-    }
-
     // --- Shared scoring helpers ---
 
     private fun compositeArtistScore(
@@ -386,36 +353,6 @@ class MixEngine @Inject constructor() {
         return result
     }
 
-    // --- Genre matching (GenreMix) ---
-
-    private fun genreConfidence(targetGenre: String, track: Track): Double {
-        val trackGenres = track.genres.map(::fuzzyNormalizeGenre).filter { it.isNotBlank() }
-        return when {
-            trackGenres.any { genreMatches(targetGenre, it) } -> 1.0
-            trackGenres.isEmpty() -> 0.58
-            else -> 0.0
-        }
-    }
-
-    private fun genreMatches(targetGenre: String, candidateGenre: String): Boolean {
-        if (candidateGenre == targetGenre) return true
-        val targetTokens = tokenizeGenre(targetGenre)
-        val candidateTokens = tokenizeGenre(candidateGenre)
-        return targetTokens.isNotEmpty() && targetTokens.all { it in candidateTokens }
-    }
-
-    private fun tokenizeGenre(value: String): Set<String> =
-        value.split(Regex("[^a-z0-9]+"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .toSet()
-
-    private fun fuzzyNormalizeGenre(value: String): String =
-        normalizeGenre(value)
-            .replace("&", "and")
-            .replace("-", " ")
-            .replace(Regex("\\s+"), " ")
-
     // --- Interleaving ---
 
     private fun interleaveByArtist(
@@ -496,47 +433,24 @@ class MixEngine @Inject constructor() {
             .replace(Regex("\\s+"), " ")
             .trim()
 
-    // --- Mode-dependent constants ---
+    // --- Constants ---
 
-    private fun maxTracksPerArtist(mode: MixMode): Int = when (mode) {
-        is MixMode.SmartMix -> 2
-        is MixMode.GenreMix -> 1
-    }
-
-    private fun firstPassUnique(mode: MixMode): Int = when (mode) {
-        is MixMode.SmartMix -> 20
-        is MixMode.GenreMix -> 12
-    }
-
-    private fun artistGap(mode: MixMode): Int = when (mode) {
-        is MixMode.SmartMix -> 12
-        is MixMode.GenreMix -> 6
-    }
-
-    private fun trackJitter(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.28
-        is MixMode.GenreMix -> 0.12
-    }
-
-    private fun favArtistBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.35
-        is MixMode.GenreMix -> 0.45
-    }
-
-    private fun favAlbumBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.40
-        is MixMode.GenreMix -> 0.25
-    }
-
-    private fun favTrackBonus(mode: MixMode): Double = when (mode) {
-        is MixMode.SmartMix -> 0.25
-        is MixMode.GenreMix -> 0.35
-    }
-
-    private fun modeTag(mode: MixMode): String = when (mode) {
-        is MixMode.SmartMix -> "SmartMix"
-        is MixMode.GenreMix -> "GenreMix"
-    }
+    @Suppress("UnusedParameter")
+    private fun maxTracksPerArtist(mode: MixMode): Int = 5
+    @Suppress("UnusedParameter")
+    private fun firstPassUnique(mode: MixMode): Int = 20
+    @Suppress("UnusedParameter")
+    private fun artistGap(mode: MixMode): Int = 12
+    @Suppress("UnusedParameter")
+    private fun trackJitter(mode: MixMode): Double = 0.6
+    @Suppress("UnusedParameter")
+    private fun favArtistBonus(mode: MixMode): Double = 0.8
+    @Suppress("UnusedParameter")
+    private fun favAlbumBonus(mode: MixMode): Double = 0.7
+    @Suppress("UnusedParameter")
+    private fun favTrackBonus(mode: MixMode): Double = 0.5
+    @Suppress("UnusedParameter")
+    private fun modeTag(mode: MixMode): String = "SmartMix"
 
     private data class ScoredTrack(
         val track: Track,
@@ -545,7 +459,6 @@ class MixEngine @Inject constructor() {
     )
 
     companion object {
-        private const val SM_FAV_ARTIST_BONUS = 0.35
-        private const val GM_FAV_ARTIST_BONUS = 0.45
+        private const val SM_FAV_ARTIST_BONUS = 0.8
     }
 }

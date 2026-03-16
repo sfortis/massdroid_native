@@ -42,7 +42,8 @@ class LibraryViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val playHistoryRepository: PlayHistoryRepository,
-    private val lastFmLibraryEnricher: LastFmLibraryEnricher
+    private val lastFmLibraryEnricher: LastFmLibraryEnricher,
+    val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 ) : ViewModel() {
 
     private val _artists = MutableStateFlow<List<Artist>>(emptyList())
@@ -56,6 +57,19 @@ class LibraryViewModel @Inject constructor(
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
+
+    private val _radios = MutableStateFlow<List<Radio>>(emptyList())
+    val radios: StateFlow<List<Radio>> = _radios.asStateFlow()
+
+    private val _browseItemsRaw = MutableStateFlow<List<BrowseItem>>(emptyList())
+    private val _browseItems = MutableStateFlow<List<BrowseItem>>(emptyList())
+    val browseItems: StateFlow<List<BrowseItem>> = _browseItems.asStateFlow()
+    private val _browsePath = MutableStateFlow<String?>(null)
+    val browsePath: StateFlow<String?> = _browsePath.asStateFlow()
+    private val browsePathStack = mutableListOf<String?>()
+
+    private val _selectedProviders = MutableStateFlow<Set<String>>(emptySet())
+    val selectedProviders: StateFlow<Set<String>> = _selectedProviders.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -74,6 +88,14 @@ class LibraryViewModel @Inject constructor(
 
     private var searchJob: Job? = null
     private var mediaEventJob: Job? = null
+    private var pendingReload = false
+
+    fun onScreenVisible() {
+        if (pendingReload) {
+            pendingReload = false
+            reloadCurrentTab()
+        }
+    }
     private val _currentTab = MutableStateFlow(0)
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
 
@@ -103,6 +125,7 @@ class LibraryViewModel @Inject constructor(
     private var hasMoreAlbums = true
     private var hasMoreTracks = true
     private var hasMorePlaylists = true
+    private var hasMoreRadios = true
 
     private val _settingsLoaded = MutableStateFlow(false)
     val settingsLoaded: StateFlow<Boolean> = _settingsLoaded.asStateFlow()
@@ -143,6 +166,7 @@ class LibraryViewModel @Inject constructor(
                             1 -> _albums.value.isEmpty()
                             2 -> _tracks.value.isEmpty()
                             3 -> _playlists.value.isEmpty()
+                            4 -> _radios.value.isEmpty()
                             else -> false
                         }
                         if (isEmpty) reloadCurrentTab()
@@ -153,13 +177,11 @@ class LibraryViewModel @Inject constructor(
             wsClient.events.collect { event ->
                 when (event.event) {
                     EventType.MEDIA_ITEM_ADDED,
-                    EventType.MEDIA_ITEM_UPDATED,
                     EventType.MEDIA_ITEM_DELETED -> {
-                        mediaEventJob?.cancel()
-                        mediaEventJob = launch {
-                            delay(500)
-                            reloadCurrentTab()
-                        }
+                        pendingReload = true
+                    }
+                    EventType.MEDIA_ITEM_UPDATED -> {
+                        // Skip: updates don't change list structure, avoid scroll reset
                     }
                 }
             }
@@ -234,6 +256,20 @@ class LibraryViewModel @Inject constructor(
         reloadCurrentTab()
     }
 
+    fun toggleProviderFilter(instanceId: String) {
+        val current = _selectedProviders.value
+        _selectedProviders.value = if (instanceId in current) current - instanceId else current + instanceId
+        reloadCurrentTab()
+    }
+
+    fun clearProviderFilter() {
+        _selectedProviders.value = emptySet()
+        reloadCurrentTab()
+    }
+
+    private fun providerFilterArgs(): List<String>? =
+        _selectedProviders.value.takeIf { it.isNotEmpty() }?.toList()
+
     fun toggleLibraryDisplayMode() {
         val current = _displayModes.value[_currentTab.value] ?: LibraryDisplayMode.LIST
         val newMode = when (current) {
@@ -252,6 +288,8 @@ class LibraryViewModel @Inject constructor(
             1 -> loadAlbums()
             2 -> loadTracks()
             3 -> loadPlaylists()
+            4 -> loadRadios()
+            5 -> applyBrowseFilterSort()
         }
     }
 
@@ -270,7 +308,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getArtists(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -282,7 +321,7 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val existingUris = apiResults.map { it.uri }.toSet()
-                    val newUris = genreUris.filter { it !in existingUris }.take(20)
+                    val newUris = genreUris.filter { it !in existingUris }
                     val genreArtists = if (newUris.isNotEmpty()) {
                         supervisorScope {
                             newUris.map { uri -> async { runCatching { parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtist(id, prov) } }.getOrNull() } }.awaitAll().filterNotNull()
@@ -325,7 +364,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getAlbums(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -337,14 +377,14 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val genreAlbums: List<Album> = supervisorScope {
-                        genreUris.take(10).map { uri ->
+                        genreUris.map { uri ->
                             async {
                                 runCatching {
                                     parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtistAlbums(id, prov) }
                                 }.getOrNull().orEmpty()
                             }
                         }.awaitAll().flatten()
-                    }
+                    }.filter { it.uri.startsWith("library://") }
                     val seenUris = apiResults.map { it.uri }.toMutableSet()
                     apiResults + genreAlbums.filter { seenUris.add(it.uri) }
                 } else apiResults
@@ -380,7 +420,8 @@ class LibraryViewModel @Inject constructor(
                 val query = currentSearch
                 val apiDeferred = async {
                     musicRepository.getTracks(
-                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
@@ -392,14 +433,14 @@ class LibraryViewModel @Inject constructor(
 
                 val merged = if (genreUris.isNotEmpty()) {
                     val genreTracks: List<Track> = supervisorScope {
-                        genreUris.take(10).map { uri ->
+                        genreUris.map { uri ->
                             async {
                                 runCatching {
                                     parseMediaUri(uri)?.let { (prov, id) -> musicRepository.getArtistTracks(id, prov) }
                                 }.getOrNull().orEmpty()
                             }
                         }.awaitAll().flatten()
-                    }
+                    }.filter { it.uri.startsWith("library://") }
                     val seenUris = apiResults.map { it.uri }.toMutableSet()
                     apiResults + genreTracks.filter { seenUris.add(it.uri) }
                 } else apiResults
@@ -457,6 +498,102 @@ class LibraryViewModel @Inject constructor(
                 _isLoadingMore.value = false
             }
         }
+    }
+
+    fun loadRadios() {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                val query = currentSearch
+                val libraryDeferred = async {
+                    musicRepository.getRadios(
+                        search = query, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly,
+                        providerFilter = providerFilterArgs()
+                    )
+                }
+                val searchDeferred = if (query != null && query.length >= 2) {
+                    async {
+                        runCatching {
+                            musicRepository.search(query, mediaTypes = listOf(MediaType.RADIO), limit = 25).radios
+                        }.getOrElse { emptyList() }
+                    }
+                } else null
+
+                val libraryResults = libraryDeferred.await()
+                val searchResults = searchDeferred?.await().orEmpty()
+
+                val merged = if (searchResults.isNotEmpty()) {
+                    val seenUris = libraryResults.map { it.uri }.toMutableSet()
+                    val libraryNames = libraryResults.map { it.name.lowercase() }.toSet()
+                    libraryResults + searchResults
+                        .filter { seenUris.add(it.uri) }
+                        .map { radio ->
+                            val alreadyInLibrary = radio.name.lowercase() in libraryNames
+                            radio.copy(inLibrary = alreadyInLibrary)
+                        }
+                } else libraryResults
+
+                _radios.value = merged
+                hasMoreRadios = libraryResults.size >= PAGE_SIZE
+            } catch (_: Exception) {}
+            _isLoading.value = false
+        }
+    }
+
+    fun loadMoreRadios() {
+        if (_isLoadingMore.value || !hasMoreRadios) return
+        _isLoadingMore.value = true
+        viewModelScope.launch {
+            try {
+                val items = musicRepository.getRadios(
+                    search = currentSearch, limit = PAGE_SIZE, offset = _radios.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                )
+                _radios.value = _radios.value + items
+                hasMoreRadios = items.size >= PAGE_SIZE
+            } catch (_: Exception) {
+            } finally {
+                _isLoadingMore.value = false
+            }
+        }
+    }
+
+    fun loadBrowse(path: String? = null) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                _browseItemsRaw.value = musicRepository.browse(path)
+                    .filter { it.name != ".." }
+                _browsePath.value = path
+                applyBrowseFilterSort()
+            } catch (_: Exception) {}
+            _isLoading.value = false
+        }
+    }
+
+    private fun applyBrowseFilterSort() {
+        var items = _browseItemsRaw.value
+        val query = _searchQuery.value.trim()
+        if (query.isNotEmpty()) {
+            items = items.filter { it.name.contains(query, ignoreCase = true) }
+        }
+        val sort = sortOption.value
+        if (sort == SortOption.NAME) {
+            items = if (sortDescending.value) items.sortedByDescending { it.name.lowercase() }
+                    else items.sortedBy { it.name.lowercase() }
+        }
+        _browseItems.value = items
+    }
+
+    fun browseTo(path: String) {
+        browsePathStack.add(_browsePath.value)
+        loadBrowse(path)
+    }
+
+    fun browseBack(): Boolean {
+        if (browsePathStack.isEmpty()) return false
+        val prev = browsePathStack.removeAt(browsePathStack.lastIndex)
+        loadBrowse(prev)
+        return true
     }
 
     fun playTrack(track: Track) {
@@ -555,9 +692,43 @@ class LibraryViewModel @Inject constructor(
                     MediaType.PLAYLIST -> _playlists.update { list ->
                         list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
                     }
+                    MediaType.RADIO -> _radios.update { list ->
+                        list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
+            }
+        }
+    }
+
+    fun removeFromLibrary(mediaType: MediaType, itemId: String, uri: String) {
+        viewModelScope.launch {
+            try {
+                val libraryItemId = Regex("^library://\\w+/(.+)$").find(uri)?.groupValues?.get(1) ?: itemId
+                musicRepository.removeFromLibrary(mediaType, libraryItemId)
+                when (mediaType) {
+                    MediaType.ARTIST -> _artists.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.ALBUM -> _albums.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.TRACK -> _tracks.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.PLAYLIST -> _playlists.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.RADIO -> _radios.update { list -> list.filter { it.itemId != itemId } }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "removeFromLibrary failed: ${e.message}")
+            }
+        }
+    }
+
+    fun addRadioToLibrary(radio: Radio) {
+        viewModelScope.launch {
+            try {
+                musicRepository.addToLibrary(radio.uri)
+                _radios.update { list ->
+                    list.map { if (it.uri == radio.uri) it.copy(inLibrary = true) else it }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "addRadioToLibrary failed: ${e.message}")
             }
         }
     }
@@ -646,6 +817,19 @@ class ArtistDetailViewModel @Inject constructor(
                     _tracks.value.firstOrNull()?.artistNames?.let { _artistName.value = it }
                 }
             }
+
+            // Auto-refresh if artist has no real image (only imageproxy fallback)
+            val hasRealImage = _artist.value?.imageUrl?.let {
+                !it.contains("imageproxy") || it.contains("path=http")
+            } ?: false
+            if (lazy && !hasRealImage) {
+                kotlinx.coroutines.delay(500)
+                val refreshed = musicRepository.getArtist(itemId, provider, lazy = false)
+                if (refreshed != null) {
+                    _artist.value = refreshed
+                    if (refreshed.name.isNotBlank()) _artistName.value = refreshed.name
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Load artist detail failed: ${e.message}")
         }
@@ -656,9 +840,7 @@ class ArtistDetailViewModel @Inject constructor(
             if (_artist.value?.description.isNullOrBlank()) {
                 viewModelScope.launch { loadLastFmBio(name) }
             }
-            if (_artist.value?.genres.isNullOrEmpty()) {
-                viewModelScope.launch { loadLastFmArtistGenres(name) }
-            }
+            viewModelScope.launch { enrichArtistGenresFromLastFm(name) }
         }
     }
 
@@ -718,14 +900,17 @@ class ArtistDetailViewModel @Inject constructor(
         }
     }
 
-    private suspend fun loadLastFmArtistGenres(artistName: String) {
+    private suspend fun enrichArtistGenresFromLastFm(artistName: String) {
         try {
-            val genres = lastFmGenreResolver.resolve(artistName)
-            if (genres.isNotEmpty()) {
-                _artist.update { it?.copy(genres = genres) }
+            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            if (lastFmGenres.isNotEmpty()) {
+                _artist.update { current ->
+                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinctBy { it.lowercase() }
+                    current?.copy(genres = merged)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm artist genres failed: ${e.message}")
+            Log.w(TAG, "Enrich artist genres failed: ${e.message}")
         }
     }
 
@@ -934,6 +1119,19 @@ class AlbumDetailViewModel @Inject constructor(
                     }
                 }
             }
+
+            // Auto-refresh if album has no real image (only imageproxy fallback)
+            val hasRealImage = _album.value?.imageUrl?.let {
+                !it.contains("imageproxy") || it.contains("path=http")
+            } ?: false
+            if (lazy && !hasRealImage) {
+                val refreshed = musicRepository.getAlbum(itemId, provider, lazy = false)
+                if (refreshed != null) {
+                    _album.value = refreshed
+                    if (refreshed.name.isNotBlank()) _albumName.value = refreshed.name
+                    _tracks.value = musicRepository.getAlbumTracks(itemId, provider)
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Load album detail failed: ${e.message}")
         }
@@ -946,9 +1144,21 @@ class AlbumDetailViewModel @Inject constructor(
             if (needsBio || needsYear) {
                 viewModelScope.launch { loadLastFmAlbumInfo(artistName, album.name, needsBio, needsYear) }
             }
-            if (album.genres.isEmpty()) {
-                viewModelScope.launch { loadLastFmGenres(artistName) }
+            viewModelScope.launch { enrichGenresFromLastFm(artistName) }
+        }
+    }
+
+    private suspend fun enrichGenresFromLastFm(artistName: String) {
+        try {
+            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            if (lastFmGenres.isNotEmpty()) {
+                _album.update { current ->
+                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinctBy { it.lowercase() }
+                    current?.copy(genres = merged)
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Enrich genres failed: ${e.message}")
         }
     }
 
@@ -968,17 +1178,6 @@ class AlbumDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Load Last.fm album info failed: ${e.message}")
-        }
-    }
-
-    private suspend fun loadLastFmGenres(artistName: String) {
-        try {
-            val genres = lastFmGenreResolver.resolve(artistName)
-            if (genres.isNotEmpty()) {
-                _album.update { it?.copy(genres = genres) }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm genres failed: ${e.message}")
         }
     }
 

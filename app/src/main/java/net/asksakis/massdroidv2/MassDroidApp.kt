@@ -34,6 +34,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     @Inject
     lateinit var appUpdateChecker: AppUpdateChecker
 
+    @Inject
+    lateinit var providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
+
+    @Inject
+    lateinit var json: kotlinx.serialization.json.Json
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -94,6 +100,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             settingsRepository.setAuthToken(token)
                             Log.d("MassDroidApp", "Token saved to DataStore")
                         }
+                        providerManifestCache.fetchManifests(wsClient, json)
                     }
                     is ConnectionState.Error -> {
                         // If token was rejected (cleared by WS client), clear from DataStore too
@@ -127,6 +134,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .okHttpClient { wsClient.getHttpClient() }
+            .components { add(coil.decode.SvgDecoder.Factory()) }
             .crossfade(true)
             .build()
     }

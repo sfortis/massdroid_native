@@ -11,8 +11,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -29,6 +36,8 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
+import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
+import net.asksakis.massdroidv2.ui.components.ProviderBadges
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 
@@ -40,12 +49,15 @@ fun LibraryScreen(
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val selectedTab by viewModel.currentTab.collectAsStateWithLifecycle()
-    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists")
+    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists", "Radios", "Browse")
 
     val artists by viewModel.artists.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val radios by viewModel.radios.collectAsStateWithLifecycle()
+    val browseItems by viewModel.browseItems.collectAsStateWithLifecycle()
+    val browsePath by viewModel.browsePath.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -55,9 +67,29 @@ fun LibraryScreen(
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
 
+    val selectedProviders by viewModel.selectedProviders.collectAsStateWithLifecycle()
+    val providerCache = LocalProviderManifestCache.current
+    val allMusicProviders by providerCache.musicProvidersFlow.collectAsStateWithLifecycle()
+    val musicProviders = remember(allMusicProviders, selectedTab) {
+        providerCache.musicProvidersForTab(selectedTab)
+    }
+
     val settingsLoaded by viewModel.settingsLoaded.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+
+    // Reload pending changes when screen becomes visible again
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.onScreenVisible()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Action sheet state
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
@@ -69,36 +101,49 @@ fun LibraryScreen(
             1 -> if (albums.isEmpty()) viewModel.loadAlbums()
             2 -> if (tracks.isEmpty()) viewModel.loadTracks()
             3 -> if (playlists.isEmpty()) viewModel.loadPlaylists()
+            4 -> if (radios.isEmpty()) viewModel.loadRadios()
+            5 -> if (browseItems.isEmpty()) viewModel.loadBrowse()
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         if (isLandscape) {
-            // Compact landscape header: search + tabs + sort in minimal space
+            val isBrowseTab = selectedTab == 5
+            // Compact landscape header: search left, filters right
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Compact search field
                 TextField(
                     value = searchQuery,
                     onValueChange = { viewModel.updateSearch(it) },
                     modifier = Modifier
-                        .weight(1f)
+                        .width(180.dp)
                         .height(44.dp),
-                    placeholder = { Text("Search...", style = MaterialTheme.typography.bodySmall) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    placeholder = {
+                        Text("Search...", style = MaterialTheme.typography.labelSmall)
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                    },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.updateSearch("") }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                            IconButton(onClick = { viewModel.updateSearch("") }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(14.dp))
                             }
                         }
                     },
                     singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onSearch = { focusManager.clearFocus() }
+                    ),
+                    textStyle = MaterialTheme.typography.labelSmall,
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -107,31 +152,49 @@ fun LibraryScreen(
                         unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
                     )
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                // Sort + display mode controls
-                SortDropdown(selected = sortOption, onSelect = { viewModel.updateSort(it) })
-                IconButton(onClick = { viewModel.toggleSortDirection() }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (sortDescending) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
-                        contentDescription = "Toggle sort direction",
-                        modifier = Modifier.size(18.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (!isBrowseTab && musicProviders.size > 1) {
+                        ProviderFilterDropdown(
+                            providers = musicProviders,
+                            selectedIds = selectedProviders,
+                            cache = providerCache,
+                            onToggle = { viewModel.toggleProviderFilter(it) },
+                            onClear = { viewModel.clearProviderFilter() }
+                        )
+                    }
+                    SortDropdown(
+                        selected = sortOption,
+                        onSelect = { viewModel.updateSort(it) },
+                        options = if (isBrowseTab) listOf(SortOption.NAME) else SortOption.entries
                     )
-                }
-                IconButton(onClick = { viewModel.toggleFavoritesFilter() }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Filter favorites",
-                        modifier = Modifier.size(18.dp),
-                        tint = if (favoritesOnly) MaterialTheme.colorScheme.error
-                               else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
-                        contentDescription = "Toggle view",
-                        modifier = Modifier.size(18.dp)
-                    )
+                    IconButton(onClick = { viewModel.toggleSortDirection() }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            if (sortDescending) Icons.Default.ArrowDownward else Icons.Default.ArrowUpward,
+                            contentDescription = "Toggle sort direction",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (!isBrowseTab) {
+                        IconButton(onClick = { viewModel.toggleFavoritesFilter() }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Filter favorites",
+                                modifier = Modifier.size(18.dp),
+                                tint = if (favoritesOnly) MaterialTheme.colorScheme.error
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                                contentDescription = "Toggle view",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             }
             // Compact tabs
@@ -151,7 +214,9 @@ fun LibraryScreen(
             }
         } else {
             // Portrait: full-size header
-            // Search bar at top
+            val isBrowseTab = selectedTab == 5
+
+            // Search bar
             TextField(
                 value = searchQuery,
                 onValueChange = { viewModel.updateSearch(it) },
@@ -164,7 +229,8 @@ fun LibraryScreen(
                         1 -> "Search albums..."
                         2 -> "Search tracks..."
                         3 -> "Search playlists..."
-                        else -> "Search library..."
+                        4 -> "Search radios..."
+                        else -> "Search..."
                     })
                 },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
@@ -176,6 +242,12 @@ fun LibraryScreen(
                     }
                 },
                 singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onSearch = { focusManager.clearFocus() }
+                ),
                 shape = MaterialTheme.shapes.extraLarge,
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -186,7 +258,7 @@ fun LibraryScreen(
             )
 
             // Tabs
-            TabRow(selectedTabIndex = selectedTab) {
+            ScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 0.dp) {
                 tabs.forEachIndexed { index, title ->
                     Tab(
                         selected = selectedTab == index,
@@ -205,9 +277,20 @@ fun LibraryScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!isBrowseTab && musicProviders.size > 1) {
+                        ProviderFilterDropdown(
+                            providers = musicProviders,
+                            selectedIds = selectedProviders,
+                            cache = providerCache,
+                            onToggle = { viewModel.toggleProviderFilter(it) },
+                            onClear = { viewModel.clearProviderFilter() }
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     SortDropdown(
                         selected = sortOption,
-                        onSelect = { viewModel.updateSort(it) }
+                        onSelect = { viewModel.updateSort(it) },
+                        options = if (isBrowseTab) listOf(SortOption.NAME) else SortOption.entries
                     )
                     IconButton(onClick = { viewModel.toggleSortDirection() }) {
                         Icon(
@@ -216,22 +299,26 @@ fun LibraryScreen(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
-                        Icon(
-                            if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Filter favorites",
-                            modifier = Modifier.size(20.dp),
-                            tint = if (favoritesOnly) MaterialTheme.colorScheme.error
-                                   else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    if (!isBrowseTab) {
+                        IconButton(onClick = { viewModel.toggleFavoritesFilter() }) {
+                            Icon(
+                                if (favoritesOnly) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Filter favorites",
+                                modifier = Modifier.size(20.dp),
+                                tint = if (favoritesOnly) MaterialTheme.colorScheme.error
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
-                IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
-                    Icon(
-                        if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
-                        contentDescription = "Toggle view"
-                    )
+                if (!isBrowseTab) {
+                    IconButton(onClick = { viewModel.toggleLibraryDisplayMode() }) {
+                        Icon(
+                            if (displayMode == LibraryDisplayMode.GRID) Icons.Default.ViewList else Icons.Default.GridView,
+                            contentDescription = "Toggle view"
+                        )
+                    }
                 }
             }
         }
@@ -272,7 +359,8 @@ fun LibraryScreen(
                                 primaryArtistName = artist.name
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) }
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        providerDomains = { it.providerDomains }
                     )
                     1 -> MediaList(
                         items = albums,
@@ -300,7 +388,8 @@ fun LibraryScreen(
                                 primaryArtistName = album.artists.firstOrNull()?.name
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) }
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        providerDomains = { it.providerDomains }
                     )
                     2 -> MediaList(
                         items = tracks,
@@ -339,7 +428,8 @@ fun LibraryScreen(
                                 primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) }
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        providerDomains = { it.providerDomains }
                     )
                     3 -> MediaList(
                         items = playlists,
@@ -363,7 +453,71 @@ fun LibraryScreen(
                                 itemId = playlist.itemId
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) }
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        providerDomains = { it.providerDomains }
+                    )
+                    4 -> MediaList(
+                        items = radios,
+                        displayMode = displayMode,
+                        isLoadingMore = isLoadingMore,
+                        onLoadMore = { viewModel.loadMoreRadios() },
+                        key = { it.uri },
+                        title = { it.name },
+                        subtitle = { "" },
+                        imageUrl = { it.imageUrl },
+                        favorite = { it.favorite },
+                        onClick = { viewModel.quickPlay(it.uri) },
+                        onLongClick = { radio ->
+                            actionSheetItem = ActionSheetItem(
+                                title = radio.name,
+                                subtitle = "",
+                                uri = radio.uri,
+                                imageUrl = radio.imageUrl,
+                                favorite = radio.favorite,
+                                mediaType = MediaType.RADIO,
+                                itemId = radio.itemId,
+                                inLibrary = radio.inLibrary
+                            )
+                        },
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        providerDomains = { it.providerDomains }
+                    )
+                    5 -> BrowseList(
+                        items = browseItems,
+                        isLoading = isLoading,
+                        browsePath = browsePath,
+                        onFolderClick = { viewModel.browseTo(it.path ?: it.uri) },
+                        onItemClick = { item ->
+                            when (item.mediaType) {
+                                "artist" -> onArtistClick(Artist(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                "album" -> onAlbumClick(Album(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                "playlist" -> onPlaylistClick(Playlist(
+                                    itemId = item.itemId, provider = item.provider,
+                                    name = item.name, uri = item.uri, imageUrl = item.imageUrl
+                                ))
+                                else -> viewModel.quickPlay(item.uri)
+                            }
+                        },
+                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        onLongClick = { item ->
+                            MediaType.fromApi(item.mediaType)?.let { type ->
+                                actionSheetItem = ActionSheetItem(
+                                    title = item.name,
+                                    uri = item.uri,
+                                    imageUrl = item.imageUrl,
+                                    favorite = false,
+                                    mediaType = type,
+                                    itemId = item.itemId
+                                )
+                            }
+                        },
+                        onBack = { viewModel.browseBack() }
                     )
                 }
             }
@@ -372,6 +526,8 @@ fun LibraryScreen(
 
     // Action sheet
     actionSheetItem?.let { target ->
+        val isRadio = target.mediaType == MediaType.RADIO
+            val isPlaylist = target.mediaType == MediaType.PLAYLIST
         val players by viewModel.players.collectAsStateWithLifecycle()
         MediaActionSheet(
             title = target.title,
@@ -390,10 +546,72 @@ fun LibraryScreen(
             onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
                 { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
+            onViewInfo = when (target.mediaType) {
+                MediaType.ARTIST -> {
+                    { onArtistClick(Artist(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl
+                    )) }
+                }
+                MediaType.ALBUM -> {
+                    { onAlbumClick(Album(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl,
+                        artistNames = target.subtitle
+                    )) }
+                }
+                MediaType.TRACK -> target.primaryArtistUri?.let { artistUri ->
+                    {
+                        onArtistClick(Artist(
+                            itemId = artistUri.substringAfterLast("/"),
+                            provider = artistUri.substringBefore("://"),
+                            name = target.primaryArtistName.orEmpty(),
+                            uri = artistUri
+                        ))
+                    }
+                }
+                MediaType.PLAYLIST -> {
+                    { onPlaylistClick(Playlist(
+                        itemId = target.itemId,
+                        provider = target.uri.substringBefore("://"),
+                        name = target.title,
+                        uri = target.uri,
+                        imageUrl = target.imageUrl
+                    )) }
+                }
+                else -> null
+            },
+            inLibrary = target.inLibrary,
+            onToggleLibrary = if (isPlaylist) null else {
+                {
+                    if (isRadio && !target.inLibrary) {
+                        viewModel.addRadioToLibrary(
+                            Radio(
+                                itemId = target.itemId,
+                                provider = target.uri.substringBefore("://"),
+                                name = target.title,
+                                uri = target.uri,
+                                imageUrl = target.imageUrl,
+                                inLibrary = false
+                            )
+                        )
+                    } else {
+                        viewModel.removeFromLibrary(target.mediaType, target.itemId, target.uri)
+                    }
+                }
+            },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
-            onStartRadio = { viewModel.startRadio(target.uri) },
+            onStartRadio = if (isRadio) null else {
+                { viewModel.startRadio(target.uri) }
+            },
             onDismiss = { actionSheetItem = null }
         )
     }
@@ -402,7 +620,8 @@ fun LibraryScreen(
 @Composable
 private fun SortDropdown(
     selected: SortOption,
-    onSelect: (SortOption) -> Unit
+    onSelect: (SortOption) -> Unit,
+    options: List<SortOption> = SortOption.entries
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -414,7 +633,7 @@ private fun SortDropdown(
             leadingIcon = { Icon(Icons.Default.Sort, contentDescription = null, modifier = Modifier.size(18.dp)) }
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SortOption.entries.forEach { option ->
+            options.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(option.label) },
                     onClick = {
@@ -423,6 +642,66 @@ private fun SortDropdown(
                     },
                     trailingIcon = {
                         if (option == selected) {
+                            Icon(Icons.Default.Check, contentDescription = null)
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderFilterDropdown(
+    providers: List<net.asksakis.massdroidv2.data.provider.MusicProvider>,
+    selectedIds: Set<String>,
+    cache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
+    onToggle: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val hasFilter = selectedIds.isNotEmpty()
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+
+    Box {
+        FilterChip(
+            selected = hasFilter,
+            onClick = { expanded = true },
+            label = {
+                Text(
+                    if (hasFilter) "${selectedIds.size} selected" else "All providers"
+                )
+            },
+            leadingIcon = {
+                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (hasFilter) {
+                DropdownMenuItem(
+                    text = { Text("Show all") },
+                    onClick = {
+                        onClear()
+                        expanded = false
+                    }
+                )
+                HorizontalDivider()
+            }
+            providers.forEach { provider ->
+                val isSelected = provider.instanceId in selectedIds
+                DropdownMenuItem(
+                    text = { Text(provider.name) },
+                    onClick = { onToggle(provider.instanceId) },
+                    leadingIcon = {
+                        ProviderBadges(
+                            providerDomains = listOf(provider.domain),
+                            cache = cache,
+                            iconSize = 20.dp,
+                            maxIcons = 1
+                        )
+                    },
+                    trailingIcon = {
+                        if (isSelected) {
                             Icon(Icons.Default.Check, contentDescription = null)
                         }
                     }
@@ -446,8 +725,10 @@ private fun <T> MediaList(
     onClick: (T) -> Unit,
     onLongClick: (T) -> Unit,
     onMoreClick: ((T) -> Unit)? = null,
-    onPlayClick: ((T) -> Unit)? = null
+    onPlayClick: ((T) -> Unit)? = null,
+    providerDomains: (T) -> List<String> = { emptyList() }
 ) {
+    val providerCache = LocalProviderManifestCache.current
     when (displayMode) {
         LibraryDisplayMode.LIST -> {
             val listState = rememberLazyListState()
@@ -466,7 +747,9 @@ private fun <T> MediaList(
                         favorite = favorite(item),
                         onLongClick = { onLongClick(item) },
                         onMoreClick = onMoreClick?.let { { it(item) } },
-                        onPlayClick = onPlayClick?.let { { it(item) } }
+                        onPlayClick = onPlayClick?.let { { it(item) } },
+                        providerDomains = providerDomains(item),
+                        providerCache = providerCache
                     )
                 }
                 if (isLoadingMore) {
@@ -494,7 +777,9 @@ private fun <T> MediaList(
                         subtitle = subtitle(item),
                         imageUrl = imageUrl(item),
                         onClick = { onClick(item) },
-                        onLongClick = { onLongClick(item) }
+                        onLongClick = { onLongClick(item) },
+                        providerDomains = providerDomains(item),
+                        providerCache = providerCache
                     )
                 }
                 if (isLoadingMore) {
@@ -552,5 +837,99 @@ private fun LoadingIndicator() {
         contentAlignment = Alignment.Center
     ) {
         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun BrowseList(
+    items: List<BrowseItem>,
+    isLoading: Boolean,
+    browsePath: String?,
+    onFolderClick: (BrowseItem) -> Unit,
+    onItemClick: (BrowseItem) -> Unit,
+    onPlayClick: (BrowseItem) -> Unit,
+    onLongClick: (BrowseItem) -> Unit,
+    onBack: () -> Unit
+) {
+    BackHandler(enabled = browsePath != null) { onBack() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (browsePath != null) {
+            ListItem(
+                headlineContent = { Text("..") },
+                leadingContent = {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back"
+                    )
+                },
+                modifier = Modifier.clickable { onBack() }
+            )
+        }
+        if (isLoading && items.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+        } else {
+            LazyColumn {
+                items(items, key = { it.uri.ifBlank { it.name } }) { item ->
+                    ListItem(
+                        headlineContent = {
+                            Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        },
+                        leadingContent = {
+                            if (item.isFolder) {
+                                Icon(Icons.Default.Folder, contentDescription = null)
+                            } else if (item.imageUrl != null) {
+                                coil.compose.AsyncImage(
+                                    model = item.imageUrl,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(MaterialTheme.shapes.small),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(
+                                    when (item.mediaType) {
+                                        "artist" -> Icons.Default.Person
+                                        "album" -> Icons.Default.Album
+                                        "track" -> Icons.Default.MusicNote
+                                        "playlist" -> Icons.Default.QueueMusic
+                                        "radio" -> Icons.Default.Radio
+                                        else -> Icons.Default.MusicNote
+                                    },
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (item.isPlayable) {
+                                    IconButton(onClick = { onPlayClick(item) }) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play")
+                                    }
+                                }
+                                if (item.isFolder) {
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null)
+                                }
+                            }
+                        },
+                        modifier = Modifier.combinedClickable(
+                            onClick = {
+                                if (item.isFolder) onFolderClick(item) else onItemClick(item)
+                            },
+                            onLongClick = if (!item.isFolder && item.isPlayable) {
+                                { onLongClick(item) }
+                            } else null
+                        )
+                    )
+                }
+            }
+        }
     }
 }

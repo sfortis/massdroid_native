@@ -129,6 +129,7 @@ fun NowPlayingScreen(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             if (!isLandscape) {
                 TopAppBar(
@@ -1164,7 +1165,7 @@ private fun SwipeableAlbumArt(
     val sizeModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.75f).aspectRatio(1f)
     } else {
-        Modifier.fillMaxHeight().aspectRatio(1f)
+        Modifier.heightIn(max = 240.dp).aspectRatio(1f)
     }
 
     Box(

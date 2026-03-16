@@ -46,4 +46,5 @@ interface PlayerRepository {
     suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>)
     fun updateCurrentTrackFavorite(favorite: Boolean)
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
+    fun notifyQueueReplacement(queueId: String)
 }

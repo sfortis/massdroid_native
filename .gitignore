@@ -18,6 +18,10 @@ local.properties
 # Scripts (local helpers)
 /scripts/
 
+# Local docs
+*.md
+!README.md
+/internal_docs/
+
 # Claude Code
-CLAUDE.md
 .claude/
