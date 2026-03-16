@@ -407,6 +407,7 @@ class MaWebSocketClient(
         timeoutMs: Long = 30_000
     ): JsonElement? {
         waitUntilReadyForCommand(command = command, awaitResponse = awaitResponse, timeoutMs = timeoutMs)
+        if (_connectionState.value !is ConnectionState.Connected && !isAuthCommand(command)) return null
         val maxAttempts = if (shouldRetryCommand(command)) 2 else 1
         var attempt = 1
         while (attempt <= maxAttempts) {
@@ -477,7 +478,8 @@ class MaWebSocketClient(
                 connectionState.first { it is ConnectionState.Connected }
             }
         } catch (_: TimeoutCancellationException) {
-            throw MaApiException("WebSocket not authenticated yet", -1)
+            Log.w(TAG, "sendCommand aborted: WebSocket not authenticated within timeout")
+            return
         }
     }
 

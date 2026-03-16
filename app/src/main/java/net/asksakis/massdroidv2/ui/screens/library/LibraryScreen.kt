@@ -36,6 +36,7 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.ProviderBadges
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
@@ -94,8 +95,10 @@ fun LibraryScreen(
     // Action sheet state
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
 
-    LaunchedEffect(selectedTab, settingsLoaded) {
+    val initConnectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    LaunchedEffect(selectedTab, settingsLoaded, initConnectionState) {
         if (!settingsLoaded) return@LaunchedEffect
+        if (initConnectionState !is ConnectionState.Connected) return@LaunchedEffect
         when (selectedTab) {
             0 -> if (artists.isEmpty()) viewModel.loadArtists()
             1 -> if (albums.isEmpty()) viewModel.loadAlbums()
@@ -323,7 +326,22 @@ fun LibraryScreen(
             }
         }
 
-        if (isLoading && !isRefreshing) {
+        val isDisconnected = initConnectionState is ConnectionState.Disconnected ||
+            initConnectionState is ConnectionState.Error
+        if (isDisconnected && !isLoading) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.CloudOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Not connected to Music Assistant", style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+        } else if (isLoading && !isRefreshing) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }

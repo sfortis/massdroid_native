@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -199,7 +201,11 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            if (isLoading && sections.isEmpty()) {
+            val isDisconnected = connectionState is ConnectionState.Disconnected ||
+                connectionState is ConnectionState.Error
+            if (sections.isEmpty() && isDisconnected) {
+                EmptyStateView(onNavigateToSettings)
+            } else if (isLoading && sections.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -338,6 +344,35 @@ fun HomeScreen(
             probeState = connectionProbe,
             onDismiss = { showConnectionDialog = false }
         )
+    }
+}
+
+@Composable
+private fun EmptyStateView(onNavigateToSettings: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                Icons.Default.CloudOff,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Not connected to Music Assistant",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(onClick = onNavigateToSettings) {
+                Text("Configure Server")
+            }
+        }
     }
 }
 

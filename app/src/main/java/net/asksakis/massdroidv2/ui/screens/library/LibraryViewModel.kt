@@ -72,6 +72,7 @@ class LibraryViewModel @Inject constructor(
     val selectedProviders: StateFlow<Set<String>> = _selectedProviders.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
+    val connectionState = wsClient.connectionState
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     private val _isLoadingMore = MutableStateFlow(false)
