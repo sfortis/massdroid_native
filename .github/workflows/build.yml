@@ -16,6 +16,9 @@ jobs:
           distribution: temurin
           cache: 'gradle'
 
+      - name: Run Detekt
+        run: ./gradlew detekt --stacktrace
+
       # results in all CICD builds being signed with the same debug key, to ease installation and testing of the generated APKs
       # this is not a security issue, as the debug key is not used for release builds and the generated APKs are not intended for distribution
       - name: Setup custom keystore file
