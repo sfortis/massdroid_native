@@ -62,9 +62,9 @@ class SendspinAudioController(
     companion object {
         private const val TAG = "SendspinCtrl"
         private const val PAUSE_DEBOUNCE_MS = 400L
-        private const val RECONNECT_STORM_WINDOW_MS = 45_000L
-        private const val RECONNECT_STORM_THRESHOLD = 3
-        private const val RECONNECT_COOLDOWN_MS = 30_000L
+        private const val RECONNECT_STORM_WINDOW_MS = 30_000L
+        private const val RECONNECT_STORM_THRESHOLD = 4
+        private const val RECONNECT_COOLDOWN_MS = 10_000L
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
     }
 
@@ -749,20 +749,14 @@ class SendspinAudioController(
             emptyList()
         }
 
-        if (currentQueueUris == snapshotQueueUris) {
-            lastKnownSendspinQueueTrackUris = currentQueueUris
-            return
-        }
-
-        Log.d(TAG, "Restoring persisted sendspin startup snapshot (${snapshotQueueUris.size} tracks)")
-        musicRepository.playMedia(queueId, snapshotQueueUris, option = "replace")
-        val restoredIdx = waitForQueueTrackIndex(queueId, snapshotTrackUri)
-        if (restoredIdx >= 0) {
-            Log.d(TAG, "Persisted sendspin snapshot restored at queue index=$restoredIdx without autoplay")
-            lastKnownSendspinQueueTrackUris = snapshotQueueUris
+        lastKnownSendspinQueueTrackUris = if (currentQueueUris.isNotEmpty()) {
+            currentQueueUris
         } else {
-            Log.w(TAG, "Persisted sendspin snapshot restored but track still missing")
+            snapshotQueueUris
         }
+        resumeTrackUri = snapshotTrackUri
+        resumePositionSeconds = snapshotPositionSeconds
+        Log.d(TAG, "Startup snapshot loaded (${lastKnownSendspinQueueTrackUris.size} tracks, no playback triggered)")
     }
 
     // endregion

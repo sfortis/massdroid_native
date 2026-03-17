@@ -1023,6 +1023,7 @@ class RemoteControlPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        Log.d("PlaybackSvc", "handleSetPlayWhenReady($playWhenReady) stack=${Thread.currentThread().stackTrace.take(8).joinToString(" <- ") { it.methodName }}")
         if (playWhenReady) onPlay() else onPause()
         return Futures.immediateVoidFuture()
     }
