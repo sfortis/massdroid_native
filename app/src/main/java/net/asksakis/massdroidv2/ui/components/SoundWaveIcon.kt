@@ -28,7 +28,7 @@ fun SoundWaveIcon(
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
             val cycleMs = 500           // 120 BPM
-            val stepMs = 20L
+            val stepMs = 50L            // ~20fps (was 20ms/50fps)
             val steps = (cycleMs / stepMs).toInt()
             val maxPhase = 5f
             while (true) {

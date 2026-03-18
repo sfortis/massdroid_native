@@ -382,9 +382,13 @@ private fun SmartMixFab(
     onClick: () -> Unit
 ) {
     val sparkleScale = remember { Animatable(1f) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val isResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(
+        androidx.lifecycle.Lifecycle.State.RESUMED
+    )
 
-    LaunchedEffect(isBusy) {
-        if (!isBusy) {
+    LaunchedEffect(isBusy, isResumed) {
+        if (!isBusy && isResumed) {
             val framesPerPulse = 24          // 24 * 50ms = 1.2s per pulse
             val pi = Math.PI.toFloat()
             while (true) {
