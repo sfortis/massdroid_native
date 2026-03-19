@@ -99,6 +99,7 @@ class PlaybackService : MediaLibraryService() {
         observeSendspinEnabled()
         observeConnectionState()
         observeShortcutActions()
+        registerBtAudioDeviceCallback()
     }
 
     private fun loadSendspinPlayerId() {
@@ -261,29 +262,85 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private var btAudioCallback: android.media.AudioDeviceCallback? = null
+
+    private fun registerBtAudioDeviceCallback() {
+        val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        btAudioCallback = object : android.media.AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) {
+                val btAdded = addedDevices.any { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+                if (btAdded && sendspinActive && sendspinPlayerId != null) {
+                    val currentSelected = playerRepository.selectedPlayer.value?.playerId
+                    if (currentSelected != sendspinPlayerId) {
+                        val deviceName = addedDevices.firstOrNull {
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                        }?.productName
+                        Log.d(TAG, "BT A2DP connected ($deviceName), auto-selecting Sendspin player")
+                        Log.d(TAG, "BT A2DP connected ($deviceName), auto-selecting Sendspin player")
+                        playerRepository.selectPlayer(sendspinPlayerId!!)
+                    }
+                }
+            }
+        }
+        am.registerAudioDeviceCallback(btAudioCallback, null)
+    }
+
+    private fun isBtA2dpActive(): Boolean {
+        val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        return am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+            .any { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+    }
+
+    private fun shouldRoutToSendspin(): Boolean =
+        isBtA2dpActive() && sendspinActive && sendspinPlayerId != null
+            && playerRepository.selectedPlayer.value?.playerId != sendspinPlayerId
+
     private fun createRemotePlayer(): RemoteControlPlayer {
         return RemoteControlPlayer(
             Looper.getMainLooper(),
             onPlay = {
-                Log.d(TAG, "RemotePlayer onPlay -> selected player")
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.play(id) }
+                val routeSendspin = shouldRoutToSendspin()
+                if (routeSendspin) {
+                    Log.d(TAG, "RemotePlayer onPlay -> BT A2DP active, routing to Sendspin")
+                    sendspinController?.handlePlay()
+                } else {
+                    Log.d(TAG, "RemotePlayer onPlay -> selected player")
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.play(id) }
+                }
             },
             onPause = {
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.pause(id) }
+                if (shouldRoutToSendspin()) {
+                    sendspinController?.handlePause()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.pause(id) }
+                }
             },
             onNext = {
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.next(id) }
+                if (shouldRoutToSendspin()) {
+                    sendspinController?.handleNext()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.next(id) }
+                }
             },
             onPrevious = {
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.previous(id) }
+                if (shouldRoutToSendspin()) {
+                    sendspinController?.handlePrev()
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.previous(id) }
+                }
             },
             onSeek = { positionMs ->
-                val id = activePlayerId() ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
+                if (shouldRoutToSendspin()) {
+                    val id = sendspinPlayerId ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
+                } else {
+                    val id = activePlayerId() ?: return@RemoteControlPlayer
+                    scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
+                }
             },
             onVolumeUp = {
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
@@ -507,6 +564,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        btAudioCallback?.let {
+            val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            am.unregisterAudioDeviceCallback(it)
+        }
         sendspinController?.destroy()
         sendspinController = null
         val manager = getSystemService(NotificationManager::class.java)
@@ -531,7 +592,8 @@ class PlaybackService : MediaLibraryService() {
             intent: Intent
         ): Boolean {
             // Notification buttons -> normal flow (controls selected player)
-            if (session.isMediaNotificationController(controllerInfo)) return false
+            val isNotification = session.isMediaNotificationController(controllerInfo)
+            if (isNotification) return false
 
             // BT/hardware buttons: route to sendspin when active, consume otherwise
             // (prevent accidental playback on remote players from BT auto-play)
@@ -546,6 +608,16 @@ class PlaybackService : MediaLibraryService() {
                 intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
             } ?: return false
             if (keyEvent.action != KeyEvent.ACTION_DOWN) return true
+
+            val keyName = when (keyEvent.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY -> "PLAY"
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> "PAUSE"
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "PLAY_PAUSE"
+                KeyEvent.KEYCODE_HEADSETHOOK -> "HEADSETHOOK"
+                KeyEvent.KEYCODE_MEDIA_NEXT -> "NEXT"
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "PREVIOUS"
+                else -> "UNKNOWN(${keyEvent.keyCode})"
+            }
 
             when (keyEvent.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY -> ctrl.handlePlay()
@@ -668,13 +740,17 @@ class PlaybackService : MediaLibraryService() {
                 for (item in mediaItems) {
                     val uri = item.requestMetadata.mediaUri?.toString()
                         ?: item.mediaId.takeIf { it.contains("/") }
-                    if (uri != null) {
+                    val resolvedUri = uri ?: resolveMediaIdToUri(item.mediaId)
+                    if (resolvedUri != null) {
                         try {
+                            Log.d(TAG, "onAddMediaItems: playing $resolvedUri (mediaId=${item.mediaId})")
                             playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
-                            musicRepository.playMedia(queueId, uri, option = "replace")
+                            musicRepository.playMedia(queueId, resolvedUri, option = "replace")
                         } catch (e: Exception) {
-                            Log.e(TAG, "playMedia failed for $uri", e)
+                            Log.e(TAG, "playMedia failed for $resolvedUri", e)
                         }
+                    } else {
+                        Log.w(TAG, "onAddMediaItems: could not resolve mediaId=${item.mediaId}")
                     }
                 }
             }
@@ -683,6 +759,14 @@ class PlaybackService : MediaLibraryService() {
     }
 
     // endregion
+
+    private fun resolveMediaIdToUri(mediaId: String): String? {
+        // Format: "type|provider|itemId" -> "provider://type/itemId"
+        val parts = mediaId.split("|")
+        if (parts.size != 3) return null
+        val (type, provider, itemId) = parts
+        return "$provider://$type/$itemId"
+    }
 
     // region Content tree builders
 
@@ -1027,7 +1111,6 @@ class RemoteControlPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        Log.d("PlaybackSvc", "handleSetPlayWhenReady($playWhenReady) stack=${Thread.currentThread().stackTrace.take(8).joinToString(" <- ") { it.methodName }}")
         if (playWhenReady) onPlay() else onPause()
         return Futures.immediateVoidFuture()
     }
