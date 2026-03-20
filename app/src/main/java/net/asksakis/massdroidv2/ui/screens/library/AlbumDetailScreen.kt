@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Radio
@@ -42,8 +43,10 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
+import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
+import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 
@@ -63,6 +66,7 @@ fun AlbumDetailScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
+    var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -187,11 +191,40 @@ fun AlbumDetailScreen(
             onToggleArtistBlocked = target.primaryArtistUri?.let { uri ->
                 { viewModel.toggleArtistBlocked(uri, target.primaryArtistName) }
             },
+            extraActions = if (target.mediaType == MediaType.TRACK) listOf(
+                MediaActionSheetExtraAction(
+                    title = "Add to Playlist",
+                    icon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                    onClick = {
+                        addToPlaylistTrackUri = target.uri
+                        viewModel.loadEditablePlaylists(target.uri)
+                        actionSheetItem = null
+                    }
+                )
+            ) else emptyList(),
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
             onStartRadio = { viewModel.startRadio(target.uri) },
             onDismiss = { actionSheetItem = null }
+        )
+    }
+
+    addToPlaylistTrackUri?.let { trackUri ->
+        val editablePlaylists by viewModel.editablePlaylists.collectAsStateWithLifecycle()
+        val isLoadingPlaylists by viewModel.isLoadingEditablePlaylists.collectAsStateWithLifecycle()
+        val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
+        val playlistContainsTrack by viewModel.playlistContainsTrack.collectAsStateWithLifecycle()
+        AddToPlaylistDialog(
+            playlists = editablePlaylists,
+            isLoading = isLoadingPlaylists,
+            addingToPlaylistId = addingToPlaylistId,
+            onDismiss = { addToPlaylistTrackUri = null },
+            onRetry = { viewModel.loadEditablePlaylists(trackUri) },
+            onPlaylistClick = { playlist -> viewModel.addTrackToPlaylist(playlist, trackUri) },
+            onCreatePlaylist = { name -> viewModel.createPlaylistAndAddTrack(name, trackUri) },
+            onRemoveFromPlaylist = { playlist -> viewModel.removeTrackFromPlaylist(playlist, trackUri) },
+            containsTrack = playlistContainsTrack
         )
     }
 }

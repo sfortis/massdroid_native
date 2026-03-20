@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import net.asksakis.massdroidv2.data.websocket.MaApiException
-import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,18 +72,6 @@ class NowPlayingViewModel @Inject constructor(
                     _lyrics.value = null
                     lyricsProvider.clearCache()
                 }
-        }
-        viewModelScope.launch {
-            wsClient.events.collect { event ->
-                when (event.event) {
-                    EventType.MEDIA_ITEM_ADDED,
-                    EventType.MEDIA_ITEM_UPDATED,
-                    EventType.MEDIA_ITEM_DELETED -> {
-                        delay(300)
-                        _playlists.value = emptyList()
-                    }
-                }
-            }
         }
     }
 
@@ -281,6 +268,28 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    fun removeCurrentTrackFromPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {
+        val track = queueState.value?.currentItem?.track ?: return
+        if (_addingToPlaylistId.value != null) return
+        viewModelScope.launch {
+            _addingToPlaylistId.value = playlist.itemId
+            try {
+                val tracks = musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider)
+                val position = tracks.indexOfFirst { it.uri == track.uri }
+                if (position >= 0) {
+                    musicRepository.removeTrackFromPlaylist(playlist, position)
+                    _playlistContainsTrack.value = _playlistContainsTrack.value - playlist.uri
+                }
+                onDone()
+            } catch (e: Exception) {
+                Log.w(TAG, "removeCurrentTrackFromPlaylist failed: ${e.message}")
+                _error.tryEmit("Failed to remove track from playlist")
+            } finally {
+                _addingToPlaylistId.value = null
+            }
+        }
+    }
+
     fun createPlaylistAndAddTrack(name: String, onDone: () -> Unit = {}) {
         val track = queueState.value?.currentItem?.track ?: return
         viewModelScope.launch {
@@ -288,6 +297,7 @@ class NowPlayingViewModel @Inject constructor(
                 val playlist = musicRepository.createPlaylist(name)
                 musicRepository.addTrackToPlaylist(playlist, track.uri)
                 _playlists.value = _playlists.value + playlist
+                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
                 onDone()
             } catch (e: Exception) {
                 Log.w(TAG, "createPlaylistAndAddTrack failed: ${e.message}")
@@ -303,6 +313,7 @@ class NowPlayingViewModel @Inject constructor(
             _addingToPlaylistId.value = playlist.itemId
             try {
                 musicRepository.addTrackToPlaylist(playlist, track.uri)
+                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
                 onDone()
             } catch (e: Exception) {
                 Log.w(TAG, "addCurrentTrackToPlaylist failed: ${e.message}")

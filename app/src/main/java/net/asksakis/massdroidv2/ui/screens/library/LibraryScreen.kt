@@ -35,7 +35,9 @@ import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
+import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
+import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.ProviderBadges
@@ -96,6 +98,7 @@ fun LibraryScreen(
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var deletePlaylistTarget by remember { mutableStateOf<ActionSheetItem?>(null) }
+    var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
 
     val initConnectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     LaunchedEffect(selectedTab, settingsLoaded, initConnectionState) {
@@ -637,6 +640,17 @@ fun LibraryScreen(
                     }
                 }
             },
+            extraActions = if (target.mediaType == MediaType.TRACK) listOf(
+                MediaActionSheetExtraAction(
+                    title = "Add to Playlist",
+                    icon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null) },
+                    onClick = {
+                        addToPlaylistTrackUri = target.uri
+                        viewModel.loadEditablePlaylists(target.uri)
+                        actionSheetItem = null
+                    }
+                )
+            ) else emptyList(),
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
@@ -650,6 +664,24 @@ fun LibraryScreen(
                 }
             } else null,
             onDismiss = { actionSheetItem = null }
+        )
+    }
+
+    addToPlaylistTrackUri?.let { trackUri ->
+        val editablePlaylists by viewModel.editablePlaylists.collectAsStateWithLifecycle()
+        val isLoadingEditablePlaylists by viewModel.isLoadingEditablePlaylists.collectAsStateWithLifecycle()
+        val addingToPlaylistId by viewModel.addingToPlaylistId.collectAsStateWithLifecycle()
+        val playlistContainsTrack by viewModel.playlistContainsTrack.collectAsStateWithLifecycle()
+        AddToPlaylistDialog(
+            playlists = editablePlaylists,
+            isLoading = isLoadingEditablePlaylists,
+            addingToPlaylistId = addingToPlaylistId,
+            onDismiss = { addToPlaylistTrackUri = null },
+            onRetry = { viewModel.loadEditablePlaylists(trackUri) },
+            onPlaylistClick = { playlist -> viewModel.addTrackToPlaylist(playlist, trackUri) },
+            onCreatePlaylist = { name -> viewModel.createPlaylistAndAddTrack(name, trackUri) },
+            onRemoveFromPlaylist = { playlist -> viewModel.removeTrackFromPlaylist(playlist, trackUri) },
+            containsTrack = playlistContainsTrack
         )
     }
 
