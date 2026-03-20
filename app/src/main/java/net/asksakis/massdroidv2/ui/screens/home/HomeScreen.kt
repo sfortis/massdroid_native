@@ -698,7 +698,8 @@ private fun SmartMixOverlay() {
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.titleLarge,
+        fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(horizontal = 16.dp)
     )
 }

@@ -47,6 +47,9 @@ interface PlayHistoryDao {
     @Query("SELECT uri FROM artists WHERE name = :name")
     suspend fun getArtistUrisByName(name: String): List<String>
 
+    @Query("SELECT DISTINCT name FROM artists WHERE name != ''")
+    suspend fun getAllArtistNames(): List<String>
+
     @Query("SELECT name, uri FROM artists WHERE uri LIKE 'library://%'")
     suspend fun getLibraryArtistUris(): List<ArtistNameUri>
 

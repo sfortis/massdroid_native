@@ -40,6 +40,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     @Inject
     lateinit var json: kotlinx.serialization.json.Json
 
+    @Inject
+    lateinit var lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -104,6 +107,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             Log.d("MassDroidApp", "Token saved to DataStore")
                         }
                         providerManifestCache.fetchManifests(wsClient, json)
+                        lastFmLibraryEnricher.enrichAllUnenriched()
                     }
                     is ConnectionState.Error -> {
                         // If token was rejected (cleared by WS client), clear from DataStore too

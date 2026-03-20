@@ -807,7 +807,16 @@ class ArtistDetailViewModel @Inject constructor(
 
     private suspend fun loadData(lazy: Boolean) {
         try {
-            _artist.value = musicRepository.getArtist(itemId, provider, lazy = lazy)
+            var artist = musicRepository.getArtist(itemId, provider, lazy = lazy)
+            // Immediately replace genres with cached Last.fm tags if available
+            if (artist != null) {
+                val cached = dao.getLastFmTags(artist.name)
+                if (cached != null) {
+                    val tags = cached.tags.split(",").filter { it.isNotBlank() }
+                    if (tags.isNotEmpty()) artist = artist.copy(genres = tags)
+                }
+            }
+            _artist.value = artist
             _albums.value = musicRepository.getArtistAlbums(itemId, provider)
             _tracks.value = musicRepository.getArtistTracks(itemId, provider)
 
@@ -906,8 +915,7 @@ class ArtistDetailViewModel @Inject constructor(
             val lastFmGenres = lastFmGenreResolver.resolve(artistName)
             if (lastFmGenres.isNotEmpty()) {
                 _artist.update { current ->
-                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinctBy { it.lowercase() }
-                    current?.copy(genres = merged)
+                    current?.copy(genres = lastFmGenres)
                 }
             }
         } catch (e: Exception) {

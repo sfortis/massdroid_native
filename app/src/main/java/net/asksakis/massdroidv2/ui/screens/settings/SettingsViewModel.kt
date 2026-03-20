@@ -43,8 +43,11 @@ class SettingsViewModel @Inject constructor(
     private val sendspinManager: SendspinManager,
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmGenreResolver: LastFmGenreResolver
+    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
 ) : ViewModel() {
+
+    val enrichmentProgress = lastFmLibraryEnricher.progress
 
     companion object {
         private const val TAG = "SettingsVM"

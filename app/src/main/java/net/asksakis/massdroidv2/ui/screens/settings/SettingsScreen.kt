@@ -653,6 +653,29 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                     Text("Save")
                 }
             }
+
+            val enrichProgress by viewModel.enrichmentProgress.collectAsStateWithLifecycle()
+            if (enrichProgress.isRunning) {
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Text(
+                        "Enriching genres: ${enrichProgress.processed}/${enrichProgress.total} (${enrichProgress.enriched} new)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else if (enrichProgress.total > 0) {
+                Text(
+                    "Genre enrichment complete: ${enrichProgress.enriched} artists enriched",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
