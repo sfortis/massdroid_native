@@ -226,7 +226,11 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private suspend fun loadFromCache() {
-        val cached = discoverCache.load() ?: return
+        val cached = discoverCache.load()
+        if (cached == null) {
+            _uiState.value = _uiState.value.copy(isLoading = false)
+            return
+        }
         artistByUri = cached.topArtists.mapNotNull { artist ->
             artist.canonicalKey()?.let { it to artist }
         }.toMap()
