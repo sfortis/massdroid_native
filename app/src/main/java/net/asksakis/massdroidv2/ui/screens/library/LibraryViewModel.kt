@@ -42,6 +42,7 @@ class LibraryViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val playHistoryRepository: PlayHistoryRepository,
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val lastFmLibraryEnricher: LastFmLibraryEnricher,
     val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 ) : ViewModel() {
@@ -314,7 +315,7 @@ class LibraryViewModel @Inject constructor(
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
-                    async { runCatching { playHistoryRepository.searchArtistUrisByGenre(query) }.getOrElse { emptyList() } }
+                    async { runCatching { genreRepository.searchArtistUris(query) }.getOrElse { emptyList() } }
                 } else null
 
                 val apiResults = apiDeferred.await()
@@ -370,7 +371,7 @@ class LibraryViewModel @Inject constructor(
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
-                    async { runCatching { playHistoryRepository.searchArtistUrisByGenre(query) }.getOrElse { emptyList() } }
+                    async { runCatching { genreRepository.searchArtistUris(query) }.getOrElse { emptyList() } }
                 } else null
 
                 val apiResults = apiDeferred.await()
@@ -426,7 +427,7 @@ class LibraryViewModel @Inject constructor(
                     )
                 }
                 val genreDeferred = if (query != null && query.length >= 3) {
-                    async { runCatching { playHistoryRepository.searchArtistUrisByGenre(query) }.getOrElse { emptyList() } }
+                    async { runCatching { genreRepository.searchArtistUris(query) }.getOrElse { emptyList() } }
                 } else null
 
                 val apiResults = apiDeferred.await()
@@ -562,8 +563,40 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                _browseItemsRaw.value = musicRepository.browse(path)
-                    .filter { it.name != ".." }
+                when {
+                    path == "genres://" -> {
+                        val genres = genreRepository.libraryGenres()
+                        _browseItemsRaw.value = genres.map { genre ->
+                            BrowseItem(
+                                itemId = genre, provider = "local", name = genre.replaceFirstChar { it.uppercase() },
+                                uri = "genres://$genre", path = "genres://$genre", isFolder = true
+                            )
+                        }
+                    }
+                    path != null && path.startsWith("genres://") -> {
+                        val genre = path.removePrefix("genres://")
+                        val artists = genreRepository.libraryArtistsForGenre(genre)
+                        _browseItemsRaw.value = artists.map { a ->
+                            BrowseItem(
+                                itemId = a.itemId, provider = a.provider, name = a.name,
+                                uri = a.uri, mediaType = "artist"
+                            )
+                        }
+                    }
+                    else -> {
+                        val serverItems = musicRepository.browse(path)
+                            .filter { it.name != ".." }
+                        _browseItemsRaw.value = if (path == null) {
+                            val genresFolder = BrowseItem(
+                                itemId = "genres", provider = "local", name = "Genres",
+                                uri = "genres://", path = "genres://", isFolder = true
+                            )
+                            listOf(genresFolder) + serverItems
+                        } else {
+                            serverItems
+                        }
+                    }
+                }
                 _browsePath.value = path
                 applyBrowseFilterSort()
             } catch (_: Exception) {}

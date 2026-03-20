@@ -19,6 +19,7 @@ private const val ORCHESTRATOR_TAG = "DiscoverReco"
 class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val recommendationEngine: RecommendationEngine,
     private val lastFmSimilarResolver: LastFmSimilarResolver
 ) {
@@ -29,9 +30,9 @@ class DiscoverRecommendationOrchestrator(
         artistSignalScores: Map<String, Double>,
         artistIdentity: (Artist) -> String
     ): List<Artist> {
-        val genreScores = playHistoryRepository.getScoredGenres(days = 90, limit = 20)
+        val genreScores = genreRepository.scoredGenres(days = 90, limit = 20)
         val artistScores = playHistoryRepository.getScoredArtists(days = 90, limit = 50)
-        val genreAdjacency = playHistoryRepository.getGenreAdjacencyMap()
+        val genreAdjacency = genreRepository.adjacencyMap()
         val enrichedArtistGenres = invertGenreArtistMap()
 
         Log.d(
@@ -90,7 +91,7 @@ class DiscoverRecommendationOrchestrator(
         loadArtistAlbumsForIdentity: suspend (String) -> List<Album>
     ): List<Album>? = try {
         val artistScores = playHistoryRepository.getScoredArtists(days = 90, limit = 10)
-        val genreScores = playHistoryRepository.getScoredGenres(days = 90, limit = 10)
+        val genreScores = genreRepository.scoredGenres(days = 90, limit = 10)
 
         if (artistScores.isEmpty()) {
             (recommendationAlbums + musicRepository.getAlbums(orderBy = "random", limit = 20))
@@ -264,7 +265,7 @@ class DiscoverRecommendationOrchestrator(
     }
 
     private suspend fun invertGenreArtistMap(): Map<String, Set<String>> {
-        val genreArtistMap = playHistoryRepository.getGenreArtistMap()
+        val genreArtistMap = genreRepository.genreArtistMap()
         val result = mutableMapOf<String, MutableSet<String>>()
         for ((genre, uris) in genreArtistMap) {
             for (uri in uris) {

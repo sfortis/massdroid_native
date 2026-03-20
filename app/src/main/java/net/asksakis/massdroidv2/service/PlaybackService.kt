@@ -75,6 +75,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+    @Inject lateinit var genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
 
     private var mediaLibrarySession: MediaLibrarySession? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -682,8 +683,12 @@ class PlaybackService : MediaLibraryService() {
                         "albums" -> loadAlbums(page, effectivePageSize)
                         "playlists" -> loadPlaylists(page, effectivePageSize)
                         "tracks" -> loadTracks(page, effectivePageSize)
+                        "genres" -> buildGenreList()
                         "genre_radio" -> buildGenreRadioList()
-                        else -> loadSubItems(parentId, page, effectivePageSize)
+                        else -> when {
+                            parentId.startsWith("genre|") -> loadGenreArtists(parentId.removePrefix("genre|"))
+                            else -> loadSubItems(parentId, page, effectivePageSize)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "onGetChildren($parentId) failed", e)
@@ -804,12 +809,27 @@ class PlaybackService : MediaLibraryService() {
         browseFolder("albums", "Albums", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
         browseFolder("playlists", "Playlists", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
         browseFolder("tracks", "Tracks", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
+        browseFolder("genres", "Genres", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
         playableItem("smart_mix", "Smart Mix", MediaMetadata.MEDIA_TYPE_PLAYLIST),
         browseFolder("genre_radio", "Genre Radio", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
     )
 
+    private suspend fun buildGenreList(): List<MediaItem> {
+        val genres = genreRepository.libraryGenres()
+        return genres.map { genre ->
+            browseFolder("genre|$genre", genre.replaceFirstChar { it.uppercase() }, MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
+        }
+    }
+
+    private suspend fun loadGenreArtists(genre: String): List<MediaItem> {
+        val artists = genreRepository.libraryArtistsForGenre(genre)
+        return artists.map { a ->
+            browseFolder("artist|${a.provider}|${a.itemId}", a.name, MediaMetadata.MEDIA_TYPE_ARTIST)
+        }
+    }
+
     private suspend fun buildGenreRadioList(): List<MediaItem> {
-        val genres = playHistoryRepository.getTopGenres(days = 60, limit = 20)
+        val genres = genreRepository.topGenres(days = 60, limit = 20)
         return genres.map { genreScore ->
             val genre = genreScore.genre.replaceFirstChar { it.uppercase() }
             playableItem("genre_radio|${genreScore.genre}", genre, MediaMetadata.MEDIA_TYPE_PLAYLIST)

@@ -44,7 +44,8 @@ class SettingsViewModel @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val lastFmGenreResolver: LastFmGenreResolver,
-    private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
+    private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
 ) : ViewModel() {
 
     val enrichmentProgress = lastFmLibraryEnricher.progress
@@ -410,7 +411,7 @@ class SettingsViewModel @Inject constructor(
         val artistsDef = async { playHistoryRepository.getTopArtists(days = 90, limit = 10) }
         val tracksDef = async { playHistoryRepository.getTopTracks(days = 90, limit = 10) }
         val albumsDef = async { playHistoryRepository.getTopAlbums(days = 90, limit = 10) }
-        val genresDef = async { playHistoryRepository.getTopGenres(days = 90, limit = 10) }
+        val genresDef = async { genreRepository.topGenres(days = 90, limit = 10) }
         val blockedDef = async { smartListeningRepository.getBlockedArtists() }
 
         _topArtists.value = artistsDef.await()

@@ -133,17 +133,19 @@ class DiscoverViewModel @Inject constructor(
     private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
     private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver,
     private val shortcutDispatcher: ShortcutActionDispatcher,
-    private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker
+    private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker,
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
 ) : ViewModel() {
 
     private val sectionCoordinator = DiscoverSectionCoordinator(
         recentFavoriteAlbumsTitle = RECENT_FAVORITE_ALBUMS_TITLE,
         recentFavoriteTracksTitle = RECENT_FAVORITE_TRACKS_TITLE
     )
-    private val contentLoader = DiscoverContentLoader(musicRepository, playHistoryRepository)
+    private val contentLoader = DiscoverContentLoader(musicRepository, genreRepository)
     private val recommendationOrchestrator = DiscoverRecommendationOrchestrator(
         musicRepository = musicRepository,
         playHistoryRepository = playHistoryRepository,
+        genreRepository = genreRepository,
         recommendationEngine = recommendationEngine,
         lastFmSimilarResolver = lastFmSimilarResolver
     )
@@ -229,7 +231,7 @@ class DiscoverViewModel @Inject constructor(
             artist.canonicalKey()?.let { it to artist }
         }.toMap()
         val historyGenreArtists = try {
-            playHistoryRepository.getGenreArtistMap()
+            genreRepository.genreArtistMap()
         } catch (_: Exception) {
             emptyMap()
         }
@@ -238,7 +240,7 @@ class DiscoverViewModel @Inject constructor(
         strictGenreArtists = builtStrictGenreArtists
         genreArtists = builtGenreArtists
         val bllScores = try {
-            playHistoryRepository.getScoredGenres(days = 90, limit = 20)
+            genreRepository.scoredGenres(days = 90, limit = 20)
         } catch (_: Exception) {
             emptyList()
         }
@@ -505,7 +507,7 @@ class DiscoverViewModel @Inject constructor(
             emptyList()
         }
         val genreScores = try {
-            playHistoryRepository.getScoredGenres(days = 120, limit = 10)
+            genreRepository.scoredGenres(days = 120, limit = 10)
         } catch (_: Exception) {
             emptyList()
         }
@@ -515,13 +517,13 @@ class DiscoverViewModel @Inject constructor(
             emptyList()
         }
         val recentGenreScores = try {
-            playHistoryRepository.getScoredGenres(days = SMART_MIX_RECENT_LOOKBACK_DAYS, limit = 8)
+            genreRepository.scoredGenres(days = SMART_MIX_RECENT_LOOKBACK_DAYS, limit = 8)
         } catch (_: Exception) {
             emptyList()
         }
         if (artistScores.isEmpty() && genreScores.isEmpty()) return SmartMixResult(emptyList(), null)
         val genreAdjacencyMap = try {
-            playHistoryRepository.getGenreAdjacencyMap()
+            genreRepository.adjacencyMap()
         } catch (_: Exception) {
             emptyMap()
         }
@@ -838,7 +840,7 @@ class DiscoverViewModel @Inject constructor(
                 )
 
                 val bllGenreScores = try {
-                    playHistoryRepository.getScoredGenres(days = 90, limit = 20)
+                    genreRepository.scoredGenres(days = 90, limit = 20)
                 } catch (_: Exception) {
                     emptyList()
                 }
@@ -1144,7 +1146,7 @@ class DiscoverViewModel @Inject constructor(
         candidateUris: List<String>
     ): Int? {
         val topForGenre = try {
-            playHistoryRepository.getTopDecadesForGenre(
+            genreRepository.decadesForGenre(
                 genre = genre,
                 days = GENRE_RADIO_DECADE_LOOKBACK_DAYS,
                 limit = 2

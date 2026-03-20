@@ -30,7 +30,7 @@ data class DiscoverContentBundle(
 
 class DiscoverContentLoader(
     private val musicRepository: MusicRepository,
-    private val playHistoryRepository: PlayHistoryRepository
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
 ) {
 
     @Suppress("TooGenericExceptionCaught")
@@ -68,7 +68,7 @@ class DiscoverContentLoader(
         }
 
         val historyGenreArtists = try {
-            playHistoryRepository.getGenreArtistMap()
+            genreRepository.genreArtistMap()
         } catch (_: Exception) {
             emptyMap()
         }

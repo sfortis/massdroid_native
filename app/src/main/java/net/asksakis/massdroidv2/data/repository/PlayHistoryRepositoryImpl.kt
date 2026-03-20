@@ -47,6 +47,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         private const val BLL_DECAY = -1.5
         private const val BLL_MIN_HOURS = 0.5
         private const val BLL_FLOOR = -100.0
+        private const val SESSION_GAP_MS = 30 * 60 * 1000L
+        private const val SESSION_DECAY = 0.7
         private const val ADJACENCY_CACHE_HOURS = 48L
         private const val MIN_ADJACENCY_RATIO = 0.25
         private const val FEEDBACK_RETENTION_DAYS = 120L
@@ -339,6 +341,11 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         dao.deleteExpiredArtistTrackCache(now - (14 * MILLIS_PER_DAY))
     }
 
+    override suspend fun getAllGenreNames(): List<String> = dao.getAllGenreNames()
+
+    override suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>> =
+        dao.getArtistsByGenre(genre).map { it.name to it.uri }
+
     override suspend fun searchArtistUrisByGenre(query: String): List<String> =
         dao.searchArtistUrisByGenre(query)
 
@@ -392,9 +399,19 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     }
 
     private fun computeWeightedBllScore(nowMs: Long, plays: List<WeightedPlay>): Double {
-        val sum = plays.sumOf { (playedAt, weight) ->
+        val sorted = plays.sortedBy { it.playedAt }
+        var sessionCount = 0
+        var prevTime = 0L
+        val sum = sorted.sumOf { (playedAt, weight) ->
+            if (playedAt - prevTime < SESSION_GAP_MS && prevTime > 0) {
+                sessionCount++
+            } else {
+                sessionCount = 0
+            }
+            prevTime = playedAt
+            val sessionFactor = SESSION_DECAY.pow(sessionCount)
             val hoursAgo = ((nowMs - playedAt).toDouble() / MILLIS_PER_HOUR).coerceAtLeast(BLL_MIN_HOURS)
-            hoursAgo.pow(BLL_DECAY) * weight
+            hoursAgo.pow(BLL_DECAY) * weight * sessionFactor
         }
         return if (sum > 0.0) ln(sum) else BLL_FLOOR
     }

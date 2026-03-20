@@ -50,6 +50,38 @@ interface PlayHistoryDao {
     @Query("SELECT DISTINCT name FROM artists WHERE name != ''")
     suspend fun getAllArtistNames(): List<String>
 
+    @Query("SELECT name FROM genres ORDER BY name")
+    suspend fun getAllGenreNames(): List<String>
+
+    @Query("""
+        SELECT DISTINCT g.name
+        FROM genres g
+        JOIN artist_genres ag ON ag.genre_name = g.name
+        JOIN artists a ON a.uri = ag.artist_uri
+        WHERE a.uri LIKE 'library://%'
+        ORDER BY g.name
+    """)
+    suspend fun getLibraryGenres(): List<String>
+
+    @Query("""
+        SELECT DISTINCT a.name, a.uri
+        FROM artist_genres ag
+        JOIN artists a ON a.uri = ag.artist_uri
+        WHERE ag.genre_name = :genre AND a.uri LIKE 'library://%'
+        ORDER BY a.name
+    """)
+    suspend fun getLibraryArtistsByGenre(genre: String): List<ArtistNameUri>
+
+    @Query("""
+        SELECT a.name, MIN(a.uri) AS uri
+        FROM artist_genres ag
+        JOIN artists a ON a.uri = ag.artist_uri
+        WHERE ag.genre_name = :genre
+        GROUP BY a.name
+        ORDER BY a.name
+    """)
+    suspend fun getArtistsByGenre(genre: String): List<ArtistNameUri>
+
     @Query("SELECT name, uri FROM artists WHERE uri LIKE 'library://%'")
     suspend fun getLibraryArtistUris(): List<ArtistNameUri>
 
