@@ -203,15 +203,15 @@ fun HomeScreen(
         ) {
             val isDisconnected = connectionState is ConnectionState.Disconnected ||
                 connectionState is ConnectionState.Error
-            if (sections.isEmpty() && isDisconnected) {
-                EmptyStateView(onNavigateToSettings)
-            } else if (isLoading && sections.isEmpty()) {
+            if (isLoading && sections.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator()
                 }
+            } else if (sections.isEmpty() && isDisconnected) {
+                EmptyStateView(onNavigateToSettings)
             } else {
                 PullToRefreshBox(
                     isRefreshing = isRefreshing,
