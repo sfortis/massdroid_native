@@ -16,7 +16,9 @@ import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
 import net.asksakis.massdroidv2.ui.screens.queue.QueueScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
+import net.asksakis.massdroidv2.ui.screens.settings.ProximitySettingsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
+import net.asksakis.massdroidv2.ui.screens.settings.RoomSetupScreen
 import net.asksakis.massdroidv2.ui.screens.settings.SettingsScreen
 
 object Routes {
@@ -28,6 +30,11 @@ object Routes {
     const val QUEUE = "queue"
     const val SETTINGS = "settings"
     const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
+    const val PROXIMITY_SETTINGS = "proximity_settings"
+    const val ROOM_SETUP = "room_setup?roomId={roomId}"
+
+    fun roomSetup(roomId: String? = null) =
+        if (roomId != null) "room_setup?roomId=${android.net.Uri.encode(roomId)}" else "room_setup"
     const val ARTIST_DETAIL = "artist/{itemId}/{provider}?name={name}"
     const val ALBUM_DETAIL = "album/{itemId}/{provider}?name={name}"
     const val PLAYLIST_DETAIL = "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}"
@@ -126,12 +133,30 @@ fun MassDroidNavHost(
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
-                onOpenRecommendationInsights = { navController.navigate(Routes.RECOMMENDATION_INSIGHTS) }
+                onOpenRecommendationInsights = { navController.navigate(Routes.RECOMMENDATION_INSIGHTS) },
+                onOpenProximity = { navController.navigate(Routes.PROXIMITY_SETTINGS) }
             )
         }
 
         composable(Routes.RECOMMENDATION_INSIGHTS) {
             RecommendationInsightsScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.PROXIMITY_SETTINGS) {
+            ProximitySettingsScreen(
+                onBack = { navController.popBackStack() },
+                onSetupRoom = { roomId -> navController.navigate(Routes.roomSetup(roomId)) }
+            )
+        }
+
+        composable(
+            Routes.ROOM_SETUP,
+            arguments = listOf(navArgument("roomId") { type = NavType.StringType; nullable = true; defaultValue = null })
+        ) { backStackEntry ->
+            RoomSetupScreen(
+                roomId = backStackEntry.arguments?.getString("roomId"),
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(

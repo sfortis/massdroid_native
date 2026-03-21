@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
@@ -66,13 +67,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
-private enum class SettingsCategory { CONNECTION, RECOMMENDATIONS, ABOUT }
+private enum class SettingsCategory { CONNECTION, RECOMMENDATIONS, PROXIMITY, ABOUT }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenRecommendationInsights: () -> Unit,
+    onOpenProximity: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
@@ -108,6 +110,7 @@ fun SettingsScreen(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
+                            SettingsCategory.PROXIMITY -> "Proximity Playback"
                             SettingsCategory.ABOUT -> "About"
                             null -> "Settings"
                         }
@@ -127,12 +130,14 @@ fun SettingsScreen(
             null -> CategoryList(
                 viewModel = viewModel,
                 modifier = Modifier.padding(paddingValues),
-                onSelect = { selectedCategory = it }
+                onSelect = { selectedCategory = it },
+                onOpenProximity = onOpenProximity
             )
             SettingsCategory.CONNECTION -> ConnectionScreen(
                 viewModel = viewModel,
                 modifier = Modifier.padding(paddingValues)
             )
+            SettingsCategory.PROXIMITY -> { /* handled via direct navigation */ }
             SettingsCategory.RECOMMENDATIONS -> RecommendationsScreen(
                 viewModel = viewModel,
                 modifier = Modifier.padding(paddingValues),
@@ -152,7 +157,8 @@ fun SettingsScreen(
 private fun CategoryList(
     viewModel: SettingsViewModel,
     modifier: Modifier = Modifier,
-    onSelect: (SettingsCategory) -> Unit
+    onSelect: (SettingsCategory) -> Unit,
+    onOpenProximity: () -> Unit = {}
 ) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
 
@@ -176,6 +182,17 @@ private fun CategoryList(
             },
             modifier = Modifier.clickable { onSelect(SettingsCategory.RECOMMENDATIONS) }
         )
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            HorizontalDivider()
+            ListItem(
+                headlineContent = { Text("Proximity Playback") },
+                supportingContent = { Text("Auto-detect rooms via BLE and transfer playback") },
+                leadingContent = {
+                    Icon(Icons.Default.LocationOn, contentDescription = null)
+                },
+                modifier = Modifier.clickable { onOpenProximity() }
+            )
+        }
         HorizontalDivider()
         ListItem(
             headlineContent = { Text("About") },
