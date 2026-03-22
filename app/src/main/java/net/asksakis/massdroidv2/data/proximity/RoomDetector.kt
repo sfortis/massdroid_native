@@ -17,6 +17,7 @@ private const val STAY_BIAS_FACTOR = 0.85
 private const val MISSING_PENALTY = 12.0
 private const val RSSI_DIFF_CLAMP = 25
 private const val MIN_MATCHED_BEACONS = 2
+private const val NO_MATCH_CLEAR_THRESHOLD = 5
 
 /**
  * Room classifier using fingerprint k-NN detection.
@@ -31,9 +32,22 @@ class RoomDetector @Inject constructor() {
 
     private var consecutiveWinnerId: String? = null
     private var consecutiveWinCount = 0
+    private var noMatchStreak = 0
+    @Volatile private var suppressed = false
+
+    fun suppress() { suppressed = true }
+    fun resume() { suppressed = false }
+
+    /** Set current room directly (e.g., after calibration) without going through confidence logic */
+    fun seedRoom(room: DetectedRoom) {
+        _currentRoom.value = room
+        consecutiveWinnerId = room.roomId
+        consecutiveWinCount = MIN_CONSECUTIVE_WINS
+        Log.d(TAG, "Seeded room: ${room.roomName}")
+    }
 
     fun detect(scanResults: Map<String, Int>, config: ProximityConfig): DetectedRoom? {
-        if (config.rooms.isEmpty() || scanResults.isEmpty()) return null
+        if (suppressed || config.rooms.isEmpty() || scanResults.isEmpty()) return null
 
         val roomWeights = config.rooms.associate { room ->
             room.id to room.beaconProfiles.associate { it.address to it.weight }
@@ -44,15 +58,23 @@ class RoomDetector @Inject constructor() {
             .flatMap { r -> r.fingerprints.flatMap { it.samples.keys } }.toSet()
         val matchedCount = scanResults.keys.count { it in allKnownAddresses }
         if (matchedCount < MIN_MATCHED_BEACONS) {
-            Log.d(TAG, "k-NN: skip (devices=${scanResults.size}, matched=$matchedCount)")
+            noMatchStreak++
+            if (noMatchStreak >= NO_MATCH_CLEAR_THRESHOLD && _currentRoom.value != null) {
+                Log.d(TAG, "k-NN: left all rooms (no match x$noMatchStreak)")
+                resetConfidence()
+                _currentRoom.value = null
+            } else {
+                Log.d(TAG, "k-NN: skip (devices=${scanResults.size}, matched=$matchedCount)")
+            }
             return null
         }
+        noMatchStreak = 0
 
         data class FpEntry(val roomId: String, val distance: Double)
 
         val allDistances = mutableListOf<FpEntry>()
         for (room in config.rooms) {
-            if (room.fingerprints.isEmpty()) continue
+            if (room.fingerprints.isEmpty() || room.calibrationQuality != CalibrationQuality.GOOD) continue
             val weights = roomWeights[room.id] ?: emptyMap()
             for (fp in room.fingerprints) {
                 val dist = fingerprintDistance(scanResults, fp, weights)
@@ -109,6 +131,7 @@ class RoomDetector @Inject constructor() {
 
     fun reset() {
         resetConfidence()
+        noMatchStreak = 0
         _currentRoom.value = null
     }
 

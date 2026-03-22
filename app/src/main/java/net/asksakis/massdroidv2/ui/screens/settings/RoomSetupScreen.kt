@@ -10,13 +10,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -141,14 +142,63 @@ fun RoomSetupScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             )
 
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
             if (existingRoom != null) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-                FingerprintInfo(existingRoom)
-            } else {
-                Spacer(modifier = Modifier.height(24.dp))
+                CalibrationInfo(existingRoom)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()
+            val isCalibrating = autoProgress != null
+
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    val id = existingRoom?.id
+                    if (id != null) {
+                        viewModel.calibrateRoom(id) {}
+                    } else {
+                        // Save first, then calibrate
+                        val player = selectedPlayer ?: return@OutlinedButton
+                        if (roomName.isBlank()) return@OutlinedButton
+                        val newId = java.util.UUID.randomUUID().toString()
+                        viewModel.saveRoom(null, roomName.trim(), player.playerId, player.displayName)
+                        // Need to get the saved room ID - use the latest config
+                    }
+                },
+                enabled = !isCalibrating && (existingRoom != null || (roomName.isNotBlank() && selectedPlayer != null)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                if (isCalibrating) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Calibrating ($autoProgress/${net.asksakis.massdroidv2.data.proximity.ProximityScanner.AUTO_FINGERPRINT_CYCLES})...")
+                } else {
+                    Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (existingRoom?.fingerprints?.isNotEmpty() == true) "Recalibrate" else "Calibrate")
+                }
+            }
+
+            if (isCalibrating) {
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    "After saving, use Auto-Tune Rooms to train fingerprints.",
+                    "Walk around the room slowly",
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+
+            if (existingRoom == null && !isCalibrating) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Save the room first, then calibrate.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
@@ -158,7 +208,7 @@ fun RoomSetupScreen(
 }
 
 @Composable
-private fun FingerprintInfo(room: net.asksakis.massdroidv2.data.proximity.RoomConfig) {
+private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomConfig) {
     val hasFp = room.fingerprints.isNotEmpty()
 
     Card(
@@ -175,14 +225,14 @@ private fun FingerprintInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
-                    Icons.Default.Fingerprint,
+                    Icons.Default.Sensors,
                     contentDescription = null,
                     tint = if (hasFp) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
                 Text(
-                    "Fingerprint Data",
+                    "Calibration Data",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
@@ -192,7 +242,7 @@ private fun FingerprintInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
 
             if (!hasFp) {
                 Text(
-                    "Not calibrated. Use Calibrate Rooms to collect fingerprints.",
+                    "Not calibrated. Tap Calibrate below to scan this room.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -202,7 +252,7 @@ private fun FingerprintInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "${room.fingerprints.size} fingerprints, ${room.beaconProfiles.size} beacons",
+                        "${room.beaconProfiles.size} beacons, ${room.fingerprints.size} samples",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     val (qLabel, qColor) = when (room.calibrationQuality) {

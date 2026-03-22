@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -79,7 +80,8 @@ fun SettingsScreen(
 ) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    var selectedCategoryName by rememberSaveable { mutableStateOf<String?>(null) }
+    val selectedCategory = selectedCategoryName?.let { name -> SettingsCategory.entries.find { it.name == name } }
 
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
 
@@ -99,7 +101,7 @@ fun SettingsScreen(
         )
     }
 
-    BackHandler(enabled = selectedCategory != null) { selectedCategory = null }
+    BackHandler(enabled = selectedCategory != null) { selectedCategoryName = null }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -118,7 +120,7 @@ fun SettingsScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = {
-                        if (selectedCategory != null) selectedCategory = null else onBack()
+                        if (selectedCategory != null) selectedCategoryName = null else onBack()
                     }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
@@ -134,14 +136,14 @@ fun SettingsScreen(
                 null -> CategoryList(
                     viewModel = viewModel,
                     modifier = Modifier.padding(paddingValues),
-                    onSelect = { selectedCategory = it }
+                    onSelect = { selectedCategoryName = it.name }
                 )
                 SettingsCategory.CONNECTION -> ConnectionScreen(
                     viewModel = viewModel,
                     modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.PROXIMITY -> ProximitySettingsScreen(
-                    onBack = { selectedCategory = null },
+                    onBack = { selectedCategoryName = null },
                     onSetupRoom = onSetupRoom,
                     modifier = Modifier.padding(paddingValues)
                 )

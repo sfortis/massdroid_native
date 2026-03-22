@@ -25,6 +25,7 @@ class ProximityConfigStore @Inject constructor(
     private val _config = MutableStateFlow(ProximityConfig())
     val config: StateFlow<ProximityConfig> = _config.asStateFlow()
 
+
     suspend fun load() = withContext(Dispatchers.IO) {
         try {
             val text = file.readText()

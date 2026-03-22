@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Speaker
@@ -219,30 +220,31 @@ fun ProximitySettingsScreen(
         AlertDialog(
             onDismissRequest = { if (!isScanning) { showTuningWizard = false; viewModel.clearTuning() } },
             title = {
-                Text(
-                    "Auto-Tune Rooms",
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.BluetoothSearching, contentDescription = null,
+                        modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Calibrate Rooms")
+                }
             },
             text = {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // Progress
+                Column(modifier = Modifier.fillMaxWidth()) {
                     config.rooms.forEach { room ->
                         val done = room.id in scannedRoomIds
                         val current = nextRoom?.id == room.id && isScanning
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                                .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 when {
-                                    done -> Icons.Default.LocationOn
+                                    done -> Icons.Default.Check
                                     current -> Icons.Default.BluetoothSearching
                                     else -> Icons.Default.LocationOn
                                 },
@@ -252,12 +254,13 @@ fun ProximitySettingsScreen(
                                     current -> MaterialTheme.colorScheme.tertiary
                                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                                 },
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(24.dp)
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
                             Text(
                                 room.name,
-                                fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = if (current || done) FontWeight.Bold else FontWeight.Normal,
                                 color = when {
                                     done -> MaterialTheme.colorScheme.primary
                                     else -> MaterialTheme.colorScheme.onSurface
@@ -265,55 +268,85 @@ fun ProximitySettingsScreen(
                             )
                             if (done) {
                                 Spacer(modifier = Modifier.weight(1f))
-                                Text("Done", style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary)
+                                Text("Done", style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold)
                             }
                         }
                     }
 
-                    if (autoProgress != null) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Scanning ($autoProgress/${ProximityScanner.AUTO_FINGERPRINT_CYCLES})...",
-                            style = MaterialTheme.typography.bodySmall)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Walk around the room slowly",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else if (nextRoom != null) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("Go to ${nextRoom.name} and tap Scan",
-                            style = MaterialTheme.typography.bodyMedium)
-                    } else {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("All rooms scanned. Tap Apply to build fingerprints.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (autoProgress != null) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Scanning ($autoProgress/${ProximityScanner.AUTO_FINGERPRINT_CYCLES})...",
+                                style = MaterialTheme.typography.bodyLarge)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Walk around the room slowly",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary)
+                        } else if (nextRoom != null) {
+                            Icon(Icons.Default.LocationOn, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(36.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Go to ${nextRoom.name}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("then tap Scan",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } else {
+                            Icon(Icons.Default.Check, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(36.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("All rooms scanned",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Tap Apply to build fingerprints",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        TextButton(
+                            onClick = { showTuningWizard = false; viewModel.clearTuning() },
+                            enabled = !isScanning
+                        ) { Text("Cancel") }
+                        if (nextRoom != null) {
+                            TextButton(
+                                onClick = {
+                                    viewModel.collectRoomSnapshot(nextRoom.id, nextRoom.name) {}
+                                },
+                                enabled = !isScanning
+                            ) { Text("Scan ${nextRoom.name}") }
+                        } else {
+                            TextButton(onClick = {
+                                viewModel.applyTuning()
+                                showTuningWizard = false
+                            }) { Text("Apply") }
+                        }
                     }
                 }
             },
-            confirmButton = {
-                if (nextRoom != null) {
-                    TextButton(
-                        onClick = {
-                            viewModel.collectRoomSnapshot(nextRoom.id, nextRoom.name) {}
-                        },
-                        enabled = !isScanning
-                    ) { Text("Scan ${nextRoom.name}") }
-                } else {
-                    TextButton(onClick = {
-                        viewModel.applyTuning()
-                        showTuningWizard = false
-                    }) { Text("Apply") }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showTuningWizard = false; viewModel.clearTuning() },
-                    enabled = !isScanning
-                ) { Text("Cancel") }
-            }
+            confirmButton = {}
         )
     }
 

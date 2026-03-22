@@ -95,6 +95,73 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
+    /** Calibrate a single room in-place (scan + compute fingerprints/profiles) */
+    fun calibrateRoom(roomId: String, onDone: () -> Unit) {
+        viewModelScope.launch {
+            roomDetector.suppress()
+            try {
+                _autoFingerprintProgress.value = 0
+
+                val rawScans = mutableListOf<Map<String, Int>>()
+                val nameMap = mutableMapOf<String, String?>()
+                val categoryMap = mutableMapOf<String, ProximityScanner.DeviceCategory>()
+
+                for (i in 1..AUTO_FINGERPRINT_CYCLES) {
+                    val devices = scanner.scanOnce(lowPower = false)
+                    val scanMap = mutableMapOf<String, Int>()
+                    for (d in devices) {
+                        scanMap[d.address] = d.rssi
+                        if (d.name != null) nameMap[d.address] = d.name
+                        if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
+                    }
+                    rawScans.add(scanMap)
+                    _autoFingerprintProgress.value = i
+                }
+                _autoFingerprintProgress.value = null
+
+                val counts = mutableMapOf<String, Int>()
+                for (scan in rawScans) for (addr in scan.keys) counts[addr] = (counts[addr] ?: 0) + 1
+                val validAddresses = counts
+                    .filter { it.value >= MIN_SIGHTINGS }
+                    .filter { categoryMap[it.key] != ProximityScanner.DeviceCategory.MOBILE }
+                    .filter { nameMap[it.key] != null }
+                    .keys
+
+                val config = configStore.config.value
+                val otherRoomMeans = config.rooms
+                    .filter { it.id != roomId && it.beaconProfiles.isNotEmpty() }
+                    .associate { room -> room.id to room.beaconProfiles.associate { it.address to it.meanRssi.toDouble() } }
+
+                val fingerprints = buildFingerprints(rawScans, validAddresses)
+                val allNames = nameMap.mapValues { it.value }
+                val profiles = computeBeaconProfiles(rawScans, validAddresses, allNames, otherRoomMeans)
+                val warnings = mutableListOf<String>()
+                val room = config.rooms.find { it.id == roomId }
+                val quality = assessQuality(room?.name ?: roomId, profiles, warnings)
+
+                configStore.update { cfg ->
+                    val updated = cfg.rooms.map { r ->
+                        if (r.id != roomId) return@map r
+                        r.copy(fingerprints = fingerprints, beaconProfiles = profiles, calibrationQuality = quality)
+                    }
+                    cfg.copy(rooms = updated)
+                }
+
+                roomDetector.reset()
+                if (room != null) {
+                    roomDetector.seedRoom(DetectedRoom(room.id, room.name, room.playerId, room.playerName))
+                }
+
+                Log.d(TAG, "Single-room calibration: ${room?.name}, ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")
+                if (warnings.isNotEmpty()) warnings.forEach { Log.w(TAG, "  $it") }
+                onDone()
+            } finally {
+                _autoFingerprintProgress.value = null
+                roomDetector.resume()
+            }
+        }
+    }
+
     // region Auto Room Tuning
 
     data class RoomTrainingData(
@@ -124,30 +191,35 @@ class ProximityViewModel @Inject constructor(
 
     fun collectRoomSnapshot(roomId: String, roomName: String, onDone: () -> Unit) {
         viewModelScope.launch {
-            _tuningStep.value = "Scanning $roomName..."
-            val rawScans = mutableListOf<Map<String, Int>>()
-            val nameMap = mutableMapOf<String, String?>()
-            val categoryMap = mutableMapOf<String, ProximityScanner.DeviceCategory>()
-            _autoFingerprintProgress.value = 0
+            roomDetector.suppress()
+            try {
+                _tuningStep.value = "Scanning $roomName..."
+                val rawScans = mutableListOf<Map<String, Int>>()
+                val nameMap = mutableMapOf<String, String?>()
+                val categoryMap = mutableMapOf<String, ProximityScanner.DeviceCategory>()
+                _autoFingerprintProgress.value = 0
 
-            for (i in 1..AUTO_FINGERPRINT_CYCLES) {
-                val devices = scanner.scanOnce(lowPower = false)
-                val scanMap = mutableMapOf<String, Int>()
-                for (d in devices) {
-                    scanMap[d.address] = d.rssi
-                    if (d.name != null) nameMap[d.address] = d.name
-                    if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
+                for (i in 1..AUTO_FINGERPRINT_CYCLES) {
+                    val devices = scanner.scanOnce(lowPower = false)
+                    val scanMap = mutableMapOf<String, Int>()
+                    for (d in devices) {
+                        scanMap[d.address] = d.rssi
+                        if (d.name != null) nameMap[d.address] = d.name
+                        if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
+                    }
+                    rawScans.add(scanMap)
+                    _autoFingerprintProgress.value = i
                 }
-                rawScans.add(scanMap)
-                _autoFingerprintProgress.value = i
-            }
-            _autoFingerprintProgress.value = null
 
-            val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap)
-            _tuningSnapshots.value = _tuningSnapshots.value + training
-            _tuningStep.value = null
-            Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices seen")
-            onDone()
+                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap)
+                _tuningSnapshots.value = _tuningSnapshots.value + training
+                Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices seen")
+                onDone()
+            } finally {
+                _autoFingerprintProgress.value = null
+                _tuningStep.value = null
+                roomDetector.resume()
+            }
         }
     }
 
@@ -212,6 +284,15 @@ class ProximityViewModel @Inject constructor(
             }
 
             roomDetector.reset()
+            roomDetector.resume()
+            // Seed room from last scanned room in wizard
+            val lastTraining = allTraining.lastOrNull()
+            if (lastTraining != null) {
+                val lastRoom = configStore.config.value.rooms.find { it.id == lastTraining.roomId }
+                if (lastRoom != null) {
+                    roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
+                }
+            }
             _tuningSnapshots.value = emptyList()
             _tuningStep.value = null
             _tuningResult.value = TuningResult(roomResults, warnings)
@@ -260,6 +341,7 @@ class ProximityViewModel @Inject constructor(
         _tuningSnapshots.value = emptyList()
         _tuningStep.value = null
         _tuningResult.value = null
+        roomDetector.resume()
     }
 
     fun dismissTuningResult() {
