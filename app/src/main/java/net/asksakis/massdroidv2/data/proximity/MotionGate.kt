@@ -37,6 +37,7 @@ class MotionGate @Inject constructor(
     private var triggerListener: TriggerEventListener? = null
     private var stepListener: SensorEventListener? = null
     private var started = false
+    private var stepCount = 0
 
     fun start() {
         if (started || sensorManager == null) return
@@ -58,6 +59,7 @@ class MotionGate @Inject constructor(
         if (stepSensor != null) {
             stepListener = object : SensorEventListener {
                 override fun onSensorChanged(event: SensorEvent?) {
+                    stepCount++
                     openMovementWindow()
                 }
                 override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -89,12 +91,14 @@ class MotionGate @Inject constructor(
     }
 
     private fun openMovementWindow() {
+        val wasMoving = _isMoving.value
         _isMoving.value = true
         windowJob?.cancel()
+        if (!wasMoving) Log.d(TAG, "Window opened (steps=$stepCount)")
         windowJob = scope.launch {
             delay(MOVEMENT_WINDOW_MS)
             _isMoving.value = false
-            Log.d(TAG, "Window closed")
+            Log.d(TAG, "Window closed (steps=$stepCount)")
         }
     }
 }

@@ -53,6 +53,11 @@ class ProximityScanner @Inject constructor(
     private var persistentCallback: ScanCallback? = null
     @Volatile private var persistentRunning = false
 
+    // Health tracking
+    @Volatile var lastPersistentCallbackMs = 0L
+    @Volatile var lastBackgroundDeliveryMs = 0L
+    @Volatile var zeroDeviceStreak = 0
+
     @SuppressLint("MissingPermission")
     fun startPersistentScan(lowPower: Boolean = true) {
         val scanner = getScanner() ?: return
@@ -66,6 +71,7 @@ class ProximityScanner @Inject constructor(
                 val name = try { result.device.name } catch (_: SecurityException) { null }
                 persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result))
                 persistentLastSeen[addr] = System.currentTimeMillis()
+                lastPersistentCallbackMs = System.currentTimeMillis()
             }
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
@@ -142,17 +148,19 @@ class ProximityScanner @Inject constructor(
             persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result))
             persistentLastSeen[addr] = System.currentTimeMillis()
         }
+        lastBackgroundDeliveryMs = System.currentTimeMillis()
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
     }
 
     /** Read current snapshot from persistent scan (no start/stop) */
     fun readSnapshot(): List<ScannedDevice> {
         val now = System.currentTimeMillis()
-        // Prune stale devices
         persistentLastSeen.entries.removeAll { now - it.value > DEVICE_RETAIN_MS }
         val stale = persistentDevices.keys - persistentLastSeen.keys
         stale.forEach { persistentDevices.remove(it) }
-        return persistentDevices.values.toList()
+        val devices = persistentDevices.values.toList()
+        if (devices.isEmpty()) zeroDeviceStreak++ else zeroDeviceStreak = 0
+        return devices
     }
 
     fun isAvailable(): Boolean =

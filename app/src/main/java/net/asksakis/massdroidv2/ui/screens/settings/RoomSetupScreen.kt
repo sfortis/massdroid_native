@@ -192,15 +192,30 @@ private fun FingerprintInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
 
             if (!hasFp) {
                 Text(
-                    "Not trained yet. Use Auto-Tune Rooms to collect fingerprints.",
+                    "Not calibrated. Use Calibrate Rooms to collect fingerprints.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                Text(
-                    "${room.fingerprints.size} fingerprints, ${room.beaconProfiles.size} beacons",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${room.fingerprints.size} fingerprints, ${room.beaconProfiles.size} beacons",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    val (qLabel, qColor) = when (room.calibrationQuality) {
+                        net.asksakis.massdroidv2.data.proximity.CalibrationQuality.GOOD ->
+                            "Good" to MaterialTheme.colorScheme.primary
+                        net.asksakis.massdroidv2.data.proximity.CalibrationQuality.WEAK ->
+                            "Weak" to MaterialTheme.colorScheme.error
+                        net.asksakis.massdroidv2.data.proximity.CalibrationQuality.UNCALIBRATED ->
+                            "N/A" to MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    Text(qLabel, style = MaterialTheme.typography.labelSmall, color = qColor,
+                        fontWeight = FontWeight.Bold)
+                }
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Top beacons by weight

@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
@@ -69,6 +70,7 @@ fun ProximitySettingsScreen(
     val tuningSnapshots by viewModel.tuningSnapshots.collectAsStateWithLifecycle()
     val tuningStep by viewModel.tuningStep.collectAsStateWithLifecycle()
     val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()
+    val tuningResult by viewModel.tuningResult.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
 
     // Request BLE permissions when enabling proximity
@@ -170,7 +172,7 @@ fun ProximitySettingsScreen(
                         ) {
                             Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Auto-Tune Rooms")
+                            Text("Calibrate Rooms")
                         }
                     }
                 }
@@ -314,6 +316,50 @@ fun ProximitySettingsScreen(
             }
         )
     }
+
+    tuningResult?.let { result ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissTuningResult() },
+            title = { Text("Calibration Results") },
+            text = {
+                Column {
+                    config.rooms.forEach { room ->
+                        val quality = result.roomResults[room.id] ?: return@forEach
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(room.name, style = MaterialTheme.typography.bodyMedium)
+                            val (label, color) = when (quality) {
+                                CalibrationQuality.GOOD -> "Good" to MaterialTheme.colorScheme.primary
+                                CalibrationQuality.WEAK -> "Weak" to MaterialTheme.colorScheme.error
+                                CalibrationQuality.UNCALIBRATED -> "N/A" to MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Text(label, style = MaterialTheme.typography.labelMedium, color = color,
+                                fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (result.warnings.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        result.warnings.forEach { warning ->
+                            Text(
+                                warning,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissTuningResult() }) { Text("OK") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -387,6 +433,16 @@ private fun RoomCard(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("${room.beaconProfiles.size} beacons", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val (qualityLabel, qualityColor) = when (room.calibrationQuality) {
+                        CalibrationQuality.GOOD -> "Calibrated" to MaterialTheme.colorScheme.primary
+                        CalibrationQuality.WEAK -> "Weak" to MaterialTheme.colorScheme.error
+                        CalibrationQuality.UNCALIBRATED -> "Not calibrated" to MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    Text(
+                        qualityLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = qualityColor
+                    )
                 }
             }
             IconButton(onClick = onDelete) {

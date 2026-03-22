@@ -3,16 +3,14 @@ package net.asksakis.massdroidv2.data.proximity
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
+
+@Serializable
 data class ProximityConfig(
     val enabled: Boolean = false,
     val autoTransfer: Boolean = false,
-    val dwellTimeSec: Int = DEFAULT_DWELL_TIME,
     val rooms: List<RoomConfig> = emptyList()
-) {
-    companion object {
-        const val DEFAULT_DWELL_TIME = 3
-    }
-}
+)
 
 @Serializable
 data class RoomConfig(
@@ -21,7 +19,8 @@ data class RoomConfig(
     val playerId: String,
     val playerName: String,
     val fingerprints: List<RoomFingerprint> = emptyList(),
-    val beaconProfiles: List<BeaconProfile> = emptyList()
+    val beaconProfiles: List<BeaconProfile> = emptyList(),
+    val calibrationQuality: CalibrationQuality = CalibrationQuality.UNCALIBRATED
 )
 
 @Serializable

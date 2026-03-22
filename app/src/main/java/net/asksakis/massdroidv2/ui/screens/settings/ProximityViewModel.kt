@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.proximity.BeaconProfile
+import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.DetectedRoom
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
@@ -26,11 +27,17 @@ import javax.inject.Inject
 import kotlin.math.sqrt
 
 private const val TAG = "ProximityVM"
-private const val MIN_TUNED_BEACONS = 3
 private const val MIN_SIGHTINGS = 2
 private const val FINGERPRINTS_PER_ROOM = 8
 private const val MIN_WEIGHT = 0.15
 private const val MAX_WEIGHT = 2.5
+
+// Quality gate thresholds
+private const val MIN_USABLE_PROFILES = 3
+private const val MIN_AVG_VISIBILITY = 0.3
+private const val MIN_DISCRIMINATIVE_BEACONS = 1
+private const val DISCRIMINATIVE_THRESHOLD = 5.0
+private const val MAX_FLOOR_RATIO = 0.8
 
 @HiltViewModel
 class ProximityViewModel @Inject constructor(
@@ -47,7 +54,6 @@ class ProximityViewModel @Inject constructor(
     val currentRoom: StateFlow<DetectedRoom?> = roomDetector.currentRoom
     val isAvailable: Boolean = scanner.isAvailable()
 
-
     init {
         viewModelScope.launch { configStore.load() }
     }
@@ -60,7 +66,6 @@ class ProximityViewModel @Inject constructor(
         viewModelScope.launch { configStore.update { it.copy(autoTransfer = auto) } }
     }
 
-
     fun deleteRoom(roomId: String) {
         viewModelScope.launch {
             configStore.update { c -> c.copy(rooms = c.rooms.filter { it.id != roomId }) }
@@ -68,12 +73,7 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
-    fun saveRoom(
-        roomId: String?,
-        name: String,
-        playerId: String,
-        playerName: String
-    ) {
+    fun saveRoom(roomId: String?, name: String, playerId: String, playerName: String) {
         viewModelScope.launch {
             val id = roomId ?: UUID.randomUUID().toString()
             val existing = configStore.config.value.rooms.find { it.id == id }
@@ -81,7 +81,8 @@ class ProximityViewModel @Inject constructor(
                 id = id,
                 name = name, playerId = playerId, playerName = playerName,
                 fingerprints = existing?.fingerprints ?: emptyList(),
-                beaconProfiles = existing?.beaconProfiles ?: emptyList()
+                beaconProfiles = existing?.beaconProfiles ?: emptyList(),
+                calibrationQuality = existing?.calibrationQuality ?: CalibrationQuality.UNCALIBRATED
             )
             configStore.update { config ->
                 val updated = config.rooms.toMutableList()
@@ -90,12 +91,9 @@ class ProximityViewModel @Inject constructor(
                 config.copy(rooms = updated)
             }
             roomDetector.reset()
-            Log.d(TAG, "Room saved: ${room.name}, ${room.fingerprints.size} fingerprints, ${room.beaconProfiles.size} profiles")
+            Log.d(TAG, "Room saved: ${room.name}")
         }
     }
-
-    private val _autoFingerprintProgress = MutableStateFlow<Int?>(null)
-    val autoFingerprintProgress: StateFlow<Int?> = _autoFingerprintProgress.asStateFlow()
 
     // region Auto Room Tuning
 
@@ -107,13 +105,23 @@ class ProximityViewModel @Inject constructor(
         val categories: Map<String, ProximityScanner.DeviceCategory>
     )
 
+    data class TuningResult(
+        val roomResults: Map<String, CalibrationQuality>,
+        val warnings: List<String>
+    )
+
+    private val _autoFingerprintProgress = MutableStateFlow<Int?>(null)
+    val autoFingerprintProgress: StateFlow<Int?> = _autoFingerprintProgress.asStateFlow()
+
     private val _tuningSnapshots = MutableStateFlow<List<RoomTrainingData>>(emptyList())
     val tuningSnapshots: StateFlow<List<RoomTrainingData>> = _tuningSnapshots.asStateFlow()
 
     private val _tuningStep = MutableStateFlow<String?>(null)
     val tuningStep: StateFlow<String?> = _tuningStep.asStateFlow()
 
-    /** Collect multi-fingerprint training data for a room during tuning wizard */
+    private val _tuningResult = MutableStateFlow<TuningResult?>(null)
+    val tuningResult: StateFlow<TuningResult?> = _tuningResult.asStateFlow()
+
     fun collectRoomSnapshot(roomId: String, roomName: String, onDone: () -> Unit) {
         viewModelScope.launch {
             _tuningStep.value = "Scanning $roomName..."
@@ -143,7 +151,6 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
-    /** After all rooms scanned, compute fingerprints + beacon profiles + legacy beacons */
     @Suppress("CyclomaticComplexity")
     fun applyTuning() {
         viewModelScope.launch {
@@ -152,11 +159,9 @@ class ProximityViewModel @Inject constructor(
 
             _tuningStep.value = "Computing fingerprints..."
 
-            // Collect all device names across rooms
             val allNames = allTraining.flatMap { it.names.entries }.associate { it.key to it.value }
             val allCategories = allTraining.flatMap { it.categories.entries }.associate { it.key to it.value }
 
-            // Filter: only named, non-mobile, seen in 2+ scans within at least one room
             val validAddresses = allTraining.flatMap { training ->
                 val counts = mutableMapOf<String, Int>()
                 for (scan in training.rawScans) {
@@ -168,9 +173,10 @@ class ProximityViewModel @Inject constructor(
                     .keys
             }.toSet()
 
-            // Per-room: build fingerprints and compute beacon stats
+            val roomResults = mutableMapOf<String, CalibrationQuality>()
+            val warnings = mutableListOf<String>()
+
             configStore.update { config ->
-                // First pass: compute per-room mean RSSI (needed for cross-room discrimination)
                 val roomMeans = allTraining.associate { training ->
                     training.roomId to computeBeaconMeans(training.rawScans, validAddresses)
                 }
@@ -178,16 +184,17 @@ class ProximityViewModel @Inject constructor(
                 val updatedRooms = config.rooms.map { room ->
                     val training = allTraining.find { it.roomId == room.id } ?: return@map room
 
-                    // Build fingerprints from raw scans (group into FINGERPRINTS_PER_ROOM)
                     val fingerprints = buildFingerprints(training.rawScans, validAddresses)
-
-                    // Compute beacon profiles with cross-room discrimination
                     val otherRoomMeans = roomMeans.filter { it.key != room.id }
                     val profiles = computeBeaconProfiles(
                         training.rawScans, validAddresses, allNames, otherRoomMeans
                     )
 
-                    Log.d(TAG, "Tuned ${room.name}: ${fingerprints.size} fingerprints, ${profiles.size} profiles")
+                    // Quality assessment
+                    val quality = assessQuality(room.name, profiles, warnings)
+                    roomResults[room.id] = quality
+
+                    Log.d(TAG, "Tuned ${room.name}: ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")
                     profiles.sortedByDescending { it.weight }.take(6).forEach { p ->
                         Log.d(TAG, "  ${p.name}: mean=${p.meanRssi}, var=${String.format("%.1f", p.variance)}, " +
                             "vis=${String.format("%.0f%%", p.visibilityRate * 100)}, " +
@@ -195,7 +202,11 @@ class ProximityViewModel @Inject constructor(
                             "w=${String.format("%.2f", p.weight)}")
                     }
 
-                    room.copy(fingerprints = fingerprints, beaconProfiles = profiles)
+                    room.copy(
+                        fingerprints = fingerprints,
+                        beaconProfiles = profiles,
+                        calibrationQuality = quality
+                    )
                 }
                 config.copy(rooms = updatedRooms)
             }
@@ -203,44 +214,89 @@ class ProximityViewModel @Inject constructor(
             roomDetector.reset()
             _tuningSnapshots.value = emptyList()
             _tuningStep.value = null
-            Log.d(TAG, "Auto-tuning complete (fingerprint mode)")
+            _tuningResult.value = TuningResult(roomResults, warnings)
+            Log.d(TAG, "Calibration complete: ${roomResults.values.groupBy { it }.mapValues { it.value.size }}")
         }
     }
 
-    /** Group raw scans into fingerprints, filtering to valid addresses */
+    private fun assessQuality(
+        roomName: String,
+        profiles: List<BeaconProfile>,
+        warnings: MutableList<String>
+    ): CalibrationQuality {
+        if (profiles.isEmpty()) {
+            warnings.add("$roomName: no usable beacons found")
+            return CalibrationQuality.WEAK
+        }
+
+        val usableCount = profiles.count { it.weight > MIN_WEIGHT }
+        val avgVisibility = profiles.map { it.visibilityRate }.average()
+        val discriminativeCount = profiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
+        val floorRatio = profiles.count { it.weight <= MIN_WEIGHT + 0.01 }.toDouble() / profiles.size
+
+        var isGood = true
+
+        if (usableCount < MIN_USABLE_PROFILES) {
+            warnings.add("$roomName: only $usableCount usable beacons (need $MIN_USABLE_PROFILES)")
+            isGood = false
+        }
+        if (avgVisibility < MIN_AVG_VISIBILITY) {
+            warnings.add("$roomName: low beacon visibility (${String.format("%.0f%%", avgVisibility * 100)})")
+            isGood = false
+        }
+        if (discriminativeCount < MIN_DISCRIMINATIVE_BEACONS) {
+            warnings.add("$roomName: no strongly discriminative beacons")
+            isGood = false
+        }
+        if (floorRatio > MAX_FLOOR_RATIO) {
+            warnings.add("$roomName: most beacon weights at minimum")
+            isGood = false
+        }
+
+        return if (isGood) CalibrationQuality.GOOD else CalibrationQuality.WEAK
+    }
+
+    fun clearTuning() {
+        _tuningSnapshots.value = emptyList()
+        _tuningStep.value = null
+        _tuningResult.value = null
+    }
+
+    fun dismissTuningResult() {
+        _tuningResult.value = null
+    }
+
+    // endregion
+
+    // region Fingerprint building
+
     private fun buildFingerprints(
         rawScans: List<Map<String, Int>>,
         validAddresses: Set<String>
     ): List<RoomFingerprint> {
         val filtered = rawScans.map { scan -> scan.filterKeys { it in validAddresses } }
             .filter { it.isNotEmpty() }
-
         if (filtered.isEmpty()) return emptyList()
 
-        // Group scans into FINGERPRINTS_PER_ROOM fingerprints
         val groupSize = (filtered.size.toFloat() / FINGERPRINTS_PER_ROOM).coerceAtLeast(1f).toInt()
         val now = System.currentTimeMillis()
 
         return filtered.chunked(groupSize).mapIndexed { idx, group ->
-            // Average RSSI across group members
             val merged = mutableMapOf<String, MutableList<Int>>()
             for (scan in group) {
                 for ((addr, rssi) in scan) {
                     merged.getOrPut(addr) { mutableListOf() }.add(rssi)
                 }
             }
-            val samples = merged.mapValues { (_, values) -> values.average().toInt() }
-
             RoomFingerprint(
                 id = UUID.randomUUID().toString(),
                 label = "scan-${idx + 1}",
-                samples = samples,
+                samples = merged.mapValues { (_, values) -> values.average().toInt() },
                 capturedAtMs = now
             )
         }
     }
 
-    /** Compute per-beacon mean RSSI for a room's scans */
     private fun computeBeaconMeans(
         rawScans: List<Map<String, Int>>,
         validAddresses: Set<String>
@@ -248,15 +304,12 @@ class ProximityViewModel @Inject constructor(
         val accum = mutableMapOf<String, MutableList<Int>>()
         for (scan in rawScans) {
             for ((addr, rssi) in scan) {
-                if (addr in validAddresses) {
-                    accum.getOrPut(addr) { mutableListOf() }.add(rssi)
-                }
+                if (addr in validAddresses) accum.getOrPut(addr) { mutableListOf() }.add(rssi)
             }
         }
         return accum.mapValues { (_, values) -> values.average() }
     }
 
-    /** Compute beacon profiles with variance, visibility, discrimination, weight */
     private fun computeBeaconProfiles(
         rawScans: List<Map<String, Int>>,
         validAddresses: Set<String>,
@@ -269,9 +322,7 @@ class ProximityViewModel @Inject constructor(
         val accum = mutableMapOf<String, MutableList<Int>>()
         for (scan in rawScans) {
             for ((addr, rssi) in scan) {
-                if (addr in validAddresses) {
-                    accum.getOrPut(addr) { mutableListOf() }.add(rssi)
-                }
+                if (addr in validAddresses) accum.getOrPut(addr) { mutableListOf() }.add(rssi)
             }
         }
 
@@ -281,32 +332,15 @@ class ProximityViewModel @Inject constructor(
                 rssiValues.map { (it - mean) * (it - mean) }.average()
             } else 0.0
             val visibilityRate = rssiValues.size.toDouble() / totalScans
-
-            // Discrimination: how much stronger is this beacon here vs best competing room
             val bestOtherMean = otherRoomMeans.values.mapNotNull { it[addr] }.maxOrNull() ?: -100.0
             val discriminationScore = mean - bestOtherMean
 
-            // Weight formula from migration plan
             val stability = 1.0 / (1.0 + sqrt(variance) / 4.0)
             val discriminationBoost = 1.0 + discriminationScore.coerceAtLeast(0.0) / 20.0
-            val rawWeight = visibilityRate * stability * discriminationBoost
-            val weight = rawWeight.coerceIn(MIN_WEIGHT, MAX_WEIGHT)
+            val weight = (visibilityRate * stability * discriminationBoost).coerceIn(MIN_WEIGHT, MAX_WEIGHT)
 
-            BeaconProfile(
-                address = addr,
-                name = allNames[addr] ?: addr,
-                meanRssi = mean.toInt(),
-                variance = variance,
-                visibilityRate = visibilityRate,
-                discriminationScore = discriminationScore,
-                weight = weight
-            )
+            BeaconProfile(addr, allNames[addr] ?: addr, mean.toInt(), variance, visibilityRate, discriminationScore, weight)
         }
-    }
-
-    fun clearTuning() {
-        _tuningSnapshots.value = emptyList()
-        _tuningStep.value = null
     }
 
     // endregion

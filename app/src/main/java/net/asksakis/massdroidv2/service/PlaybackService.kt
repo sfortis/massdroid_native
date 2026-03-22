@@ -406,6 +406,13 @@ class PlaybackService : MediaLibraryService() {
                 if (screenOn && cooledDown) {
                     // Screen on: ensure persistent scan running, read snapshot
                     proximityScanner.startPersistentScan(lowPower = false)
+                    // Recovery: restart scan if consecutive zero-device reads
+                    if (proximityScanner.zeroDeviceStreak >= 5) {
+                        Log.w(TAG, "Scanner recovery: ${proximityScanner.zeroDeviceStreak} zero-device reads")
+                        proximityScanner.stopPersistentScan()
+                        proximityScanner.startPersistentScan(lowPower = false)
+                        proximityScanner.zeroDeviceStreak = 0
+                    }
                     burstScan("screen")
                     kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS * 3)
                 } else if (isMoving && !screenOn && cooledDown) {
