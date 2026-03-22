@@ -143,10 +143,16 @@ class PlaybackService : MediaLibraryService() {
                 getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
                 scope.launch {
                     try {
-                        // Select player first, then send play command (not toggle)
                         playerRepository.selectPlayer(room.playerId)
-                        playerRepository.play(room.playerId)
-                        Log.d(TAG, "Proximity play on: ${room.playerName}")
+                        // Check if player has queue items; if empty, start Smart Mix
+                        val queueItems = try { musicRepository.getQueueItems(room.playerId, limit = 1) } catch (_: Exception) { emptyList() }
+                        if (queueItems.isNotEmpty()) {
+                            playerRepository.play(room.playerId)
+                            Log.d(TAG, "Proximity play on: ${room.playerName}")
+                        } else {
+                            Log.d(TAG, "Proximity play: empty queue, dispatching Smart Mix on ${room.playerName}")
+                            shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+                        }
                     } catch (e: Exception) {
                         Log.w(TAG, "Proximity play failed: ${e.message}")
                     }
@@ -306,7 +312,11 @@ class PlaybackService : MediaLibraryService() {
             ) ?: return
             proximityScanner.handleBackgroundScanResult(results)
 
-            // Detect room directly from receiver (polling loop may be frozen in doze)
+            // Only detect from receiver when screen is OFF (main loop handles screen-on)
+            val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+            val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
+            if (screenOn) return
+
             val config = proximityConfigStore.config.value
             if (!config.enabled) return
             if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
@@ -451,7 +461,10 @@ class PlaybackService : MediaLibraryService() {
         val previousPlayer = playerRepository.selectedPlayer.value
         val sourcePlayerId = previousPlayer?.playerId
         val wasPlaying = previousPlayer?.state == PlaybackState.PLAYING
+        // Already on this player and playing - nothing to do
         if (sourcePlayerId == detected.playerId && wasPlaying) return
+        // Already notified for this room (no duplicate notifications)
+        if (pendingProximityTransfer?.roomId == detected.roomId) return
         lastRoomSwitchMs = System.currentTimeMillis()
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
 
