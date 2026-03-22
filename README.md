@@ -8,23 +8,21 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## Screenshots
 
-<table align="center">
-  <tr>
-    <td align="center"><img src="screenshots/home.png" width="240" /><br/><sub>Discover</sub></td>
-    <td align="center"><img src="screenshots/nowplaying.png" width="240" /><br/><sub>Now Playing</sub></td>
-    <td align="center"><img src="screenshots/library_providers.png" width="240" /><br/><sub>Library</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/search_providers.png" width="240" /><br/><sub>Search</sub></td>
-    <td align="center"><img src="screenshots/players.png" width="240" /><br/><sub>Players</sub></td>
-    <td align="center"><img src="screenshots/artist_detail.png" width="240" /><br/><sub>Artist Detail</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/album_detail.png" width="240" /><br/><sub>Album Detail</sub></td>
-    <td align="center"><img src="screenshots/proximity_settings.png" width="240" /><br/><sub>Proximity Playback</sub></td>
-    <td align="center"><img src="screenshots/room_setup.png" width="240" /><br/><sub>Room Setup</sub></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="screenshots/home.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/nowplaying.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/library_providers.png" width="260" />
+</p>
+<p align="center">
+  <img src="screenshots/search_providers.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/players.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/artist_detail.png" width="260" />
+</p>
+<p align="center">
+  <img src="screenshots/album_detail.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/proximity_settings.png" width="260" />&nbsp;&nbsp;
+  <img src="screenshots/room_setup.png" width="260" />
+</p>
 
 ## Exploration & Discovery
 
