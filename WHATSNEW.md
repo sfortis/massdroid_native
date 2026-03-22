@@ -1,16 +1,12 @@
+- Proximity Playback: BLE fingerprint room detection with automatic speaker transfer
+- Per-room configuration: assign playlist, volume level, and shuffle per room
+- Time schedule: set active days and hours for proximity detection
+- Calibration wizard with quality assessment (Good/Weak indicators)
+- Per-room calibrate button for single-room re-training
 - Playlist management: create, delete, add/remove tracks with checkmark indicators
-- Genres folder in Library Browse tab and MediaBrowser tree (library artists only)
-- GenreRepository: centralized genre provider for browse, radio, and recommendations
 - Transfer queue from NowPlaying player options menu
-- Smart Mix and Genre Radio exposed in MediaBrowser for external controllers (AAIdrive, Android Auto)
-- Last.fm enricher syncs all library artists from server, periodic background enrichment with progress
+- Smart Mix and Genre Radio exposed in MediaBrowser for external controllers
+- Last.fm enricher syncs all library artists, periodic background enrichment with progress
 - BLL scoring: session diminishing returns prevents album binges from dominating scores
-- Skip dampening: skips penalize the track but barely affect the artist
-- Auto-select Sendspin player on Bluetooth A2DP connect
-- Faster reconnect strategy (30x1s, 30x5s, then stop)
-- Auto-show update dialog on app launch
-- InitialsBox placeholder for playlists without images
-- Reduce background CPU usage (animation throttling, notification update throttle)
+- Fix audio focus steal on app startup (other media apps no longer pause)
 - Fix startup flash of disconnected empty state
-- Fix external controller browse playback (AAIdrive)
-- Fix cached Last.fm tags not written to artist_genres table
