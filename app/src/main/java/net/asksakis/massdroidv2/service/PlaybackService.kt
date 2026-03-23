@@ -384,7 +384,7 @@ class PlaybackService : MediaLibraryService() {
             motionGate.start()
             proximityScanner.startPersistentScan(lowPower = false)
             val beaconAddresses = proximityConfigStore.config.value.rooms
-                .flatMap { r -> r.beaconProfiles.map { it.address } }.toSet()
+                .flatMap { r -> r.beaconProfiles.map { it.address } }.filter { !it.startsWith("wifi:") }.toSet()
             if (beaconAddresses.isNotEmpty()) {
                 proximityScanner.startBackgroundScan(beaconAddresses)
             }
@@ -396,7 +396,9 @@ class PlaybackService : MediaLibraryService() {
                 for (i in 1..2) {
                     kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
                     val devices = proximityScanner.readSnapshot()
-                    roomDetector.detect(devices.associate { it.address to it.rssi }, proximityConfigStore.config.value)
+                    val rssi = devices.associate { it.address to it.rssi }.toMutableMap()
+                    rssi.putAll(proximityScanner.readWifiSnapshot())
+                    roomDetector.detect(rssi, proximityConfigStore.config.value)
                 }
                 Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
@@ -413,7 +415,7 @@ class PlaybackService : MediaLibraryService() {
                     if (isWithinSchedule()) {
                         motionGate.start()
                         val addrs = proximityConfigStore.config.value.rooms
-                            .flatMap { r -> r.beaconProfiles.map { it.address } }.toSet()
+                            .flatMap { r -> r.beaconProfiles.map { it.address } }.filter { !it.startsWith("wifi:") }.toSet()
                         if (addrs.isNotEmpty()) proximityScanner.startBackgroundScan(addrs)
                     }
                     continue
@@ -448,7 +450,9 @@ class PlaybackService : MediaLibraryService() {
                         if (devices.isNotEmpty()) {
                             Log.d(TAG, "BLE fast-path (motion): ${devices.size} devices")
                             val cfg = proximityConfigStore.config.value
-                            val detected = roomDetector.detect(devices.associate { it.address to it.rssi }, cfg)
+                            val rssiMap = devices.associate { it.address to it.rssi }.toMutableMap()
+                            rssiMap.putAll(proximityScanner.readWifiSnapshot())
+                            val detected = roomDetector.detect(rssiMap, cfg)
                             if (detected != null) handleRoomChange(detected, cfg)
                         } else {
                             Log.d(TAG, "BLE fast-path: 0 devices (BLE radio blocked)")
