@@ -162,7 +162,7 @@ fun RoomSetupScreen(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                 // Detection policy
-                val isStrict = existingRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT
+                val currentPolicy = existingRoom.detectionPolicy
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -180,34 +180,40 @@ fun RoomSetupScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            androidx.compose.material3.FilterChip(
-                                selected = isStrict,
-                                onClick = {
-                                    viewModel.updateRoomPolicy(existingRoom.id, net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
-                                },
-                                label = { Text("Strict") },
-                                leadingIcon = if (isStrict) { { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) } } else null,
-                                modifier = Modifier.weight(1f)
-                            )
-                            androidx.compose.material3.FilterChip(
-                                selected = !isStrict,
-                                onClick = {
-                                    viewModel.updateRoomPolicy(existingRoom.id, net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED)
-                                },
-                                label = { Text("Relaxed") },
-                                leadingIcon = if (!isStrict) { { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) } } else null,
-                                modifier = Modifier.weight(1f)
-                            )
+                            net.asksakis.massdroidv2.data.proximity.DetectionPolicy.entries.forEach { policy ->
+                                val selected = currentPolicy == policy
+                                androidx.compose.material3.FilterChip(
+                                    selected = selected,
+                                    onClick = { viewModel.updateRoomPolicy(existingRoom.id, policy) },
+                                    label = { Text(policy.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) },
+                                    leadingIcon = if (selected) { { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) } } else null,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            if (isStrict) "Best for multi-room homes with good calibration"
-                            else "For single-room or low-ambiguity spaces (office, studio)",
+                            when (currentPolicy) {
+                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT ->
+                                    "Best for multi-room homes with good BLE separation"
+                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.NORMAL ->
+                                    "Good for simpler spaces with weaker BLE coverage"
+                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED ->
+                                    "Wi-Fi-first detection for spaces with poor BLE coverage"
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (currentPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED)
+                                MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (currentPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED) {
+                            Text(
+                                "May increase false positives in multi-room environments",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
                 }
 

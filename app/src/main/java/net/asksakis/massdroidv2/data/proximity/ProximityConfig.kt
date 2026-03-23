@@ -6,33 +6,49 @@ import kotlinx.serialization.Serializable
 enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
 
 @Serializable
-enum class DetectionPolicy { STRICT, RELAXED }
+enum class DetectionPolicy { STRICT, NORMAL, RELAXED }
 
 data class PolicyRules(
     val allowWeakCalibration: Boolean,
-    val minCoverage: Int,
+    val minBleCoverage: Int,
+    val allowWifiOnly: Boolean,
     val minConfidence: Double,
     val minMargin: Double,
     val minConsecutiveWins: Int,
-    val minUsableProfiles: Int
+    val minUsableProfiles: Int,
+    val wifiMaxWeight: Double
 )
 
 fun DetectionPolicy.rules(): PolicyRules = when (this) {
     DetectionPolicy.STRICT -> PolicyRules(
         allowWeakCalibration = false,
-        minCoverage = 2,
+        minBleCoverage = 2,
+        allowWifiOnly = false,
         minConfidence = 0.6,
         minMargin = 4.0,
         minConsecutiveWins = 2,
-        minUsableProfiles = 3
+        minUsableProfiles = 3,
+        wifiMaxWeight = 0.35
     )
-    DetectionPolicy.RELAXED -> PolicyRules(
+    DetectionPolicy.NORMAL -> PolicyRules(
         allowWeakCalibration = true,
-        minCoverage = 1,
+        minBleCoverage = 1,
+        allowWifiOnly = false,
         minConfidence = 0.4,
         minMargin = 2.0,
         minConsecutiveWins = 1,
-        minUsableProfiles = 2
+        minUsableProfiles = 2,
+        wifiMaxWeight = 0.5
+    )
+    DetectionPolicy.RELAXED -> PolicyRules(
+        allowWeakCalibration = true,
+        minBleCoverage = 0,
+        allowWifiOnly = true,
+        minConfidence = 0.35,
+        minMargin = 1.5,
+        minConsecutiveWins = 1,
+        minUsableProfiles = 2,
+        wifiMaxWeight = 0.8
     )
 }
 
