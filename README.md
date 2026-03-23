@@ -136,9 +136,7 @@ Download the latest signed APK from [GitHub Releases](https://github.com/sfortis
 
 ### Dev build (latest features, may be unstable)
 
-The most recent debug build is always available at:
-
-[Download dev build](https://github.com/sfortis/massdroid_native/releases/download/dev-latest/massdroid-2.7.0-debug.apk)
+The most recent debug build is always available at the [dev-latest release](https://github.com/sfortis/massdroid_native/releases/tag/dev-latest).
 
 > Debug and release builds can be installed side by side (different package IDs). Debug builds are not signed with the release key, so you cannot upgrade from debug to release or vice versa.
 
