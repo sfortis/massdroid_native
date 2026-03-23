@@ -59,7 +59,7 @@ fun PlayersScreen(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
     val playerRoomMap = remember(proximityConfig) {
-        proximityConfig.rooms.associate { it.playerId to it.name }
+        proximityConfig.rooms.groupBy { it.playerId }.mapValues { (_, rooms) -> rooms.map { it.name } }
     }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -102,7 +102,7 @@ fun PlayersScreen(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
-                                roomName = playerRoomMap[player.playerId],
+                                roomNames = playerRoomMap[player.playerId] ?: emptyList(),
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
                                 onQueueMenuClick = { queueMenuPlayer = player },
@@ -169,7 +169,7 @@ private fun PlayerListItem(
     player: Player,
     isSelected: Boolean,
     isLocalPlayer: Boolean = false,
-    roomName: String? = null,
+    roomNames: List<String> = emptyList(),
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
     onQueueMenuClick: () -> Unit,
@@ -192,7 +192,6 @@ private fun PlayerListItem(
             PlayerNameWithBadge(
                 name = player.displayName,
                 isLocalPlayer = isLocalPlayer,
-                roomName = roomName,
                 fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.Bold else null
             )
         },
@@ -234,6 +233,26 @@ private fun PlayerListItem(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                if (roomNames.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        roomNames.forEach { room ->
+                            Text(
+                                text = room,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .background(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -280,7 +299,7 @@ private fun PlayerQueueSheet(
     player: Player,
     allPlayers: List<Player>,
     sendspinClientId: String?,
-    playerRoomMap: Map<String, String> = emptyMap(),
+    playerRoomMap: Map<String, List<String>> = emptyMap(),
     onPlayerSettings: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
@@ -360,8 +379,7 @@ private fun PlayerQueueSheet(
                         headlineContent = {
                             PlayerNameWithBadge(
                                 name = target.displayName,
-                                isLocalPlayer = sendspinClientId != null && target.playerId == sendspinClientId,
-                                roomName = playerRoomMap[target.playerId]
+                                isLocalPlayer = sendspinClientId != null && target.playerId == sendspinClientId
                             )
                         },
                         leadingContent = {

@@ -20,7 +20,6 @@ import androidx.compose.ui.unit.dp
 fun PlayerNameWithBadge(
     name: String,
     isLocalPlayer: Boolean,
-    roomName: String? = null,
     modifier: Modifier = Modifier,
     fontWeight: FontWeight? = null
 ) {
@@ -44,20 +43,6 @@ fun PlayerNameWithBadge(
                 modifier = Modifier
                     .background(
                         color = Color(0xFFEF5350),
-                        shape = RoundedCornerShape(4.dp)
-                    )
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            )
-        }
-        if (roomName != null) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = roomName,
-                color = MaterialTheme.colorScheme.onPrimary,
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier
-                    .background(
-                        color = MaterialTheme.colorScheme.primary,
                         shape = RoundedCornerShape(4.dp)
                     )
                     .padding(horizontal = 6.dp, vertical = 2.dp)
