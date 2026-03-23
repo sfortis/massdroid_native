@@ -8,6 +8,34 @@ enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
 @Serializable
 enum class DetectionPolicy { STRICT, RELAXED }
 
+data class PolicyRules(
+    val allowWeakCalibration: Boolean,
+    val minCoverage: Int,
+    val minConfidence: Double,
+    val minMargin: Double,
+    val minConsecutiveWins: Int,
+    val minUsableProfiles: Int
+)
+
+fun DetectionPolicy.rules(): PolicyRules = when (this) {
+    DetectionPolicy.STRICT -> PolicyRules(
+        allowWeakCalibration = false,
+        minCoverage = 2,
+        minConfidence = 0.6,
+        minMargin = 4.0,
+        minConsecutiveWins = 2,
+        minUsableProfiles = 3
+    )
+    DetectionPolicy.RELAXED -> PolicyRules(
+        allowWeakCalibration = true,
+        minCoverage = 1,
+        minConfidence = 0.4,
+        minMargin = 2.0,
+        minConsecutiveWins = 1,
+        minUsableProfiles = 2
+    )
+}
+
 @Serializable
 data class ProximityConfig(
     val enabled: Boolean = false,

@@ -10,16 +10,9 @@ import kotlin.math.abs
 
 private const val TAG = "RoomDetector"
 private const val KNN_K = 5
-private const val MIN_CONFIDENCE = 0.6
-private const val MIN_CONFIDENCE_RELAXED = 0.4
-private const val MIN_MARGIN = 4.0
-private const val MIN_MARGIN_RELAXED = 2.0
-private const val MIN_CONSECUTIVE_WINS = 2
-private const val MIN_CONSECUTIVE_WINS_RELAXED = 1
 private const val STAY_BIAS_FACTOR = 0.85
 private const val MISSING_PENALTY = 12.0
 private const val RSSI_DIFF_CLAMP = 25
-private const val MIN_MATCHED_BEACONS = 2
 private const val NO_MATCH_CLEAR_THRESHOLD = 5
 
 /**
@@ -45,19 +38,19 @@ class RoomDetector @Inject constructor() {
     fun seedRoom(room: DetectedRoom) {
         _currentRoom.value = room
         consecutiveWinnerId = room.roomId
-        consecutiveWinCount = MIN_CONSECUTIVE_WINS
+        consecutiveWinCount = 10
         Log.d(TAG, "Seeded room: ${room.roomName}")
     }
 
     fun detect(scanResults: Map<String, Int>, config: ProximityConfig): DetectedRoom? {
         if (suppressed || config.rooms.isEmpty() || scanResults.isEmpty()) return null
 
-        // Build eligible rooms (respecting detection policy)
+        // Build eligible rooms using centralized policy rules
         val eligibleRooms = config.rooms.filter { room ->
             if (room.fingerprints.isEmpty()) return@filter false
-            val allowWeak = room.detectionPolicy == DetectionPolicy.RELAXED
-            if (!allowWeak && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false
-            if (allowWeak && room.calibrationQuality == CalibrationQuality.UNCALIBRATED) return@filter false
+            val rules = room.detectionPolicy.rules()
+            if (!rules.allowWeakCalibration && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false
+            if (room.calibrationQuality == CalibrationQuality.UNCALIBRATED) return@filter false
             true
         }
         if (eligibleRooms.isEmpty()) return null
@@ -70,11 +63,10 @@ class RoomDetector @Inject constructor() {
 
         val allDistances = mutableListOf<FpEntry>()
         for (room in eligibleRooms) {
-            // Per-room coverage: check how many of this room's beacons are in the scan
+            val rules = room.detectionPolicy.rules()
             val roomAddresses = room.fingerprints.flatMap { it.samples.keys }.toSet()
             val roomMatched = scanResults.keys.count { it in roomAddresses }
-            val minCoverage = if (room.detectionPolicy == DetectionPolicy.RELAXED) 1 else MIN_MATCHED_BEACONS
-            if (roomMatched < minCoverage) continue
+            if (roomMatched < rules.minCoverage) continue
 
             val weights = roomWeights[room.id] ?: emptyMap()
             for (fp in room.fingerprints) {
@@ -106,26 +98,22 @@ class RoomDetector @Inject constructor() {
 
         val winnerAvgDist = topK.filter { it.roomId == winnerId }.map { it.distance }.average()
         val runnerUpAvgDist = topK.filter { it.roomId != winnerId }
-            .map { it.distance }.takeIf { it.isNotEmpty() }?.average() ?: (winnerAvgDist + MIN_MARGIN + 1)
+            .map { it.distance }.takeIf { it.isNotEmpty() }?.average() ?: (winnerAvgDist + 5.0)
         val margin = runnerUpAvgDist - winnerAvgDist
 
         val winnerRoom = config.rooms.first { it.id == winnerId }
-        val isRelaxed = winnerRoom.detectionPolicy == DetectionPolicy.RELAXED
+        val rules = winnerRoom.detectionPolicy.rules()
         val topRoomNames = topK.map { e -> config.rooms.first { it.id == e.roomId }.name }
 
         Log.d(TAG, "k-NN: winner=${winnerRoom.name}, conf=${String.format("%.2f", confidence)}, " +
             "margin=${String.format("%.1f", margin)}, devices=${scanResults.size}, " +
-            "policy=${if (isRelaxed) "RELAXED" else "STRICT"}, top$KNN_K=$topRoomNames")
+            "policy=${winnerRoom.detectionPolicy}, top$KNN_K=$topRoomNames")
 
-        val reqConfidence = if (isRelaxed) MIN_CONFIDENCE_RELAXED else MIN_CONFIDENCE
-        val reqMargin = if (isRelaxed) MIN_MARGIN_RELAXED else MIN_MARGIN
-        val reqWins = if (isRelaxed) MIN_CONSECUTIVE_WINS_RELAXED else MIN_CONSECUTIVE_WINS
-
-        if (confidence < reqConfidence) {
+        if (confidence < rules.minConfidence) {
             resetConfidence()
             return null
         }
-        if (sortedVotes.size > 1 && margin < reqMargin) {
+        if (sortedVotes.size > 1 && margin < rules.minMargin) {
             resetConfidence()
             return null
         }
@@ -137,7 +125,7 @@ class RoomDetector @Inject constructor() {
             consecutiveWinCount = 1
         }
 
-        if (consecutiveWinCount < reqWins) return null
+        if (consecutiveWinCount < rules.minConsecutiveWins) return null
 
         val detected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
         val changed = _currentRoom.value?.roomId != winnerRoom.id

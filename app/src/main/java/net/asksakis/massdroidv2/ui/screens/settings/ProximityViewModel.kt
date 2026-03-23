@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.proximity.BeaconProfile
 import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.DetectedRoom
+import net.asksakis.massdroidv2.data.proximity.rules
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
@@ -37,7 +38,7 @@ private const val MIN_WEIGHT = 0.15
 private const val MAX_WEIGHT = 2.5
 
 // Quality gate thresholds
-private const val MIN_USABLE_PROFILES = 3
+
 private const val MIN_AVG_VISIBILITY = 0.3
 private const val MIN_DISCRIMINATIVE_BEACONS = 1
 private const val DISCRIMINATIVE_THRESHOLD = 5.0
@@ -182,7 +183,7 @@ class ProximityViewModel @Inject constructor(
                     .associate { room -> room.id to room.beaconProfiles.associate { it.address to it.meanRssi.toDouble() } }
 
                 if (validAddresses.isEmpty()) {
-                    Log.w(TAG, "Calibration failed: no named BLE devices found")
+                    Log.w(TAG, "Calibration failed: no stable non-mobile BLE devices found")
                     val totalDevices = counts.size
                     val mobileCount = counts.keys.count { categoryMap[it] == ProximityScanner.DeviceCategory.MOBILE }
                     val rpaCount = counts.keys.count { addressTypes[it] == ProximityScanner.AddressType.RPA }
@@ -193,7 +194,7 @@ class ProximityViewModel @Inject constructor(
                     val profiles = computeBeaconProfiles(rawScans, validAddresses, allNames, otherRoomMeans)
                     val warnings = mutableListOf<String>()
                     val room = config.rooms.find { it.id == roomId }
-                    val quality = assessQuality(room?.name ?: roomId, profiles, warnings)
+                    val quality = assessQuality(room?.name ?: roomId, profiles, warnings, room?.detectionPolicy ?: net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
 
                     configStore.update { cfg ->
                         val updated = cfg.rooms.map { r ->
@@ -204,11 +205,10 @@ class ProximityViewModel @Inject constructor(
                     }
 
                     roomDetector.reset()
-                    // Seed room if quality meets the room's detection policy
                     val updatedRoom = configStore.config.value.rooms.find { it.id == roomId }
                     if (updatedRoom != null && quality != CalibrationQuality.UNCALIBRATED) {
-                        val allowWeak = updatedRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED
-                        if (quality == CalibrationQuality.GOOD || allowWeak) {
+                        val rules = updatedRoom.detectionPolicy.rules()
+                        if (quality == CalibrationQuality.GOOD || rules.allowWeakCalibration) {
                             roomDetector.seedRoom(DetectedRoom(updatedRoom.id, updatedRoom.name, updatedRoom.playerId, updatedRoom.playerName))
                         }
                     }
@@ -330,7 +330,7 @@ class ProximityViewModel @Inject constructor(
                             training.rawScans, validAddresses, allNames, otherRoomMeans
                         )
 
-                        val quality = assessQuality(room.name, profiles, warnings)
+                        val quality = assessQuality(room.name, profiles, warnings, room.detectionPolicy)
                         roomResults[room.id] = quality
 
                         Log.d(TAG, "Tuned ${room.name}: ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")
@@ -351,7 +351,11 @@ class ProximityViewModel @Inject constructor(
                 if (lastTraining != null) {
                     val lastRoom = configStore.config.value.rooms.find { it.id == lastTraining.roomId }
                     if (lastRoom != null) {
-                        roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
+                        val quality = lastRoom.calibrationQuality
+                        val rules = lastRoom.detectionPolicy.rules()
+                        if (quality == CalibrationQuality.GOOD || (rules.allowWeakCalibration && quality == CalibrationQuality.WEAK)) {
+                            roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
+                        }
                     }
                 }
 
@@ -368,7 +372,8 @@ class ProximityViewModel @Inject constructor(
     private fun assessQuality(
         roomName: String,
         profiles: List<BeaconProfile>,
-        warnings: MutableList<String>
+        warnings: MutableList<String>,
+        policy: net.asksakis.massdroidv2.data.proximity.DetectionPolicy = net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT
     ): CalibrationQuality {
         if (profiles.isEmpty()) {
             warnings.add("$roomName: no usable beacons found")
@@ -380,10 +385,11 @@ class ProximityViewModel @Inject constructor(
         val discriminativeCount = profiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
         val floorRatio = profiles.count { it.weight <= MIN_WEIGHT + 0.01 }.toDouble() / profiles.size
 
+        val rules = policy.rules()
         var isGood = true
 
-        if (usableCount < MIN_USABLE_PROFILES) {
-            warnings.add("$roomName: only $usableCount usable beacons (need $MIN_USABLE_PROFILES)")
+        if (usableCount < rules.minUsableProfiles) {
+            warnings.add("$roomName: only $usableCount usable beacons (need ${rules.minUsableProfiles})")
             isGood = false
         }
         if (avgVisibility < MIN_AVG_VISIBILITY) {
