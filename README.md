@@ -6,20 +6,10 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Follow Me: BLE + WiFi fingerprint room detection with automatic speaker transfer
-- Three-tier detection policy: Strict, Normal, Relaxed (WiFi-first for low-BLE environments)
-- WiFi AP fingerprinting as support layer for improved room detection accuracy
-- Per-room configuration: assign playlist, volume level, shuffle, and detection policy
-- Time schedule with full battery suspension outside active hours
-- Calibration wizard with quality assessment and guided instructions
-- Per-room calibrate button for single-room re-training
-- Room badges on Players screen showing assigned rooms per speaker
-- Centralized PolicyRules for consistent detection behavior
-- Visibility-based address promotion for better office/corporate BLE support
-- Playlist management: create, delete, add/remove tracks with checkmark indicators
-- Transfer queue from NowPlaying player options menu
-- Fix audio focus steal on app startup (other media apps no longer pause)
-- Fix startup flash of disconnected empty state
+- Theme toggle: Dark / Light / Auto mode in Settings
+- Light theme improvements: stronger contrast
+- Fix HERE badge stuck when leaving room area
+- Updated launcher icons and logo
 
 ## Screenshots
 
