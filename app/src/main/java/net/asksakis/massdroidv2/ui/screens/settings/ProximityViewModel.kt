@@ -204,8 +204,13 @@ class ProximityViewModel @Inject constructor(
                     }
 
                     roomDetector.reset()
-                    if (room != null && quality == CalibrationQuality.GOOD) {
-                        roomDetector.seedRoom(DetectedRoom(room.id, room.name, room.playerId, room.playerName))
+                    // Seed room if quality meets the room's detection policy
+                    val updatedRoom = configStore.config.value.rooms.find { it.id == roomId }
+                    if (updatedRoom != null && quality != CalibrationQuality.UNCALIBRATED) {
+                        val allowWeak = updatedRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED
+                        if (quality == CalibrationQuality.GOOD || allowWeak) {
+                            roomDetector.seedRoom(DetectedRoom(updatedRoom.id, updatedRoom.name, updatedRoom.playerId, updatedRoom.playerName))
+                        }
                     }
 
                     Log.d(TAG, "Single-room calibration: ${room?.name}, ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")

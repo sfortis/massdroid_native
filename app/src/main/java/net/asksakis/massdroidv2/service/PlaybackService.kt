@@ -333,7 +333,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun createProximityNotificationChannel() {
         val channel = NotificationChannel(
-            PROXIMITY_CHANNEL_ID, "Proximity Playback", NotificationManager.IMPORTANCE_HIGH
+            PROXIMITY_CHANNEL_ID, "Follow Me", NotificationManager.IMPORTANCE_HIGH
         ).apply { description = "Room detection and playback transfer"; setShowBadge(false) }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
@@ -378,24 +378,27 @@ class PlaybackService : MediaLibraryService() {
         stopProximityEngine()
         Log.d(TAG, "Starting proximity engine")
 
-        motionGate.start()
-        proximityScanner.startPersistentScan(lowPower = false)
-
-        // PendingIntent background scan as fallback for screen-off
-        val beaconAddresses = proximityConfigStore.config.value.rooms
-            .flatMap { r -> r.beaconProfiles.map { it.address } }.toSet()
-        if (beaconAddresses.isNotEmpty()) {
-            proximityScanner.startBackgroundScan(beaconAddresses)
+        // Skip full radio startup if outside schedule
+        if (isWithinSchedule()) {
+            motionGate.start()
+            proximityScanner.startPersistentScan(lowPower = false)
+            val beaconAddresses = proximityConfigStore.config.value.rooms
+                .flatMap { r -> r.beaconProfiles.map { it.address } }.toSet()
+            if (beaconAddresses.isNotEmpty()) {
+                proximityScanner.startBackgroundScan(beaconAddresses)
+            }
         }
 
         proximityJob = scope.launch {
-            // Warmup: 2 snapshots to reach confidence
-            for (i in 1..2) {
-                kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
-                val devices = proximityScanner.readSnapshot()
-                roomDetector.detect(devices.associate { it.address to it.rssi }, proximityConfigStore.config.value)
+            // Warmup: 2 snapshots to reach confidence (skip if outside schedule)
+            if (isWithinSchedule()) {
+                for (i in 1..2) {
+                    kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
+                    val devices = proximityScanner.readSnapshot()
+                    roomDetector.detect(devices.associate { it.address to it.rssi }, proximityConfigStore.config.value)
+                }
+                Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
-            Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
 
             // Main loop: screen-on = persistent snapshot, screen-off = PendingIntent background scan
             while (proximityConfigStore.config.value.enabled) {

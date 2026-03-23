@@ -47,6 +47,7 @@ class MotionGate @Inject constructor(
         if (motionSensor != null) {
             triggerListener = object : TriggerEventListener() {
                 override fun onTrigger(event: TriggerEvent?) {
+                    if (!started) return
                     Log.d(TAG, "Significant motion")
                     openMovementWindow()
                     sensorManager.requestTriggerSensor(this, motionSensor)
@@ -59,6 +60,7 @@ class MotionGate @Inject constructor(
         if (stepSensor != null) {
             stepListener = object : SensorEventListener {
                 override fun onSensorChanged(event: SensorEvent?) {
+                    if (!started) return
                     stepCount++
                     openMovementWindow()
                 }

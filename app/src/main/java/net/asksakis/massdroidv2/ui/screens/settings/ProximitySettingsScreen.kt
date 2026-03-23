@@ -98,8 +98,8 @@ fun ProximitySettingsScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             ListItem(
-                headlineContent = { Text("Enable Proximity Detection") },
-                supportingContent = { Text("Detect rooms via BLE and suggest speaker transfers") },
+                headlineContent = { Text("Enable Follow Me") },
+                supportingContent = { Text("Detect room changes and suggest speaker transfers") },
                 trailingContent = {
                     Switch(
                         checked = config.enabled,
@@ -317,10 +317,14 @@ fun ProximitySettingsScreen(
                             Text("Scanning ($autoProgress/${ProximityScanner.AUTO_FINGERPRINT_CYCLES})...",
                                 style = MaterialTheme.typography.bodyLarge)
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("Walk around the room slowly",
+                            Text("Walk to 2\u20133 spots in the room",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.tertiary)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Keep phone in hand, avoid doorways",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         } else if (nextRoom != null) {
                             Icon(Icons.Default.LocationOn, contentDescription = null,
                                 tint = MaterialTheme.colorScheme.tertiary,
@@ -636,9 +640,11 @@ private fun UnavailableScreen(onBack: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                "Proximity Playback requires Android 12 or later with Bluetooth support.",
+                "Follow Me requires a device with Bluetooth support.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(modifier = Modifier.height(24.dp))
+            TextButton(onClick = onBack) { Text("Go Back") }
     }
 }

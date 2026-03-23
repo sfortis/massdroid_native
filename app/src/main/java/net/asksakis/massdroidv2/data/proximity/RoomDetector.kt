@@ -11,8 +11,11 @@ import kotlin.math.abs
 private const val TAG = "RoomDetector"
 private const val KNN_K = 5
 private const val MIN_CONFIDENCE = 0.6
+private const val MIN_CONFIDENCE_RELAXED = 0.4
 private const val MIN_MARGIN = 4.0
+private const val MIN_MARGIN_RELAXED = 2.0
 private const val MIN_CONSECUTIVE_WINS = 2
+private const val MIN_CONSECUTIVE_WINS_RELAXED = 1
 private const val STAY_BIAS_FACTOR = 0.85
 private const val MISSING_PENALTY = 12.0
 private const val RSSI_DIFF_CLAMP = 25
@@ -49,45 +52,50 @@ class RoomDetector @Inject constructor() {
     fun detect(scanResults: Map<String, Int>, config: ProximityConfig): DetectedRoom? {
         if (suppressed || config.rooms.isEmpty() || scanResults.isEmpty()) return null
 
-        val roomWeights = config.rooms.associate { room ->
+        // Build eligible rooms (respecting detection policy)
+        val eligibleRooms = config.rooms.filter { room ->
+            if (room.fingerprints.isEmpty()) return@filter false
+            val allowWeak = room.detectionPolicy == DetectionPolicy.RELAXED
+            if (!allowWeak && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false
+            if (allowWeak && room.calibrationQuality == CalibrationQuality.UNCALIBRATED) return@filter false
+            true
+        }
+        if (eligibleRooms.isEmpty()) return null
+
+        val roomWeights = eligibleRooms.associate { room ->
             room.id to room.beaconProfiles.associate { it.address to it.weight }
         }
 
-        // Check minimum beacon coverage: scan must match at least MIN_MATCHED_BEACONS known addresses
-        val allKnownAddresses = config.rooms
-            .flatMap { r -> r.fingerprints.flatMap { it.samples.keys } }.toSet()
-        val matchedCount = scanResults.keys.count { it in allKnownAddresses }
-        if (matchedCount < MIN_MATCHED_BEACONS) {
+        data class FpEntry(val roomId: String, val distance: Double)
+
+        val allDistances = mutableListOf<FpEntry>()
+        for (room in eligibleRooms) {
+            // Per-room coverage: check how many of this room's beacons are in the scan
+            val roomAddresses = room.fingerprints.flatMap { it.samples.keys }.toSet()
+            val roomMatched = scanResults.keys.count { it in roomAddresses }
+            val minCoverage = if (room.detectionPolicy == DetectionPolicy.RELAXED) 1 else MIN_MATCHED_BEACONS
+            if (roomMatched < minCoverage) continue
+
+            val weights = roomWeights[room.id] ?: emptyMap()
+            for (fp in room.fingerprints) {
+                val dist = fingerprintDistance(scanResults, fp, weights)
+                val biased = if (_currentRoom.value?.roomId == room.id) dist * STAY_BIAS_FACTOR else dist
+                allDistances.add(FpEntry(room.id, biased))
+            }
+        }
+
+        if (allDistances.isEmpty()) {
             noMatchStreak++
             if (noMatchStreak >= NO_MATCH_CLEAR_THRESHOLD && _currentRoom.value != null) {
                 Log.d(TAG, "k-NN: left all rooms (no match x$noMatchStreak)")
                 resetConfidence()
                 _currentRoom.value = null
             } else {
-                Log.d(TAG, "k-NN: skip (devices=${scanResults.size}, matched=$matchedCount)")
+                Log.d(TAG, "k-NN: skip (devices=${scanResults.size}, no room matched coverage)")
             }
             return null
         }
         noMatchStreak = 0
-
-        data class FpEntry(val roomId: String, val distance: Double)
-
-        val allDistances = mutableListOf<FpEntry>()
-        for (room in config.rooms) {
-            if (room.fingerprints.isEmpty()) continue
-            val allowWeak = room.detectionPolicy == DetectionPolicy.RELAXED
-            if (!allowWeak && room.calibrationQuality != CalibrationQuality.GOOD) continue
-            if (allowWeak && room.calibrationQuality == CalibrationQuality.UNCALIBRATED) continue
-            val weights = roomWeights[room.id] ?: emptyMap()
-            for (fp in room.fingerprints) {
-                val dist = fingerprintDistance(scanResults, fp, weights)
-                // Proportional stay bias: current room distances scaled down
-                val biased = if (_currentRoom.value?.roomId == room.id) dist * STAY_BIAS_FACTOR else dist
-                allDistances.add(FpEntry(room.id, biased))
-            }
-        }
-
-        if (allDistances.isEmpty()) return null
 
         val topK = allDistances.sortedBy { it.distance }.take(KNN_K)
         val votes = topK.groupBy { it.roomId }.mapValues { it.value.size }
@@ -102,17 +110,22 @@ class RoomDetector @Inject constructor() {
         val margin = runnerUpAvgDist - winnerAvgDist
 
         val winnerRoom = config.rooms.first { it.id == winnerId }
+        val isRelaxed = winnerRoom.detectionPolicy == DetectionPolicy.RELAXED
         val topRoomNames = topK.map { e -> config.rooms.first { it.id == e.roomId }.name }
 
         Log.d(TAG, "k-NN: winner=${winnerRoom.name}, conf=${String.format("%.2f", confidence)}, " +
             "margin=${String.format("%.1f", margin)}, devices=${scanResults.size}, " +
-            "top$KNN_K=$topRoomNames")
+            "policy=${if (isRelaxed) "RELAXED" else "STRICT"}, top$KNN_K=$topRoomNames")
 
-        if (confidence < MIN_CONFIDENCE) {
+        val reqConfidence = if (isRelaxed) MIN_CONFIDENCE_RELAXED else MIN_CONFIDENCE
+        val reqMargin = if (isRelaxed) MIN_MARGIN_RELAXED else MIN_MARGIN
+        val reqWins = if (isRelaxed) MIN_CONSECUTIVE_WINS_RELAXED else MIN_CONSECUTIVE_WINS
+
+        if (confidence < reqConfidence) {
             resetConfidence()
             return null
         }
-        if (sortedVotes.size > 1 && margin < MIN_MARGIN) {
+        if (sortedVotes.size > 1 && margin < reqMargin) {
             resetConfidence()
             return null
         }
@@ -124,7 +137,7 @@ class RoomDetector @Inject constructor() {
             consecutiveWinCount = 1
         }
 
-        if (consecutiveWinCount < MIN_CONSECUTIVE_WINS) return null
+        if (consecutiveWinCount < reqWins) return null
 
         val detected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
         val changed = _currentRoom.value?.roomId != winnerRoom.id

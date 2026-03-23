@@ -6,7 +6,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Proximity Playback: BLE fingerprint room detection with automatic speaker transfer
+- Follow Me: BLE fingerprint room detection with automatic speaker transfer
 - Per-room configuration: assign playlist, volume level, and shuffle per room
 - Time schedule: set active days and hours for proximity detection
 - Calibration wizard with quality assessment (Good/Weak indicators)
@@ -46,7 +46,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Smart Listening** : Runs silently in the background. Every play, skip, like, and unlike trains a per-artist preference model that decays over 60 days, so the engine adapts as your taste evolves.
 - **Recommendation Insights** : View your top artists, albums, and genres, plus manage blocked artists from Settings.
 
-## Proximity Playback
+## Follow Me
 
 Walk between rooms and your music follows you. MassDroid uses BLE fingerprinting to detect which room you are in and automatically transfer playback or notify you to switch speakers.
 
@@ -82,7 +82,7 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
 - **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player. Audio streams as Opus frames over WebSocket, decoded and played through your phone speaker or headphones.
-- **Proximity Playback** : BLE fingerprint-based room detection with auto-transfer, per-room playlists, volume, and scheduling
+- **Follow Me** : BLE fingerprint-based room detection with auto-transfer, per-room playlists, volume, and scheduling
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade and volume normalization
@@ -108,7 +108,7 @@ When Sendspin is enabled, the phone registers as a Music Assistant player. Audio
 
 - Android 8.0+ (API 26)
 - A running [Music Assistant](https://music-assistant.io/) server (v2.x)
-- Android 12+ for Proximity Playback (BLE scanning)
+- Bluetooth support for Follow Me (room detection)
 
 ## Permissions
 
@@ -124,7 +124,7 @@ When Sendspin is enabled, the phone registers as a Music Assistant player. Audio
 | Wake Lock | Keep Sendspin audio streaming while screen is off |
 | Battery Optimization Exemption | Reliable background playback and proximity detection |
 
-All permissions are requested at runtime when needed. Proximity-related permissions (Bluetooth, Location, Activity Recognition) are only requested when you enable Proximity Playback.
+All permissions are requested at runtime when needed. Proximity-related permissions (Bluetooth, Location, Activity Recognition) are only requested when you enable Follow Me.
 
 ## Configuration
 

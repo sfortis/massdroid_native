@@ -1,4 +1,4 @@
-- Proximity Playback: BLE fingerprint room detection with automatic speaker transfer
+- Follow Me: BLE fingerprint room detection with automatic speaker transfer
 - Per-room configuration: assign playlist, volume level, and shuffle per room
 - Time schedule: set active days and hours for proximity detection
 - Calibration wizard with quality assessment (Good/Weak indicators)

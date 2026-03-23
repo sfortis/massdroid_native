@@ -202,8 +202,7 @@ class ProximityScanner @Inject constructor(
         return devices
     }
 
-    fun isAvailable(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && getScanner() != null
+    fun isAvailable(): Boolean = getScanner() != null
 
     @SuppressLint("MissingPermission")
     suspend fun scanOnce(lowPower: Boolean = true): List<ScannedDevice> {

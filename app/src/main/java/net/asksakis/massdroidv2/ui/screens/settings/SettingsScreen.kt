@@ -112,7 +112,7 @@ fun SettingsScreen(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
-                            SettingsCategory.PROXIMITY -> "Proximity Playback"
+                            SettingsCategory.PROXIMITY -> "Follow Me"
                             SettingsCategory.ABOUT -> "About"
                             null -> "Settings"
                         }
@@ -194,8 +194,8 @@ private fun CategoryList(
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             HorizontalDivider()
             ListItem(
-                headlineContent = { Text("Proximity Playback") },
-                supportingContent = { Text("Auto-detect rooms via BLE and transfer playback") },
+                headlineContent = { Text("Follow Me") },
+                supportingContent = { Text("Music follows you between rooms") },
                 leadingContent = {
                     Icon(Icons.Default.LocationOn, contentDescription = null)
                 },

@@ -232,19 +232,10 @@ fun RoomSetupScreen(
 
             androidx.compose.material3.OutlinedButton(
                 onClick = {
-                    val id = existingRoom?.id
-                    if (id != null) {
-                        viewModel.calibrateRoom(id) {}
-                    } else {
-                        // Save first, then calibrate
-                        val player = selectedPlayer ?: return@OutlinedButton
-                        if (roomName.isBlank()) return@OutlinedButton
-                        val newId = java.util.UUID.randomUUID().toString()
-                        viewModel.saveRoom(null, roomName.trim(), player.playerId, player.displayName)
-                        // Need to get the saved room ID - use the latest config
-                    }
+                    val id = existingRoom?.id ?: return@OutlinedButton
+                    viewModel.calibrateRoom(id) {}
                 },
-                enabled = !isCalibrating && (existingRoom != null || (roomName.isNotBlank() && selectedPlayer != null)),
+                enabled = !isCalibrating && existingRoom != null,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
@@ -284,10 +275,16 @@ fun RoomSetupScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                "Walk around the room slowly",
+                                "Walk to 2\u20133 spots in the room",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.tertiary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Keep phone in hand, avoid doorways",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     },
@@ -632,6 +629,16 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                     Text(qLabel, style = MaterialTheme.typography.labelSmall, color = qColor,
                         fontWeight = FontWeight.Bold)
                 }
+
+                if (room.calibrationQuality == net.asksakis.massdroidv2.data.proximity.CalibrationQuality.WEAK) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Try recalibrating, use Relaxed mode, or check for more stable devices nearby.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Top beacons by weight
