@@ -128,6 +128,20 @@ When Sendspin is enabled, the phone registers as a Music Assistant player. Audio
 
 All permissions are requested at runtime when needed. Proximity-related permissions (Bluetooth, Location, Activity Recognition) are only requested when you enable Follow Me.
 
+## Installation
+
+### Stable release
+
+Download the latest signed APK from [GitHub Releases](https://github.com/sfortis/massdroid_native/releases/latest).
+
+### Dev build (latest features, may be unstable)
+
+The most recent debug build is always available at:
+
+[Download dev build](https://github.com/sfortis/massdroid_native/releases/download/dev-latest/massdroid-2.7.0-debug.apk)
+
+> Debug and release builds can be installed side by side (different package IDs). Debug builds are not signed with the release key, so you cannot upgrade from debug to release or vice versa.
+
 ## Configuration
 
 ### Server connection
