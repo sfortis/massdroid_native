@@ -98,6 +98,16 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
+    fun updateRoomPolicy(roomId: String, policy: net.asksakis.massdroidv2.data.proximity.DetectionPolicy) {
+        viewModelScope.launch {
+            configStore.update { config ->
+                config.copy(rooms = config.rooms.map { r ->
+                    if (r.id == roomId) r.copy(detectionPolicy = policy) else r
+                })
+            }
+        }
+    }
+
     fun deleteRoom(roomId: String) {
         viewModelScope.launch {
             configStore.update { c -> c.copy(rooms = c.rooms.filter { it.id != roomId }) }

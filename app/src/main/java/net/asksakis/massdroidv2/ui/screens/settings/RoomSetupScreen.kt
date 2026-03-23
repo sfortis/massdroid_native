@@ -160,6 +160,36 @@ fun RoomSetupScreen(
 
             if (existingRoom != null) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // Detection policy
+                ListItem(
+                    headlineContent = { Text("Detection policy") },
+                    supportingContent = {
+                        Text(
+                            if (existingRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
+                                "Strict: requires strong calibration (multi-room homes)"
+                            else
+                                "Relaxed: accepts weaker calibration (single-room, office)"
+                        )
+                    },
+                    trailingContent = {
+                        androidx.compose.material3.FilterChip(
+                            selected = existingRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED,
+                            onClick = {
+                                val newPolicy = if (existingRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
+                                    net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED
+                                else net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT
+                                viewModel.updateRoomPolicy(existingRoom.id, newPolicy)
+                            },
+                            label = {
+                                Text(if (existingRoom.detectionPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT) "Strict" else "Relaxed")
+                            }
+                        )
+                    }
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
                 PlaybackConfigSection(
                     roomId = existingRoom.id,
                     playbackConfig = existingRoom.playbackConfig,

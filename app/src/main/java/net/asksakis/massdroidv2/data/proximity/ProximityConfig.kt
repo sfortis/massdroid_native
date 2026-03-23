@@ -5,7 +5,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
 
-
+@Serializable
+enum class DetectionPolicy { STRICT, RELAXED }
 
 @Serializable
 data class ProximityConfig(
@@ -32,6 +33,7 @@ data class RoomConfig(
     val fingerprints: List<RoomFingerprint> = emptyList(),
     val beaconProfiles: List<BeaconProfile> = emptyList(),
     val calibrationQuality: CalibrationQuality = CalibrationQuality.UNCALIBRATED,
+    val detectionPolicy: DetectionPolicy = DetectionPolicy.STRICT,
     val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig()
 )
 

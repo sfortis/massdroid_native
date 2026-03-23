@@ -74,7 +74,10 @@ class RoomDetector @Inject constructor() {
 
         val allDistances = mutableListOf<FpEntry>()
         for (room in config.rooms) {
-            if (room.fingerprints.isEmpty() || room.calibrationQuality != CalibrationQuality.GOOD) continue
+            if (room.fingerprints.isEmpty()) continue
+            val allowWeak = room.detectionPolicy == DetectionPolicy.RELAXED
+            if (!allowWeak && room.calibrationQuality != CalibrationQuality.GOOD) continue
+            if (allowWeak && room.calibrationQuality == CalibrationQuality.UNCALIBRATED) continue
             val weights = roomWeights[room.id] ?: emptyMap()
             for (fp in room.fingerprints) {
                 val dist = fingerprintDistance(scanResults, fp, weights)
