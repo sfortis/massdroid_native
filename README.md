@@ -6,15 +6,15 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Save queue to playlist: append current queue to existing or new playlist with duplicate detection
-- WiFi context gate: connected AP BSSID prevents false room detection across locations
-- Discrimination-aware anchor ranking for better adjacent room separation
-- Motion-triggered 2s scan cadence for faster room transitions
-- Theme toggle: Dark / Light / Auto mode in Settings
-- Light theme improvements: stronger contrast
-- Per-room calibration isolation prevents beacon leakage between rooms
-- Fix HERE badge stuck when leaving room area
-- Updated launcher icons and logo
+- Follow Me: BLE fingerprint room detection with automatic speaker transfer
+- WiFi context gate: connected AP prevents false detection across locations
+- Per-room configuration: playlist, volume, shuffle, and detection policy
+- Save queue to playlist with duplicate detection
+- Time schedule with full battery suspension outside active hours
+- Calibration wizard with quality assessment
+- Theme toggle: Dark / Light / Auto
+- Room badges on Players screen
+- Fix audio focus steal on app startup
 - Other small fixes and UI improvements
 
 ## Screenshots
