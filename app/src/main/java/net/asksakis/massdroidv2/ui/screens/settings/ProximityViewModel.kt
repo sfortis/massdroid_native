@@ -189,12 +189,19 @@ class ProximityViewModel @Inject constructor(
                     .filter { it.id != roomId && it.beaconProfiles.isNotEmpty() }
                     .associate { room -> room.id to room.beaconProfiles.associate { it.address to it.meanRssi.toDouble() } }
 
+                val totalScans = rawScans.sumOf { it.size }
                 if (validAddresses.isEmpty()) {
                     Log.w(TAG, "Calibration failed: no stable non-mobile BLE devices found")
                     val totalDevices = counts.size
                     val mobileCount = counts.keys.count { categoryMap[it] == ProximityScanner.DeviceCategory.MOBILE }
                     val rpaCount = counts.keys.count { addressTypes[it] == ProximityScanner.AddressType.RPA }
-                    _calibrationError.value = "No usable BLE devices found ($totalDevices seen, $mobileCount mobile, $rpaCount rotating). Need stationary devices with stable addresses (TVs, speakers, routers, access points)."
+                    val errorMsg = when {
+                        totalScans == 0 -> "No BLE devices detected. Check that Bluetooth and Location are enabled in system settings."
+                        totalDevices == 0 -> "BLE scan ran but found 0 devices. Make sure Location Services are on and Bluetooth permissions are granted."
+                        totalDevices == mobileCount -> "Found $totalDevices devices but all are mobile (phones, wearables). Need stationary devices like TVs, speakers, or routers."
+                        else -> "Found $totalDevices devices ($mobileCount mobile, $rpaCount rotating) but none are stable enough. Need stationary devices with fixed addresses."
+                    }
+                    _calibrationError.value = errorMsg
                 } else {
                     val fingerprints = buildFingerprints(rawScans, validAddresses)
                     val allNames = nameMap.mapValues { it.value }

@@ -248,11 +248,14 @@ class QueueViewModel @Inject constructor(
                     musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider).map { it.uri }.toSet()
                 } catch (_: Exception) { emptySet() }
                 val newUris = trackUris.filter { it !in existing }
+                Log.d(TAG, "Save queue: ${trackUris.size} queue tracks, ${existing.size} existing, ${newUris.size} new")
                 for (uri in newUris) {
                     musicRepository.addTrackToPlaylist(playlist, uri)
                 }
-                _error.tryEmit("Added ${newUris.size} tracks to ${playlist.name}" +
-                    if (trackUris.size > newUris.size) " (${trackUris.size - newUris.size} already existed)" else "")
+                val msg = if (newUris.isEmpty()) "All ${trackUris.size} tracks already in ${playlist.name}"
+                    else "Added ${newUris.size} tracks to ${playlist.name}" +
+                        if (trackUris.size > newUris.size) " (${trackUris.size - newUris.size} already existed)" else ""
+                _error.tryEmit(msg)
             } catch (e: Exception) {
                 _error.tryEmit("Failed to save queue: ${e.message}")
             }
