@@ -144,6 +144,7 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

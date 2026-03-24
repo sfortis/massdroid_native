@@ -10,6 +10,8 @@ import kotlin.math.abs
 
 private const val TAG = "RoomDetector"
 private const val KNN_K = 5
+private const val TOP_ANCHORS = 5
+private const val COVERAGE_ANCHORS = 8
 private const val STAY_BIAS_FACTOR = 0.85
 private const val MISSING_PENALTY = 12.0
 private const val RSSI_DIFF_CLAMP = 25
@@ -42,11 +44,11 @@ class RoomDetector @Inject constructor() {
         Log.d(TAG, "Seeded room: ${room.roomName}")
     }
 
-    fun detect(scanResults: Map<String, Int>, config: ProximityConfig): DetectedRoom? {
+    fun detect(scanResults: Map<String, Int>, config: ProximityConfig, motionActive: Boolean = false, currentBssid: String? = null): DetectedRoom? {
         if (suppressed || config.rooms.isEmpty()) return null
         if (scanResults.isEmpty()) return handleNoMatch("empty scan")
 
-        // Build eligible rooms using centralized policy rules
+        // Build eligible rooms using centralized policy rules + WiFi context gate
         val eligibleRooms = config.rooms.filter { room ->
             if (room.fingerprints.isEmpty()) return@filter false
             val rules = room.detectionPolicy.rules()
@@ -56,8 +58,26 @@ class RoomDetector @Inject constructor() {
         }
         if (eligibleRooms.isEmpty()) return null
 
-        val roomWeights = eligibleRooms.associate { room ->
-            room.id to room.beaconProfiles.associate { it.address to it.weight }
+        // Use top-N anchors by weight for coverage check and scoring (prune long tail)
+        val roomSortedBleProfiles = eligibleRooms.associate { room ->
+            room.id to room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
+                .sortedWith(
+                    compareByDescending<BeaconProfile> { it.discriminationScore > 5.0 }
+                        .thenByDescending { it.weight }
+                        .thenByDescending { it.discriminationScore }
+                )
+        }
+
+        val roomCoverageBleAnchors = roomSortedBleProfiles.mapValues { (_, bleProfiles) ->
+            bleProfiles.take(COVERAGE_ANCHORS).map { it.address }.toSet()
+        }
+
+        val roomTopAnchors = eligibleRooms.associate { room ->
+            // Prefer discriminative anchors, then by weight
+            val topBle = roomSortedBleProfiles[room.id].orEmpty().take(TOP_ANCHORS)
+            val topWifi = room.beaconProfiles.filter { it.address.startsWith("wifi:") }
+                .sortedByDescending { it.weight }.take(TOP_ANCHORS)
+            room.id to (topBle + topWifi).associate { it.address to it.weight }
         }
 
         data class FpEntry(val roomId: String, val distance: Double)
@@ -65,26 +85,36 @@ class RoomDetector @Inject constructor() {
         val allDistances = mutableListOf<FpEntry>()
         for (room in eligibleRooms) {
             val rules = room.detectionPolicy.rules()
-            // Coverage gate: BLE primary, WiFi allowed only for RELAXED
-            val bleAddresses = room.fingerprints.flatMap { it.samples.keys }.filter { !it.startsWith("wifi:") }.toSet()
-            val bleMatched = scanResults.keys.count { it in bleAddresses }
-            if (bleMatched < rules.minBleCoverage) {
-                if (!rules.allowWifiOnly) continue
-                // WiFi-only fallback: need at least 2 WiFi matches
-                val wifiAddresses = room.fingerprints.flatMap { it.samples.keys }.filter { it.startsWith("wifi:") }.toSet()
-                val wifiMatched = scanResults.keys.count { it in wifiAddresses }
-                if (wifiMatched < 2) continue
-            }
+            val topWeights = roomTopAnchors[room.id] ?: emptyMap()
+            // BLE coverage gate uses a slightly wider anchor set than scoring.
+            val coverageBleAddrs = roomCoverageBleAnchors[room.id] ?: emptySet()
+            val bleMatched = scanResults.keys.count { it in coverageBleAddrs }
+            if (bleMatched < rules.minBleCoverage) continue
 
-            val weights = roomWeights[room.id] ?: emptyMap()
             for (fp in room.fingerprints) {
-                val dist = fingerprintDistance(scanResults, fp, weights)
+                val dist = fingerprintDistance(scanResults, fp, topWeights)
                 val biased = if (_currentRoom.value?.roomId == room.id) dist * STAY_BIAS_FACTOR else dist
-                allDistances.add(FpEntry(room.id, biased))
+                // WiFi BSSID as supplementary scoring hint
+                val bssidAdjusted = when {
+                    room.connectedBssid == null || currentBssid == null -> biased
+                    room.connectedBssid == currentBssid -> biased * 0.9
+                    else -> biased * 1.1
+                }
+                allDistances.add(FpEntry(room.id, bssidAdjusted))
             }
         }
 
-        if (allDistances.isEmpty()) return handleNoMatch("devices=${scanResults.size}, no coverage")
+        if (allDistances.isEmpty()) {
+            val liveBle = scanResults.keys.filter { !it.startsWith("wifi:") }.sorted()
+            val coverageDetails = eligibleRooms.joinToString(" | ") { room ->
+                val topBle = roomCoverageBleAnchors[room.id].orEmpty().sorted()
+                val matched = liveBle.filter { it in topBle }
+                "${room.name}: matched=${matched.size}/${topBle.size}, live=$matched, top=$topBle"
+            }
+            return handleNoMatch(
+                "devices=${scanResults.size}, no coverage, liveBle=$liveBle, rooms=[$coverageDetails]"
+            )
+        }
         noMatchStreak = 0
 
         val topK = allDistances.sortedBy { it.distance }.take(KNN_K)
@@ -123,7 +153,9 @@ class RoomDetector @Inject constructor() {
             consecutiveWinCount = 1
         }
 
-        if (consecutiveWinCount < rules.minConsecutiveWins) return null
+        // During motion: fast confirm (1 win), otherwise use policy threshold
+        val reqWins = if (motionActive) 1 else rules.minConsecutiveWins
+        if (consecutiveWinCount < reqWins) return null
 
         val detected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
         val changed = _currentRoom.value?.roomId != winnerRoom.id
@@ -157,7 +189,8 @@ class RoomDetector @Inject constructor() {
         var total = 0.0
         var used = 0.0
         for ((addr, refRssi) in fingerprint.samples) {
-            val weight = weights[addr] ?: 1.0
+            // Only score addresses that are in the top anchors set
+            val weight = weights[addr] ?: continue
             val currentRssi = current[addr]
             val contribution = if (currentRssi != null) {
                 weight * abs(currentRssi - refRssi).coerceAtMost(RSSI_DIFF_CLAMP)

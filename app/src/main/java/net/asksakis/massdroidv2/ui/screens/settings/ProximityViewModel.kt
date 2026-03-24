@@ -36,12 +36,11 @@ private const val MIN_SIGHTINGS = 2
 private const val FINGERPRINTS_PER_ROOM = 8
 private const val MIN_WEIGHT = 0.15
 private const val MAX_WEIGHT = 2.5
-private const val WIFI_MAX_WEIGHT = 0.5
 
 // Quality gate thresholds
 
 private const val MIN_AVG_VISIBILITY = 0.3
-private const val MIN_DISCRIMINATIVE_BEACONS = 1
+private const val MIN_DISCRIMINATIVE_BEACONS = 2
 private const val DISCRIMINATIVE_THRESHOLD = 5.0
 private const val MAX_FLOOR_RATIO = 0.8
 
@@ -155,12 +154,6 @@ class ProximityViewModel @Inject constructor(
                         if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
                         addressTypes[d.address] = d.addressType
                     }
-                    // Add WiFi APs as additional fingerprint data
-                    val wifiSnapshot = scanner.readWifiSnapshot()
-                    scanMap.putAll(wifiSnapshot)
-                    wifiSnapshot.keys.forEach { addr ->
-                        addressTypes[addr] = ProximityScanner.AddressType.PUBLIC
-                    }
                     rawScans.add(scanMap)
                     _autoFingerprintProgress.value = i
                 }
@@ -210,10 +203,16 @@ class ProximityViewModel @Inject constructor(
                     val room = config.rooms.find { it.id == roomId }
                     val quality = assessQuality(room?.name ?: roomId, profiles, warnings, room?.detectionPolicy ?: net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
 
+                    // Save connected WiFi BSSID as context gate
+                    val wifiSnapshot = scanner.readWifiSnapshot()
+                    val bssid = wifiSnapshot.keys.firstOrNull()?.removePrefix("wifi:")
+                    if (bssid != null) Log.d(TAG, "Connected WiFi BSSID: $bssid")
+
                     configStore.update { cfg ->
                         val updated = cfg.rooms.map { r ->
                             if (r.id != roomId) return@map r
-                            r.copy(fingerprints = fingerprints, beaconProfiles = profiles, calibrationQuality = quality)
+                            r.copy(fingerprints = fingerprints, beaconProfiles = profiles,
+                                calibrationQuality = quality, connectedBssid = bssid ?: r.connectedBssid)
                         }
                         cfg.copy(rooms = updated)
                     }
@@ -246,7 +245,8 @@ class ProximityViewModel @Inject constructor(
         val rawScans: List<Map<String, Int>>,
         val names: Map<String, String?>,
         val categories: Map<String, ProximityScanner.DeviceCategory>,
-        val addressTypes: Map<String, ProximityScanner.AddressType> = emptyMap()
+        val addressTypes: Map<String, ProximityScanner.AddressType> = emptyMap(),
+        val connectedBssid: String? = null
     )
 
     data class TuningResult(
@@ -286,16 +286,14 @@ class ProximityViewModel @Inject constructor(
                         if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
                         addrTypeMap[d.address] = d.addressType
                     }
-                    val wifiSnapshot = scanner.readWifiSnapshot()
-                    scanMap.putAll(wifiSnapshot)
-                    wifiSnapshot.keys.forEach { addr -> addrTypeMap[addr] = ProximityScanner.AddressType.PUBLIC }
                     rawScans.add(scanMap)
                     _autoFingerprintProgress.value = i
                 }
 
-                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap, addrTypeMap)
+                val bssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
+                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap, addrTypeMap, bssid)
                 _tuningSnapshots.value = _tuningSnapshots.value + training
-                Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices seen")
+                Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices, wifi=${bssid ?: "none"}")
                 onDone()
             } finally {
                 _autoFingerprintProgress.value = null
@@ -322,33 +320,37 @@ class ProximityViewModel @Inject constructor(
 
                 val allAddressTypes = allTraining.flatMap { it.addressTypes.entries }
                     .associate { it.key to it.value }
-                val validAddresses = allTraining.flatMap { training ->
+
+                // Per-room valid addresses (avoids leaking beacons between rooms)
+                fun roomValidAddresses(training: RoomTrainingData): Set<String> {
                     val counts = mutableMapOf<String, Int>()
                     for (scan in training.rawScans) {
                         for (addr in scan.keys) counts[addr] = (counts[addr] ?: 0) + 1
                     }
                     val hvThreshold = (training.rawScans.size * 0.7).toInt()
-                    counts
+                    return counts
                         .filter { allCategories[it.key] != ProximityScanner.DeviceCategory.MOBILE }
                         .filter { (addr, seen) ->
                             val isStable = scanner.isStableAddress(allAddressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC)
                             (isStable && seen >= MIN_SIGHTINGS) || seen >= hvThreshold
                         }
                         .keys
-                }.toSet()
+                }
 
                 configStore.update { config ->
+                    // First pass: compute per-room means for cross-room discrimination
                     val roomMeans = allTraining.associate { training ->
-                        training.roomId to computeBeaconMeans(training.rawScans, validAddresses)
+                        training.roomId to computeBeaconMeans(training.rawScans, roomValidAddresses(training))
                     }
 
                     val updatedRooms = config.rooms.map { room ->
                         val training = allTraining.find { it.roomId == room.id } ?: return@map room
+                        val validAddrs = roomValidAddresses(training)
 
-                        val fingerprints = buildFingerprints(training.rawScans, validAddresses)
+                        val fingerprints = buildFingerprints(training.rawScans, validAddrs)
                         val otherRoomMeans = roomMeans.filter { it.key != room.id }
                         val profiles = computeBeaconProfiles(
-                            training.rawScans, validAddresses, allNames, otherRoomMeans
+                            training.rawScans, validAddrs, allNames, otherRoomMeans
                         )
 
                         val quality = assessQuality(room.name, profiles, warnings, room.detectionPolicy)
@@ -362,7 +364,9 @@ class ProximityViewModel @Inject constructor(
                                 "w=${String.format("%.2f", p.weight)}")
                         }
 
-                        room.copy(fingerprints = fingerprints, beaconProfiles = profiles, calibrationQuality = quality)
+                        room.copy(fingerprints = fingerprints, beaconProfiles = profiles,
+                            calibrationQuality = quality,
+                            connectedBssid = training.connectedBssid ?: room.connectedBssid)
                     }
                     config.copy(rooms = updatedRooms)
                 }
@@ -428,15 +432,6 @@ class ProximityViewModel @Inject constructor(
             isGood = false
         }
 
-        // RELAXED: WiFi support can upgrade quality if BLE alone is insufficient
-        if (!isGood && rules.allowWifiOnly) {
-            val wifiProfiles = profiles.filter { it.address.startsWith("wifi:") }
-            val wifiUsable = wifiProfiles.count { it.weight > MIN_WEIGHT }
-            if (usableCount >= 1 && wifiUsable >= 2) {
-                Log.d(TAG, "$roomName: BLE-only WEAK, upgraded to GOOD with WiFi support ($usableCount BLE + $wifiUsable WiFi)")
-                return CalibrationQuality.GOOD
-            }
-        }
 
         return if (isGood) CalibrationQuality.GOOD else CalibrationQuality.WEAK
     }
@@ -523,9 +518,7 @@ class ProximityViewModel @Inject constructor(
 
             val stability = 1.0 / (1.0 + sqrt(variance) / 4.0)
             val discriminationBoost = 1.0 + discriminationScore.coerceAtLeast(0.0) / 20.0
-            val isWifi = addr.startsWith("wifi:")
-            val maxW = if (isWifi) WIFI_MAX_WEIGHT else MAX_WEIGHT
-            val weight = (visibilityRate * stability * discriminationBoost).coerceIn(MIN_WEIGHT, maxW)
+            val weight = (visibilityRate * stability * discriminationBoost).coerceIn(MIN_WEIGHT, MAX_WEIGHT)
 
             BeaconProfile(addr, allNames[addr] ?: addr, mean.toInt(), variance, visibilityRate, discriminationScore, weight)
         }

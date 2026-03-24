@@ -6,49 +6,33 @@ import kotlinx.serialization.Serializable
 enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
 
 @Serializable
-enum class DetectionPolicy { STRICT, NORMAL, RELAXED }
+enum class DetectionPolicy { STRICT, NORMAL }
 
 data class PolicyRules(
     val allowWeakCalibration: Boolean,
     val minBleCoverage: Int,
-    val allowWifiOnly: Boolean,
     val minConfidence: Double,
     val minMargin: Double,
     val minConsecutiveWins: Int,
-    val minUsableProfiles: Int,
-    val wifiMaxWeight: Double
+    val minUsableProfiles: Int
 )
 
 fun DetectionPolicy.rules(): PolicyRules = when (this) {
     DetectionPolicy.STRICT -> PolicyRules(
         allowWeakCalibration = false,
         minBleCoverage = 2,
-        allowWifiOnly = false,
         minConfidence = 0.6,
         minMargin = 4.0,
         minConsecutiveWins = 2,
-        minUsableProfiles = 3,
-        wifiMaxWeight = 0.35
+        minUsableProfiles = 3
     )
     DetectionPolicy.NORMAL -> PolicyRules(
         allowWeakCalibration = true,
         minBleCoverage = 1,
-        allowWifiOnly = false,
         minConfidence = 0.4,
         minMargin = 2.0,
         minConsecutiveWins = 1,
-        minUsableProfiles = 2,
-        wifiMaxWeight = 0.5
-    )
-    DetectionPolicy.RELAXED -> PolicyRules(
-        allowWeakCalibration = true,
-        minBleCoverage = 0,
-        allowWifiOnly = true,
-        minConfidence = 0.35,
-        minMargin = 1.5,
-        minConsecutiveWins = 1,
-        minUsableProfiles = 2,
-        wifiMaxWeight = 0.8
+        minUsableProfiles = 2
     )
 }
 
@@ -78,7 +62,8 @@ data class RoomConfig(
     val beaconProfiles: List<BeaconProfile> = emptyList(),
     val calibrationQuality: CalibrationQuality = CalibrationQuality.UNCALIBRATED,
     val detectionPolicy: DetectionPolicy = DetectionPolicy.STRICT,
-    val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig()
+    val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig(),
+    val connectedBssid: String? = null
 )
 
 @Serializable

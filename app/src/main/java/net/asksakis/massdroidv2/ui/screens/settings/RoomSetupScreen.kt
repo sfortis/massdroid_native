@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -200,20 +202,10 @@ fun RoomSetupScreen(
                                     "Best for multi-room homes with good BLE separation"
                                 net.asksakis.massdroidv2.data.proximity.DetectionPolicy.NORMAL ->
                                     "Good for simpler spaces with weaker BLE coverage"
-                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED ->
-                                    "Wi-Fi-first detection for spaces with poor BLE coverage"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (currentPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED)
-                                MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (currentPolicy == net.asksakis.massdroidv2.data.proximity.DetectionPolicy.RELAXED) {
-                            Text(
-                                "May increase false positives in multi-room environments",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
                     }
                 }
 
@@ -624,7 +616,7 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                         "${room.beaconProfiles.size} beacons, ${room.fingerprints.size} samples",
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    val (qLabel, qColor) = when (room.calibrationQuality) {
+                    val (qLabel, qBg) = when (room.calibrationQuality) {
                         net.asksakis.massdroidv2.data.proximity.CalibrationQuality.GOOD ->
                             "Good" to MaterialTheme.colorScheme.primary
                         net.asksakis.massdroidv2.data.proximity.CalibrationQuality.WEAK ->
@@ -632,17 +624,42 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                         net.asksakis.massdroidv2.data.proximity.CalibrationQuality.UNCALIBRATED ->
                             "N/A" to MaterialTheme.colorScheme.onSurfaceVariant
                     }
-                    Text(qLabel, style = MaterialTheme.typography.labelSmall, color = qColor,
-                        fontWeight = FontWeight.Bold)
+                    Text(
+                        qLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .background(qBg, MaterialTheme.shapes.extraSmall)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
                 }
 
                 if (room.calibrationQuality == net.asksakis.massdroidv2.data.proximity.CalibrationQuality.WEAK) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Try recalibrating, use Relaxed mode, or check for more stable devices nearby.",
+                        "Try recalibrating or check for more stable BLE devices nearby.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
+                }
+
+                // WiFi context
+                if (room.connectedBssid != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.Wifi, contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary)
+                        Text(
+                            "WiFi: ${room.connectedBssid}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))

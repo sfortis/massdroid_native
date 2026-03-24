@@ -76,6 +76,8 @@ class PlaybackService : MediaLibraryService() {
         private const val PROXIMITY_TRANSFER_ACTION = "net.asksakis.massdroidv2.PROXIMITY_TRANSFER"
         private const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
         private const val BURST_SCAN_INTERVAL_MS = 4_000L
+        private const val MOTION_SCAN_INTERVAL_MS = 2_000L
+        private const val QUICK_RETRY_DELAY_MS = 1_500L
         private const val COOLDOWN_AFTER_SWITCH_MS = 15_000L
     }
 
@@ -104,6 +106,7 @@ class PlaybackService : MediaLibraryService() {
     private var sendspinController: SendspinAudioController? = null
     private var sendspinActive = false
     private var proximityJob: Job? = null
+    private var proximityQuickRetryJob: Job? = null
     private var pendingProximityTransfer: DetectedRoom? = null
     private var pendingTransferSourcePlayerId: String? = null
     private var lastRoomSwitchMs = 0L
@@ -320,12 +323,13 @@ class PlaybackService : MediaLibraryService() {
             val config = proximityConfigStore.config.value
             if (!config.enabled || !isWithinSchedule()) return
             if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
-            val rssiMap = results.associate { it.device.address to it.rssi }.toMutableMap()
-            rssiMap.putAll(proximityScanner.readWifiSnapshot())
-            val detected = roomDetector.detect(rssiMap, config)
+            val rssiMap = results.associate { it.device.address to it.rssi }
+            val detected = roomDetector.detect(rssiMap, config, currentBssid = currentConnectedBssid())
             if (detected != null) {
                 Log.d(TAG, "Background room change: ${detected.roomName}")
                 handleRoomChange(detected, config)
+            } else if (results.isNotEmpty() && (motionGate.isMoving.value || roomDetector.currentRoom.value == null)) {
+                scheduleQuickProximityRetry("bg-receiver")
             }
         }
     }
@@ -396,9 +400,8 @@ class PlaybackService : MediaLibraryService() {
                 for (i in 1..2) {
                     kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
                     val devices = proximityScanner.readSnapshot()
-                    val rssi = devices.associate { it.address to it.rssi }.toMutableMap()
-                    rssi.putAll(proximityScanner.readWifiSnapshot())
-                    roomDetector.detect(rssi, proximityConfigStore.config.value)
+                    val rssi = devices.associate { it.address to it.rssi }
+                    roomDetector.detect(rssi, proximityConfigStore.config.value, currentBssid = currentConnectedBssid())
                 }
                 Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
@@ -427,42 +430,44 @@ class PlaybackService : MediaLibraryService() {
                 val cooledDown = System.currentTimeMillis() - lastRoomSwitchMs >= COOLDOWN_AFTER_SWITCH_MS
 
                 if (screenOn && cooledDown) {
-                    // Screen on: ensure persistent scan running, read snapshot
                     proximityScanner.startPersistentScan(lowPower = false)
-                    // Recovery: restart scan if consecutive zero-device reads
                     if (proximityScanner.zeroDeviceStreak >= 5) {
                         Log.w(TAG, "Scanner recovery: ${proximityScanner.zeroDeviceStreak} zero-device reads")
                         proximityScanner.stopPersistentScan()
                         proximityScanner.startPersistentScan(lowPower = false)
                         proximityScanner.zeroDeviceStreak = 0
                     }
-                    burstScan("screen")
-                    kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS * 3)
+                    burstScan(if (isMoving) "motion" else "screen")
+                    // Aggressive cadence during motion window (2s), relaxed otherwise (12s)
+                    val interval = if (isMoving) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3
+                    kotlinx.coroutines.delay(interval)
                 } else if (isMoving && !screenOn && cooledDown) {
-                    // Screen off + motion: pause persistent scan, do exclusive scanOnce
-                    // PendingIntent background scan continues independently (OS-managed)
+                    // Screen off + motion: 2 rapid scans then normal cadence
                     val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
                     val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:proximity")
-                    wl.acquire(10_000)
+                    wl.acquire(15_000)
                     try {
                         proximityScanner.stopPersistentScan()
-                        val devices = proximityScanner.scanOnce(lowPower = false)
-                        if (devices.isNotEmpty()) {
-                            Log.d(TAG, "BLE fast-path (motion): ${devices.size} devices")
-                            val cfg = proximityConfigStore.config.value
-                            val rssiMap = devices.associate { it.address to it.rssi }.toMutableMap()
-                            rssiMap.putAll(proximityScanner.readWifiSnapshot())
-                            val detected = roomDetector.detect(rssiMap, cfg)
-                            if (detected != null) handleRoomChange(detected, cfg)
-                        } else {
-                            Log.d(TAG, "BLE fast-path: 0 devices (BLE radio blocked)")
+                        val bssid = currentConnectedBssid()
+                        val cfg = proximityConfigStore.config.value
+                        for (burst in 1..2) {
+                            val devices = proximityScanner.scanOnce(lowPower = false)
+                            if (devices.isNotEmpty()) {
+                                Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
+                                val rssiMap = devices.associate { it.address to it.rssi }
+                                val detected = roomDetector.detect(rssiMap, cfg, motionActive = true, currentBssid = bssid)
+                                if (detected != null) { handleRoomChange(detected, cfg); break }
+                            } else {
+                                Log.d(TAG, "BLE fast-path $burst/2: 0 devices")
+                            }
+                            if (burst < 2) kotlinx.coroutines.delay(1_500)
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "BLE fast-path failed: ${e.message}")
                     } finally {
                         if (wl.isHeld) wl.release()
                     }
-                    kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
+                    kotlinx.coroutines.delay(MOTION_SCAN_INTERVAL_MS)
                 } else {
                     kotlinx.coroutines.delay(2_000)
                 }
@@ -478,28 +483,76 @@ class PlaybackService : MediaLibraryService() {
 
         try {
             val devices = proximityScanner.readSnapshot()
-            val rssiMap = devices.associate { it.address to it.rssi }.toMutableMap()
-            // Merge WiFi APs for richer fingerprint matching
-            rssiMap.putAll(proximityScanner.readWifiSnapshot())
-            Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} BLE + ${rssiMap.size - devices.size} WiFi")
+            val rssiMap = devices.associate { it.address to it.rssi }
+            Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
 
-            val detected = roomDetector.detect(rssiMap, config)
+            val motionActive = motionGate.isMoving.value
+            val detected = roomDetector.detect(rssiMap, config, motionActive, currentConnectedBssid())
 
             if (detected != null) handleRoomChange(detected, config)
+            else if (devices.isNotEmpty() && (motionActive || roomDetector.currentRoom.value == null)) {
+                scheduleQuickProximityRetry("burst-$trigger")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Burst scan failed: ${e.message}")
         }
     }
 
+    private fun scheduleQuickProximityRetry(reason: String) {
+        if (proximityQuickRetryJob?.isActive == true) return
+        proximityQuickRetryJob = scope.launch {
+            kotlinx.coroutines.delay(QUICK_RETRY_DELAY_MS)
+            val config = proximityConfigStore.config.value
+            if (!config.enabled || !isWithinSchedule()) return@launch
+            if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return@launch
+
+            val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+            val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
+
+            try {
+                val devices = if (screenOn) {
+                    proximityScanner.readSnapshot()
+                } else {
+                    proximityScanner.scanOnce(lowPower = false)
+                }
+                if (devices.isEmpty()) {
+                    Log.d(TAG, "Quick retry ($reason): 0 devices")
+                    return@launch
+                }
+
+                val detected = roomDetector.detect(
+                    devices.associate { it.address to it.rssi },
+                    config,
+                    motionGate.isMoving.value,
+                    currentConnectedBssid()
+                )
+                if (detected != null) {
+                    Log.d(TAG, "Quick retry ($reason): confirmed ${detected.roomName}")
+                    handleRoomChange(detected, config)
+                } else {
+                    Log.d(TAG, "Quick retry ($reason): no confirm from ${devices.size} devices")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Quick retry ($reason) failed: ${e.message}")
+            }
+        }
+    }
+
     private fun handleRoomChange(detected: DetectedRoom, config: net.asksakis.massdroidv2.data.proximity.ProximityConfig) {
+        proximityQuickRetryJob?.cancel()
+        proximityQuickRetryJob = null
         if (!isWithinSchedule()) return
         val previousPlayer = playerRepository.selectedPlayer.value
         val sourcePlayerId = previousPlayer?.playerId
         val wasPlaying = previousPlayer?.state == PlaybackState.PLAYING
-        if (sourcePlayerId == detected.playerId && wasPlaying) return
         if (pendingProximityTransfer?.roomId == detected.roomId) return
         lastRoomSwitchMs = System.currentTimeMillis()
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
+
+        // Room volume is a room-context setting, not a playback-action side effect.
+        applyRoomVolume(detected)
+
+        if (sourcePlayerId == detected.playerId && wasPlaying) return
 
         if (config.autoTransfer && wasPlaying && sourcePlayerId != null && sourcePlayerId != detected.playerId) {
             performProximityTransfer(sourcePlayerId, detected)
@@ -515,6 +568,8 @@ class PlaybackService : MediaLibraryService() {
         proximityScanner.stopPersistentScan()
         proximityScanner.stopBackgroundScan()
         roomDetector.reset()
+        proximityQuickRetryJob?.cancel()
+        proximityQuickRetryJob = null
         pendingProximityTransfer = null
         pendingTransferSourcePlayerId = null
         lastRoomSwitchMs = 0
@@ -604,6 +659,11 @@ class PlaybackService : MediaLibraryService() {
     }
 
     // endregion
+
+    private fun currentConnectedBssid(): String? {
+        val wifi = proximityScanner.readWifiSnapshot()
+        return wifi.keys.firstOrNull()?.removePrefix("wifi:")
+    }
 
     private fun activePlayerId(): String? {
         return playerRepository.selectedPlayer.value?.playerId
