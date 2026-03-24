@@ -91,6 +91,10 @@ class ProximityViewModel @Inject constructor(
         viewModelScope.launch { configStore.update { it.copy(autoTransfer = auto) } }
     }
 
+    fun setStopWhenNoRoomActive(enabled: Boolean) {
+        viewModelScope.launch { configStore.update { it.copy(stopWhenNoRoomActive = enabled) } }
+    }
+
     fun updateSchedule(transform: (ProximitySchedule) -> ProximitySchedule) {
         viewModelScope.launch { configStore.update { it.copy(schedule = transform(it.schedule)) } }
     }

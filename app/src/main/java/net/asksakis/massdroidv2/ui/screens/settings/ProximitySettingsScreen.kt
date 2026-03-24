@@ -146,6 +146,19 @@ fun ProximitySettingsScreen(
                     }
                 )
 
+                ListItem(
+                    headlineContent = { Text("Stop when no room is active") },
+                    supportingContent = {
+                        Text("If Follow Me loses room detection and no hand-off happens for 10 minutes, stop playback on the speaker that was active when detection was lost.")
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = config.stopWhenNoRoomActive,
+                            onCheckedChange = { viewModel.setStopWhenNoRoomActive(it) }
+                        )
+                    }
+                )
+
                 // Schedule
                 ListItem(
                     headlineContent = { Text("Schedule") },

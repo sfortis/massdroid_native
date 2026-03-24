@@ -80,6 +80,7 @@ class PlaybackService : MediaLibraryService() {
         private const val MOTION_SCAN_INTERVAL_MS = 2_000L
         private const val QUICK_RETRY_DELAY_MS = 1_500L
         private const val COOLDOWN_AFTER_SWITCH_MS = 15_000L
+        private const val NO_ROOM_STOP_TIMEOUT_MS = 10 * 60 * 1000L
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -108,6 +109,8 @@ class PlaybackService : MediaLibraryService() {
     private var sendspinActive = false
     private var proximityJob: Job? = null
     private var proximityQuickRetryJob: Job? = null
+    private var noRoomStopJob: Job? = null
+    private var noRoomStopArmedPlayerId: String? = null
     private var pendingProximityTransfer: DetectedRoom? = null
     private var pendingTransferSourcePlayerId: String? = null
     private var lastRoomSwitchMs = 0L
@@ -128,6 +131,7 @@ class PlaybackService : MediaLibraryService() {
         createProximityNotificationChannel()
         registerReceiver(bleScanReceiver, android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION), RECEIVER_NOT_EXPORTED)
         observeProximityConfig()
+        observeRoomActivity()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -369,7 +373,7 @@ class PlaybackService : MediaLibraryService() {
             var wasEnabled = false
             var roomCount = 0
             proximityConfigStore.config.collect { config ->
-                val shouldRun = config.enabled && config.rooms.isNotEmpty() && hasBleScanPermission()
+                val shouldRun = shouldRunProximity(config)
                 val structureChanged = config.enabled != wasEnabled || config.rooms.size != roomCount
                 wasEnabled = config.enabled
                 roomCount = config.rooms.size
@@ -377,6 +381,31 @@ class PlaybackService : MediaLibraryService() {
                     startProximityEngine()
                 } else if (!shouldRun) {
                     stopProximityEngine()
+                } else if (!config.stopWhenNoRoomActive) {
+                    cancelNoRoomStopTimer("disabled")
+                } else if (roomDetector.currentRoom.value == null) {
+                    scheduleNoRoomStopIfNeeded("enabled-while-no-room")
+                }
+            }
+        }
+    }
+
+    private fun shouldRunProximity(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig): Boolean {
+        return config.enabled && config.rooms.isNotEmpty() && hasBleScanPermission()
+    }
+
+    private fun observeRoomActivity() {
+        scope.launch {
+            var previousRoomId: String? = null
+            roomDetector.currentRoom.collect { room ->
+                if (room != null) {
+                    previousRoomId = room.roomId
+                    cancelNoRoomStopTimer("room-active")
+                } else {
+                    if (previousRoomId != null) {
+                        scheduleNoRoomStopIfNeeded("room-lost")
+                    }
+                    previousRoomId = null
                 }
             }
         }
@@ -565,9 +594,48 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun scheduleNoRoomStopIfNeeded(reason: String) {
+        if (noRoomStopJob?.isActive == true) return
+        val config = proximityConfigStore.config.value
+        if (!shouldRunProximity(config) || !config.stopWhenNoRoomActive) return
+        val player = playerRepository.selectedPlayer.value ?: return
+        if (player.state != PlaybackState.PLAYING) return
+        noRoomStopArmedPlayerId = player.playerId
+
+        noRoomStopJob = scope.launch {
+            Log.d(TAG, "No-room stop timer armed ($reason): ${player.displayName} in 10m")
+            delay(NO_ROOM_STOP_TIMEOUT_MS)
+
+            val latestConfig = proximityConfigStore.config.value
+            val currentRoom = roomDetector.currentRoom.value
+            val armedPlayerId = noRoomStopArmedPlayerId
+            val armedPlayer = armedPlayerId?.let { id -> playerRepository.players.value.find { it.playerId == id } }
+            if (!shouldRunProximity(latestConfig) || !latestConfig.stopWhenNoRoomActive) return@launch
+            if (currentRoom != null) return@launch
+            if (armedPlayer == null || armedPlayer.state != PlaybackState.PLAYING) return@launch
+
+            try {
+                playerRepository.pause(armedPlayer.playerId)
+                Log.d(TAG, "No-room stop timer fired: paused ${armedPlayer.displayName}")
+            } catch (e: Exception) {
+                Log.w(TAG, "No-room stop failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun cancelNoRoomStopTimer(reason: String) {
+        if (noRoomStopJob?.isActive == true) {
+            Log.d(TAG, "No-room stop timer canceled ($reason)")
+        }
+        noRoomStopJob?.cancel()
+        noRoomStopJob = null
+        noRoomStopArmedPlayerId = null
+    }
+
     private fun handleRoomChange(detected: DetectedRoom, config: net.asksakis.massdroidv2.data.proximity.ProximityConfig) {
         proximityQuickRetryJob?.cancel()
         proximityQuickRetryJob = null
+        cancelNoRoomStopTimer("room-confirmed")
         if (!isWithinSchedule()) return
         val previousPlayer = playerRepository.selectedPlayer.value
         val sourcePlayerId = previousPlayer?.playerId
@@ -597,6 +665,7 @@ class PlaybackService : MediaLibraryService() {
         roomDetector.reset()
         proximityQuickRetryJob?.cancel()
         proximityQuickRetryJob = null
+        cancelNoRoomStopTimer("engine-stopped")
         pendingProximityTransfer = null
         pendingTransferSourcePlayerId = null
         lastRoomSwitchMs = 0
@@ -856,6 +925,9 @@ class PlaybackService : MediaLibraryService() {
             }.collect { (player, queue) ->
                 val elapsed = playerRepository.elapsedTime.value
                 if (player == null) return@collect
+                if (player.state != PlaybackState.PLAYING) {
+                    cancelNoRoomStopTimer("playback-stopped")
+                }
 
                 val isSendspinPlayer = sendspinPlayerId != null &&
                     player.playerId == sendspinPlayerId
