@@ -1,4 +1,10 @@
+- Save queue to playlist: append current queue to existing or new playlist with duplicate detection
+- WiFi context gate: connected AP BSSID prevents false room detection across locations
+- Discrimination-aware anchor ranking for better adjacent room separation
+- Motion-triggered 2s scan cadence for faster room transitions
 - Theme toggle: Dark / Light / Auto mode in Settings
 - Light theme improvements: stronger contrast
+- Per-room calibration isolation prevents beacon leakage between rooms
 - Fix HERE badge stuck when leaving room area
 - Updated launcher icons and logo
+- Other small fixes and UI improvements
