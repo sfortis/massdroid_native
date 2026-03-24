@@ -106,11 +106,13 @@ class ProximityScanner @Inject constructor(
         }
         persistentCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val addr = result.device.address ?: return
-                val name = try { result.device.name } catch (_: SecurityException) { null }
-                persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
-                persistentLastSeen[addr] = System.currentTimeMillis()
-                lastPersistentCallbackMs = System.currentTimeMillis()
+                try {
+                    val addr = result.device?.address ?: return
+                    val name = try { result.device.name } catch (_: Exception) { null }
+                    persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                    persistentLastSeen[addr] = System.currentTimeMillis()
+                    lastPersistentCallbackMs = System.currentTimeMillis()
+                } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
@@ -118,8 +120,8 @@ class ProximityScanner @Inject constructor(
             scanner.startScan(null, settings, persistentCallback)
             persistentRunning = true
             Log.d(TAG, "Persistent scan: ${if (lowPower) "LOW_POWER" else "LOW_LATENCY"}")
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Persistent scan permission denied: ${e.message}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Persistent scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
         }
     }
 
@@ -167,7 +169,7 @@ class ProximityScanner @Inject constructor(
             scanner.startScan(filters, settings, backgroundScanPending!!)
             Log.d(TAG, "Background PendingIntent scan started for ${beaconAddresses.size} beacons")
         } catch (e: Exception) {
-            Log.w(TAG, "Background scan failed: ${e.message}")
+            Log.w(TAG, "Background scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
         }
     }
 
@@ -182,10 +184,12 @@ class ProximityScanner @Inject constructor(
     /** Called from BroadcastReceiver when background scan results arrive */
     fun handleBackgroundScanResult(results: List<ScanResult>) {
         for (result in results) {
-            val addr = result.device?.address ?: continue
-            val name = try { result.device.name } catch (_: SecurityException) { null }
-            persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
-            persistentLastSeen[addr] = System.currentTimeMillis()
+            try {
+                val addr = result.device?.address ?: continue
+                val name = try { result.device.name } catch (_: Exception) { null }
+                persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                persistentLastSeen[addr] = System.currentTimeMillis()
+            } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
         lastBackgroundDeliveryMs = System.currentTimeMillis()
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
@@ -235,9 +239,11 @@ class ProximityScanner @Inject constructor(
             suspendCancellableCoroutine { cont ->
                 val callback = object : ScanCallback() {
                     override fun onScanResult(callbackType: Int, result: ScanResult) {
-                        val addr = result.device.address ?: return
-                        val name = try { result.device.name } catch (_: SecurityException) { null }
-                        devices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                        try {
+                            val addr = result.device?.address ?: return
+                            val name = try { result.device.name } catch (_: Exception) { null }
+                            devices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                        } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
                     }
 
                     override fun onScanFailed(errorCode: Int) {
@@ -251,8 +257,8 @@ class ProximityScanner @Inject constructor(
 
                 try {
                     scanner.startScan(null, settings, callback)
-                } catch (e: SecurityException) {
-                    Log.w(TAG, "BLE scan permission denied: ${e.message}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "BLE scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
                     if (cont.isActive) cont.resume(emptyList())
                     return@suspendCancellableCoroutine
                 }
