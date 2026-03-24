@@ -163,8 +163,57 @@ fun RoomSetupScreen(
             if (existingRoom != null) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
-                // Detection policy
                 val currentPolicy = existingRoom.detectionPolicy
+                val wifiOnlyEnabled = existingRoom.stickToConnectedWifi
+                val canUseWifiOnly = existingRoom.connectedBssid != null
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            "Wi-Fi AP Override",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Stick to connected Wi-Fi AP",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Switch(
+                                checked = wifiOnlyEnabled,
+                                onCheckedChange = { viewModel.updateRoomStickToConnectedWifi(existingRoom.id, it) },
+                                enabled = canUseWifiOnly || wifiOnlyEnabled
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            if (canUseWifiOnly) {
+                                "Use the current Wi-Fi access point instead of BLE beacons for this room. Best for separate places like Home, Office, or other remote locations, not nearby rooms on the same Wi-Fi."
+                            } else {
+                                "Calibrate once while connected to the room's Wi-Fi AP to enable this option."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -177,7 +226,8 @@ fun RoomSetupScreen(
                         Text(
                             "Detection Mode",
                             style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = if (wifiOnlyEnabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
@@ -188,7 +238,8 @@ fun RoomSetupScreen(
                                 val selected = currentPolicy == policy
                                 androidx.compose.material3.FilterChip(
                                     selected = selected,
-                                    onClick = { viewModel.updateRoomPolicy(existingRoom.id, policy) },
+                                    onClick = { if (!wifiOnlyEnabled) viewModel.updateRoomPolicy(existingRoom.id, policy) },
+                                    enabled = !wifiOnlyEnabled,
                                     label = { Text(policy.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) },
                                     leadingIcon = if (selected) { { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) } } else null,
                                     modifier = Modifier.weight(1f)
@@ -197,11 +248,15 @@ fun RoomSetupScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            when (currentPolicy) {
-                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT ->
-                                    "Best for multi-room homes with good BLE separation"
-                                net.asksakis.massdroidv2.data.proximity.DetectionPolicy.NORMAL ->
-                                    "Good for simpler spaces with weaker BLE coverage"
+                            if (wifiOnlyEnabled) {
+                                "Detection mode is disabled while Wi-Fi AP override is enabled."
+                            } else {
+                                when (currentPolicy) {
+                                    net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT ->
+                                        "Prefer this for nearby rooms that need cleaner BLE separation."
+                                    net.asksakis.massdroidv2.data.proximity.DetectionPolicy.NORMAL ->
+                                        "Use this when BLE coverage is weaker and the room is harder to fingerprint."
+                                }
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -314,6 +369,18 @@ fun RoomSetupScreen(
             }
         )
     }
+
+    val calibrationSummary by viewModel.calibrationSummary.collectAsStateWithLifecycle()
+    calibrationSummary?.let { summary ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissCalibrationSummary() },
+            title = { Text("Calibration Result") },
+            text = { Text(summary) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissCalibrationSummary() }) { Text("OK") }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -357,7 +424,7 @@ private fun PlaybackConfigSection(
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                "Play automatically when entering this room",
+                "Choose what starts when this room is confirmed. If no playlist is selected, the current queue moves here instead.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -638,9 +705,16 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                 if (room.calibrationQuality == net.asksakis.massdroidv2.data.proximity.CalibrationQuality.WEAK) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        "Try recalibrating or check for more stable BLE devices nearby.",
+                        "This room may be harder to detect consistently. Recalibrate closer to stable devices and away from doorways.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
+                    )
+                } else if (room.calibrationQuality == net.asksakis.massdroidv2.data.proximity.CalibrationQuality.GOOD) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "This room has enough stable anchors for reliable detection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 

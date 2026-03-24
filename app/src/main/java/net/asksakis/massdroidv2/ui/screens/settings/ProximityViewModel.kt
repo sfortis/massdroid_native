@@ -59,6 +59,8 @@ class ProximityViewModel @Inject constructor(
     val players: StateFlow<List<Player>> = playerRepository.players
     val currentRoom: StateFlow<DetectedRoom?> = roomDetector.currentRoom
     val isAvailable: Boolean = scanner.isAvailable()
+    val bluetoothEnabled: StateFlow<Boolean> = scanner.observeBluetoothState()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), scanner.isBluetoothEnabled())
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
@@ -70,6 +72,10 @@ class ProximityViewModel @Inject constructor(
     private val _calibrationError = MutableStateFlow<String?>(null)
     val calibrationError: StateFlow<String?> = _calibrationError.asStateFlow()
     fun dismissCalibrationError() { _calibrationError.value = null }
+
+    private val _calibrationSummary = MutableStateFlow<String?>(null)
+    val calibrationSummary: StateFlow<String?> = _calibrationSummary.asStateFlow()
+    fun dismissCalibrationSummary() { _calibrationSummary.value = null }
 
     fun loadPlaylists() {
         viewModelScope.launch {
@@ -109,6 +115,17 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
+    fun updateRoomStickToConnectedWifi(roomId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            configStore.update { config ->
+                config.copy(rooms = config.rooms.map { r ->
+                    if (r.id == roomId) r.copy(stickToConnectedWifi = enabled) else r
+                })
+            }
+            roomDetector.reset()
+        }
+    }
+
     fun deleteRoom(roomId: String) {
         viewModelScope.launch {
             configStore.update { c -> c.copy(rooms = c.rooms.filter { it.id != roomId }) }
@@ -135,9 +152,15 @@ class ProximityViewModel @Inject constructor(
 
     /** Calibrate a single room in-place (scan + compute fingerprints/profiles) */
     fun calibrateRoom(roomId: String, onDone: () -> Unit) {
+        if (!scanner.isBluetoothEnabled()) {
+            _calibrationError.value = "Bluetooth is off. Turn on Bluetooth to calibrate room detection."
+            onDone()
+            return
+        }
         viewModelScope.launch {
             roomDetector.suppress()
             try {
+                _calibrationSummary.value = null
                 _autoFingerprintProgress.value = 0
 
                 val rawScans = mutableListOf<Map<String, Int>>()
@@ -170,19 +193,20 @@ class ProximityViewModel @Inject constructor(
                     Log.d(TAG, "  $addr seen=$seen name=${name ?: "(unnamed)"} cat=$cat addr=$addrType")
                 }
 
-                // Accept devices that are either:
-                // 1. Stable address type (Public/Random Static) + seen 2+, or
-                // 2. High visibility (70%+ scans) regardless of address type (observed MAC stability)
-                // Always exclude MOBILE devices
-                val highVisThreshold = (AUTO_FINGERPRINT_CYCLES * 0.7).toInt()
+                val wifiSnapshot = scanner.readWifiSnapshot()
+                val bssid = wifiSnapshot.keys.firstOrNull()?.removePrefix("wifi:")
+                if (bssid != null) Log.d(TAG, "Connected WiFi BSSID: $bssid")
+
+                // Accept only stable, non-mobile BLE addresses for fingerprinting.
+                // RPA/NRPA devices rotate and are not reliable room anchors.
                 val validAddresses = counts
                     .filter { categoryMap[it.key] != ProximityScanner.DeviceCategory.MOBILE }
                     .filter { (addr, seen) ->
                         val isStable = scanner.isStableAddress(addressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC)
-                        (isStable && seen >= MIN_SIGHTINGS) || seen >= highVisThreshold
+                        isStable && seen >= MIN_SIGHTINGS
                     }
                     .keys
-                Log.d(TAG, "Valid addresses: ${validAddresses.size} (stable or high-visibility, non-mobile)")
+                Log.d(TAG, "Valid addresses: ${validAddresses.size} (stable, non-mobile only)")
 
                 val config = configStore.config.value
                 val otherRoomMeans = config.rooms
@@ -192,6 +216,13 @@ class ProximityViewModel @Inject constructor(
                 val totalScans = rawScans.sumOf { it.size }
                 if (validAddresses.isEmpty()) {
                     Log.w(TAG, "Calibration failed: no stable non-mobile BLE devices found")
+                    if (bssid != null) {
+                        configStore.update { cfg ->
+                            cfg.copy(rooms = cfg.rooms.map { r ->
+                                if (r.id == roomId) r.copy(connectedBssid = bssid) else r
+                            })
+                        }
+                    }
                     val totalDevices = counts.size
                     val mobileCount = counts.keys.count { categoryMap[it] == ProximityScanner.DeviceCategory.MOBILE }
                     val rpaCount = counts.keys.count { addressTypes[it] == ProximityScanner.AddressType.RPA }
@@ -199,7 +230,7 @@ class ProximityViewModel @Inject constructor(
                         totalScans == 0 -> "No BLE devices detected. Check that Bluetooth and Location are enabled in system settings."
                         totalDevices == 0 -> "BLE scan ran but found 0 devices. Make sure Location Services are on and Bluetooth permissions are granted."
                         totalDevices == mobileCount -> "Found $totalDevices devices but all are mobile (phones, wearables). Need stationary devices like TVs, speakers, or routers."
-                        else -> "Found $totalDevices devices ($mobileCount mobile, $rpaCount rotating) but none are stable enough. Need stationary devices with fixed addresses."
+                        else -> "Found $totalDevices BLE devices, but none qualified as stable room anchors. $mobileCount looked like mobile devices and $rpaCount used rotating addresses. The rest were too unstable or too weakly seen for reliable room fingerprinting."
                     }
                     _calibrationError.value = errorMsg
                 } else {
@@ -209,11 +240,6 @@ class ProximityViewModel @Inject constructor(
                     val warnings = mutableListOf<String>()
                     val room = config.rooms.find { it.id == roomId }
                     val quality = assessQuality(room?.name ?: roomId, profiles, warnings, room?.detectionPolicy ?: net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
-
-                    // Save connected WiFi BSSID as context gate
-                    val wifiSnapshot = scanner.readWifiSnapshot()
-                    val bssid = wifiSnapshot.keys.firstOrNull()?.removePrefix("wifi:")
-                    if (bssid != null) Log.d(TAG, "Connected WiFi BSSID: $bssid")
 
                     configStore.update { cfg ->
                         val updated = cfg.rooms.map { r ->
@@ -232,6 +258,13 @@ class ProximityViewModel @Inject constructor(
                             roomDetector.seedRoom(DetectedRoom(updatedRoom.id, updatedRoom.name, updatedRoom.playerId, updatedRoom.playerName))
                         }
                     }
+
+                    _calibrationSummary.value = buildCalibrationSummary(
+                        roomName = room?.name ?: roomId,
+                        quality = quality,
+                        profiles = profiles,
+                        warnings = warnings
+                    )
 
                     Log.d(TAG, "Single-room calibration: ${room?.name}, ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")
                     if (warnings.isNotEmpty()) warnings.forEach { Log.w(TAG, "  $it") }
@@ -274,6 +307,11 @@ class ProximityViewModel @Inject constructor(
     val tuningResult: StateFlow<TuningResult?> = _tuningResult.asStateFlow()
 
     fun collectRoomSnapshot(roomId: String, roomName: String, onDone: () -> Unit) {
+        if (!scanner.isBluetoothEnabled()) {
+            _calibrationError.value = "Bluetooth is off. Turn on Bluetooth to calibrate."
+            onDone()
+            return
+        }
         viewModelScope.launch {
             roomDetector.suppress()
             try {
@@ -334,12 +372,11 @@ class ProximityViewModel @Inject constructor(
                     for (scan in training.rawScans) {
                         for (addr in scan.keys) counts[addr] = (counts[addr] ?: 0) + 1
                     }
-                    val hvThreshold = (training.rawScans.size * 0.7).toInt()
                     return counts
                         .filter { allCategories[it.key] != ProximityScanner.DeviceCategory.MOBILE }
                         .filter { (addr, seen) ->
                             val isStable = scanner.isStableAddress(allAddressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC)
-                            (isStable && seen >= MIN_SIGHTINGS) || seen >= hvThreshold
+                            isStable && seen >= MIN_SIGHTINGS
                         }
                         .keys
                 }
@@ -441,6 +478,31 @@ class ProximityViewModel @Inject constructor(
 
 
         return if (isGood) CalibrationQuality.GOOD else CalibrationQuality.WEAK
+    }
+
+    private fun buildCalibrationSummary(
+        roomName: String,
+        quality: CalibrationQuality,
+        profiles: List<BeaconProfile>,
+        warnings: List<String>
+    ): String {
+        val bleProfiles = profiles.filter { !it.address.startsWith("wifi:") }
+        val usableCount = bleProfiles.count { it.weight > MIN_WEIGHT }
+        val discriminativeCount = bleProfiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
+        val visibilityPct = ((bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0) * 100).toInt()
+        return if (quality == CalibrationQuality.GOOD) {
+            "Good calibration: $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+        } else {
+            val reasons = warnings
+                .filter { it.startsWith("$roomName:") }
+                .map { it.substringAfter(": ").replaceFirstChar(Char::uppercase) }
+                .take(2)
+            if (reasons.isNotEmpty()) {
+                "Weak calibration: ${reasons.joinToString(". ")}."
+            } else {
+                "Weak calibration: only $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+            }
+        }
     }
 
     fun clearTuning() {

@@ -208,6 +208,22 @@ class ProximityScanner @Inject constructor(
 
     fun isAvailable(): Boolean = getScanner() != null
 
+    fun isBluetoothEnabled(): Boolean = Companion.isBluetoothEnabled(context)
+
+    fun observeBluetoothState(): kotlinx.coroutines.flow.Flow<Boolean> = kotlinx.coroutines.flow.callbackFlow {
+        trySend(isBluetoothEnabled())
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                if (intent?.action == android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) {
+                    val state = intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, android.bluetooth.BluetoothAdapter.ERROR)
+                    trySend(state == android.bluetooth.BluetoothAdapter.STATE_ON)
+                }
+            }
+        }
+        context.registerReceiver(receiver, android.content.IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED))
+        awaitClose { try { context.unregisterReceiver(receiver) } catch (_: Exception) { } }
+    }
+
     /** Get connected WiFi AP BSSID + RSSI. No scanning needed. */
     @SuppressLint("MissingPermission")
     fun readWifiSnapshot(): Map<String, Int> {
@@ -401,6 +417,10 @@ class ProximityScanner @Inject constructor(
     companion object {
         const val BLE_SCAN_ACTION = "net.asksakis.massdroidv2.BLE_SCAN_RESULT"
         const val AUTO_FINGERPRINT_CYCLES = 10
+        fun isBluetoothEnabled(context: Context): Boolean {
+            val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            return btManager?.adapter?.isEnabled == true
+        }
         private const val APPLE_COMPANY_ID = 0x004C
         private const val TILE_COMPANY_ID = 0x00D7
         private val SMARTTAG_UUID = ParcelUuid.fromString("0000FD5A-0000-1000-8000-00805F9B34FB")

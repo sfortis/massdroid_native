@@ -73,13 +73,33 @@ class RoomDetector @Inject constructor() {
         currentBssid: String? = null
     ): DetectResult {
         if (suppressed || config.rooms.isEmpty()) return DetectResult.NoDecision
+        val wifiOnlyMatches = config.rooms.filter { room ->
+            room.stickToConnectedWifi &&
+                room.connectedBssid != null &&
+                currentBssid != null &&
+                room.connectedBssid == currentBssid
+        }
+        if (wifiOnlyMatches.isNotEmpty()) {
+            if (wifiOnlyMatches.size > 1) {
+                Log.w(TAG, "Multiple rooms matched connected Wi-Fi AP $currentBssid: ${wifiOnlyMatches.joinToString { it.name }}")
+            }
+            val winnerRoom = wifiOnlyMatches.find { it.id == _currentRoom.value?.roomId } ?: wifiOnlyMatches.first()
+            val detected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
+            noteWinnerCandidate(winnerRoom.id)
+            val changed = _currentRoom.value?.roomId != winnerRoom.id
+            _currentRoom.value = detected
+            Log.d(TAG, "Wi-Fi AP override: ${winnerRoom.name} via $currentBssid")
+            return if (changed) DetectResult.Confirmed(detected) else DetectResult.NoDecision
+        }
+
         if (scanResults.isEmpty()) {
             handleNoMatch("empty scan")
             return DetectResult.NoCoverage
         }
 
-        // Build eligible rooms using centralized policy rules + WiFi context gate
+        // Build eligible BLE rooms using centralized policy rules.
         val eligibleRooms = config.rooms.filter { room ->
+            if (room.stickToConnectedWifi) return@filter false
             if (room.fingerprints.isEmpty()) return@filter false
             val rules = room.detectionPolicy.rules()
             if (!rules.allowWeakCalibration && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false

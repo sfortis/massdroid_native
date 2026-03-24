@@ -97,14 +97,23 @@ fun ProximitySettingsScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
+            val btEnabled by viewModel.bluetoothEnabled.collectAsStateWithLifecycle()
             ListItem(
                 headlineContent = { Text("Enable Follow Me") },
-                supportingContent = { Text("Detect room changes and suggest speaker transfers") },
+                supportingContent = {
+                    Text(
+                        if (!btEnabled) "Bluetooth is off. Turn on Bluetooth to use Follow Me."
+                        else "Detect room changes and suggest speaker transfers"
+                    )
+                },
                 trailingContent = {
                     Switch(
                         checked = config.enabled,
+                        enabled = btEnabled || config.enabled,
                         onCheckedChange = { enabled ->
-                            if (enabled) {
+                            if (!enabled) {
+                                viewModel.setEnabled(false)
+                            } else if (btEnabled) {
                                 val perms = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                                     perms += android.Manifest.permission.BLUETOOTH_SCAN
@@ -118,8 +127,6 @@ fun ProximitySettingsScreen(
                                 }
                                 if (allGranted) viewModel.setEnabled(true)
                                 else permissionLauncher.launch(perms.toTypedArray())
-                            } else {
-                                viewModel.setEnabled(false)
                             }
                         }
                     )

@@ -32,7 +32,7 @@ fun DetectionPolicy.rules(): PolicyRules = when (this) {
         minConfidence = 0.4,
         minMargin = 2.0,
         minConsecutiveWins = 1,
-        minUsableProfiles = 2
+        minUsableProfiles = 1
     )
 }
 
@@ -63,7 +63,8 @@ data class RoomConfig(
     val calibrationQuality: CalibrationQuality = CalibrationQuality.UNCALIBRATED,
     val detectionPolicy: DetectionPolicy = DetectionPolicy.STRICT,
     val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig(),
-    val connectedBssid: String? = null
+    val connectedBssid: String? = null,
+    val stickToConnectedWifi: Boolean = false
 )
 
 @Serializable
