@@ -4,9 +4,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -16,6 +21,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DragHandle
@@ -23,6 +29,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radio
@@ -31,7 +38,10 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -102,6 +112,7 @@ fun QueueScreen(
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
     var actionSheetItem by remember { mutableStateOf<QueueActionItem?>(null) }
     var showQueueMenu by remember { mutableStateOf(false) }
+    var showSaveQueueDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val haptic = LocalHapticFeedback.current
     val displayItems = remember { mutableStateListOf<QueueItem>() }
@@ -166,6 +177,12 @@ fun QueueScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        viewModel.getPlaylists()
+                        showSaveQueueDialog = true
+                    }) {
+                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Save queue to playlist")
+                    }
                     IconButton(onClick = { showQueueMenu = true }) {
                         Icon(Icons.Default.SwapHoriz, contentDescription = "Transfer queue")
                     }
@@ -443,6 +460,26 @@ fun QueueScreen(
                 }
             }
         }
+    }
+
+    if (showSaveQueueDialog) {
+        val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+
+        net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog(
+            playlists = playlists,
+            isLoading = false,
+            addingToPlaylistId = null,
+            onDismiss = { showSaveQueueDialog = false },
+            onRetry = { viewModel.getPlaylists() },
+            onPlaylistClick = { playlist ->
+                viewModel.saveQueueToPlaylist(playlist)
+                showSaveQueueDialog = false
+            },
+            onCreatePlaylist = { name ->
+                viewModel.saveQueueToNewPlaylist(name)
+                showSaveQueueDialog = false
+            }
+        )
     }
 }
 

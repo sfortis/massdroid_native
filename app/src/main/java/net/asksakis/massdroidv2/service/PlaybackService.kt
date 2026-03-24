@@ -45,6 +45,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.data.proximity.DetectedRoom
+import net.asksakis.massdroidv2.data.proximity.DetectResult
 import net.asksakis.massdroidv2.data.proximity.MotionGate
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
@@ -324,12 +325,17 @@ class PlaybackService : MediaLibraryService() {
             if (!config.enabled || !isWithinSchedule()) return
             if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
             val rssiMap = results.associate { it.device.address to it.rssi }
-            val detected = roomDetector.detect(rssiMap, config, currentBssid = currentConnectedBssid())
-            if (detected != null) {
-                Log.d(TAG, "Background room change: ${detected.roomName}")
-                handleRoomChange(detected, config)
-            } else if (results.isNotEmpty() && (motionGate.isMoving.value || roomDetector.currentRoom.value == null)) {
-                scheduleQuickProximityRetry("bg-receiver")
+            when (val result = roomDetector.detectDetailed(rssiMap, config, currentBssid = currentConnectedBssid())) {
+                is DetectResult.Confirmed -> {
+                    Log.d(TAG, "Background room change: ${result.room.roomName}")
+                    handleRoomChange(result.room, config)
+                }
+                is DetectResult.Borderline -> {
+                    if (shouldQuickRetryBorderline(result.winner.roomId, motionGate.isMoving.value)) {
+                        scheduleQuickProximityRetry("bg-receiver:${result.reason}")
+                    }
+                }
+                else -> Unit
             }
         }
     }
@@ -341,6 +347,11 @@ class PlaybackService : MediaLibraryService() {
             PROXIMITY_CHANNEL_ID, "Follow Me", NotificationManager.IMPORTANCE_HIGH
         ).apply { description = "Room detection and playback transfer"; setShowBadge(false) }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+    }
+
+    private fun shouldQuickRetryBorderline(winnerRoomId: String, motionActive: Boolean): Boolean {
+        val currentRoomId = roomDetector.currentRoom.value?.roomId
+        return motionActive || currentRoomId == null || winnerRoomId != currentRoomId
     }
 
     private fun hasBleScanPermission(): Boolean {
@@ -455,8 +466,13 @@ class PlaybackService : MediaLibraryService() {
                             if (devices.isNotEmpty()) {
                                 Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
                                 val rssiMap = devices.associate { it.address to it.rssi }
-                                val detected = roomDetector.detect(rssiMap, cfg, motionActive = true, currentBssid = bssid)
-                                if (detected != null) { handleRoomChange(detected, cfg); break }
+                                when (val result = roomDetector.detectDetailed(rssiMap, cfg, motionActive = true, currentBssid = bssid)) {
+                                    is DetectResult.Confirmed -> {
+                                        handleRoomChange(result.room, cfg)
+                                        break
+                                    }
+                                    else -> Unit
+                                }
                             } else {
                                 Log.d(TAG, "BLE fast-path $burst/2: 0 devices")
                             }
@@ -487,11 +503,14 @@ class PlaybackService : MediaLibraryService() {
             Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
 
             val motionActive = motionGate.isMoving.value
-            val detected = roomDetector.detect(rssiMap, config, motionActive, currentConnectedBssid())
-
-            if (detected != null) handleRoomChange(detected, config)
-            else if (devices.isNotEmpty() && (motionActive || roomDetector.currentRoom.value == null)) {
-                scheduleQuickProximityRetry("burst-$trigger")
+            when (val result = roomDetector.detectDetailed(rssiMap, config, motionActive, currentConnectedBssid())) {
+                is DetectResult.Confirmed -> handleRoomChange(result.room, config)
+                is DetectResult.Borderline -> {
+                    if (shouldQuickRetryBorderline(result.winner.roomId, motionActive)) {
+                        scheduleQuickProximityRetry("burst-$trigger:${result.reason}")
+                    }
+                }
+                else -> Unit
             }
         } catch (e: Exception) {
             Log.w(TAG, "Burst scan failed: ${e.message}")
@@ -520,17 +539,25 @@ class PlaybackService : MediaLibraryService() {
                     return@launch
                 }
 
-                val detected = roomDetector.detect(
+                when (val result = roomDetector.detectDetailed(
                     devices.associate { it.address to it.rssi },
                     config,
                     motionGate.isMoving.value,
                     currentConnectedBssid()
-                )
-                if (detected != null) {
-                    Log.d(TAG, "Quick retry ($reason): confirmed ${detected.roomName}")
-                    handleRoomChange(detected, config)
-                } else {
-                    Log.d(TAG, "Quick retry ($reason): no confirm from ${devices.size} devices")
+                )) {
+                    is DetectResult.Confirmed -> {
+                        Log.d(TAG, "Quick retry ($reason): confirmed ${result.room.roomName}")
+                        handleRoomChange(result.room, config)
+                    }
+                    is DetectResult.Borderline -> {
+                        Log.d(TAG, "Quick retry ($reason): borderline ${result.winner.roomName} (${result.reason}) from ${devices.size} devices")
+                    }
+                    DetectResult.NoCoverage -> {
+                        Log.d(TAG, "Quick retry ($reason): no coverage from ${devices.size} devices")
+                    }
+                    DetectResult.NoDecision -> {
+                        Log.d(TAG, "Quick retry ($reason): no decision from ${devices.size} devices")
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Quick retry ($reason) failed: ${e.message}")

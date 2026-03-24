@@ -230,4 +230,48 @@ class QueueViewModel @Inject constructor(
         }
         return "Operation failed"
     }
+
+    fun getPlaylists() = viewModelScope.launch {
+        try { _playlists.value = musicRepository.getPlaylists() } catch (_: Exception) { }
+    }
+
+    private val _playlists = MutableStateFlow<List<net.asksakis.massdroidv2.domain.model.Playlist>>(emptyList())
+    val playlists: StateFlow<List<net.asksakis.massdroidv2.domain.model.Playlist>> = _playlists.asStateFlow()
+
+    fun saveQueueToPlaylist(playlist: net.asksakis.massdroidv2.domain.model.Playlist) {
+        val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
+        if (trackUris.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                // Get existing tracks to avoid duplicates
+                val existing = try {
+                    musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider).map { it.uri }.toSet()
+                } catch (_: Exception) { emptySet() }
+                val newUris = trackUris.filter { it !in existing }
+                for (uri in newUris) {
+                    musicRepository.addTrackToPlaylist(playlist, uri)
+                }
+                _error.tryEmit("Added ${newUris.size} tracks to ${playlist.name}" +
+                    if (trackUris.size > newUris.size) " (${trackUris.size - newUris.size} already existed)" else "")
+            } catch (e: Exception) {
+                _error.tryEmit("Failed to save queue: ${e.message}")
+            }
+        }
+    }
+
+    fun saveQueueToNewPlaylist(name: String) {
+        val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
+        if (trackUris.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val playlist = musicRepository.createPlaylist(name)
+                for (uri in trackUris) {
+                    musicRepository.addTrackToPlaylist(playlist, uri)
+                }
+                _error.tryEmit("Created '$name' with ${trackUris.size} tracks")
+            } catch (e: Exception) {
+                _error.tryEmit("Failed to create playlist: ${e.message}")
+            }
+        }
+    }
 }

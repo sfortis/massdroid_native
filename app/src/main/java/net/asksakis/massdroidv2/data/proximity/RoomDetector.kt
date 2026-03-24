@@ -17,6 +17,18 @@ private const val MISSING_PENALTY = 12.0
 private const val RSSI_DIFF_CLAMP = 25
 private const val NO_MATCH_CLEAR_THRESHOLD = 5
 
+sealed interface DetectResult {
+    data class Confirmed(val room: DetectedRoom) : DetectResult
+    data class Borderline(
+        val winner: DetectedRoom,
+        val confidence: Double,
+        val margin: Double,
+        val reason: String
+    ) : DetectResult
+    data object NoCoverage : DetectResult
+    data object NoDecision : DetectResult
+}
+
 /**
  * Room classifier using fingerprint k-NN detection.
  * Computes weighted Manhattan distance to stored fingerprints,
@@ -44,9 +56,27 @@ class RoomDetector @Inject constructor() {
         Log.d(TAG, "Seeded room: ${room.roomName}")
     }
 
-    fun detect(scanResults: Map<String, Int>, config: ProximityConfig, motionActive: Boolean = false, currentBssid: String? = null): DetectedRoom? {
-        if (suppressed || config.rooms.isEmpty()) return null
-        if (scanResults.isEmpty()) return handleNoMatch("empty scan")
+    fun detect(
+        scanResults: Map<String, Int>,
+        config: ProximityConfig,
+        motionActive: Boolean = false,
+        currentBssid: String? = null
+    ): DetectedRoom? = when (val result = detectDetailed(scanResults, config, motionActive, currentBssid)) {
+        is DetectResult.Confirmed -> result.room
+        else -> null
+    }
+
+    fun detectDetailed(
+        scanResults: Map<String, Int>,
+        config: ProximityConfig,
+        motionActive: Boolean = false,
+        currentBssid: String? = null
+    ): DetectResult {
+        if (suppressed || config.rooms.isEmpty()) return DetectResult.NoDecision
+        if (scanResults.isEmpty()) {
+            handleNoMatch("empty scan")
+            return DetectResult.NoCoverage
+        }
 
         // Build eligible rooms using centralized policy rules + WiFi context gate
         val eligibleRooms = config.rooms.filter { room ->
@@ -56,7 +86,7 @@ class RoomDetector @Inject constructor() {
             if (room.calibrationQuality == CalibrationQuality.UNCALIBRATED) return@filter false
             true
         }
-        if (eligibleRooms.isEmpty()) return null
+        if (eligibleRooms.isEmpty()) return DetectResult.NoDecision
 
         // Use top-N anchors by weight for coverage check and scoring (prune long tail)
         val roomSortedBleProfiles = eligibleRooms.associate { room ->
@@ -111,9 +141,8 @@ class RoomDetector @Inject constructor() {
                 val matched = liveBle.filter { it in topBle }
                 "${room.name}: matched=${matched.size}/${topBle.size}, live=$matched, top=$topBle"
             }
-            return handleNoMatch(
-                "devices=${scanResults.size}, no coverage, liveBle=$liveBle, rooms=[$coverageDetails]"
-            )
+            handleNoMatch("devices=${scanResults.size}, no coverage, liveBle=$liveBle, rooms=[$coverageDetails]")
+            return DetectResult.NoCoverage
         }
         noMatchStreak = 0
 
@@ -137,30 +166,40 @@ class RoomDetector @Inject constructor() {
             "margin=${String.format("%.1f", margin)}, devices=${scanResults.size}, " +
             "policy=${winnerRoom.detectionPolicy}, top$KNN_K=$topRoomNames")
 
+        val winnerDetected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
+        noteWinnerCandidate(winnerId)
+
         if (confidence < rules.minConfidence) {
-            resetConfidence()
-            return null
+            return DetectResult.Borderline(
+                winner = winnerDetected,
+                confidence = confidence,
+                margin = margin,
+                reason = "low-confidence"
+            )
         }
         if (sortedVotes.size > 1 && margin < rules.minMargin) {
-            resetConfidence()
-            return null
-        }
-
-        if (winnerId == consecutiveWinnerId) {
-            consecutiveWinCount++
-        } else {
-            consecutiveWinnerId = winnerId
-            consecutiveWinCount = 1
+            return DetectResult.Borderline(
+                winner = winnerDetected,
+                confidence = confidence,
+                margin = margin,
+                reason = "low-margin"
+            )
         }
 
         // During motion: fast confirm (1 win), otherwise use policy threshold
         val reqWins = if (motionActive) 1 else rules.minConsecutiveWins
-        if (consecutiveWinCount < reqWins) return null
+        if (consecutiveWinCount < reqWins) {
+            return DetectResult.Borderline(
+                winner = winnerDetected,
+                confidence = confidence,
+                margin = margin,
+                reason = "needs-$reqWins-wins"
+            )
+        }
 
-        val detected = DetectedRoom(winnerRoom.id, winnerRoom.name, winnerRoom.playerId, winnerRoom.playerName)
         val changed = _currentRoom.value?.roomId != winnerRoom.id
-        _currentRoom.value = detected
-        return if (changed) detected else null
+        _currentRoom.value = winnerDetected
+        return if (changed) DetectResult.Confirmed(winnerDetected) else DetectResult.NoDecision
     }
 
     fun reset() {
@@ -169,7 +208,7 @@ class RoomDetector @Inject constructor() {
         _currentRoom.value = null
     }
 
-    private fun handleNoMatch(reason: String): DetectedRoom? {
+    private fun handleNoMatch(reason: String) {
         noMatchStreak++
         if (noMatchStreak >= NO_MATCH_CLEAR_THRESHOLD && _currentRoom.value != null) {
             Log.d(TAG, "k-NN: left all rooms ($reason x$noMatchStreak)")
@@ -178,7 +217,6 @@ class RoomDetector @Inject constructor() {
         } else {
             Log.d(TAG, "k-NN: skip ($reason, streak=$noMatchStreak)")
         }
-        return null
     }
 
     private fun fingerprintDistance(
@@ -206,5 +244,14 @@ class RoomDetector @Inject constructor() {
     private fun resetConfidence() {
         consecutiveWinnerId = null
         consecutiveWinCount = 0
+    }
+
+    private fun noteWinnerCandidate(winnerId: String) {
+        if (winnerId == consecutiveWinnerId) {
+            consecutiveWinCount++
+        } else {
+            consecutiveWinnerId = winnerId
+            consecutiveWinCount = 1
+        }
     }
 }

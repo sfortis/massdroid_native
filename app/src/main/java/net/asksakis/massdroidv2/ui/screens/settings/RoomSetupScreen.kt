@@ -378,7 +378,7 @@ private fun PlaybackConfigSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        playbackConfig.playlistName ?: "None (resume queue)",
+                        playbackConfig.playlistName ?: "None (move current queue)",
                         style = MaterialTheme.typography.bodyLarge,
                         color = if (playbackConfig.playlistUri != null) MaterialTheme.colorScheme.onSurface
                         else MaterialTheme.colorScheme.onSurfaceVariant
@@ -525,7 +525,7 @@ private fun PlaybackConfigSection(
                             ) {
                                 RadioButton(selected = noneSelected, onClick = null)
                                 Text(
-                                    "None (resume queue)",
+                                    "None (move current queue)",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
