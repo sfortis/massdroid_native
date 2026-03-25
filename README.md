@@ -58,6 +58,43 @@ Walk between rooms and your music follows you. MassDroid uses BLE fingerprinting
 
 Requires Android 12+ with Bluetooth support.
 
+### Room Detection Tips
+
+To get reliable room detection, treat each room like a BLE fingerprinting problem, not just a “find the strongest beacon” problem.
+
+- **Calibrate inside the room, not near the doorway** : Doorways blend adjacent-room fingerprints and make transitions less stable.
+- **Low signal can still be useful** : A room can have weak BLE beacons and still be detectable if the overall RSSI pattern is consistent and different from nearby rooms.
+- **Common beacons are fine** : The same TV, speaker, or router can appear in multiple rooms. What matters is that the RSSI pattern changes between rooms.
+- **Prefer stationary devices** : TVs, speakers, consoles, routers, and smart home hubs are good anchors. Phones, watches, earbuds, and other personal devices are intentionally ignored.
+- **Private-address devices are not automatically bad** : Some useful devices advertise with private BLE addresses. Use the inspection tools below to see what the app is actually using or ignoring.
+- **Use `STRICT` as the default** : Use `NORMAL` only for genuinely weaker rooms that need a more forgiving BLE policy.
+- **Use Wi-Fi AP override only for separate locations** : `Stick to connected Wi-Fi AP` is best for distinct places like `Home`, `Office`, or a detached space. It is not meant for nearby rooms on the same Wi-Fi.
+
+### Follow Me Tools
+
+MassDroid includes a few built-in tools to help you tune room detection without guessing:
+
+- **Calibration Data** : Shows the saved room fingerprint, number of beacons, number of samples, and whether the room currently looks `Good` or `Weak`.
+- **Recalibrate** : Rebuilds the room fingerprint from fresh BLE scans. Use this after moving devices or if a room keeps misdetecting.
+- **Inspect BLE** : Runs a high-accuracy BLE scan and shows:
+  - which devices Follow Me would use as room anchors right now
+  - which stable devices are visible but not yet in the room profile
+  - which devices are ignored because they are mobile or excluded by the current policy
+- **Detection Mode** : `STRICT` requires a cleaner BLE match. `NORMAL` is a fallback for weaker rooms.
+- **Wi-Fi AP Override** : Lets a room use the currently connected Wi-Fi access point instead of BLE anchors.
+
+### Practical Troubleshooting
+
+- If a room looks good in real life but still shows `Weak`, inspect whether it has a low-signal but structured fingerprint rather than simply “not enough strong beacons”.
+- If two nearby rooms confuse each other, recalibrate both away from the doorway and compare their `Inspect BLE` results.
+- If a remote location keeps false-triggering from home, store its Wi-Fi AP and enable `Stick to connected Wi-Fi AP`.
+- If detection feels slow during movement, test with the screen off as well as screen on. The motion-driven scanning path is more aggressive during real room-to-room movement.
+- If you want deeper diagnostics, capture logs with:
+
+```bash
+adb logcat -d -v threadtime -s PlaybackSvc RoomDetector MotionGate ProximityScanner
+```
+
 ## Recommendation Engine
 
 MassDroid includes a local recommendation engine that learns your listening habits and generates personalized content.

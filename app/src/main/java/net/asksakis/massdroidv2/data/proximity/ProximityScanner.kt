@@ -42,6 +42,15 @@ class ProximityScanner @Inject constructor(
         val addressType: AddressType = AddressType.PUBLIC
     )
 
+    data class SnapshotDebugState(
+        val bufferSize: Int,
+        val freshestAgeMs: Long?,
+        val oldestAgeMs: Long?,
+        val lastPersistentCallbackAgeMs: Long?,
+        val lastBackgroundDeliveryAgeMs: Long?,
+        val persistentRunning: Boolean
+    )
+
     /**
      * Classify BLE address type. Uses BluetoothDevice.getAddressType() on API 34+
      * for reliable Public vs Random distinction. Falls back to top-2-bit heuristic.
@@ -101,6 +110,8 @@ class ProximityScanner @Inject constructor(
     private val persistentLastSeen = ConcurrentHashMap<String, Long>()
     private var persistentCallback: ScanCallback? = null
     @Volatile private var persistentRunning = false
+    @Volatile private var lastPersistentCallbackMs = 0L
+    @Volatile private var lastBackgroundDeliveryMs = 0L
 
     @Volatile var zeroDeviceStreak = 0
     @Volatile var uiHighAccuracyRequested = false
@@ -118,7 +129,9 @@ class ProximityScanner @Inject constructor(
                     val addr = result.device?.address ?: return
                     val name = try { result.device.name } catch (_: Exception) { null }
                     persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
-                    persistentLastSeen[addr] = System.currentTimeMillis()
+                    val now = System.currentTimeMillis()
+                    persistentLastSeen[addr] = now
+                    lastPersistentCallbackMs = now
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
         }
@@ -126,22 +139,38 @@ class ProximityScanner @Inject constructor(
         try {
             scanner.startScan(null, settings, persistentCallback)
             persistentRunning = true
-            Log.d(TAG, "Persistent scan: ${if (lowPower) "LOW_POWER" else "LOW_LATENCY"}")
+            Log.d(
+                TAG,
+                "Persistent scan: ${if (lowPower) "LOW_POWER" else "LOW_LATENCY"} " +
+                    "(buffer=${persistentDevices.size})"
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Persistent scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun stopPersistentScan() {
-        if (!persistentRunning) return
+    fun stopPersistentScan(clearBuffers: Boolean = true) {
+        if (!persistentRunning) {
+            if (clearBuffers) {
+                persistentDevices.clear()
+                persistentLastSeen.clear()
+            }
+            return
+        }
         val scanner = getScanner()
+        val bufferBeforeStop = persistentDevices.size
         persistentCallback?.let { cb -> try { scanner?.stopScan(cb) } catch (_: Exception) { } }
         persistentCallback = null
         persistentRunning = false
-        persistentDevices.clear()
-        persistentLastSeen.clear()
-        Log.d(TAG, "Persistent scan stopped")
+        if (clearBuffers) {
+            persistentDevices.clear()
+            persistentLastSeen.clear()
+        }
+        Log.d(
+            TAG,
+            "Persistent scan stopped (bufferBefore=$bufferBeforeStop, clearBuffers=$clearBuffers, bufferAfter=${persistentDevices.size})"
+        )
     }
 
     // --- PendingIntent-based background scan (works with screen off) ---
@@ -195,21 +224,36 @@ class ProximityScanner @Inject constructor(
                 val addr = result.device?.address ?: continue
                 val name = try { result.device.name } catch (_: Exception) { null }
                 persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
-                persistentLastSeen[addr] = System.currentTimeMillis()
+                val now = System.currentTimeMillis()
+                persistentLastSeen[addr] = now
+                lastBackgroundDeliveryMs = now
             } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
     }
 
     /** Read current snapshot from persistent scan (no start/stop) */
-    fun readSnapshot(): List<ScannedDevice> {
+    fun readSnapshot(retainMs: Long = DEVICE_RETAIN_MS): List<ScannedDevice> {
         val now = System.currentTimeMillis()
-        persistentLastSeen.entries.removeAll { now - it.value > DEVICE_RETAIN_MS }
+        persistentLastSeen.entries.removeAll { now - it.value > retainMs }
         val stale = persistentDevices.keys - persistentLastSeen.keys
         stale.forEach { persistentDevices.remove(it) }
         val devices = persistentDevices.values.toList()
         if (devices.isEmpty()) zeroDeviceStreak++ else zeroDeviceStreak = 0
         return devices
+    }
+
+    fun snapshotDebugState(): SnapshotDebugState {
+        val now = System.currentTimeMillis()
+        val ages = persistentLastSeen.values.map { now - it }
+        return SnapshotDebugState(
+            bufferSize = persistentDevices.size,
+            freshestAgeMs = ages.minOrNull(),
+            oldestAgeMs = ages.maxOrNull(),
+            lastPersistentCallbackAgeMs = lastPersistentCallbackMs.takeIf { it > 0L }?.let { now - it },
+            lastBackgroundDeliveryAgeMs = lastBackgroundDeliveryMs.takeIf { it > 0L }?.let { now - it },
+            persistentRunning = persistentRunning
+        )
     }
 
     fun isAvailable(): Boolean = getScanner() != null

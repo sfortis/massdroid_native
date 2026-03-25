@@ -10,10 +10,10 @@ import kotlin.math.abs
 
 private const val TAG = "RoomDetector"
 private const val KNN_K = 5
-private const val TOP_ANCHORS = 5
 private const val COVERAGE_ANCHORS = 8
 private const val STAY_BIAS_FACTOR = 0.85
 private const val MISSING_PENALTY = 12.0
+private const val TAIL_MISSING_PENALTY_FACTOR = 0.35
 private const val RSSI_DIFF_CLAMP = 25
 private const val NO_MATCH_CLEAR_THRESHOLD = 5
 
@@ -108,14 +108,15 @@ class RoomDetector @Inject constructor() {
         }
         if (eligibleRooms.isEmpty()) return DetectResult.NoDecision
 
-        // Use top-N anchors by weight for coverage check and scoring (prune long tail)
+        // Rank BLE anchors once. Use the strongest subset for coverage/primary-anchor handling,
+        // but score against the full calibrated fingerprint.
         val roomSortedBleProfiles = eligibleRooms.associate { room ->
             room.id to rankBeaconProfilesForDetection(
                 room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
             )
         }
 
-        val roomCoverageBleAnchors = roomSortedBleProfiles.mapValues { (_, bleProfiles) ->
+        val roomPrimaryBleAnchors = roomSortedBleProfiles.mapValues { (_, bleProfiles) ->
             bleProfiles.take(COVERAGE_ANCHORS).map { it.address }.toSet()
         }
 
@@ -132,13 +133,12 @@ class RoomDetector @Inject constructor() {
         for (room in eligibleRooms) {
             val rules = room.detectionPolicy.rules()
             val allWeights = roomAllWeights[room.id] ?: emptyMap()
-            // BLE coverage gate uses a slightly wider anchor set than scoring.
-            val coverageBleAddrs = roomCoverageBleAnchors[room.id] ?: emptySet()
-            val bleMatched = scanResults.keys.count { it in coverageBleAddrs }
+            val primaryAnchors = roomPrimaryBleAnchors[room.id] ?: emptySet()
+            val bleMatched = scanResults.keys.count { it in primaryAnchors }
             if (bleMatched < rules.minBleCoverage) continue
 
             for (fp in room.fingerprints) {
-                val dist = fingerprintDistance(scanResults, fp, allWeights)
+                val dist = fingerprintDistance(scanResults, fp, allWeights, primaryAnchors)
                 val biased = if (_currentRoom.value?.roomId == room.id) dist * STAY_BIAS_FACTOR else dist
                 // WiFi BSSID as supplementary scoring hint
                 val bssidAdjusted = when {
@@ -153,7 +153,7 @@ class RoomDetector @Inject constructor() {
         if (allDistances.isEmpty()) {
             val liveBle = scanResults.keys.filter { !it.startsWith("wifi:") }.sorted()
             val coverageDetails = eligibleRooms.joinToString(" | ") { room ->
-                val topBle = roomCoverageBleAnchors[room.id].orEmpty().sorted()
+                val topBle = roomPrimaryBleAnchors[room.id].orEmpty().sorted()
                 val matched = liveBle.filter { it in topBle }
                 "${room.name}: matched=${matched.size}/${topBle.size}, live=$matched, top=$topBle"
             }
@@ -238,18 +238,20 @@ class RoomDetector @Inject constructor() {
     private fun fingerprintDistance(
         current: Map<String, Int>,
         fingerprint: RoomFingerprint,
-        weights: Map<String, Double>
+        weights: Map<String, Double>,
+        primaryAnchors: Set<String>
     ): Double {
         var total = 0.0
         var used = 0.0
         for ((addr, refRssi) in fingerprint.samples) {
-            // Only score addresses that are in the top anchors set
+            // Score the full fingerprint, but penalize missing tail anchors less aggressively.
             val weight = weights[addr] ?: continue
             val currentRssi = current[addr]
             val contribution = if (currentRssi != null) {
                 weight * abs(currentRssi - refRssi).coerceAtMost(RSSI_DIFF_CLAMP)
             } else {
-                weight * MISSING_PENALTY
+                val penaltyFactor = if (addr in primaryAnchors) 1.0 else TAIL_MISSING_PENALTY_FACTOR
+                weight * MISSING_PENALTY * penaltyFactor
             }
             total += contribution
             used += weight
