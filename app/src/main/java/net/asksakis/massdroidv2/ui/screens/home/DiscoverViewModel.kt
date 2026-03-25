@@ -378,14 +378,17 @@ class DiscoverViewModel @Inject constructor(
                 if (hadDstm) {
                     musicRepository.setDontStopTheMusic(queueId, false)
                 }
-                playerRepository.setQueueFilterMode(
-                    queueId,
-                    PlayerRepository.QueueFilterMode.SMART_GENERATED
-                )
-                lastSmartMixSelection = mixResult.tracks
-                musicRepository.playMedia(queueId, trackUris, option = "replace")
-                if (hadDstm) {
-                    musicRepository.setDontStopTheMusic(queueId, true)
+                try {
+                    playerRepository.setQueueFilterMode(
+                        queueId,
+                        PlayerRepository.QueueFilterMode.SMART_GENERATED
+                    )
+                    lastSmartMixSelection = mixResult.tracks
+                    musicRepository.playMedia(queueId, trackUris, option = "replace")
+                } finally {
+                    if (hadDstm) {
+                        musicRepository.setDontStopTheMusic(queueId, true)
+                    }
                 }
                 logQueueContents("smartMix", awaitQueueItems = true)
                 val message = if (mixResult.genre != null) {
