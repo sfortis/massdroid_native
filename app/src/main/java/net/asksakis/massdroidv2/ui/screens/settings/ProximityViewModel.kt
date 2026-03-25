@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.AUTO_FINGERPRINT_CYCLES
+import net.asksakis.massdroidv2.data.proximity.rankBeaconProfilesForDetection
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.proximity.RoomFingerprint
@@ -43,6 +44,27 @@ private const val MIN_AVG_VISIBILITY = 0.3
 private const val MIN_DISCRIMINATIVE_BEACONS = 2
 private const val DISCRIMINATIVE_THRESHOLD = 5.0
 private const val MAX_FLOOR_RATIO = 0.8
+
+data class BleInspectionItem(
+    val address: String,
+    val name: String?,
+    val rssi: Int,
+    val category: ProximityScanner.DeviceCategory,
+    val addressType: ProximityScanner.AddressType,
+    val profileWeight: Double? = null,
+    val profileDiscrimination: Double? = null,
+    val profileMeanRssi: Int? = null
+)
+
+data class BleInspectionReport(
+    val roomName: String,
+    val totalDevices: Int,
+    val connectedBssid: String?,
+    val usefulAnchors: List<BleInspectionItem>,
+    val stableCandidates: List<BleInspectionItem>,
+    val privateAddressDevices: List<BleInspectionItem>,
+    val mobileDevices: List<BleInspectionItem>
+)
 
 @HiltViewModel
 class ProximityViewModel @Inject constructor(
@@ -76,6 +98,28 @@ class ProximityViewModel @Inject constructor(
     private val _calibrationSummary = MutableStateFlow<String?>(null)
     val calibrationSummary: StateFlow<String?> = _calibrationSummary.asStateFlow()
     fun dismissCalibrationSummary() { _calibrationSummary.value = null }
+
+    private val _bleInspectionInProgress = MutableStateFlow(false)
+    val bleInspectionInProgress: StateFlow<Boolean> = _bleInspectionInProgress.asStateFlow()
+
+    private val _bleInspectionReport = MutableStateFlow<BleInspectionReport?>(null)
+    val bleInspectionReport: StateFlow<BleInspectionReport?> = _bleInspectionReport.asStateFlow()
+
+    private val _bleInspectionError = MutableStateFlow<String?>(null)
+    val bleInspectionError: StateFlow<String?> = _bleInspectionError.asStateFlow()
+
+    fun dismissBleInspection() { _bleInspectionReport.value = null }
+    fun dismissBleInspectionError() { _bleInspectionError.value = null }
+
+    fun startLiveMonitoring() {
+        scanner.uiHighAccuracyRequested = true
+        Log.d(TAG, "Live monitoring: ON")
+    }
+
+    fun stopLiveMonitoring() {
+        scanner.uiHighAccuracyRequested = false
+        Log.d(TAG, "Live monitoring: OFF")
+    }
 
     fun loadPlaylists() {
         viewModelScope.launch {
@@ -134,6 +178,67 @@ class ProximityViewModel @Inject constructor(
         viewModelScope.launch {
             configStore.update { c -> c.copy(rooms = c.rooms.filter { it.id != roomId }) }
             roomDetector.reset()
+        }
+    }
+
+    fun inspectRoomBle(roomId: String) {
+        if (!scanner.isBluetoothEnabled()) {
+            _bleInspectionError.value = "Bluetooth is off. Turn it on to inspect BLE signals."
+            return
+        }
+        viewModelScope.launch {
+            _bleInspectionInProgress.value = true
+            try {
+                val room = configStore.config.value.rooms.find { it.id == roomId }
+                if (room == null) {
+                    _bleInspectionError.value = "Room not found."
+                    return@launch
+                }
+
+                val devices = scanner.scanOnce(lowPower = false)
+                val connectedBssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
+                val rankedProfiles = rankBeaconProfilesForDetection(
+                    room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
+                )
+                val usefulProfileMap = rankedProfiles.take(8).associateBy { it.address }
+
+                val usefulAnchors = mutableListOf<BleInspectionItem>()
+                val stableCandidates = mutableListOf<BleInspectionItem>()
+                val privateAddressDevices = mutableListOf<BleInspectionItem>()
+                val mobileDevices = mutableListOf<BleInspectionItem>()
+
+                devices.sortedByDescending { it.rssi }.forEach { device ->
+                    val item = BleInspectionItem(
+                        address = device.address,
+                        name = device.name,
+                        rssi = device.rssi,
+                        category = device.category,
+                        addressType = device.addressType,
+                        profileWeight = usefulProfileMap[device.address]?.weight,
+                        profileDiscrimination = usefulProfileMap[device.address]?.discriminationScore,
+                        profileMeanRssi = usefulProfileMap[device.address]?.meanRssi
+                    )
+
+                    when {
+                        usefulProfileMap.containsKey(device.address) -> usefulAnchors += item
+                        device.category == ProximityScanner.DeviceCategory.MOBILE -> mobileDevices += item
+                        scanner.isPrivateAddress(device.addressType) -> privateAddressDevices += item
+                        else -> stableCandidates += item
+                    }
+                }
+
+                _bleInspectionReport.value = BleInspectionReport(
+                    roomName = room.name,
+                    totalDevices = devices.size,
+                    connectedBssid = connectedBssid,
+                    usefulAnchors = usefulAnchors,
+                    stableCandidates = stableCandidates.take(10),
+                    privateAddressDevices = privateAddressDevices.take(10),
+                    mobileDevices = mobileDevices.take(10)
+                )
+            } finally {
+                _bleInspectionInProgress.value = false
+            }
         }
     }
 
@@ -201,16 +306,19 @@ class ProximityViewModel @Inject constructor(
                 val bssid = wifiSnapshot.keys.firstOrNull()?.removePrefix("wifi:")
                 if (bssid != null) Log.d(TAG, "Connected WiFi BSSID: $bssid")
 
-                // Accept only stable, non-mobile BLE addresses for fingerprinting.
-                // RPA/NRPA devices rotate and are not reliable room anchors.
+                // Accept stable addresses normally, and allow private-address devices
+                // only when they look empirically stable enough for room anchoring.
                 val validAddresses = counts
-                    .filter { categoryMap[it.key] != ProximityScanner.DeviceCategory.MOBILE }
                     .filter { (addr, seen) ->
-                        val isStable = scanner.isStableAddress(addressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC)
-                        isStable && seen >= MIN_SIGHTINGS
+                        scanner.isUsableRoomAnchorAddress(
+                            category = categoryMap[addr] ?: ProximityScanner.DeviceCategory.UNKNOWN,
+                            addressType = addressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC,
+                            seenCount = seen,
+                            name = nameMap[addr]
+                        )
                     }
                     .keys
-                Log.d(TAG, "Valid addresses: ${validAddresses.size} (stable, non-mobile only)")
+                Log.d(TAG, "Valid addresses: ${validAddresses.size} (empirically usable room anchors)")
 
                 val config = configStore.config.value
                 val otherRoomMeans = config.rooms
@@ -229,12 +337,14 @@ class ProximityViewModel @Inject constructor(
                     }
                     val totalDevices = counts.size
                     val mobileCount = counts.keys.count { categoryMap[it] == ProximityScanner.DeviceCategory.MOBILE }
-                    val rpaCount = counts.keys.count { addressTypes[it] == ProximityScanner.AddressType.RPA }
+                    val privateCount = counts.keys.count {
+                        scanner.isPrivateAddress(addressTypes[it] ?: ProximityScanner.AddressType.PUBLIC)
+                    }
                     val errorMsg = when {
                         totalScans == 0 -> "No BLE devices detected. Check that Bluetooth and Location are enabled in system settings."
                         totalDevices == 0 -> "BLE scan ran but found 0 devices. Make sure Location Services are on and Bluetooth permissions are granted."
                         totalDevices == mobileCount -> "Found $totalDevices devices but all are mobile (phones, wearables). Need stationary devices like TVs, speakers, or routers."
-                        else -> "Found $totalDevices BLE devices, but none qualified as stable room anchors. $mobileCount looked like mobile devices and $rpaCount used rotating addresses. The rest were too unstable or too weakly seen for reliable room fingerprinting."
+                        else -> "Found $totalDevices BLE devices, but none qualified as usable room anchors. $mobileCount looked like mobile devices and $privateCount used private addresses. The rest were too unstable or too weakly seen for reliable room fingerprinting."
                     }
                     _calibrationError.value = errorMsg
                 } else {
@@ -377,10 +487,13 @@ class ProximityViewModel @Inject constructor(
                         for (addr in scan.keys) counts[addr] = (counts[addr] ?: 0) + 1
                     }
                     return counts
-                        .filter { allCategories[it.key] != ProximityScanner.DeviceCategory.MOBILE }
                         .filter { (addr, seen) ->
-                            val isStable = scanner.isStableAddress(allAddressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC)
-                            isStable && seen >= MIN_SIGHTINGS
+                            scanner.isUsableRoomAnchorAddress(
+                                category = allCategories[addr] ?: ProximityScanner.DeviceCategory.UNKNOWN,
+                                addressType = allAddressTypes[addr] ?: ProximityScanner.AddressType.PUBLIC,
+                                seenCount = seen,
+                                name = allNames[addr]
+                            )
                         }
                         .keys
                 }
@@ -459,8 +572,13 @@ class ProximityViewModel @Inject constructor(
         val avgVisibility = bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0
         val discriminativeCount = bleProfiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
         val floorRatio = if (bleProfiles.isNotEmpty()) bleProfiles.count { it.weight <= MIN_WEIGHT + 0.01 }.toDouble() / bleProfiles.size else 1.0
-
         val rules = policy.rules()
+        val hasStructuredFingerprint =
+            usableCount >= rules.minUsableProfiles &&
+                discriminativeCount >= MIN_DISCRIMINATIVE_BEACONS &&
+                floorRatio <= MAX_FLOOR_RATIO &&
+                bleProfiles.size >= 4
+
         var isGood = true
 
         if (usableCount < rules.minUsableProfiles) {
@@ -469,7 +587,9 @@ class ProximityViewModel @Inject constructor(
         }
         if (avgVisibility < MIN_AVG_VISIBILITY) {
             warnings.add("$roomName: low beacon visibility (${String.format("%.0f%%", avgVisibility * 100)})")
-            isGood = false
+            if (!hasStructuredFingerprint) {
+                isGood = false
+            }
         }
         if (discriminativeCount < MIN_DISCRIMINATIVE_BEACONS) {
             warnings.add("$roomName: no strongly discriminative beacons")
@@ -494,8 +614,13 @@ class ProximityViewModel @Inject constructor(
         val usableCount = bleProfiles.count { it.weight > MIN_WEIGHT }
         val discriminativeCount = bleProfiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
         val visibilityPct = ((bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0) * 100).toInt()
+        val lowVisibility = visibilityPct < (MIN_AVG_VISIBILITY * 100).toInt()
         return if (quality == CalibrationQuality.GOOD) {
-            "Good calibration: $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+            if (lowVisibility) {
+                "Good calibration: low-signal but structured fingerprint with $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+            } else {
+                "Good calibration: $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+            }
         } else {
             val reasons = warnings
                 .filter { it.startsWith("$roomName:") }
@@ -598,4 +723,8 @@ class ProximityViewModel @Inject constructor(
     }
 
     // endregion
+
+    override fun onCleared() {
+        scanner.uiHighAccuracyRequested = false
+    }
 }

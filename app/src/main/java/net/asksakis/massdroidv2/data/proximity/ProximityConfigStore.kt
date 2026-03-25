@@ -40,17 +40,6 @@ class ProximityConfigStore @Inject constructor(
         }
     }
 
-    suspend fun save(config: ProximityConfig) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            try {
-                file.writeText(json.encodeToString(ProximityConfig.serializer(), config))
-                _config.value = config
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to save config: ${e.message}")
-            }
-        }
-    }
-
     suspend fun update(transform: (ProximityConfig) -> ProximityConfig) {
         mutex.withLock {
             val updated = transform(_config.value)

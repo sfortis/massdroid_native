@@ -110,24 +110,20 @@ class RoomDetector @Inject constructor() {
 
         // Use top-N anchors by weight for coverage check and scoring (prune long tail)
         val roomSortedBleProfiles = eligibleRooms.associate { room ->
-            room.id to room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
-                .sortedWith(
-                    compareByDescending<BeaconProfile> { it.discriminationScore > 5.0 }
-                        .thenByDescending { it.weight }
-                        .thenByDescending { it.discriminationScore }
-                )
+            room.id to rankBeaconProfilesForDetection(
+                room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
+            )
         }
 
         val roomCoverageBleAnchors = roomSortedBleProfiles.mapValues { (_, bleProfiles) ->
             bleProfiles.take(COVERAGE_ANCHORS).map { it.address }.toSet()
         }
 
-        val roomTopAnchors = eligibleRooms.associate { room ->
-            // Prefer discriminative anchors, then by weight
-            val topBle = roomSortedBleProfiles[room.id].orEmpty().take(TOP_ANCHORS)
-            val topWifi = room.beaconProfiles.filter { it.address.startsWith("wifi:") }
-                .sortedByDescending { it.weight }.take(TOP_ANCHORS)
-            room.id to (topBle + topWifi).associate { it.address to it.weight }
+        // All calibrated beacons participate in scoring (the full pattern IS the fingerprint)
+        val roomAllWeights = eligibleRooms.associate { room ->
+            room.id to room.beaconProfiles
+                .filter { !it.address.startsWith("wifi:") }
+                .associate { it.address to it.weight }
         }
 
         data class FpEntry(val roomId: String, val distance: Double)
@@ -135,14 +131,14 @@ class RoomDetector @Inject constructor() {
         val allDistances = mutableListOf<FpEntry>()
         for (room in eligibleRooms) {
             val rules = room.detectionPolicy.rules()
-            val topWeights = roomTopAnchors[room.id] ?: emptyMap()
+            val allWeights = roomAllWeights[room.id] ?: emptyMap()
             // BLE coverage gate uses a slightly wider anchor set than scoring.
             val coverageBleAddrs = roomCoverageBleAnchors[room.id] ?: emptySet()
             val bleMatched = scanResults.keys.count { it in coverageBleAddrs }
             if (bleMatched < rules.minBleCoverage) continue
 
             for (fp in room.fingerprints) {
-                val dist = fingerprintDistance(scanResults, fp, topWeights)
+                val dist = fingerprintDistance(scanResults, fp, allWeights)
                 val biased = if (_currentRoom.value?.roomId == room.id) dist * STAY_BIAS_FACTOR else dist
                 // WiFi BSSID as supplementary scoring hint
                 val bssidAdjusted = when {

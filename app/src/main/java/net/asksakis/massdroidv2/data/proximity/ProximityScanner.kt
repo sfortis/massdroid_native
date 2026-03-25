@@ -15,12 +15,7 @@ import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -30,8 +25,6 @@ import kotlin.coroutines.resume
 
 private const val TAG = "ProximityScanner"
 private const val SCAN_DURATION_MS = 5_000L
-private const val RSSI_WINDOW_SIZE = 8
-private const val EMIT_INTERVAL_MS = 2_000L
 private const val DEVICE_RETAIN_MS = 15_000L
 
 @Singleton
@@ -76,8 +69,7 @@ class ProximityScanner @Inject constructor(
         return when (firstByte and 0xC0) {
             0xC0 -> AddressType.RANDOM_STATIC
             0x40 -> AddressType.RPA
-            // 0x00: ambiguous (Public or NRPA). Default to PUBLIC;
-            // truly rotating devices get filtered by visibility threshold anyway
+            // 0x00: ambiguous (Public or NRPA). Default to PUBLIC.
             else -> AddressType.PUBLIC
         }
     }
@@ -86,16 +78,32 @@ class ProximityScanner @Inject constructor(
     fun isStableAddress(addressType: AddressType): Boolean =
         addressType == AddressType.PUBLIC || addressType == AddressType.RANDOM_STATIC
 
+    fun isPrivateAddress(addressType: AddressType): Boolean =
+        addressType == AddressType.RPA || addressType == AddressType.NRPA
+
+    fun isUsableRoomAnchorAddress(
+        category: DeviceCategory,
+        addressType: AddressType,
+        seenCount: Int,
+        name: String?
+    ): Boolean {
+        if (category == DeviceCategory.MOBILE) return false
+        if (isStableAddress(addressType)) return seenCount >= 2
+        if (isPrivateAddress(addressType)) {
+            val hasName = !name.isNullOrBlank()
+            return hasName && seenCount >= 4
+        }
+        return false
+    }
+
     // Persistent background scan: start once, read snapshot anytime
     private val persistentDevices = ConcurrentHashMap<String, ScannedDevice>()
     private val persistentLastSeen = ConcurrentHashMap<String, Long>()
     private var persistentCallback: ScanCallback? = null
     @Volatile private var persistentRunning = false
 
-    // Health tracking
-    @Volatile var lastPersistentCallbackMs = 0L
-    @Volatile var lastBackgroundDeliveryMs = 0L
     @Volatile var zeroDeviceStreak = 0
+    @Volatile var uiHighAccuracyRequested = false
 
     @SuppressLint("MissingPermission")
     fun startPersistentScan(lowPower: Boolean = true) {
@@ -111,7 +119,6 @@ class ProximityScanner @Inject constructor(
                     val name = try { result.device.name } catch (_: Exception) { null }
                     persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
                     persistentLastSeen[addr] = System.currentTimeMillis()
-                    lastPersistentCallbackMs = System.currentTimeMillis()
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
         }
@@ -191,7 +198,6 @@ class ProximityScanner @Inject constructor(
                 persistentLastSeen[addr] = System.currentTimeMillis()
             } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
-        lastBackgroundDeliveryMs = System.currentTimeMillis()
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
     }
 
@@ -294,77 +300,6 @@ class ProximityScanner @Inject constructor(
             }
         } ?: devices.values.toList()
     }
-
-    fun liveScan(): Flow<List<ScannedDevice>> = callbackFlow {
-        val scanner = getScanner()
-        if (scanner == null) {
-            send(emptyList())
-            close()
-            return@callbackFlow
-        }
-        val rssiHistory = ConcurrentHashMap<String, MutableList<Int>>()
-        val deviceNames = ConcurrentHashMap<String, String?>()
-        val deviceCategories = ConcurrentHashMap<String, DeviceCategory>()
-        val lastSeen = ConcurrentHashMap<String, Long>()
-
-        @SuppressLint("MissingPermission")
-        val callback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val addr = result.device.address ?: return
-                val name = try { result.device.name } catch (_: SecurityException) { null }
-                if (name != null) deviceNames[addr] = name
-                val cat = classifyDevice(result)
-                if (cat != DeviceCategory.UNKNOWN) deviceCategories[addr] = cat
-                lastSeen[addr] = System.currentTimeMillis()
-                val history = rssiHistory.getOrPut(addr) { mutableListOf() }
-                synchronized(history) {
-                    history.add(result.rssi)
-                    if (history.size > RSSI_WINDOW_SIZE) history.removeAt(0)
-                }
-            }
-
-            override fun onScanFailed(errorCode: Int) {
-                Log.w(TAG, "Live scan failed: $errorCode")
-            }
-        }
-
-        val emitTimer = java.util.Timer()
-        emitTimer.scheduleAtFixedRate(object : java.util.TimerTask() {
-            override fun run() {
-                val now = System.currentTimeMillis()
-                val staleAddrs = lastSeen.filter { now - it.value > DEVICE_RETAIN_MS }.keys
-                staleAddrs.forEach { addr ->
-                    rssiHistory.remove(addr)
-                    deviceNames.remove(addr)
-                    deviceCategories.remove(addr)
-                    lastSeen.remove(addr)
-                }
-                val smoothed = rssiHistory.map { (addr, history) ->
-                    val avg = synchronized(history) { if (history.isNotEmpty()) history.average().toInt() else -100 }
-                    ScannedDevice(addr, deviceNames[addr], avg, deviceCategories[addr] ?: DeviceCategory.UNKNOWN)
-                }.sortedByDescending { it.rssi }
-                trySend(smoothed)
-            }
-        }, EMIT_INTERVAL_MS, EMIT_INTERVAL_MS)
-
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        try {
-            scanner.startScan(null, settings, callback)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Live scan permission denied: ${e.message}")
-            send(emptyList())
-            close()
-            return@callbackFlow
-        }
-
-        awaitClose {
-            emitTimer.cancel()
-            try { scanner.stopScan(callback) } catch (_: Exception) { }
-        }
-    }.flowOn(Dispatchers.IO)
 
     @SuppressLint("MissingPermission")
     fun classifyDevice(result: ScanResult): DeviceCategory {

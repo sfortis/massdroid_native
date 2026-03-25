@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,12 +23,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -64,6 +70,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -162,6 +170,7 @@ fun RoomSetupScreen(
 
             if (existingRoom != null) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                SectionHeader("Detection")
 
                 val currentPolicy = existingRoom.detectionPolicy
                 val wifiOnlyEnabled = existingRoom.stickToConnectedWifi
@@ -169,7 +178,7 @@ fun RoomSetupScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                     )
@@ -212,12 +221,12 @@ fun RoomSetupScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                     )
@@ -266,6 +275,8 @@ fun RoomSetupScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                SectionHeader("Playback")
+
                 PlaybackConfigSection(
                     roomId = existingRoom.id,
                     playbackConfig = existingRoom.playbackConfig,
@@ -276,26 +287,48 @@ fun RoomSetupScreen(
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
             if (existingRoom != null) {
+                SectionHeader("Calibration")
                 CalibrationInfo(existingRoom)
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
             val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()
             val isCalibrating = autoProgress != null
+            val bleInspectionInProgress by viewModel.bleInspectionInProgress.collectAsStateWithLifecycle()
+            val bleInspectionReport by viewModel.bleInspectionReport.collectAsStateWithLifecycle()
+            val bleInspectionError by viewModel.bleInspectionError.collectAsStateWithLifecycle()
 
-            androidx.compose.material3.OutlinedButton(
-                onClick = {
-                    val id = existingRoom?.id ?: return@OutlinedButton
-                    viewModel.calibrateRoom(id) {}
-                },
-                enabled = !isCalibrating && existingRoom != null,
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(if (existingRoom?.fingerprints?.isNotEmpty() == true) "Recalibrate" else "Calibrate")
+                androidx.compose.material3.OutlinedButton(
+                    onClick = {
+                        val id = existingRoom?.id ?: return@OutlinedButton
+                        viewModel.calibrateRoom(id) {}
+                    },
+                    enabled = !isCalibrating && !bleInspectionInProgress && existingRoom != null,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (existingRoom?.fingerprints?.isNotEmpty() == true) "Recalibrate" else "Calibrate")
+                }
+
+                androidx.compose.material3.OutlinedButton(
+                    onClick = {
+                        val id = existingRoom?.id ?: return@OutlinedButton
+                        viewModel.inspectRoomBle(id)
+                    },
+                    enabled = !isCalibrating && !bleInspectionInProgress && existingRoom != null,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Inspect BLE")
+                }
             }
 
             if (isCalibrating) {
@@ -345,6 +378,59 @@ fun RoomSetupScreen(
                 )
             }
 
+            if (bleInspectionInProgress) {
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = {
+                        Row(
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Info, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Inspecting BLE")
+                        }
+                    },
+                    text = {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                "Scanning nearby BLE devices the same way Follow Me does.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    confirmButton = {}
+                )
+            }
+
+            bleInspectionError?.let { error ->
+                AlertDialog(
+                    onDismissRequest = { viewModel.dismissBleInspectionError() },
+                    title = { Text("BLE Inspection Failed") },
+                    text = { Text(error) },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.dismissBleInspectionError() }) { Text("OK") }
+                    }
+                )
+            }
+
+            bleInspectionReport?.let { report ->
+                BleInspectionDialog(
+                    report = report,
+                    onDismiss = { viewModel.dismissBleInspection() }
+                )
+            }
+
             if (existingRoom == null && !isCalibrating) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
@@ -383,6 +469,224 @@ fun RoomSetupScreen(
     }
 }
 
+@Composable
+private fun BleInspectionDialog(
+    report: BleInspectionReport,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.985f)
+                .padding(horizontal = 12.dp)
+                .heightIn(max = 720.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "BLE Inspection",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Shows which BLE devices Follow Me would use as room anchors right now, and which ones it ignores.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            "${report.roomName}: ${report.totalDevices} devices in current scan",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        report.connectedBssid?.let { bssid ->
+                            Text(
+                                "Connected Wi-Fi AP: $bssid",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 620.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Used as room anchors now: ${report.usefulAnchors.size + report.stableCandidates.size}  ·  Ignored as room anchors now: ${report.privateAddressDevices.size + report.mobileDevices.size}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    BleInspectionSection(
+                        title = "Used as room anchors now: room-matched",
+                        supportingText = "These devices match this room's saved BLE anchors, so Follow Me can use them for detection right now.",
+                        emptyMessage = "No current scan matches the room's top BLE anchors.",
+                        items = report.usefulAnchors
+                    )
+                    BleInspectionSection(
+                        title = "Used as room anchors now: stable candidates",
+                        supportingText = "These look stable enough to be useful anchors, but they are not part of this room profile yet. Recalibrating can add them.",
+                        emptyMessage = "No extra stable non-mobile beacons in this scan.",
+                        items = report.stableCandidates
+                    )
+                    BleInspectionSection(
+                        title = "Ignored as room anchors now: private-address class",
+                        supportingText = "Follow Me currently ignores these as room anchors under the active calibration policy.",
+                        emptyMessage = "No private-address BLE devices in this scan.",
+                        items = report.privateAddressDevices
+                    )
+                    BleInspectionSection(
+                        title = "Ignored as room anchors now: mobile devices",
+                        supportingText = "Phones, watches, and similar personal devices are ignored because they move with people.",
+                        emptyMessage = "No mobile devices classified in this scan.",
+                        items = report.mobileDevices
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BleInspectionSection(
+    title: String,
+    supportingText: String,
+    emptyMessage: String,
+    items: List<BleInspectionItem>
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (items.isEmpty()) {
+                Text(
+                    emptyMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                items.forEachIndexed { index, item ->
+                    BleInspectionRow(item = item)
+                    if (index != items.lastIndex) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun BleInspectionRow(item: BleInspectionItem) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Text(
+                item.name ?: item.address,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                "RSSI ${item.rssi}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Text(
+            item.address,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val details = buildList {
+            add(item.addressType.name)
+            if (item.category != net.asksakis.massdroidv2.data.proximity.ProximityScanner.DeviceCategory.UNKNOWN) {
+                add(item.category.name)
+            }
+            item.profileWeight?.let { add("w=${String.format("%.2f", it)}") }
+            item.profileDiscrimination?.let { add("disc=${String.format("%.1f", it)}") }
+            item.profileMeanRssi?.let { add("mean=${it}") }
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            details.forEach { detail ->
+                Box(
+                    modifier = Modifier
+                        .background(
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            shape = MaterialTheme.shapes.small
+                        )
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackConfigSection(
@@ -398,7 +702,7 @@ private fun PlaybackConfigSection(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         )
@@ -506,7 +810,7 @@ private fun PlaybackConfigSection(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(
-                        Icons.Default.VolumeUp,
+                        Icons.AutoMirrored.Filled.VolumeUp,
                         contentDescription = null,
                         tint = if (playbackConfig.volumeEnabled) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -524,14 +828,21 @@ private fun PlaybackConfigSection(
                 )
             }
 
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Apply this room volume when the room is confirmed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
             if (playbackConfig.volumeEnabled) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.VolumeDown, contentDescription = null,
+                    Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Slider(
@@ -543,7 +854,7 @@ private fun PlaybackConfigSection(
                         steps = 9,
                         modifier = Modifier.weight(1f)
                     )
-                    Icon(Icons.Default.VolumeUp, contentDescription = null,
+                    Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -554,7 +865,7 @@ private fun PlaybackConfigSection(
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
             } else {
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     "Use current player volume",
                     style = MaterialTheme.typography.bodySmall,
@@ -642,7 +953,7 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         )
@@ -752,7 +1063,7 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                Icons.Default.BluetoothSearching,
+                                Icons.AutoMirrored.Filled.BluetoothSearching,
                                 contentDescription = null,
                                 modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant

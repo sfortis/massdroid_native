@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -51,16 +54,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
 import javax.inject.Inject
 import net.asksakis.massdroidv2.ui.navigation.MassDroidNavHost
 import net.asksakis.massdroidv2.ui.navigation.Routes
+import net.asksakis.massdroidv2.ui.permissions.AppPermissions
+import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
+import net.asksakis.massdroidv2.ui.permissions.PermissionRationaleDialog
 import net.asksakis.massdroidv2.ui.screens.home.MiniPlayerViewModel
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 
@@ -84,16 +86,33 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
     @Inject lateinit var appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker
     @Inject lateinit var settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
+    @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* granted or not, nothing to do */ }
+
+    private val followMePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.all { it }) {
+            startService(
+                Intent(this, net.asksakis.massdroidv2.service.PlaybackService::class.java)
+                    .setAction(net.asksakis.massdroidv2.service.PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+            )
+        }
+    }
+
+    private var showNotificationPermissionDialog by mutableStateOf(false)
+    private var showFollowMePermissionDialog by mutableStateOf(false)
+    private var pendingFollowMePermissions by mutableStateOf<List<String>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestNotificationPermission()
+        requestFollowMePermissionsIfNeeded()
         checkBatteryOptimization()
         handleShortcutIntent(intent)
         setContent {
@@ -124,6 +143,26 @@ class MainActivity : ComponentActivity() {
                 MassDroidTheme(darkTheme = darkTheme) {
                     MassDroidApp()
                     UpdatePrompt(appUpdateChecker)
+                    if (showNotificationPermissionDialog) {
+                        PermissionRationaleDialog(
+                            spec = AppPermissionRationales.notifications,
+                            onConfirm = {
+                                showNotificationPermissionDialog = false
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            },
+                            onDismiss = { showNotificationPermissionDialog = false }
+                        )
+                    }
+                    if (showFollowMePermissionDialog) {
+                        PermissionRationaleDialog(
+                            spec = AppPermissionRationales.followMe,
+                            onConfirm = {
+                                showFollowMePermissionDialog = false
+                                followMePermissionLauncher.launch(pendingFollowMePermissions.toTypedArray())
+                            },
+                            onDismiss = { showFollowMePermissionDialog = false }
+                        )
+                    }
                 }
             }
         }
@@ -153,7 +192,24 @@ class MainActivity : ComponentActivity() {
 
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+            showNotificationPermissionDialog = true
+        }
+    }
+
+    private fun requestFollowMePermissionsIfNeeded() {
+        lifecycleScope.launch {
+            proximityConfigStore.load()
+            val config = proximityConfigStore.config.value
+            if (!config.enabled) return@launch
+
+            val missing = AppPermissions.missing(this@MainActivity, AppPermissions.followMeRequired())
+            if (missing.isEmpty()) return@launch
+            pendingFollowMePermissions = missing
+            showFollowMePermissionDialog = true
         }
     }
 

@@ -22,8 +22,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
@@ -46,6 +46,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,10 @@ import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
+import net.asksakis.massdroidv2.service.PlaybackService
+import net.asksakis.massdroidv2.ui.permissions.AppPermissions
+import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
+import net.asksakis.massdroidv2.ui.permissions.PermissionRationaleDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,12 +84,39 @@ fun ProximitySettingsScreen(
     val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()
     val tuningResult by viewModel.tuningResult.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    var permissionRefreshTick by remember { mutableStateOf(0) }
+    var showFollowMePermissionDialog by remember { mutableStateOf(false) }
+    val requiredPermissions = remember { AppPermissions.followMeRequired() }
+    val missingPermissions = remember(permissionRefreshTick, context) {
+        AppPermissions.missing(context, requiredPermissions)
+    }
+    val hasAllFollowMePermissions = missingPermissions.isEmpty()
+    LaunchedEffect(config.enabled, hasAllFollowMePermissions) {
+        if (config.enabled && !hasAllFollowMePermissions) {
+            showFollowMePermissionDialog = true
+        }
+    }
+
+    // High accuracy scanning while this screen is visible
+    DisposableEffect(Unit) {
+        viewModel.startLiveMonitoring()
+        onDispose { viewModel.stopLiveMonitoring() }
+    }
 
     // Request BLE permissions when enabling proximity
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.values.all { it }) viewModel.setEnabled(true)
+        permissionRefreshTick++
+        if (results.values.all { it }) {
+            if (!config.enabled) {
+                viewModel.setEnabled(true)
+            }
+            context.startService(
+                android.content.Intent(context, PlaybackService::class.java)
+                    .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+            )
+        }
     }
 
     if (!viewModel.isAvailable) {
@@ -102,8 +135,9 @@ fun ProximitySettingsScreen(
                 headlineContent = { Text("Enable Follow Me") },
                 supportingContent = {
                     Text(
-                        if (!btEnabled) "Bluetooth is off. Turn on Bluetooth to use Follow Me."
-                        else "Detect room changes and suggest speaker transfers"
+                        if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
+                        else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
+                        else "Detect room changes and control speaker hand-offs."
                     )
                 },
                 trailingContent = {
@@ -114,19 +148,8 @@ fun ProximitySettingsScreen(
                             if (!enabled) {
                                 viewModel.setEnabled(false)
                             } else if (btEnabled) {
-                                val perms = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                                    perms += android.Manifest.permission.BLUETOOTH_SCAN
-                                    perms += android.Manifest.permission.BLUETOOTH_CONNECT
-                                }
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                    perms += android.Manifest.permission.ACTIVITY_RECOGNITION
-                                }
-                                val allGranted = perms.all {
-                                    context.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                }
-                                if (allGranted) viewModel.setEnabled(true)
-                                else permissionLauncher.launch(perms.toTypedArray())
+                                if (hasAllFollowMePermissions) viewModel.setEnabled(true)
+                                else showFollowMePermissionDialog = true
                             }
                         }
                     )
@@ -137,7 +160,7 @@ fun ProximitySettingsScreen(
                 HorizontalDivider()
                 ListItem(
                     headlineContent = { Text("Auto-transfer") },
-                    supportingContent = { Text("Transfer queue automatically without notification") },
+                    supportingContent = { Text("Transfer playback automatically instead of asking first.") },
                     trailingContent = {
                         Switch(
                             checked = config.autoTransfer,
@@ -147,9 +170,9 @@ fun ProximitySettingsScreen(
                 )
 
                 ListItem(
-                    headlineContent = { Text("Stop when no room is active") },
+                    headlineContent = { Text("Stop when no room is detected") },
                     supportingContent = {
-                        Text("If Follow Me loses room detection and no hand-off happens for 10 minutes, stop playback on the speaker that was active when detection was lost.")
+                        Text("After 10 minutes without a detected room, pause the last active speaker.")
                     },
                     trailingContent = {
                         Switch(
@@ -220,7 +243,7 @@ fun ProximitySettingsScreen(
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
                         ) {
-                            Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Calibrate Rooms")
                         }
@@ -274,7 +297,7 @@ fun ProximitySettingsScreen(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.BluetoothSearching, contentDescription = null,
+                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null,
                         modifier = Modifier.size(24.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Calibrate Rooms")
@@ -294,7 +317,7 @@ fun ProximitySettingsScreen(
                             Icon(
                                 when {
                                     done -> Icons.Default.Check
-                                    current -> Icons.Default.BluetoothSearching
+                                    current -> Icons.AutoMirrored.Filled.BluetoothSearching
                                     else -> Icons.Default.LocationOn
                                 },
                                 contentDescription = null,
@@ -444,6 +467,27 @@ fun ProximitySettingsScreen(
             confirmButton = {
                 TextButton(onClick = { viewModel.dismissTuningResult() }) { Text("OK") }
             }
+        )
+    }
+
+    if (showFollowMePermissionDialog) {
+        PermissionRationaleDialog(
+            spec = AppPermissionRationales.followMe,
+            onConfirm = {
+                showFollowMePermissionDialog = false
+                if (missingPermissions.isNotEmpty()) {
+                    permissionLauncher.launch(missingPermissions.toTypedArray())
+                } else {
+                    if (!config.enabled) {
+                        viewModel.setEnabled(true)
+                    }
+                    context.startService(
+                        android.content.Intent(context, PlaybackService::class.java)
+                            .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                    )
+                }
+            },
+            onDismiss = { showFollowMePermissionDialog = false }
         )
     }
 }
@@ -618,7 +662,7 @@ private fun RoomCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(14.dp),
+                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(14.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("${room.beaconProfiles.size} beacons", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -653,7 +697,7 @@ private fun UnavailableScreen(onBack: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
-                Icons.Default.BluetoothSearching,
+                Icons.AutoMirrored.Filled.BluetoothSearching,
                 contentDescription = null,
                 modifier = Modifier.size(64.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant

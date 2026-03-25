@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.data.proximity
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -41,35 +43,50 @@ class MotionGate @Inject constructor(
 
     fun start() {
         if (started || sensorManager == null) return
+        if (!hasMotionPermission()) {
+            Log.w(TAG, "Start skipped: ACTIVITY_RECOGNITION permission missing")
+            return
+        }
         started = true
+        stepCount = 0
 
-        val motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
-        if (motionSensor != null) {
-            triggerListener = object : TriggerEventListener() {
-                override fun onTrigger(event: TriggerEvent?) {
-                    if (!started) return
-                    Log.d(TAG, "Significant motion")
-                    openMovementWindow()
-                    sensorManager.requestTriggerSensor(this, motionSensor)
+        try {
+            val motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+            if (motionSensor != null) {
+                triggerListener = object : TriggerEventListener() {
+                    override fun onTrigger(event: TriggerEvent?) {
+                        if (!started) return
+                        Log.d(TAG, "Significant motion")
+                        openMovementWindow()
+                        sensorManager.requestTriggerSensor(this, motionSensor)
+                    }
                 }
+                sensorManager.requestTriggerSensor(triggerListener, motionSensor)
             }
-            sensorManager.requestTriggerSensor(triggerListener, motionSensor)
-        }
 
-        val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
-        if (stepSensor != null) {
-            stepListener = object : SensorEventListener {
-                override fun onSensorChanged(event: SensorEvent?) {
-                    if (!started) return
-                    stepCount++
-                    openMovementWindow()
+            val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+            if (stepSensor != null) {
+                stepListener = object : SensorEventListener {
+                    override fun onSensorChanged(event: SensorEvent?) {
+                        if (!started) return
+                        stepCount++
+                        openMovementWindow()
+                    }
+                    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
                 }
-                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+                sensorManager.registerListener(stepListener, stepSensor, SensorManager.SENSOR_DELAY_NORMAL)
             }
-            sensorManager.registerListener(stepListener, stepSensor, SensorManager.SENSOR_DELAY_NORMAL)
-        }
 
-        Log.d(TAG, "Started (motion=${motionSensor != null}, steps=${stepSensor != null})")
+            Log.d(TAG, "Started (motion=${motionSensor != null}, steps=${stepSensor != null})")
+        } catch (e: SecurityException) {
+            cleanupRegisteredSensors()
+            started = false
+            Log.w(TAG, "Start failed: missing activity permission", e)
+        } catch (e: Exception) {
+            cleanupRegisteredSensors()
+            started = false
+            Log.w(TAG, "Start failed: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
     }
 
     fun stop() {
@@ -85,11 +102,18 @@ class MotionGate @Inject constructor(
         windowJob?.cancel()
         windowJob = null
         _isMoving.value = false
+        stepCount = 0
         Log.d(TAG, "Stopped")
     }
 
-    fun forceActive() {
-        openMovementWindow()
+    private fun cleanupRegisteredSensors() {
+        val motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+        if (motionSensor != null && triggerListener != null) {
+            sensorManager?.cancelTriggerSensor(triggerListener, motionSensor)
+        }
+        triggerListener = null
+        stepListener?.let { sensorManager?.unregisterListener(it) }
+        stepListener = null
     }
 
     private fun openMovementWindow() {
@@ -102,5 +126,10 @@ class MotionGate @Inject constructor(
             _isMoving.value = false
             Log.d(TAG, "Window closed (steps=$stepCount)")
         }
+    }
+
+    private fun hasMotionPermission(): Boolean {
+        return android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q ||
+            context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
     }
 }
