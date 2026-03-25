@@ -8,6 +8,9 @@ enum class CalibrationQuality { UNCALIBRATED, WEAK, GOOD }
 @Serializable
 enum class DetectionPolicy { STRICT, NORMAL }
 
+@Serializable
+enum class AnchorType { MAC, NAME }
+
 data class PolicyRules(
     val allowWeakCalibration: Boolean,
     val minBleCoverage: Int,
@@ -93,7 +96,9 @@ data class BeaconProfile(
     val variance: Double,
     val visibilityRate: Double,
     val discriminationScore: Double,
-    val weight: Double
+    val weight: Double,
+    val anchorKey: String = address,
+    val anchorType: AnchorType = AnchorType.MAC
 )
 
 data class DetectedRoom(

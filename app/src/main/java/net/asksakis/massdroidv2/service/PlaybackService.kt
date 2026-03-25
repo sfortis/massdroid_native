@@ -35,7 +35,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -85,6 +84,13 @@ class PlaybackService : MediaLibraryService() {
         private const val HIGH_ACCURACY_WINDOW_MS = 30_000L
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
         private const val HIGH_ACCURACY_SNAPSHOT_RETAIN_MS = 30_000L
+        private const val HIGH_ACCURACY_FRESH_SNAPSHOT_MS = 8_000L
+        private const val BLE_DEBUG_DEVICE_LIMIT = 8
+        private const val BG_CONFIRM_MIN_DEVICES = 4
+        private const val MOTION_BOOST_DEBOUNCE_MS = 1_000L
+        private const val STARTUP_WARMUP_SNAPSHOTS = 3
+        private const val STARTUP_WARMUP_INTERVAL_MS = 1_200L
+        private const val PROXIMITY_COMMAND_DEDUPE_MS = 12_000L
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -121,6 +127,9 @@ class PlaybackService : MediaLibraryService() {
     private var highAccuracyUntilMs = 0L
     private var highAccuracyStartedAtMs = 0L
     private var persistentScanLowPower: Boolean? = null
+    private var lastMotionBoostMs = 0L
+    private var lastProximityTransferCommand: RecentProximityTransferCommand? = null
+    private var lastRoomPlaybackCommand: RecentRoomPlaybackCommand? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -338,14 +347,29 @@ class PlaybackService : MediaLibraryService() {
             val config = proximityConfigStore.config.value
             if (!config.enabled || !isWithinSchedule()) return
             if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
-            val rssiMap = results.associate { it.device.address to it.rssi }
+            val backgroundDevices = results.mapNotNull { result ->
+                proximityScanner.toScannedDevice(result)
+            }
+            logBleDevices("bg-receiver", backgroundDevices, config)
+            val rssiMap = buildDetectionAnchorSnapshot(backgroundDevices, config)
+            val allowCommit = rssiMap.size >= BG_CONFIRM_MIN_DEVICES
             when (val result = roomDetector.detectDetailed(
                 rssiMap,
                 config,
                 motionActive = motionGate.isMoving.value,
-                currentBssid = currentConnectedBssid()
+                currentBssid = currentConnectedBssid(),
+                commitRoomChange = allowCommit
             )) {
                 is DetectResult.Confirmed -> {
+                    if (!allowCommit) {
+                        Log.d(
+                            TAG,
+                            "Background confirm suppressed: ${result.room.roomName} from tiny batch " +
+                                "(${rssiMap.size} unique devices)"
+                        )
+                        scheduleQuickProximityRetry("bg-receiver:tiny-batch")
+                        return
+                    }
                     Log.d(TAG, "Background room change: ${result.room.roomName}")
                     handleRoomChange(result.room, config)
                 }
@@ -455,22 +479,13 @@ class PlaybackService : MediaLibraryService() {
         if (isWithinSchedule()) {
             motionGate.start()
             ensurePersistentScan(lowPower = true)
-            val beaconAddresses = proximityConfigStore.config.value.rooms
-                .flatMap { r -> r.beaconProfiles.map { it.address } }.filter { !it.startsWith("wifi:") }.toSet()
-            if (beaconAddresses.isNotEmpty()) {
-                proximityScanner.startBackgroundScan(beaconAddresses)
-            }
+            startBackgroundScanForConfig(proximityConfigStore.config.value)
         }
 
         proximityJob = scope.launch {
-            // Warmup: 2 snapshots to reach confidence (skip if outside schedule)
+            // Startup warmup: use short high-accuracy snapshots instead of 4s burst spacing.
             if (isWithinSchedule()) {
-                for (i in 1..2) {
-                    kotlinx.coroutines.delay(BURST_SCAN_INTERVAL_MS)
-                    val devices = proximityScanner.readSnapshot()
-                    val rssi = devices.associate { it.address to it.rssi }
-                    roomDetector.detect(rssi, proximityConfigStore.config.value, currentBssid = currentConnectedBssid())
-                }
+                runStartupWarmup()
                 Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
 
@@ -480,48 +495,13 @@ class PlaybackService : MediaLibraryService() {
                     val risingEdge = moving && !wasMoving
                     wasMoving = moving
                     if (!risingEdge) return@collect
-                    if (!isWithinSchedule() || isDeviceInDoze()) return@collect
+                    performMotionDetection("Motion boost: immediate high-accuracy escalation", "motion-open", "immediate")
+                }
+            }
 
-                    updateHighAccuracyWindow(true)
-                    ensurePersistentScan(lowPower = false)
-                    Log.d(TAG, "Motion boost: immediate high-accuracy escalation")
-
-                    if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return@collect
-
-                    try {
-                        val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
-                        val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
-                        if (screenOn) {
-                            burstScan("motion-open")
-                        } else {
-                            val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-                            val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:motion-boost")
-                            wl.acquire(10_000)
-                            try {
-                                val devices = readFastPathSnapshotWithWarmRetry(
-                                    logPrefix = "Motion boost",
-                                    detailPrefix = "immediate"
-                                )
-                                if (devices.isNotEmpty()) {
-                                    val cfg = proximityConfigStore.config.value
-                                    val rssiMap = devices.associate { it.address to it.rssi }
-                                    when (val result = roomDetector.detectDetailed(
-                                        rssiMap,
-                                        cfg,
-                                        motionActive = true,
-                                        currentBssid = currentConnectedBssid()
-                                    )) {
-                                        is DetectResult.Confirmed -> handleRoomChange(result.room, cfg)
-                                        else -> Unit
-                                    }
-                                }
-                            } finally {
-                                if (wl.isHeld) wl.release()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Motion boost failed: ${e.message}")
-                    }
+            launch {
+                motionGate.motionEvents.collect {
+                    performMotionDetection("Motion boost: significant-motion refresh", "motion-refresh", "significant-motion")
                 }
             }
 
@@ -536,9 +516,7 @@ class PlaybackService : MediaLibraryService() {
                     // Re-arm when back in schedule
                     if (isWithinSchedule()) {
                         motionGate.start()
-                        val addrs = proximityConfigStore.config.value.rooms
-                            .flatMap { r -> r.beaconProfiles.map { it.address } }.filter { !it.startsWith("wifi:") }.toSet()
-                        if (addrs.isNotEmpty()) proximityScanner.startBackgroundScan(addrs)
+                        startBackgroundScanForConfig(proximityConfigStore.config.value)
                     }
                     continue
                 }
@@ -552,11 +530,7 @@ class PlaybackService : MediaLibraryService() {
                     kotlinx.coroutines.delay(30_000)
                     if (!isDeviceInDoze() && isWithinSchedule()) {
                         motionGate.start()
-                        val addrs = proximityConfigStore.config.value.rooms
-                            .flatMap { r -> r.beaconProfiles.map { it.address } }
-                            .filter { !it.startsWith("wifi:") }
-                            .toSet()
-                        if (addrs.isNotEmpty()) proximityScanner.startBackgroundScan(addrs)
+                        startBackgroundScanForConfig(proximityConfigStore.config.value)
                         ensurePersistentScan(lowPower = true)
                     }
                     continue
@@ -596,7 +570,8 @@ class PlaybackService : MediaLibraryService() {
                             )
                             if (devices.isNotEmpty()) {
                                 Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
-                                val rssiMap = devices.associate { it.address to it.rssi }
+                                logBleDevices("fast-path:motion-$burst", devices, cfg)
+                                val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
                                 when (val result = roomDetector.detectDetailed(rssiMap, cfg, motionActive = true, currentBssid = bssid)) {
                                     is DetectResult.Confirmed -> {
                                         handleRoomChange(result.room, cfg)
@@ -618,6 +593,28 @@ class PlaybackService : MediaLibraryService() {
                     kotlinx.coroutines.delay(2_000)
                 }
             }
+        }
+    }
+
+    private suspend fun runStartupWarmup() {
+        ensurePersistentScan(lowPower = false)
+        repeat(STARTUP_WARMUP_SNAPSHOTS) { index ->
+            if (index > 0) {
+                kotlinx.coroutines.delay(STARTUP_WARMUP_INTERVAL_MS)
+            }
+            val devices = readDetectionSnapshot(preferFresh = true)
+            if (devices.isEmpty()) return@repeat
+            val rssi = buildDetectionAnchorSnapshot(devices, proximityConfigStore.config.value)
+            roomDetector.detectDetailed(
+                scanResults = rssi,
+                config = proximityConfigStore.config.value,
+                motionActive = false,
+                currentBssid = currentConnectedBssid()
+            )
+            if (roomDetector.currentRoom.value != null) return
+        }
+        if (!updateHighAccuracyWindow(motionGate.isMoving.value) && !proximityScanner.uiHighAccuracyRequested) {
+            ensurePersistentScan(lowPower = true)
         }
     }
 
@@ -661,6 +658,60 @@ class PlaybackService : MediaLibraryService() {
         persistentScanLowPower = null
     }
 
+    private suspend fun performMotionDetection(
+        logMessage: String,
+        burstTrigger: String,
+        detailPrefix: String
+    ) {
+        if (!isWithinSchedule() || isDeviceInDoze()) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastMotionBoostMs < MOTION_BOOST_DEBOUNCE_MS) return
+        lastMotionBoostMs = now
+
+        updateHighAccuracyWindow(true)
+        ensurePersistentScan(lowPower = false)
+        Log.d(TAG, logMessage)
+
+        if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
+
+        try {
+            val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+            val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
+            if (screenOn) {
+                burstScan(burstTrigger)
+            } else {
+                val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:$detailPrefix")
+                wl.acquire(10_000)
+                try {
+                    val devices = readFastPathSnapshotWithWarmRetry(
+                        logPrefix = "Motion boost",
+                        detailPrefix = detailPrefix
+                    )
+                    if (devices.isNotEmpty()) {
+                        val cfg = proximityConfigStore.config.value
+                        logBleDevices("motion-boost:$detailPrefix", devices, cfg)
+                        val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
+                        when (val result = roomDetector.detectDetailed(
+                            rssiMap,
+                            cfg,
+                            motionActive = true,
+                            currentBssid = currentConnectedBssid()
+                        )) {
+                            is DetectResult.Confirmed -> handleRoomChange(result.room, cfg)
+                            else -> Unit
+                        }
+                    }
+                } finally {
+                    if (wl.isHeld) wl.release()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Motion detection failed ($detailPrefix): ${e.message}")
+        }
+    }
+
     /** Read BLE snapshot from persistent scan and detect room */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun burstScan(trigger: String) {
@@ -669,10 +720,14 @@ class PlaybackService : MediaLibraryService() {
 
         try {
             val motionActive = motionGate.isMoving.value
-            val retainMs = if (motionActive) HIGH_ACCURACY_SNAPSHOT_RETAIN_MS else 15_000L
-            val devices = proximityScanner.readSnapshot(retainMs = retainMs)
-            val rssiMap = devices.associate { it.address to it.rssi }
+            val devices = if (motionActive) {
+                readDetectionSnapshot(preferFresh = true)
+            } else {
+                proximityScanner.readSnapshot()
+            }
+            val rssiMap = buildDetectionAnchorSnapshot(devices, config)
             Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
+            logBleDevices("snapshot:$trigger", devices, config)
 
             when (val result = roomDetector.detectDetailed(rssiMap, config, motionActive, currentConnectedBssid())) {
                 is DetectResult.Confirmed -> handleRoomChange(result.room, config)
@@ -709,9 +764,7 @@ class PlaybackService : MediaLibraryService() {
                         detailPrefix = reason
                     )
                 } else {
-                    proximityScanner.readSnapshot(
-                        retainMs = if (motionGate.isMoving.value) HIGH_ACCURACY_SNAPSHOT_RETAIN_MS else 15_000L
-                    )
+                    readDetectionSnapshot(preferFresh = motionGate.isMoving.value)
                 }
                 if (devices.isEmpty()) {
                     val snapshot = proximityScanner.snapshotDebugState()
@@ -724,9 +777,10 @@ class PlaybackService : MediaLibraryService() {
                     )
                     return@launch
                 }
+                logBleDevices("quick-retry:$reason", devices, config)
 
                 when (val result = roomDetector.detectDetailed(
-                    devices.associate { it.address to it.rssi },
+                    buildDetectionAnchorSnapshot(devices, config),
                     config,
                     motionGate.isMoving.value,
                     currentConnectedBssid()
@@ -755,7 +809,7 @@ class PlaybackService : MediaLibraryService() {
         logPrefix: String,
         detailPrefix: String
     ): List<net.asksakis.massdroidv2.data.proximity.ProximityScanner.ScannedDevice> {
-        var devices = proximityScanner.readSnapshot(retainMs = HIGH_ACCURACY_SNAPSHOT_RETAIN_MS)
+        var devices = readDetectionSnapshot(preferFresh = true)
         if (devices.isNotEmpty()) return devices
 
         val before = proximityScanner.snapshotDebugState()
@@ -768,7 +822,7 @@ class PlaybackService : MediaLibraryService() {
         )
 
         kotlinx.coroutines.delay(750)
-        devices = proximityScanner.readSnapshot(retainMs = HIGH_ACCURACY_SNAPSHOT_RETAIN_MS)
+        devices = readDetectionSnapshot(preferFresh = true)
         if (devices.isEmpty()) {
             val after = proximityScanner.snapshotDebugState()
             Log.d(
@@ -780,6 +834,87 @@ class PlaybackService : MediaLibraryService() {
             )
         }
         return devices
+    }
+
+    private fun readDetectionSnapshot(preferFresh: Boolean): List<net.asksakis.massdroidv2.data.proximity.ProximityScanner.ScannedDevice> {
+        if (!preferFresh) return proximityScanner.readSnapshot()
+
+        val freshDevices = proximityScanner.readSnapshot(
+            retainMs = HIGH_ACCURACY_FRESH_SNAPSHOT_MS,
+            pruneMs = HIGH_ACCURACY_SNAPSHOT_RETAIN_MS
+        )
+        if (freshDevices.size >= 3) return freshDevices
+
+        return proximityScanner.readSnapshot(
+            retainMs = HIGH_ACCURACY_SNAPSHOT_RETAIN_MS,
+            pruneMs = HIGH_ACCURACY_SNAPSHOT_RETAIN_MS
+        )
+    }
+
+    private fun preferredNameAnchors(
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig
+    ): Set<String> = config.rooms
+        .flatMap { room ->
+            room.beaconProfiles
+                .filter { it.anchorType == net.asksakis.massdroidv2.data.proximity.AnchorType.NAME }
+                .map { it.anchorKey }
+        }
+        .toSet()
+
+    private fun buildDetectionAnchorSnapshot(
+        devices: Collection<ProximityScanner.ScannedDevice>,
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig
+    ): Map<String, Int> = proximityScanner.buildAnchorSnapshot(
+        devices,
+        preferredNameAnchors(config)
+    )
+
+    private fun logBleDevices(
+        trigger: String,
+        devices: List<ProximityScanner.ScannedDevice>,
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig = proximityConfigStore.config.value
+    ) {
+        if (devices.isEmpty()) return
+        val summary = devices
+            .sortedByDescending { it.rssi }
+            .take(BLE_DEBUG_DEVICE_LIMIT)
+            .joinToString("; ") { device ->
+                val name = device.name?.takeIf { it.isNotBlank() } ?: "Unknown"
+                "$name | ${device.address} | ${device.rssi}dBm | ${device.addressType} | ${device.category}"
+            }
+        Log.d(TAG, "BLE devices ($trigger): $summary")
+        val preferredNameAnchors = preferredNameAnchors(config)
+        val anchorSummary = devices
+            .groupBy { proximityScanner.classifyAnchorIdentity(it, preferredNameAnchors).key }
+            .values
+            .map { grouped ->
+                val strongest = grouped.maxBy { it.rssi }
+                val identity = proximityScanner.classifyAnchorIdentity(strongest, preferredNameAnchors)
+                "${identity.displayName} => ${identity.key} | ${strongest.rssi}dBm | ${identity.type}"
+            }
+            .take(BLE_DEBUG_DEVICE_LIMIT)
+            .joinToString("; ")
+        Log.d(TAG, "BLE anchors ($trigger): $anchorSummary")
+    }
+
+    private fun startBackgroundScanForConfig(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig) {
+        val hasNameAnchors = config.rooms.any { room ->
+            room.beaconProfiles.any { it.anchorType == net.asksakis.massdroidv2.data.proximity.AnchorType.NAME }
+        }
+        val macAddresses = config.rooms
+            .flatMap { room ->
+                room.beaconProfiles
+                    .filter { it.anchorType == net.asksakis.massdroidv2.data.proximity.AnchorType.MAC }
+                    .map { it.address }
+            }
+            .filter { !it.startsWith("wifi:") }
+            .toSet()
+
+        if (hasNameAnchors) {
+            proximityScanner.startBackgroundScan(emptySet())
+        } else if (macAddresses.isNotEmpty()) {
+            proximityScanner.startBackgroundScan(macAddresses)
+        }
     }
 
     private fun scheduleNoRoomStopIfNeeded(reason: String) {
@@ -825,26 +960,42 @@ class PlaybackService : MediaLibraryService() {
         proximityQuickRetryJob = null
         cancelNoRoomStopTimer("room-confirmed")
         if (!isWithinSchedule()) return
-        val previousPlayer = playerRepository.selectedPlayer.value
-        val sourcePlayerId = previousPlayer?.playerId
-        val wasPlaying = previousPlayer?.state == PlaybackState.PLAYING
+        val roomConfig = config.rooms.find { it.id == detected.roomId }
+        val playbackContext = resolveProximityPlaybackContext(detected.playerId)
+        val sourcePlayerId = playbackContext.transferSourcePlayer?.playerId
+        val targetIsPlaying = playbackContext.targetPlayer?.state == PlaybackState.PLAYING
         if (pendingProximityTransfer?.roomId == detected.roomId) return
         lastRoomSwitchMs = System.currentTimeMillis()
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
-
-        // Room volume is a room-context setting, not a playback-action side effect.
-        applyRoomVolume(detected)
-
-        if (config.autoTransfer) {
-            showAutoTransferNotification(detected)
+        if (playbackContext.ambiguousTransferPlayers.isNotEmpty()) {
+            val names = playbackContext.ambiguousTransferPlayers.joinToString { it.displayName }
+            Log.w(TAG, "Proximity transfer source ambiguous for ${detected.roomName}: [$names]")
         }
 
-        if (sourcePlayerId == detected.playerId && wasPlaying) return
+        applyRoomVolume(detected)
+        showRoomDetectedNotification(detected)
 
-        if (config.autoTransfer && wasPlaying && sourcePlayerId != null && sourcePlayerId != detected.playerId) {
+        if (targetIsPlaying) {
+            if (roomConfig?.playbackConfig?.playlistUri != null) {
+                scope.launch {
+                    try {
+                        performRoomPlayback(detected, roomConfig)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Same-player room playback failed: ${e.message}")
+                    }
+                }
+            }
+            return
+        }
+
+        if (config.autoTransfer && sourcePlayerId != null && sourcePlayerId != detected.playerId) {
             performProximityTransfer(sourcePlayerId, detected)
         } else {
-            showProximityNotification(detected, wasPlaying, sourcePlayerId)
+            showProximityNotification(
+                room = detected,
+                canTransfer = sourcePlayerId != null && sourcePlayerId != detected.playerId,
+                sourcePlayerId = sourcePlayerId
+            )
         }
     }
 
@@ -863,6 +1014,9 @@ class PlaybackService : MediaLibraryService() {
         lastRoomSwitchMs = 0
         highAccuracyUntilMs = 0L
         highAccuracyStartedAtMs = 0L
+        lastMotionBoostMs = 0L
+        lastProximityTransferCommand = null
+        lastRoomPlaybackCommand = null
         getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
     }
 
@@ -883,7 +1037,7 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun showProximityNotification(room: DetectedRoom, wasPlaying: Boolean, sourcePlayerId: String?) {
+    private fun showProximityNotification(room: DetectedRoom, canTransfer: Boolean, sourcePlayerId: String?) {
         pendingProximityTransfer = room
         pendingTransferSourcePlayerId = sourcePlayerId
         val transferIntent = Intent(PROXIMITY_TRANSFER_ACTION, null, this, PlaybackService::class.java)
@@ -894,7 +1048,6 @@ class PlaybackService : MediaLibraryService() {
         val playPending = PendingIntent.getService(
             this, 1, playIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val canTransfer = wasPlaying && sourcePlayerId != null && sourcePlayerId != room.playerId
         val actionLabel = if (canTransfer) "Move Here" else "Play Here"
 
         val notification = NotificationCompat.Builder(this, PROXIMITY_CHANNEL_ID)
@@ -910,7 +1063,7 @@ class PlaybackService : MediaLibraryService() {
         getSystemService(NotificationManager::class.java)?.notify(PROXIMITY_NOTIFICATION_ID, notification)
     }
 
-    private fun showAutoTransferNotification(room: DetectedRoom) {
+    private fun showRoomDetectedNotification(room: DetectedRoom) {
         val notification = NotificationCompat.Builder(this, PROXIMITY_CHANNEL_ID)
             .setContentTitle("Now in ${room.roomName}")
             .setContentText("Follow Me detected ${room.roomName}")
@@ -925,6 +1078,15 @@ class PlaybackService : MediaLibraryService() {
 
     private fun performProximityTransfer(sourcePlayerId: String, room: DetectedRoom) {
         if (sourcePlayerId == room.playerId) return
+        if (!isPlayerAvailable(room.playerId)) {
+            Log.w(TAG, "Proximity transfer skipped: ${room.playerName} not available")
+            return
+        }
+        if (shouldSkipRecentTransfer(sourcePlayerId, room)) {
+            Log.d(TAG, "Proximity transfer skipped: duplicate recent move $sourcePlayerId -> ${room.playerId} (${room.roomName})")
+            return
+        }
+        rememberTransferCommand(sourcePlayerId, room)
         scope.launch {
             try {
                 musicRepository.transferQueue(sourcePlayerId, room.playerId)
@@ -938,9 +1100,18 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private suspend fun performRoomPlayback(room: DetectedRoom, roomConfig: net.asksakis.massdroidv2.data.proximity.RoomConfig?) {
+        if (!isPlayerAvailable(room.playerId)) {
+            Log.w(TAG, "Proximity play skipped: ${room.playerName} not available")
+            return
+        }
         val playback = roomConfig?.playbackConfig
         val uri = playback?.playlistUri
         if (uri != null) {
+            if (shouldSkipRecentRoomPlayback(room, uri)) {
+                Log.d(TAG, "Proximity room playback skipped: duplicate recent command on ${room.playerName} for $uri")
+                return
+            }
+            rememberRoomPlaybackCommand(room, uri)
             musicRepository.playMedia(room.playerId, uri, option = "replace")
             if (playback.shuffle) {
                 try { musicRepository.shuffleQueue(room.playerId, true) } catch (_: Exception) { }
@@ -954,12 +1125,97 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun applyRoomVolume(room: DetectedRoom) {
+        if (!isPlayerAvailable(room.playerId)) return
         val roomConfig = proximityConfigStore.config.value.rooms.find { it.id == room.roomId } ?: return
         val playback = roomConfig.playbackConfig
         if (!playback.volumeEnabled) return
         val volume = (playback.volumeLevel * 10).coerceIn(0, 100)
         sendVolumeCommand(room.playerId, volume)
         Log.d(TAG, "Proximity volume: ${room.playerName} -> $volume%")
+    }
+
+    private fun isPlayerAvailable(playerId: String): Boolean {
+        return playerRepository.players.value.any { it.playerId == playerId && it.available }
+    }
+
+    private fun shouldSkipRecentTransfer(sourcePlayerId: String, room: DetectedRoom): Boolean {
+        val recent = lastProximityTransferCommand ?: return false
+        val now = System.currentTimeMillis()
+        return now - recent.issuedAtMs <= PROXIMITY_COMMAND_DEDUPE_MS
+            && recent.sourcePlayerId == sourcePlayerId
+            && recent.targetPlayerId == room.playerId
+            && recent.roomId == room.roomId
+    }
+
+    private fun rememberTransferCommand(sourcePlayerId: String, room: DetectedRoom) {
+        lastProximityTransferCommand = RecentProximityTransferCommand(
+            sourcePlayerId = sourcePlayerId,
+            targetPlayerId = room.playerId,
+            roomId = room.roomId,
+            issuedAtMs = System.currentTimeMillis()
+        )
+    }
+
+    private fun shouldSkipRecentRoomPlayback(room: DetectedRoom, playlistUri: String): Boolean {
+        val recent = lastRoomPlaybackCommand ?: return false
+        val now = System.currentTimeMillis()
+        return now - recent.issuedAtMs <= PROXIMITY_COMMAND_DEDUPE_MS
+            && recent.playerId == room.playerId
+            && recent.roomId == room.roomId
+            && recent.playlistUri == playlistUri
+    }
+
+    private fun rememberRoomPlaybackCommand(room: DetectedRoom, playlistUri: String) {
+        lastRoomPlaybackCommand = RecentRoomPlaybackCommand(
+            playerId = room.playerId,
+            roomId = room.roomId,
+            playlistUri = playlistUri,
+            issuedAtMs = System.currentTimeMillis()
+        )
+    }
+
+    private data class ProximityPlaybackContext(
+        val targetPlayer: net.asksakis.massdroidv2.domain.model.Player?,
+        val transferSourcePlayer: net.asksakis.massdroidv2.domain.model.Player?,
+        val ambiguousTransferPlayers: List<net.asksakis.massdroidv2.domain.model.Player>
+    )
+
+    private data class RecentProximityTransferCommand(
+        val sourcePlayerId: String,
+        val targetPlayerId: String,
+        val roomId: String,
+        val issuedAtMs: Long
+    )
+
+    private data class RecentRoomPlaybackCommand(
+        val playerId: String,
+        val roomId: String,
+        val playlistUri: String,
+        val issuedAtMs: Long
+    )
+
+    private fun resolveProximityPlaybackContext(targetPlayerId: String): ProximityPlaybackContext {
+        val players = playerRepository.players.value.filter { it.available }
+        val targetPlayer = players.find { it.playerId == targetPlayerId }
+        val selectedPlayer = playerRepository.selectedPlayer.value
+        val playingPlayers = players.filter { it.state == PlaybackState.PLAYING }
+        val transferCandidates = playingPlayers.filter { it.playerId != targetPlayerId }
+
+        val resolvedTransferSource = when {
+            selectedPlayer?.state == PlaybackState.PLAYING && selectedPlayer.playerId != targetPlayerId -> selectedPlayer
+            transferCandidates.size == 1 -> transferCandidates.first()
+            else -> null
+        }
+
+        return ProximityPlaybackContext(
+            targetPlayer = targetPlayer,
+            transferSourcePlayer = resolvedTransferSource,
+            ambiguousTransferPlayers = if (resolvedTransferSource == null && transferCandidates.size > 1) {
+                transferCandidates
+            } else {
+                emptyList()
+            }
+        )
     }
 
     private fun isWithinSchedule(): Boolean {
@@ -1010,14 +1266,15 @@ class PlaybackService : MediaLibraryService() {
         btAudioCallback = object : android.media.AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) {
                 val btAdded = addedDevices.any { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-                if (btAdded && sendspinActive && sendspinPlayerId != null) {
+                val sendspinTarget = sendspinPlayerId
+                if (btAdded && sendspinActive && sendspinTarget != null) {
                     val currentSelected = playerRepository.selectedPlayer.value?.playerId
-                    if (currentSelected != sendspinPlayerId) {
+                    if (currentSelected != sendspinTarget) {
                         val deviceName = addedDevices.firstOrNull {
                             it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
                         }?.productName
                         Log.d(TAG, "BT A2DP connected ($deviceName), auto-selecting Sendspin player")
-                        playerRepository.selectPlayer(sendspinPlayerId!!)
+                        playerRepository.selectPlayer(sendspinTarget)
                     }
                 }
             }

@@ -14,10 +14,12 @@ import net.asksakis.massdroidv2.data.proximity.BeaconProfile
 import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.DetectedRoom
 import net.asksakis.massdroidv2.data.proximity.rules
+import net.asksakis.massdroidv2.data.proximity.AnchorType
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.AUTO_FINGERPRINT_CYCLES
+import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.CALIBRATION_SAMPLES_PER_SCAN_SESSION
 import net.asksakis.massdroidv2.data.proximity.rankBeaconProfilesForDetection
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
@@ -33,16 +35,21 @@ import javax.inject.Inject
 import kotlin.math.sqrt
 
 private const val TAG = "ProximityVM"
-private const val MIN_SIGHTINGS = 2
 private const val FINGERPRINTS_PER_ROOM = 8
 private const val MIN_WEIGHT = 0.15
 private const val MAX_WEIGHT = 2.5
+private const val STRONG_LOCAL_RSSI_DBM = -65.0
+private const val GOOD_LOCAL_RSSI_DBM = -72.0
+private const val WEAK_LOCAL_RSSI_DBM = -80.0
+private const val FAR_LOCAL_RSSI_DBM = -88.0
+private const val DOMINANT_ANCHOR_MIN_SCORE = 1.1
 
 // Quality gate thresholds
 
 private const val MIN_AVG_VISIBILITY = 0.3
 private const val MIN_DISCRIMINATIVE_BEACONS = 2
 private const val DISCRIMINATIVE_THRESHOLD = 5.0
+private const val MODERATE_DISCRIMINATIVE_THRESHOLD = 2.0
 private const val MAX_FLOOR_RATIO = 0.8
 
 data class BleInspectionItem(
@@ -51,6 +58,7 @@ data class BleInspectionItem(
     val rssi: Int,
     val category: ProximityScanner.DeviceCategory,
     val addressType: ProximityScanner.AddressType,
+    val anchorType: AnchorType,
     val profileWeight: Double? = null,
     val profileDiscrimination: Double? = null,
     val profileMeanRssi: Int? = null
@@ -198,9 +206,13 @@ class ProximityViewModel @Inject constructor(
                 val devices = scanner.scanOnce(lowPower = false)
                 val connectedBssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
                 val rankedProfiles = rankBeaconProfilesForDetection(
-                    room.beaconProfiles.filter { !it.address.startsWith("wifi:") }
+                    room.beaconProfiles.filter { !it.anchorKey.startsWith("wifi:") }
                 )
-                val usefulProfileMap = rankedProfiles.take(8).associateBy { it.address }
+                val usefulProfileMap = rankedProfiles.take(8).associateBy { it.anchorKey }
+                val preferredNameAnchors = room.beaconProfiles
+                    .filter { it.anchorType == AnchorType.NAME }
+                    .map { it.anchorKey }
+                    .toSet()
 
                 val usefulAnchors = mutableListOf<BleInspectionItem>()
                 val stableCandidates = mutableListOf<BleInspectionItem>()
@@ -208,19 +220,21 @@ class ProximityViewModel @Inject constructor(
                 val mobileDevices = mutableListOf<BleInspectionItem>()
 
                 devices.sortedByDescending { it.rssi }.forEach { device ->
+                    val identity = scanner.classifyAnchorIdentity(device, preferredNameAnchors)
                     val item = BleInspectionItem(
                         address = device.address,
                         name = device.name,
                         rssi = device.rssi,
                         category = device.category,
                         addressType = device.addressType,
-                        profileWeight = usefulProfileMap[device.address]?.weight,
-                        profileDiscrimination = usefulProfileMap[device.address]?.discriminationScore,
-                        profileMeanRssi = usefulProfileMap[device.address]?.meanRssi
+                        anchorType = identity.type,
+                        profileWeight = usefulProfileMap[identity.key]?.weight,
+                        profileDiscrimination = usefulProfileMap[identity.key]?.discriminationScore,
+                        profileMeanRssi = usefulProfileMap[identity.key]?.meanRssi
                     )
 
                     when {
-                        usefulProfileMap.containsKey(device.address) -> usefulAnchors += item
+                        usefulProfileMap.containsKey(identity.key) -> usefulAnchors += item
                         device.category == ProximityScanner.DeviceCategory.MOBILE -> mobileDevices += item
                         scanner.isPrivateAddress(device.addressType) -> privateAddressDevices += item
                         else -> stableCandidates += item
@@ -276,18 +290,27 @@ class ProximityViewModel @Inject constructor(
                 val nameMap = mutableMapOf<String, String?>()
                 val categoryMap = mutableMapOf<String, ProximityScanner.DeviceCategory>()
                 val addressTypes = mutableMapOf<String, ProximityScanner.AddressType>()
+                val anchorTypes = mutableMapOf<String, AnchorType>()
+                val preferredNameAnchors = existingNameAnchorsForRoom(roomId)
+                val scanSessions = calibrationScanSessions()
 
-                for (i in 1..AUTO_FINGERPRINT_CYCLES) {
-                    val devices = scanner.scanOnce(lowPower = false)
-                    val scanMap = mutableMapOf<String, Int>()
-                    for (d in devices) {
-                        scanMap[d.address] = d.rssi
-                        if (d.name != null) nameMap[d.address] = d.name
-                        if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
-                        addressTypes[d.address] = d.addressType
+                var progress = 0
+                repeat(scanSessions) {
+                    val windows = scanner.scanCalibrationSamples(lowPower = false)
+                    for (devices in windows) {
+                        if (progress >= AUTO_FINGERPRINT_CYCLES) break
+                        val scanMap = buildAnchorScan(
+                            devices,
+                            nameMap,
+                            categoryMap,
+                            addressTypes,
+                            anchorTypes,
+                            preferredNameAnchors
+                        )
+                        rawScans.add(scanMap)
+                        progress++
+                        _autoFingerprintProgress.value = progress
                     }
-                    rawScans.add(scanMap)
-                    _autoFingerprintProgress.value = i
                 }
                 _autoFingerprintProgress.value = null
 
@@ -323,7 +346,7 @@ class ProximityViewModel @Inject constructor(
                 val config = configStore.config.value
                 val otherRoomMeans = config.rooms
                     .filter { it.id != roomId && it.beaconProfiles.isNotEmpty() }
-                    .associate { room -> room.id to room.beaconProfiles.associate { it.address to it.meanRssi.toDouble() } }
+                    .associate { room -> room.id to room.beaconProfiles.associate { it.anchorKey to it.meanRssi.toDouble() } }
 
                 val totalScans = rawScans.sumOf { it.size }
                 if (validAddresses.isEmpty()) {
@@ -350,7 +373,7 @@ class ProximityViewModel @Inject constructor(
                 } else {
                     val fingerprints = buildFingerprints(rawScans, validAddresses)
                     val allNames = nameMap.mapValues { it.value }
-                    val profiles = computeBeaconProfiles(rawScans, validAddresses, allNames, otherRoomMeans)
+                    val profiles = computeBeaconProfiles(rawScans, validAddresses, allNames, anchorTypes, otherRoomMeans)
                     val warnings = mutableListOf<String>()
                     val room = config.rooms.find { it.id == roomId }
                     val quality = assessQuality(room?.name ?: roomId, profiles, warnings, room?.detectionPolicy ?: net.asksakis.massdroidv2.data.proximity.DetectionPolicy.STRICT)
@@ -399,6 +422,7 @@ class ProximityViewModel @Inject constructor(
         val rawScans: List<Map<String, Int>>,
         val names: Map<String, String?>,
         val categories: Map<String, ProximityScanner.DeviceCategory>,
+        val anchorTypes: Map<String, AnchorType> = emptyMap(),
         val addressTypes: Map<String, ProximityScanner.AddressType> = emptyMap(),
         val connectedBssid: String? = null
     )
@@ -433,24 +457,33 @@ class ProximityViewModel @Inject constructor(
                 val rawScans = mutableListOf<Map<String, Int>>()
                 val nameMap = mutableMapOf<String, String?>()
                 val categoryMap = mutableMapOf<String, ProximityScanner.DeviceCategory>()
+                val anchorTypeMap = mutableMapOf<String, AnchorType>()
                 val addrTypeMap = mutableMapOf<String, ProximityScanner.AddressType>()
+                val preferredNameAnchors = existingNameAnchorsForRoom(roomId)
+                val scanSessions = calibrationScanSessions()
                 _autoFingerprintProgress.value = 0
 
-                for (i in 1..AUTO_FINGERPRINT_CYCLES) {
-                    val devices = scanner.scanOnce(lowPower = false)
-                    val scanMap = mutableMapOf<String, Int>()
-                    for (d in devices) {
-                        scanMap[d.address] = d.rssi
-                        if (d.name != null) nameMap[d.address] = d.name
-                        if (d.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[d.address] = d.category
-                        addrTypeMap[d.address] = d.addressType
+                var progress = 0
+                repeat(scanSessions) {
+                    val windows = scanner.scanCalibrationSamples(lowPower = false)
+                    for (devices in windows) {
+                        if (progress >= AUTO_FINGERPRINT_CYCLES) break
+                        val scanMap = buildAnchorScan(
+                            devices,
+                            nameMap,
+                            categoryMap,
+                            addrTypeMap,
+                            anchorTypeMap,
+                            preferredNameAnchors
+                        )
+                        rawScans.add(scanMap)
+                        progress++
+                        _autoFingerprintProgress.value = progress
                     }
-                    rawScans.add(scanMap)
-                    _autoFingerprintProgress.value = i
                 }
 
                 val bssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
-                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap, addrTypeMap, bssid)
+                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap, anchorTypeMap, addrTypeMap, bssid)
                 _tuningSnapshots.value = _tuningSnapshots.value + training
                 Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices, wifi=${bssid ?: "none"}")
                 onDone()
@@ -476,6 +509,7 @@ class ProximityViewModel @Inject constructor(
 
                 val allNames = allTraining.flatMap { it.names.entries }.associate { it.key to it.value }
                 val allCategories = allTraining.flatMap { it.categories.entries }.associate { it.key to it.value }
+                val allAnchorTypes = allTraining.flatMap { it.anchorTypes.entries }.associate { it.key to it.value }
 
                 val allAddressTypes = allTraining.flatMap { it.addressTypes.entries }
                     .associate { it.key to it.value }
@@ -511,7 +545,7 @@ class ProximityViewModel @Inject constructor(
                         val fingerprints = buildFingerprints(training.rawScans, validAddrs)
                         val otherRoomMeans = roomMeans.filter { it.key != room.id }
                         val profiles = computeBeaconProfiles(
-                            training.rawScans, validAddrs, allNames, otherRoomMeans
+                            training.rawScans, validAddrs, allNames, allAnchorTypes, otherRoomMeans
                         )
 
                         val quality = assessQuality(room.name, profiles, warnings, room.detectionPolicy)
@@ -539,7 +573,9 @@ class ProximityViewModel @Inject constructor(
                     if (lastRoom != null) {
                         val quality = lastRoom.calibrationQuality
                         val rules = lastRoom.detectionPolicy.rules()
-                        if (quality == CalibrationQuality.GOOD || (rules.allowWeakCalibration && quality == CalibrationQuality.WEAK)) {
+                        if (quality == CalibrationQuality.GOOD ||
+                            (rules.allowWeakCalibration && quality == CalibrationQuality.WEAK)
+                        ) {
                             roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
                         }
                     }
@@ -567,17 +603,31 @@ class ProximityViewModel @Inject constructor(
         }
 
         // Quality based on BLE beacons only (WiFi is support layer, not primary)
-        val bleProfiles = profiles.filter { !it.address.startsWith("wifi:") }
+        val bleProfiles = profiles.filter { !it.anchorKey.startsWith("wifi:") }
         val usableCount = bleProfiles.count { it.weight > MIN_WEIGHT }
         val avgVisibility = bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0
         val discriminativeCount = bleProfiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
+        val moderateDiscriminativeCount = bleProfiles.count { it.discriminationScore > MODERATE_DISCRIMINATIVE_THRESHOLD }
         val floorRatio = if (bleProfiles.isNotEmpty()) bleProfiles.count { it.weight <= MIN_WEIGHT + 0.01 }.toDouble() / bleProfiles.size else 1.0
         val rules = policy.rules()
+        val dominantAnchor = bleProfiles.maxByOrNull { calibrationDominanceScore(it) }
+        val dominantAnchorScore = dominantAnchor?.let { calibrationDominanceScore(it) } ?: 0.0
+        val hasModeratePatternSupport =
+            moderateDiscriminativeCount >= maxOf(rules.minUsableProfiles, 3)
+        val hasDominantAnchorSupport =
+            usableCount >= maxOf(rules.minUsableProfiles, 4) &&
+                avgVisibility >= 0.6 &&
+                floorRatio <= MAX_FLOOR_RATIO &&
+                dominantAnchorScore >= DOMINANT_ANCHOR_MIN_SCORE
         val hasStructuredFingerprint =
             usableCount >= rules.minUsableProfiles &&
-                discriminativeCount >= MIN_DISCRIMINATIVE_BEACONS &&
                 floorRatio <= MAX_FLOOR_RATIO &&
-                bleProfiles.size >= 4
+                bleProfiles.size >= 4 &&
+                (
+                    discriminativeCount >= MIN_DISCRIMINATIVE_BEACONS ||
+                        hasModeratePatternSupport ||
+                        hasDominantAnchorSupport
+                    )
 
         var isGood = true
 
@@ -592,8 +642,17 @@ class ProximityViewModel @Inject constructor(
             }
         }
         if (discriminativeCount < MIN_DISCRIMINATIVE_BEACONS) {
-            warnings.add("$roomName: no strongly discriminative beacons")
-            isGood = false
+            if (hasModeratePatternSupport) {
+                warnings.add("$roomName: relying on full RSSI pattern instead of strongly discriminative beacons")
+            } else if (hasDominantAnchorSupport && dominantAnchor != null) {
+                warnings.add(
+                    "$roomName: relying on dominant local anchor ${dominantAnchor.name} " +
+                        "(score=${String.format("%.2f", dominantAnchorScore)}) with support anchors"
+                )
+            } else {
+                warnings.add("$roomName: no strongly discriminative beacons")
+                isGood = false
+            }
         }
         if (floorRatio > MAX_FLOOR_RATIO) {
             warnings.add("$roomName: most beacon weights at minimum")
@@ -610,14 +669,20 @@ class ProximityViewModel @Inject constructor(
         profiles: List<BeaconProfile>,
         warnings: List<String>
     ): String {
-        val bleProfiles = profiles.filter { !it.address.startsWith("wifi:") }
+        val bleProfiles = profiles.filter { !it.anchorKey.startsWith("wifi:") }
         val usableCount = bleProfiles.count { it.weight > MIN_WEIGHT }
         val discriminativeCount = bleProfiles.count { it.discriminationScore > DISCRIMINATIVE_THRESHOLD }
+        val moderateDiscriminativeCount = bleProfiles.count { it.discriminationScore > MODERATE_DISCRIMINATIVE_THRESHOLD }
         val visibilityPct = ((bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0) * 100).toInt()
         val lowVisibility = visibilityPct < (MIN_AVG_VISIBILITY * 100).toInt()
+        val patternDriven = discriminativeCount < MIN_DISCRIMINATIVE_BEACONS && moderateDiscriminativeCount >= 3
         return if (quality == CalibrationQuality.GOOD) {
-            if (lowVisibility) {
+            if (lowVisibility && patternDriven) {
+                "Good calibration: low-signal but structured RSSI fingerprint with $usableCount usable BLE anchors, $moderateDiscriminativeCount moderate-separation anchors, avg visibility ${visibilityPct}%."
+            } else if (lowVisibility) {
                 "Good calibration: low-signal but structured fingerprint with $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
+            } else if (patternDriven) {
+                "Good calibration: structured RSSI fingerprint with $usableCount usable BLE anchors and $moderateDiscriminativeCount moderate-separation anchors."
             } else {
                 "Good calibration: $usableCount usable BLE anchors, $discriminativeCount discriminative, avg visibility ${visibilityPct}%."
             }
@@ -670,7 +735,7 @@ class ProximityViewModel @Inject constructor(
             RoomFingerprint(
                 id = UUID.randomUUID().toString(),
                 label = "scan-${idx + 1}",
-                samples = merged.mapValues { (_, values) -> values.average().toInt() },
+                samples = merged.mapValues { (_, values) -> robustMean(values).toInt() },
                 capturedAtMs = now
             )
         }
@@ -686,13 +751,14 @@ class ProximityViewModel @Inject constructor(
                 if (addr in validAddresses) accum.getOrPut(addr) { mutableListOf() }.add(rssi)
             }
         }
-        return accum.mapValues { (_, values) -> values.average() }
+        return accum.mapValues { (_, values) -> robustMean(values) }
     }
 
     private fun computeBeaconProfiles(
         rawScans: List<Map<String, Int>>,
         validAddresses: Set<String>,
         allNames: Map<String, String?>,
+        allAnchorTypes: Map<String, AnchorType>,
         otherRoomMeans: Map<String, Map<String, Double>>
     ): List<BeaconProfile> {
         val totalScans = rawScans.size
@@ -706,7 +772,7 @@ class ProximityViewModel @Inject constructor(
         }
 
         return accum.map { (addr, rssiValues) ->
-            val mean = rssiValues.average()
+            val mean = robustMean(rssiValues)
             val variance = if (rssiValues.size > 1) {
                 rssiValues.map { (it - mean) * (it - mean) }.average()
             } else 0.0
@@ -716,10 +782,88 @@ class ProximityViewModel @Inject constructor(
 
             val stability = 1.0 / (1.0 + sqrt(variance) / 4.0)
             val discriminationBoost = 1.0 + discriminationScore.coerceAtLeast(0.0) / 20.0
-            val weight = (visibilityRate * stability * discriminationBoost).coerceIn(MIN_WEIGHT, MAX_WEIGHT)
+            val localSignalFactor = when {
+                mean >= STRONG_LOCAL_RSSI_DBM -> 1.45
+                mean >= GOOD_LOCAL_RSSI_DBM -> 1.25
+                mean >= WEAK_LOCAL_RSSI_DBM -> 1.0
+                mean >= FAR_LOCAL_RSSI_DBM -> 0.8
+                else -> 0.55
+            }
+            val weight = (visibilityRate * stability * discriminationBoost * localSignalFactor)
+                .coerceIn(MIN_WEIGHT, MAX_WEIGHT)
 
-            BeaconProfile(addr, allNames[addr] ?: addr, mean.toInt(), variance, visibilityRate, discriminationScore, weight)
+            BeaconProfile(
+                address = addr,
+                name = allNames[addr] ?: addr,
+                meanRssi = mean.toInt(),
+                variance = variance,
+                visibilityRate = visibilityRate,
+                discriminationScore = discriminationScore,
+                weight = weight,
+                anchorKey = addr,
+                anchorType = allAnchorTypes[addr] ?: AnchorType.MAC
+            )
         }
+    }
+
+    private fun buildAnchorScan(
+        devices: List<ProximityScanner.ScannedDevice>,
+        nameMap: MutableMap<String, String?>,
+        categoryMap: MutableMap<String, ProximityScanner.DeviceCategory>,
+        addressTypeMap: MutableMap<String, ProximityScanner.AddressType>,
+        anchorTypeMap: MutableMap<String, AnchorType>,
+        preferredNameAnchors: Set<String> = emptySet()
+    ): Map<String, Int> {
+        val scanMap = mutableMapOf<String, Int>()
+        for (device in devices) {
+            val identity = scanner.classifyAnchorIdentity(device, preferredNameAnchors)
+            val current = scanMap[identity.key]
+            if (current == null || device.rssi > current) {
+                scanMap[identity.key] = device.rssi
+            }
+            if (identity.displayName.isNotBlank()) nameMap[identity.key] = identity.displayName
+            if (device.category != ProximityScanner.DeviceCategory.UNKNOWN) categoryMap[identity.key] = device.category
+            addressTypeMap[identity.key] = device.addressType
+            anchorTypeMap[identity.key] = identity.type
+        }
+        return scanMap
+    }
+
+    private fun existingNameAnchorsForRoom(roomId: String): Set<String> =
+        configStore.config.value.rooms
+            .find { it.id == roomId }
+            ?.beaconProfiles
+            ?.filter { it.anchorType == AnchorType.NAME }
+            ?.map { it.anchorKey }
+            ?.toSet()
+            .orEmpty()
+
+    private fun calibrationScanSessions(): Int =
+        (AUTO_FINGERPRINT_CYCLES + CALIBRATION_SAMPLES_PER_SCAN_SESSION - 1) / CALIBRATION_SAMPLES_PER_SCAN_SESSION
+
+    private fun robustMean(values: List<Int>): Double {
+        if (values.isEmpty()) return 0.0
+        if (values.size < 5) return values.average()
+
+        val sorted = values.sorted()
+        val trim = (sorted.size * 0.15).toInt().coerceAtLeast(1)
+        val trimmed = sorted.subList(trim, (sorted.size - trim).coerceAtLeast(trim + 1))
+        return if (trimmed.isEmpty()) sorted.average() else trimmed.average()
+    }
+
+    private fun calibrationDominanceScore(profile: BeaconProfile): Double {
+        val localSignalScore = when {
+            profile.meanRssi >= STRONG_LOCAL_RSSI_DBM -> 1.0
+            profile.meanRssi >= GOOD_LOCAL_RSSI_DBM -> 0.75
+            profile.meanRssi >= WEAK_LOCAL_RSSI_DBM -> 0.45
+            profile.meanRssi >= FAR_LOCAL_RSSI_DBM -> 0.2
+            else -> 0.05
+        }
+        val positiveSeparation = when {
+            profile.discriminationScore <= 0.0 -> 0.0
+            else -> (profile.discriminationScore / 20.0).coerceAtMost(2.0)
+        }
+        return localSignalScore * profile.visibilityRate * positiveSeparation
     }
 
     // endregion

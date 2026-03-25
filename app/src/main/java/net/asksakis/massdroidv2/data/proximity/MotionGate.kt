@@ -12,13 +12,15 @@ import android.hardware.TriggerEventListener
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -32,14 +34,17 @@ class MotionGate @Inject constructor(
 ) {
     private val _isMoving = MutableStateFlow(false)
     val isMoving: StateFlow<Boolean> = _isMoving.asStateFlow()
+    private val _motionEvents = MutableSharedFlow<Long>(extraBufferCapacity = 8)
+    val motionEvents: SharedFlow<Long> = _motionEvents.asSharedFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
     private var windowJob: Job? = null
     private var triggerListener: TriggerEventListener? = null
     private var stepListener: SensorEventListener? = null
     private var started = false
     private var stepCount = 0
+    private var movementGeneration = 0L
 
     fun start() {
         if (started || sensorManager == null) return
@@ -49,6 +54,7 @@ class MotionGate @Inject constructor(
         }
         started = true
         stepCount = 0
+        movementGeneration++
 
         try {
             val motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
@@ -57,6 +63,7 @@ class MotionGate @Inject constructor(
                     override fun onTrigger(event: TriggerEvent?) {
                         if (!started) return
                         Log.d(TAG, "Significant motion")
+                        _motionEvents.tryEmit(System.currentTimeMillis())
                         openMovementWindow()
                         sensorManager.requestTriggerSensor(this, motionSensor)
                     }
@@ -92,6 +99,7 @@ class MotionGate @Inject constructor(
     fun stop() {
         if (!started) return
         started = false
+        movementGeneration++
         val motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
         if (motionSensor != null && triggerListener != null) {
             sensorManager?.cancelTriggerSensor(triggerListener, motionSensor)
@@ -117,12 +125,14 @@ class MotionGate @Inject constructor(
     }
 
     private fun openMovementWindow() {
+        val generation = movementGeneration
         val wasMoving = _isMoving.value
         _isMoving.value = true
         windowJob?.cancel()
         if (!wasMoving) Log.d(TAG, "Window opened (steps=$stepCount)")
         windowJob = scope.launch {
             delay(MOVEMENT_WINDOW_MS)
+            if (!started || generation != movementGeneration) return@launch
             _isMoving.value = false
             Log.d(TAG, "Window closed (steps=$stepCount)")
         }

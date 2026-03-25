@@ -643,6 +643,7 @@ private fun BleInspectionRow(item: BleInspectionItem) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         val details = buildList {
+            add(item.anchorType.name)
             add(item.addressType.name)
             if (item.category != net.asksakis.massdroidv2.data.proximity.ProximityScanner.DeviceCategory.UNKNOWN) {
                 add(item.category.name)

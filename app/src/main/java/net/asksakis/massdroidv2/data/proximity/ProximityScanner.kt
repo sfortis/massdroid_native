@@ -16,23 +16,29 @@ import android.os.ParcelUuid
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.selects.onTimeout
+import net.asksakis.massdroidv2.data.proximity.AnchorType
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.coroutines.resume
 
 private const val TAG = "ProximityScanner"
 private const val SCAN_DURATION_MS = 5_000L
 private const val DEVICE_RETAIN_MS = 15_000L
+private const val MIN_VALID_RSSI = -126
+private const val MAX_VALID_RSSI = 20
+private const val MIN_CONNECTED_WIFI_RSSI = -90
+private const val INVALID_WIFI_BSSID = "02:00:00:00:00:00"
 
 @Singleton
 class ProximityScanner @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     enum class DeviceCategory { STATIONARY, MOBILE, UNKNOWN }
-    enum class AddressType { PUBLIC, RANDOM_STATIC, RPA, NRPA }
+    enum class AddressType { PUBLIC, RANDOM_STATIC, RPA, NRPA, AMBIGUOUS }
 
     data class ScannedDevice(
         val address: String,
@@ -51,9 +57,16 @@ class ProximityScanner @Inject constructor(
         val persistentRunning: Boolean
     )
 
+    data class AnchorIdentity(
+        val key: String,
+        val type: AnchorType,
+        val displayName: String
+    )
+
     /**
      * Classify BLE address type. Uses BluetoothDevice.getAddressType() on API 34+
      * for reliable Public vs Random distinction. Falls back to top-2-bit heuristic.
+     * The 0x00 bucket is ambiguous (PUBLIC or NRPA), so do not treat it as stable.
      */
     @SuppressLint("NewApi")
     fun classifyAddressType(address: String, result: ScanResult? = null): AddressType {
@@ -78,8 +91,7 @@ class ProximityScanner @Inject constructor(
         return when (firstByte and 0xC0) {
             0xC0 -> AddressType.RANDOM_STATIC
             0x40 -> AddressType.RPA
-            // 0x00: ambiguous (Public or NRPA). Default to PUBLIC.
-            else -> AddressType.PUBLIC
+            else -> AddressType.AMBIGUOUS
         }
     }
 
@@ -90,6 +102,102 @@ class ProximityScanner @Inject constructor(
     fun isPrivateAddress(addressType: AddressType): Boolean =
         addressType == AddressType.RPA || addressType == AddressType.NRPA
 
+    fun isUnstableAddress(addressType: AddressType): Boolean =
+        addressType == AddressType.RPA || addressType == AddressType.NRPA || addressType == AddressType.AMBIGUOUS
+
+    fun isValidRssi(rssi: Int): Boolean = rssi in MIN_VALID_RSSI..MAX_VALID_RSSI
+
+    fun normalizeAnchorName(name: String?): String? {
+        val cleaned = name
+            ?.trim()
+            ?.takeIf { !looksLikeMacAddress(it) }
+            ?.lowercase()
+            ?.replace(Regex("^le[-_ ]+"), "")
+            ?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.length >= 4 }
+            ?: return null
+        return cleaned
+    }
+
+    fun nameAnchorKey(name: String?): String? = normalizeAnchorName(name)?.let { "name:$it" }
+
+    fun hasMeaningfulAnchorName(name: String?): Boolean = normalizeAnchorName(name) != null
+
+    private fun looksLikeMacAddress(value: String): Boolean {
+        return Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$").matches(value.trim())
+    }
+
+    fun classifyAnchorIdentity(
+        address: String,
+        name: String?,
+        category: DeviceCategory,
+        addressType: AddressType,
+        preferredNameAnchors: Set<String> = emptySet()
+    ): AnchorIdentity {
+        val normalizedName = normalizeAnchorName(name)
+        val preferredNameKey = normalizedName?.let { "name:$it" }
+        val shouldUseName = category != DeviceCategory.MOBILE &&
+            preferredNameKey != null &&
+            (
+                preferredNameKey in preferredNameAnchors ||
+                    !isStableAddress(addressType)
+                )
+        if (shouldUseName) {
+            return AnchorIdentity(
+                key = preferredNameKey!!,
+                type = AnchorType.NAME,
+                displayName = name!!.trim()
+            )
+        }
+
+        return AnchorIdentity(
+            key = address,
+            type = AnchorType.MAC,
+            displayName = name?.takeIf { it.isNotBlank() } ?: address
+        )
+    }
+
+    fun classifyAnchorIdentity(
+        device: ScannedDevice,
+        preferredNameAnchors: Set<String> = emptySet()
+    ): AnchorIdentity =
+        classifyAnchorIdentity(
+            device.address,
+            device.name,
+            device.category,
+            device.addressType,
+            preferredNameAnchors
+        )
+
+    fun buildAnchorSnapshot(
+        devices: Collection<ScannedDevice>,
+        preferredNameAnchors: Set<String> = emptySet()
+    ): Map<String, Int> {
+        val snapshot = mutableMapOf<String, Int>()
+        for (device in devices) {
+            val anchorKey = classifyAnchorIdentity(device, preferredNameAnchors).key
+            val current = snapshot[anchorKey]
+            if (current == null || device.rssi > current) {
+                snapshot[anchorKey] = device.rssi
+            }
+        }
+        return snapshot
+    }
+
+    @SuppressLint("MissingPermission")
+    fun toScannedDevice(result: ScanResult): ScannedDevice? {
+        val addr = result.device?.address ?: return null
+        if (!isValidRssi(result.rssi)) return null
+        val name = try { result.device.name } catch (_: Exception) { null }
+        return ScannedDevice(
+            address = addr,
+            name = name,
+            rssi = result.rssi,
+            category = classifyDevice(result),
+            addressType = classifyAddressType(addr, result)
+        )
+    }
+
     fun isUsableRoomAnchorAddress(
         category: DeviceCategory,
         addressType: AddressType,
@@ -97,10 +205,10 @@ class ProximityScanner @Inject constructor(
         name: String?
     ): Boolean {
         if (category == DeviceCategory.MOBILE) return false
+        if (!hasMeaningfulAnchorName(name)) return false
         if (isStableAddress(addressType)) return seenCount >= 2
-        if (isPrivateAddress(addressType)) {
-            val hasName = !name.isNullOrBlank()
-            return hasName && seenCount >= 4
+        if (isUnstableAddress(addressType)) {
+            return normalizeAnchorName(name) != null && seenCount >= 4
         }
         return false
     }
@@ -108,6 +216,7 @@ class ProximityScanner @Inject constructor(
     // Persistent background scan: start once, read snapshot anytime
     private val persistentDevices = ConcurrentHashMap<String, ScannedDevice>()
     private val persistentLastSeen = ConcurrentHashMap<String, Long>()
+    private val persistentSnapshotLock = Any()
     private var persistentCallback: ScanCallback? = null
     @Volatile private var persistentRunning = false
     @Volatile private var lastPersistentCallbackMs = 0L
@@ -123,21 +232,21 @@ class ProximityScanner @Inject constructor(
         if (persistentRunning) {
             if (persistentCallback != null) return // Already running, skip mode switch to avoid throttle
         }
-        persistentCallback = object : ScanCallback() {
+        val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 try {
-                    val addr = result.device?.address ?: return
-                    val name = try { result.device.name } catch (_: Exception) { null }
-                    persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                    val device = toScannedDevice(result) ?: return
+                    persistentDevices[device.address] = device
                     val now = System.currentTimeMillis()
-                    persistentLastSeen[addr] = now
+                    persistentLastSeen[device.address] = now
                     lastPersistentCallbackMs = now
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
         try {
-            scanner.startScan(null, settings, persistentCallback)
+            scanner.startScan(null, settings, callback)
+            persistentCallback = callback
             persistentRunning = true
             Log.d(
                 TAG,
@@ -145,6 +254,8 @@ class ProximityScanner @Inject constructor(
                     "(buffer=${persistentDevices.size})"
             )
         } catch (e: Exception) {
+            persistentCallback = null
+            persistentRunning = false
             Log.w(TAG, "Persistent scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
         }
     }
@@ -221,24 +332,33 @@ class ProximityScanner @Inject constructor(
     fun handleBackgroundScanResult(results: List<ScanResult>) {
         for (result in results) {
             try {
-                val addr = result.device?.address ?: continue
-                val name = try { result.device.name } catch (_: Exception) { null }
-                persistentDevices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
+                val device = toScannedDevice(result) ?: continue
+                persistentDevices[device.address] = device
                 val now = System.currentTimeMillis()
-                persistentLastSeen[addr] = now
+                persistentLastSeen[device.address] = now
                 lastBackgroundDeliveryMs = now
             } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
     }
 
-    /** Read current snapshot from persistent scan (no start/stop) */
-    fun readSnapshot(retainMs: Long = DEVICE_RETAIN_MS): List<ScannedDevice> {
-        val now = System.currentTimeMillis()
-        persistentLastSeen.entries.removeAll { now - it.value > retainMs }
-        val stale = persistentDevices.keys - persistentLastSeen.keys
-        stale.forEach { persistentDevices.remove(it) }
-        val devices = persistentDevices.values.toList()
+    /**
+     * Read current snapshot from persistent scan (no start/stop).
+     * This also prunes stale entries from the shared persistent buffer by design.
+     */
+    fun readSnapshot(
+        retainMs: Long = DEVICE_RETAIN_MS,
+        pruneMs: Long = retainMs
+    ): List<ScannedDevice> {
+        val devices = synchronized(persistentSnapshotLock) {
+            val now = System.currentTimeMillis()
+            persistentLastSeen.entries.removeAll { now - it.value > pruneMs }
+            val stale = persistentDevices.keys - persistentLastSeen.keys
+            stale.forEach { persistentDevices.remove(it) }
+            persistentDevices.entries
+                .filter { entry -> now - (persistentLastSeen[entry.key] ?: now) <= retainMs }
+                .map { it.value }
+        }
         if (devices.isEmpty()) zeroDeviceStreak++ else zeroDeviceStreak = 0
         return devices
     }
@@ -284,7 +404,7 @@ class ProximityScanner @Inject constructor(
             val info = wifiManager.connectionInfo
             val bssid = info?.bssid
             val rssi = info?.rssi ?: -100
-            if (bssid != null && bssid != "02:00:00:00:00:00" && rssi > -90) {
+            if (bssid != null && bssid != INVALID_WIFI_BSSID && rssi > MIN_CONNECTED_WIFI_RSSI) {
                 mapOf("wifi:$bssid" to rssi)
             } else {
                 emptyMap()
@@ -296,53 +416,113 @@ class ProximityScanner @Inject constructor(
     }
 
 
+    @kotlin.OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @SuppressLint("MissingPermission")
     suspend fun scanOnce(lowPower: Boolean = true): List<ScannedDevice> {
         val scanner = getScanner() ?: return emptyList()
         val devices = ConcurrentHashMap<String, ScannedDevice>()
+        val scanFailed = CompletableDeferred<Unit>()
 
         return withTimeoutOrNull(SCAN_DURATION_MS + 1_000) {
-            suspendCancellableCoroutine { cont ->
-                val callback = object : ScanCallback() {
-                    override fun onScanResult(callbackType: Int, result: ScanResult) {
-                        try {
-                            val addr = result.device?.address ?: return
-                            val name = try { result.device.name } catch (_: Exception) { null }
-                            devices[addr] = ScannedDevice(addr, name, result.rssi, classifyDevice(result), classifyAddressType(addr, result))
-                        } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
-                    }
-
-                    override fun onScanFailed(errorCode: Int) {
-                        Log.w(TAG, "BLE scan failed: $errorCode")
-                        if (cont.isActive) cont.resume(emptyList())
+            val callback = object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    try {
+                        val device = toScannedDevice(result) ?: return
+                        devices[device.address] = device
+                    } catch (e: Exception) {
+                        Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}")
                     }
                 }
 
-                val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
-                val settings = ScanSettings.Builder().setScanMode(mode).build()
+                override fun onScanFailed(errorCode: Int) {
+                    Log.w(TAG, "BLE scan failed: $errorCode")
+                    scanFailed.complete(Unit)
+                }
+            }
 
+            val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
+            val settings = ScanSettings.Builder().setScanMode(mode).build()
+
+            try {
+                scanner.startScan(null, settings, callback)
+            } catch (e: Exception) {
+                Log.w(TAG, "BLE scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                return@withTimeoutOrNull emptyList()
+            }
+
+            try {
+                val failedEarly = select<Boolean> {
+                    scanFailed.onAwait { true }
+                    onTimeout(SCAN_DURATION_MS) { false }
+                }
+                if (failedEarly) emptyList() else devices.values.toList()
+            } finally {
                 try {
-                    scanner.startScan(null, settings, callback)
-                } catch (e: Exception) {
-                    Log.w(TAG, "BLE scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                    if (cont.isActive) cont.resume(emptyList())
-                    return@suspendCancellableCoroutine
-                }
-
-                val timer = java.util.Timer()
-                cont.invokeOnCancellation {
-                    timer.cancel()
-                    try { scanner.stopScan(callback) } catch (_: Exception) { }
-                }
-
-                timer.schedule(object : java.util.TimerTask() {
-                    override fun run() {
-                        try { scanner.stopScan(callback) } catch (_: Exception) { }
-                        if (cont.isActive) cont.resume(devices.values.toList())
-                    }
-                }, SCAN_DURATION_MS)
+                    scanner.stopScan(callback)
+                } catch (_: Exception) { }
             }
         } ?: devices.values.toList()
+    }
+
+    @kotlin.OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @SuppressLint("MissingPermission")
+    suspend fun scanCalibrationSamples(
+        lowPower: Boolean = false,
+        sampleWindows: Int = CALIBRATION_SAMPLES_PER_SCAN_SESSION
+    ): List<List<ScannedDevice>> {
+        val scanner = getScanner() ?: return emptyList()
+        val windows = mutableListOf<List<ScannedDevice>>()
+        val windowDevices = ConcurrentHashMap<String, ScannedDevice>()
+        val samples = sampleWindows.coerceAtLeast(1)
+        val scanFailed = CompletableDeferred<Unit>()
+
+        return withTimeoutOrNull(SCAN_DURATION_MS + 1_000) {
+            val callback = object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    try {
+                        val device = toScannedDevice(result) ?: return
+                        windowDevices[device.address] = device
+                    } catch (e: Exception) {
+                        Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}")
+                    }
+                }
+
+                override fun onScanFailed(errorCode: Int) {
+                    Log.w(TAG, "BLE calibration scan failed: $errorCode")
+                    scanFailed.complete(Unit)
+                }
+            }
+
+            val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
+            val settings = ScanSettings.Builder().setScanMode(mode).build()
+
+            try {
+                scanner.startScan(null, settings, callback)
+            } catch (e: Exception) {
+                Log.w(TAG, "BLE calibration scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                return@withTimeoutOrNull emptyList()
+            }
+
+            val intervalMs = (SCAN_DURATION_MS / samples).coerceAtLeast(1_000L)
+            try {
+                repeat(samples) {
+                    val failedEarly = select<Boolean> {
+                        scanFailed.onAwait { true }
+                        onTimeout(intervalMs) { false }
+                    }
+                    windows += windowDevices.values.toList()
+                    windowDevices.clear()
+                    if (failedEarly) {
+                        return@withTimeoutOrNull emptyList()
+                    }
+                }
+                windows.filter { it.isNotEmpty() }
+            } finally {
+                try {
+                    scanner.stopScan(callback)
+                } catch (_: Exception) { }
+            }
+        } ?: windows.filter { it.isNotEmpty() }
     }
 
     @SuppressLint("MissingPermission")
@@ -395,7 +575,8 @@ class ProximityScanner @Inject constructor(
 
     companion object {
         const val BLE_SCAN_ACTION = "net.asksakis.massdroidv2.BLE_SCAN_RESULT"
-        const val AUTO_FINGERPRINT_CYCLES = 10
+        const val AUTO_FINGERPRINT_CYCLES = 20
+        const val CALIBRATION_SAMPLES_PER_SCAN_SESSION = 2
         fun isBluetoothEnabled(context: Context): Boolean {
             val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             return btManager?.adapter?.isEnabled == true
