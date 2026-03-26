@@ -68,6 +68,15 @@ fun PlayersScreen(
     val playerRoomMap = remember(proximityConfig) {
         proximityConfig.rooms.groupBy { it.playerId }.mapValues { (_, rooms) -> rooms.map { it.name } }
     }
+    val availablePlayers = remember(players) {
+        players.filter { it.available }.sortedBy { it.displayName.lowercase() }
+    }
+    val activePlayerCount = remember(availablePlayers) {
+        availablePlayers.count { it.state != PlaybackState.IDLE }
+    }
+    val assignedRoomCount = remember(availablePlayers, playerRoomMap) {
+        availablePlayers.flatMap { playerRoomMap[it.playerId].orEmpty() }.distinct().size
+    }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
@@ -97,12 +106,18 @@ fun PlayersScreen(
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
 
+                    PlayersHeader(
+                        totalPlayers = availablePlayers.size,
+                        activePlayers = activePlayerCount,
+                        assignedRooms = assignedRoomCount
+                    )
+
                     LazyColumn(
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        contentPadding = PaddingValues(start = 0.dp, top = 6.dp, end = 0.dp, bottom = 8.dp)
                     ) {
                         items(
-                            players.filter { it.available }.sortedBy { it.displayName.lowercase() },
+                            availablePlayers,
                             key = { it.playerId }
                         ) { player ->
                             PlayerListItem(
@@ -151,6 +166,11 @@ fun PlayersScreen(
                                 viewModel.transferQueue(player.playerId, targetId)
                                 queueMenuPlayer = null
                             },
+                            onStartSongRadio = {
+                                player.currentMedia?.uri?.let { uri ->
+                                    viewModel.startSongRadio(player.playerId, uri)
+                                }
+                            },
                             onDismiss = { queueMenuPlayer = null }
                         )
                     }
@@ -173,6 +193,30 @@ fun PlayersScreen(
 
 }
 
+@Composable
+private fun PlayersHeader(
+    totalPlayers: Int,
+    activePlayers: Int,
+    assignedRooms: Int
+) {
+    Column(
+        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = "Players",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerListItem(
@@ -192,20 +236,15 @@ private fun PlayerListItem(
     }
 
     val isPlaying = player.state == PlaybackState.PLAYING
-    val stateLabel = when (player.state) {
-        PlaybackState.PLAYING -> "Playing"
-        PlaybackState.PAUSED -> "Paused"
-        PlaybackState.IDLE -> "Idle"
-    }
     val accentColor = when {
         isSelected -> MaterialTheme.colorScheme.primary
         isPlaying -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     val containerColor = when {
-        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f)
-        isPlaying -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.18f)
-        else -> MaterialTheme.colorScheme.surface
+        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
+        isPlaying -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.32f)
+        else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val title = player.currentMedia?.title
     val artist = player.currentMedia?.artist
@@ -218,12 +257,7 @@ private fun PlayerListItem(
         shape = RoundedCornerShape(18.dp),
         color = containerColor,
         tonalElevation = if (isSelected || isPlaying) 1.dp else 0.dp,
-        shadowElevation = 0.dp,
-        border = BorderStroke(
-            width = if (isSelected) 1.25.dp else 0.9.dp,
-            color = if (isSelected) accentColor.copy(alpha = 0.45f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)
-        )
+        shadowElevation = 0.dp
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
@@ -233,26 +267,23 @@ private fun PlayerListItem(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = accentColor.copy(alpha = 0.10f),
-                    modifier = Modifier.size(42.dp)
+                Box(
+                    modifier = Modifier.size(28.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        SoundWaveIcon(
-                            isPlaying = isPlaying,
-                            waveColor = accentColor,
-                            modifier = Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = onIconLongPress
-                            )
-                        ) {
-                            PlayerIcon(
-                                player = player,
-                                modifier = Modifier.size(22.dp),
-                                tint = accentColor
-                            )
-                        }
+                    SoundWaveIcon(
+                        isPlaying = isPlaying,
+                        waveColor = accentColor,
+                        modifier = Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = onIconLongPress
+                        )
+                    ) {
+                        PlayerIcon(
+                            player = player,
+                            modifier = Modifier.size(22.dp),
+                            tint = accentColor
+                        )
                     }
                 }
 
@@ -260,29 +291,13 @@ private fun PlayerListItem(
 
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
                 ) {
                     PlayerNameWithBadge(
                         name = player.displayName,
                         isLocalPlayer = isLocalPlayer,
                         fontWeight = FontWeight.Bold
                     )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(accentColor)
-                        )
-                        Text(
-                            text = stateLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = accentColor
-                        )
-                    }
                 }
 
                 IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(32.dp)) {
@@ -295,33 +310,23 @@ private fun PlayerListItem(
             }
 
             if (!title.isNullOrBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
-                    border = BorderStroke(
-                        width = 0.8.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = accentColor,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (!artist.isNullOrBlank()) "$title • $artist" else title,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (!artist.isNullOrBlank()) "$title • $artist" else title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
@@ -395,20 +400,16 @@ private fun PlayerListItem(
 private fun RoomChip(roomName: String, isActive: Boolean) {
     Surface(
         shape = RoundedCornerShape(9.dp),
-        color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-        border = BorderStroke(
-            width = 0.8.dp,
-            color = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)
-        )
+        color = if (isActive) MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+        else MaterialTheme.colorScheme.surface.copy(alpha = 0.68f)
     ) {
         Text(
             text = roomName,
             style = MaterialTheme.typography.labelSmall,
-            color = if (isActive) MaterialTheme.colorScheme.primary
+            color = if (isActive) MaterialTheme.colorScheme.onSurface
             else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+            fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
     }
 }
@@ -423,6 +424,7 @@ private fun PlayerQueueSheet(
     onPlayerSettings: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
+    onStartSongRadio: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var showTransferList by remember { mutableStateOf(false) }
@@ -468,6 +470,19 @@ private fun PlayerQueueSheet(
                             Icon(Icons.Default.ChevronRight, contentDescription = null)
                         },
                         modifier = Modifier.clickable { showTransferList = true }
+                    )
+                }
+                if (player.currentMedia?.uri != null) {
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Start Song Radio") },
+                        leadingContent = {
+                            Icon(Icons.Default.Radio, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onStartSongRadio()
+                            onDismiss()
+                        }
                     )
                 }
                 ListItem(
