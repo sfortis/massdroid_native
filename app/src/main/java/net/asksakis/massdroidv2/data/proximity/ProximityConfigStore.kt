@@ -32,7 +32,7 @@ class ProximityConfigStore @Inject constructor(
         mutex.withLock {
             try {
                 val text = file.readText()
-                _config.value = json.decodeFromString<ProximityConfig>(text)
+                _config.value = json.decodeFromString<ProximityConfig>(text).normalized()
             } catch (e: Exception) {
                 Log.d(TAG, "No config or corrupt: ${e.message}")
                 _config.value = ProximityConfig()
@@ -42,7 +42,7 @@ class ProximityConfigStore @Inject constructor(
 
     suspend fun update(transform: (ProximityConfig) -> ProximityConfig) {
         mutex.withLock {
-            val updated = transform(_config.value)
+            val updated = transform(_config.value).normalized()
             withContext(Dispatchers.IO) {
                 try {
                     file.writeText(json.encodeToString(ProximityConfig.serializer(), updated))

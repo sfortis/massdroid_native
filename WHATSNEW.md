@@ -1,10 +1,15 @@
-- Follow Me: BLE fingerprint room detection with automatic speaker transfer
-- WiFi context gate: connected AP prevents false detection across locations
-- Per-room configuration: playlist, volume, shuffle, and detection policy
+- Follow Me: walk between rooms and your music follows automatically
+- Smarter room detection with signal smoothing and improved scoring
+- Room detection works with screen off and responds faster to movement
+- Per-room settings: assign a player, playlist, volume, shuffle, and detection sensitivity
+- Calibration wizard with quality feedback so you know when a room is ready
+- WiFi awareness prevents false detection at different locations
+- Time schedule so Follow Me only runs when you need it
+- BLE inspection tool to see what devices Follow Me is using
+- Start Song Radio from player options menu
 - Save queue to playlist with duplicate detection
-- Time schedule with full battery suspension outside active hours
-- Calibration wizard with quality assessment
+- Redesigned Players screen with richer cards and room badges
 - Theme toggle: Dark / Light / Auto
-- Room badges on Players screen
+- Fix Don't Stop the Music staying disabled after failed Smart Mix
 - Fix audio focus steal on app startup
-- Other small fixes and UI improvements
+- UI polish: splash screen, permission dialogs, redesigned Library controls, Player Settings available from Now Playing

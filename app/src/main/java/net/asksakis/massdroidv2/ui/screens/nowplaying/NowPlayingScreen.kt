@@ -258,6 +258,9 @@ fun NowPlayingScreen(
                 showPlayerMenu = false
                 showTransferSheet = true
             },
+            onStartSongRadio = currentTrack?.uri?.let { uri ->
+                { viewModel.startSongRadio(uri) }
+            },
             onClick = {
                 showPlayerMenu = false
                 viewModel.toggleCurrentArtistBlocked()
@@ -310,9 +313,12 @@ fun NowPlayingScreen(
 
     player?.let { currentPlayer ->
         if (showPlayerSettingsDialog) {
-            PlayerSettingsDialog(
+            net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
-                viewModel = viewModel,
+                initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                onLoadConfig = { viewModel.getPlayerConfig(it) },
+                onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
+                onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
@@ -823,6 +829,7 @@ private fun PlayerOptionsSheet(
     onDismiss: () -> Unit,
     onPlayerSettings: () -> Unit,
     onTransferQueue: () -> Unit,
+    onStartSongRadio: (() -> Unit)?,
     onClick: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -878,6 +885,29 @@ private fun PlayerOptionsSheet(
                         )
                     },
                     modifier = Modifier.clickable(onClick = onTransferQueue)
+                )
+            }
+            if (onStartSongRadio != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Start Song Radio") },
+                    supportingContent = {
+                        Text(
+                            "Play similar tracks based on current song",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.Radio,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onStartSongRadio()
+                        onDismiss()
+                    }
                 )
             }
             ListItem(
@@ -970,98 +1000,6 @@ private fun TrackInfoSection(
             } else Modifier
         )
     }
-}
-
-@Composable
-private fun PlayerSettingsDialog(
-    player: net.asksakis.massdroidv2.domain.model.Player,
-    viewModel: NowPlayingViewModel,
-    onDismiss: () -> Unit
-) {
-    var config by remember { mutableStateOf<PlayerConfig?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-    var name by remember { mutableStateOf(player.displayName) }
-    var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
-    var volumeNormalization by remember { mutableStateOf(false) }
-
-    LaunchedEffect(player.playerId) {
-        val loaded = viewModel.getPlayerConfig(player.playerId)
-        if (loaded != null) {
-            config = loaded
-            name = loaded.name.ifBlank { player.displayName }
-            crossfadeMode = loaded.crossfadeMode
-            volumeNormalization = loaded.volumeNormalization
-        }
-        isLoading = false
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Player Settings") },
-        text = {
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Player name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Text("Crossfade", style = MaterialTheme.typography.labelMedium)
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        CrossfadeMode.entries.forEachIndexed { index, mode ->
-                            SegmentedButton(
-                                selected = crossfadeMode == mode,
-                                onClick = { crossfadeMode = mode },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = CrossfadeMode.entries.size
-                                ),
-                                label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Volume normalization")
-                        Switch(
-                            checked = volumeNormalization,
-                            onCheckedChange = { volumeNormalization = it }
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val values = mutableMapOf<String, Any>(
-                        "smart_fades_mode" to crossfadeMode.apiValue,
-                        "volume_normalization" to volumeNormalization
-                    )
-                    if (name.isNotBlank() && name.trim() != player.displayName) {
-                        values["name"] = name.trim()
-                    }
-                    viewModel.savePlayerConfig(player.playerId, values)
-                    onDismiss()
-                },
-                enabled = !isLoading
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
 }
 
 @Composable

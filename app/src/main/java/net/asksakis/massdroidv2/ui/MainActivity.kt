@@ -111,8 +111,10 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requestNotificationPermission()
-        requestFollowMePermissionsIfNeeded()
+        if (savedInstanceState == null) {
+            requestNotificationPermission()
+            requestFollowMePermissionsIfNeeded()
+        }
         checkBatteryOptimization()
         handleShortcutIntent(intent)
         setContent {

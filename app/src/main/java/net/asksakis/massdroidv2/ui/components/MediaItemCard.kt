@@ -1,11 +1,10 @@
 package net.asksakis.massdroidv2.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
@@ -17,7 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -48,6 +46,7 @@ fun MediaItemRow(
     fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     val context = LocalContext.current
+    val showProviderBadges = providerCache != null && providerDomains.distinct().size > 1
     val imageModel = remember(imageUrl, context) {
         ImageRequest.Builder(context)
             .data(imageUrl)
@@ -68,15 +67,15 @@ fun MediaItemRow(
             )
         },
         supportingContent = {
-            if (subtitle.isNotBlank() || (providerDomains.isNotEmpty() && providerCache != null)) {
+            if (subtitle.isNotBlank() || showProviderBadges) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (providerCache != null && providerDomains.isNotEmpty()) {
+                    if (showProviderBadges) {
                         ProviderBadges(
                             providerDomains = providerDomains,
-                            cache = providerCache,
+                            cache = providerCache!!,
                             iconSize = 14.dp
                         )
                     }
@@ -122,14 +121,17 @@ fun MediaItemRow(
                 if (showEqualizer) {
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)),
+                            .align(Alignment.BottomEnd)
+                            .padding(4.dp)
+                            .clip(MaterialTheme.shapes.extraSmall)
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.84f))
+                            .padding(horizontal = 4.dp, vertical = 3.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         EqualizerBars(
-                            modifier = Modifier.height(24.dp),
-                            barWidth = 3.dp,
-                            spacing = 2.dp,
+                            modifier = Modifier.height(12.dp),
+                            barWidth = 2.dp,
+                            spacing = 1.dp,
                             barCount = 4,
                             bpm = 90
                         )
@@ -150,18 +152,15 @@ fun MediaItemRow(
                         Spacer(modifier = Modifier.width(12.dp))
                     }
                     if (onPlayClick != null) {
-                        OutlinedIconButton(
+                        IconButton(
                             onClick = onPlayClick,
-                            modifier = Modifier.size(32.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            colors = IconButtonDefaults.outlinedIconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Play",
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -241,29 +240,24 @@ fun MediaItemGrid(
                     contentScale = ContentScale.Crop
                 )
             }
-            if (providerCache != null && providerDomains.isNotEmpty()) {
-                ProviderBadges(
-                    providerDomains = providerDomains,
-                    cache = providerCache,
-                    iconSize = 14.dp,
-                    withShadow = true,
-                    modifier = Modifier.padding(4.dp)
-                )
-            }
         }
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        Text(
-            text = subtitle.ifBlank { "\u00A0" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        if (subtitle.isNotBlank()) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        } else {
+            Spacer(modifier = Modifier.height(14.dp))
+        }
     }
 }

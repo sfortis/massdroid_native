@@ -233,7 +233,7 @@ fun HomeScreen(
                 ) {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
                         contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
                     ) {
                         itemsIndexed(
@@ -710,8 +710,8 @@ private fun SmartMixOverlay() {
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(horizontal = 16.dp)
     )
 }

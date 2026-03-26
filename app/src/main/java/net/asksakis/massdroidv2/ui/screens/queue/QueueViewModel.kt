@@ -242,6 +242,7 @@ class QueueViewModel @Inject constructor(
         val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
         if (trackUris.isEmpty()) return
         viewModelScope.launch {
+            var added = 0
             try {
                 // Get existing tracks to avoid duplicates
                 val existing = try {
@@ -251,13 +252,21 @@ class QueueViewModel @Inject constructor(
                 Log.d(TAG, "Save queue: ${trackUris.size} queue tracks, ${existing.size} existing, ${newUris.size} new")
                 for (uri in newUris) {
                     musicRepository.addTrackToPlaylist(playlist, uri)
+                    added++
                 }
                 val msg = if (newUris.isEmpty()) "All ${trackUris.size} tracks already in ${playlist.name}"
-                    else "Added ${newUris.size} tracks to ${playlist.name}" +
+                    else "Added $added tracks to ${playlist.name}" +
                         if (trackUris.size > newUris.size) " (${trackUris.size - newUris.size} already existed)" else ""
                 _error.tryEmit(msg)
             } catch (e: Exception) {
-                _error.tryEmit("Failed to save queue: ${e.message}")
+                Log.w(TAG, "saveQueueToPlaylist failed: ${e.message}")
+                _error.tryEmit(
+                    if (added > 0) {
+                        "Added $added of ${trackUris.size} tracks to ${playlist.name}, then failed"
+                    } else {
+                        "Failed to save queue: ${e.message}"
+                    }
+                )
             }
         }
     }
@@ -266,14 +275,23 @@ class QueueViewModel @Inject constructor(
         val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
         if (trackUris.isEmpty()) return
         viewModelScope.launch {
+            var added = 0
             try {
                 val playlist = musicRepository.createPlaylist(name)
                 for (uri in trackUris) {
                     musicRepository.addTrackToPlaylist(playlist, uri)
+                    added++
                 }
-                _error.tryEmit("Created '$name' with ${trackUris.size} tracks")
+                _error.tryEmit("Created '$name' with $added tracks")
             } catch (e: Exception) {
-                _error.tryEmit("Failed to create playlist: ${e.message}")
+                Log.w(TAG, "saveQueueToNewPlaylist failed: ${e.message}")
+                _error.tryEmit(
+                    if (added > 0) {
+                        "Created '$name' and added $added of ${trackUris.size} tracks, then failed"
+                    } else {
+                        "Failed to create playlist: ${e.message}"
+                    }
+                )
             }
         }
     }

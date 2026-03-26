@@ -218,6 +218,17 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun startSongRadio(playerId: String, trackUri: String) {
+        viewModelScope.launch {
+            try {
+                playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.RADIO_SMART)
+                musicRepository.playMedia(playerId, trackUri, radioMode = true)
+            } catch (e: Exception) {
+                Log.w(TAG, "startSongRadio failed: ${e.message}")
+            }
+        }
+    }
+
     fun transferQueue(sourceId: String, targetId: String) {
         viewModelScope.launch {
             withContext(NonCancellable) {

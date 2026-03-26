@@ -32,6 +32,9 @@ private const val MIN_VALID_RSSI = -126
 private const val MAX_VALID_RSSI = 20
 private const val MIN_CONNECTED_WIFI_RSSI = -90
 private const val INVALID_WIFI_BSSID = "02:00:00:00:00:00"
+private val MAC_ADDRESS_REGEX = Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+private val LE_PREFIX_REGEX = Regex("^le[-_ ]+")
+private val MULTISPACE_REGEX = Regex("\\s+")
 
 @Singleton
 class ProximityScanner @Inject constructor(
@@ -112,8 +115,8 @@ class ProximityScanner @Inject constructor(
             ?.trim()
             ?.takeIf { !looksLikeMacAddress(it) }
             ?.lowercase()
-            ?.replace(Regex("^le[-_ ]+"), "")
-            ?.replace(Regex("\\s+"), " ")
+            ?.replace(LE_PREFIX_REGEX, "")
+            ?.replace(MULTISPACE_REGEX, " ")
             ?.takeIf { it.length >= 4 }
             ?: return null
         return cleaned
@@ -124,7 +127,7 @@ class ProximityScanner @Inject constructor(
     fun hasMeaningfulAnchorName(name: String?): Boolean = normalizeAnchorName(name) != null
 
     private fun looksLikeMacAddress(value: String): Boolean {
-        return Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$").matches(value.trim())
+        return MAC_ADDRESS_REGEX.matches(value.trim())
     }
 
     fun classifyAnchorIdentity(

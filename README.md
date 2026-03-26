@@ -2,27 +2,30 @@
 
 Native Android client for [Music Assistant](https://music-assistant.io/), the open-source music server that integrates all your music sources and players.
 
-MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers.
+MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers. Lightweight at under 4 MB, with no ads, no trackers, and no cloud dependencies.
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Follow Me: BLE fingerprint room detection with automatic speaker transfer
-- WiFi context gate: connected AP prevents false detection across locations
-- Per-room configuration: playlist, volume, shuffle, and detection policy
-- Save queue to playlist with duplicate detection
-- Time schedule with full battery suspension outside active hours
-- Calibration wizard with quality assessment
-- Theme toggle: Dark / Light / Auto
-- Room badges on Players screen
+- **Follow Me**: Walk between rooms and your music follows. Detects which room you are in using nearby Bluetooth devices and automatically transfers playback to the right speaker.
+- **Smarter detection**: Improved room matching with signal smoothing, better scoring, and faster response to movement.
+- **Per-room settings**: Assign a player, playlist, volume level, and detection sensitivity to each room.
+- **Calibration wizard**: Guided room calibration with quality feedback so you know when a room is ready.
+- **WiFi location awareness**: Prevents false room detection when you are at a different location (e.g. office vs home).
+- **Time schedule**: Set active days and hours so Follow Me only runs when you need it.
+- **Start Song Radio**: Start a radio station based on the currently playing track, directly from the player menu.
+- **Save queue to playlist**: Save your current queue as a new or existing playlist, with duplicate detection.
+- **Redesigned Players screen**: Richer player cards with room badges and streamlined controls.
+- **Theme toggle**: Switch between Dark, Light, and Auto themes.
+- Fix DSTM staying disabled after failed Smart Mix playback
 - Fix audio focus steal on app startup
-- Other small fixes and UI improvements
+- UI polish: splash screen, permission dialogs, redesigned Library controls, Player Settings available from Now Playing
 
 ## Screenshots
 
 <p align="center">
   <img src="screenshots/home.png" width="260" />&nbsp;&nbsp;
   <img src="screenshots/nowplaying.png" width="260" />&nbsp;&nbsp;
-  <img src="screenshots/library_providers.png" width="260" />
+  <img src="screenshots/library.png" width="260" />
 </p>
 <p align="center">
   <img src="screenshots/search_providers.png" width="260" />&nbsp;&nbsp;
@@ -33,6 +36,9 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
   <img src="screenshots/album_detail.png" width="260" />&nbsp;&nbsp;
   <img src="screenshots/proximity_settings.png" width="260" />&nbsp;&nbsp;
   <img src="screenshots/room_setup.png" width="260" />
+</p>
+<p align="center">
+  <img src="screenshots/inspect_ble.png" width="260" />
 </p>
 
 ## Exploration & Discovery
@@ -89,11 +95,6 @@ MassDroid includes a few built-in tools to help you tune room detection without 
 - If two nearby rooms confuse each other, recalibrate both away from the doorway and compare their `Inspect BLE` results.
 - If a remote location keeps false-triggering from home, store its Wi-Fi AP and enable `Stick to connected Wi-Fi AP`.
 - If detection feels slow during movement, test with the screen off as well as screen on. The motion-driven scanning path is more aggressive during real room-to-room movement.
-- If you want deeper diagnostics, capture logs with:
-
-```bash
-adb logcat -d -v threadtime -s PlaybackSvc RoomDetector MotionGate ProximityScanner
-```
 
 ## Recommendation Engine
 

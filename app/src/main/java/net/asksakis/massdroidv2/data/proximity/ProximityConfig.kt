@@ -48,13 +48,41 @@ data class ProximityConfig(
     val rooms: List<RoomConfig> = emptyList()
 )
 
+fun ProximityConfig.normalized(): ProximityConfig = copy(schedule = schedule.normalized())
+
 @Serializable
 data class ProximitySchedule(
     val enabled: Boolean = false,
     val days: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 7),
-    val startHour: Int = 7,
-    val endHour: Int = 23
-)
+    val startMinuteOfDay: Int? = null,
+    val endMinuteOfDay: Int? = null,
+    val startHour: Int? = DEFAULT_START_HOUR,
+    val endHour: Int? = DEFAULT_END_HOUR
+) {
+    val effectiveStartMinuteOfDay: Int
+        get() = (startMinuteOfDay ?: ((startHour ?: DEFAULT_START_HOUR) * 60)).coerceIn(0, MINUTES_PER_DAY - 1)
+
+    val effectiveEndMinuteOfDay: Int
+        get() = (endMinuteOfDay ?: ((endHour ?: DEFAULT_END_HOUR) * 60)).coerceIn(0, MINUTES_PER_DAY - 1)
+
+    fun normalized(): ProximitySchedule = copy(
+        startMinuteOfDay = effectiveStartMinuteOfDay,
+        endMinuteOfDay = effectiveEndMinuteOfDay,
+        startHour = null,
+        endHour = null
+    )
+}
+
+private const val MINUTES_PER_DAY = 24 * 60
+private const val DEFAULT_START_HOUR = 7
+private const val DEFAULT_END_HOUR = 23
+
+fun formatMinuteOfDay(minuteOfDay: Int): String {
+    val normalized = minuteOfDay.coerceIn(0, MINUTES_PER_DAY - 1)
+    val hour = normalized / 60
+    val minute = normalized % 60
+    return String.format("%02d:%02d", hour, minute)
+}
 
 @Serializable
 data class RoomConfig(

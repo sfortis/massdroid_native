@@ -8,9 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -37,10 +34,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -54,10 +52,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
 import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
+import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
 import net.asksakis.massdroidv2.service.PlaybackService
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
@@ -87,6 +88,9 @@ fun ProximitySettingsScreen(
         AppPermissions.missing(context, requiredPermissions)
     }
     val hasAllFollowMePermissions = missingPermissions.isEmpty()
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        permissionRefreshTick++
+    }
     LaunchedEffect(config.enabled, hasAllFollowMePermissions) {
         if (config.enabled && !hasAllFollowMePermissions) {
             showFollowMePermissionDialog = true
@@ -185,7 +189,10 @@ fun ProximitySettingsScreen(
                         if (config.schedule.enabled) {
                             val dayNames = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
                             val activeDays = config.schedule.days.sorted().map { dayNames[it - 1] }.joinToString(", ")
-                            Text("$activeDays, ${config.schedule.startHour}:00\u2013${config.schedule.endHour}:00")
+                            Text(
+                                "$activeDays, ${formatMinuteOfDay(config.schedule.effectiveStartMinuteOfDay)}\u2013" +
+                                    formatMinuteOfDay(config.schedule.effectiveEndMinuteOfDay)
+                            )
                         } else {
                             Text("Always active")
                         }
@@ -529,7 +536,7 @@ private fun ScheduleConfig(
     ) {
         androidx.compose.material3.AssistChip(
             onClick = { showStartPicker = true },
-            label = { Text("${schedule.startHour}:00", style = MaterialTheme.typography.titleSmall) },
+            label = { Text(formatMinuteOfDay(schedule.effectiveStartMinuteOfDay), style = MaterialTheme.typography.titleSmall) },
             leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp)) }
         )
         Spacer(modifier = Modifier.width(12.dp))
@@ -537,57 +544,56 @@ private fun ScheduleConfig(
         Spacer(modifier = Modifier.width(12.dp))
         androidx.compose.material3.AssistChip(
             onClick = { showEndPicker = true },
-            label = { Text("${schedule.endHour}:00", style = MaterialTheme.typography.titleSmall) },
+            label = { Text(formatMinuteOfDay(schedule.effectiveEndMinuteOfDay), style = MaterialTheme.typography.titleSmall) },
             leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp)) }
         )
     }
 
     if (showStartPicker) {
         TimePickerDialog(
-            currentHour = schedule.startHour,
-            onSelect = { viewModel.updateSchedule { s -> s.copy(startHour = it) }; showStartPicker = false },
+            currentMinuteOfDay = schedule.effectiveStartMinuteOfDay,
+            onSelect = { minute -> viewModel.updateSchedule { s -> s.copy(startMinuteOfDay = minute, startHour = null) }; showStartPicker = false },
             onDismiss = { showStartPicker = false }
         )
     }
     if (showEndPicker) {
         TimePickerDialog(
-            currentHour = schedule.endHour,
-            onSelect = { viewModel.updateSchedule { s -> s.copy(endHour = it) }; showEndPicker = false },
+            currentMinuteOfDay = schedule.effectiveEndMinuteOfDay,
+            onSelect = { minute -> viewModel.updateSchedule { s -> s.copy(endMinuteOfDay = minute, endHour = null) }; showEndPicker = false },
             onDismiss = { showEndPicker = false }
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TimePickerDialog(currentHour: Int, onSelect: (Int) -> Unit, onDismiss: () -> Unit) {
+private fun TimePickerDialog(
+    currentMinuteOfDay: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val pickerState = rememberTimePickerState(
+        initialHour = currentMinuteOfDay / 60,
+        initialMinute = currentMinuteOfDay % 60,
+        is24Hour = true
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Select Time") },
         text = {
-            val hours = (0..23).toList()
-            LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                items(hours) { h ->
-                    val selected = h == currentHour
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelect(h) }
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        RadioButton(selected = selected, onClick = null)
-                        Text(
-                            "${h}:00",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                TimePicker(state = pickerState)
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        confirmButton = {
+            TextButton(onClick = { onSelect(pickerState.hour * 60 + pickerState.minute) }) {
+                Text("OK")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 

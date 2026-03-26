@@ -130,6 +130,7 @@ class PlaybackService : MediaLibraryService() {
     private var lastMotionBoostMs = 0L
     private var lastProximityTransferCommand: RecentProximityTransferCommand? = null
     private var lastRoomPlaybackCommand: RecentRoomPlaybackCommand? = null
+    private var suppressNextProximityRoomAction = false
 
     override fun onCreate() {
         super.onCreate()
@@ -483,9 +484,11 @@ class PlaybackService : MediaLibraryService() {
         }
 
         proximityJob = scope.launch {
+            var scheduleSuspended = !isWithinSchedule()
             // Startup warmup: use short high-accuracy snapshots instead of 4s burst spacing.
             if (isWithinSchedule()) {
                 runStartupWarmup()
+                syncSelectedPlayerToCurrentRoom("engine-start")
                 Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
 
@@ -509,16 +512,17 @@ class PlaybackService : MediaLibraryService() {
             while (proximityConfigStore.config.value.enabled) {
                 // Fully suspend proximity subsystem outside schedule
                 if (!isWithinSchedule()) {
-                    stopPersistentScanTracked()
-                    proximityScanner.stopBackgroundScan()
-                    motionGate.stop()
-                    kotlinx.coroutines.delay(60_000)
-                    // Re-arm when back in schedule
-                    if (isWithinSchedule()) {
-                        motionGate.start()
-                        startBackgroundScanForConfig(proximityConfigStore.config.value)
+                    if (!scheduleSuspended) {
+                        suspendProximityForSchedule()
+                        scheduleSuspended = true
                     }
+                    kotlinx.coroutines.delay(60_000)
                     continue
+                }
+
+                if (scheduleSuspended) {
+                    resumeProximityAfterSchedule()
+                    scheduleSuspended = false
                 }
 
                 if (isDeviceInDoze()) {
@@ -616,6 +620,42 @@ class PlaybackService : MediaLibraryService() {
         if (!updateHighAccuracyWindow(motionGate.isMoving.value) && !proximityScanner.uiHighAccuracyRequested) {
             ensurePersistentScan(lowPower = true)
         }
+    }
+
+    private fun suspendProximityForSchedule() {
+        Log.d(TAG, "Proximity schedule inactive: suspending Follow Me")
+        proximityQuickRetryJob?.cancel()
+        proximityQuickRetryJob = null
+        stopPersistentScanTracked()
+        proximityScanner.stopBackgroundScan()
+        motionGate.stop()
+        roomDetector.reset()
+        cancelNoRoomStopTimer("outside-schedule")
+        pendingProximityTransfer = null
+        pendingTransferSourcePlayerId = null
+        highAccuracyUntilMs = 0L
+        highAccuracyStartedAtMs = 0L
+        lastMotionBoostMs = 0L
+        getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
+    }
+
+    private suspend fun resumeProximityAfterSchedule() {
+        Log.d(TAG, "Proximity schedule active: resuming Follow Me")
+        suppressNextProximityRoomAction = true
+        motionGate.start()
+        startBackgroundScanForConfig(proximityConfigStore.config.value)
+        ensurePersistentScan(lowPower = true)
+        runStartupWarmup()
+        syncSelectedPlayerToCurrentRoom("schedule-resume")
+        Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
+    }
+
+    private fun syncSelectedPlayerToCurrentRoom(reason: String) {
+        val room = roomDetector.currentRoom.value ?: return
+        if (!isPlayerAvailable(room.playerId)) return
+        if (playerRepository.selectedPlayer.value?.playerId == room.playerId) return
+        playerRepository.selectPlayer(room.playerId)
+        Log.d(TAG, "Proximity selected player ($reason): ${room.playerName}")
     }
 
     private fun updateHighAccuracyWindow(isMoving: Boolean): Boolean {
@@ -921,6 +961,7 @@ class PlaybackService : MediaLibraryService() {
         if (noRoomStopJob?.isActive == true) return
         val config = proximityConfigStore.config.value
         if (!shouldRunProximity(config) || !config.stopWhenNoRoomActive) return
+        if (!isWithinSchedule()) return
         val player = playerRepository.selectedPlayer.value ?: return
         if (player.state != PlaybackState.PLAYING) return
         noRoomStopArmedPlayerId = player.playerId
@@ -967,6 +1008,15 @@ class PlaybackService : MediaLibraryService() {
         if (pendingProximityTransfer?.roomId == detected.roomId) return
         lastRoomSwitchMs = System.currentTimeMillis()
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
+        if (suppressNextProximityRoomAction) {
+            suppressNextProximityRoomAction = false
+            if (isPlayerAvailable(detected.playerId) && playerRepository.selectedPlayer.value?.playerId != detected.playerId) {
+                playerRepository.selectPlayer(detected.playerId)
+                Log.d(TAG, "Proximity selected player (resume-sync): ${detected.playerName}")
+            }
+            Log.d(TAG, "Proximity room action suppressed after schedule resume: ${detected.roomName}")
+            return
+        }
         if (playbackContext.ambiguousTransferPlayers.isNotEmpty()) {
             val names = playbackContext.ambiguousTransferPlayers.joinToString { it.displayName }
             Log.w(TAG, "Proximity transfer source ambiguous for ${detected.roomName}: [$names]")
@@ -1017,6 +1067,7 @@ class PlaybackService : MediaLibraryService() {
         lastMotionBoostMs = 0L
         lastProximityTransferCommand = null
         lastRoomPlaybackCommand = null
+        suppressNextProximityRoomAction = false
         getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
     }
 
@@ -1198,12 +1249,17 @@ class PlaybackService : MediaLibraryService() {
         val players = playerRepository.players.value.filter { it.available }
         val targetPlayer = players.find { it.playerId == targetPlayerId }
         val selectedPlayer = playerRepository.selectedPlayer.value
+        val selectedAvailablePlayer = selectedPlayer?.let { selected ->
+            players.find { it.playerId == selected.playerId }
+        }
         val playingPlayers = players.filter { it.state == PlaybackState.PLAYING }
         val transferCandidates = playingPlayers.filter { it.playerId != targetPlayerId }
 
         val resolvedTransferSource = when {
-            selectedPlayer?.state == PlaybackState.PLAYING && selectedPlayer.playerId != targetPlayerId -> selectedPlayer
             transferCandidates.size == 1 -> transferCandidates.first()
+            transferCandidates.isEmpty() &&
+                selectedAvailablePlayer != null &&
+                selectedAvailablePlayer.playerId != targetPlayerId -> selectedAvailablePlayer
             else -> null
         }
 
@@ -1219,18 +1275,20 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun isWithinSchedule(): Boolean {
-        val schedule = proximityConfigStore.config.value.schedule
+        val schedule = proximityConfigStore.config.value.schedule.normalized()
         if (!schedule.enabled) return true
         val now = java.util.Calendar.getInstance()
         val dayOfWeek = now.get(java.util.Calendar.DAY_OF_WEEK)
         // Calendar: Sun=1..Sat=7, our schedule: Mon=1..Sun=7
         val day = if (dayOfWeek == java.util.Calendar.SUNDAY) 7 else dayOfWeek - 1
         if (day !in schedule.days) return false
-        val hour = now.get(java.util.Calendar.HOUR_OF_DAY)
-        return if (schedule.startHour <= schedule.endHour) {
-            hour in schedule.startHour until schedule.endHour
+        val minuteOfDay = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+        val startMinute = schedule.effectiveStartMinuteOfDay
+        val endMinute = schedule.effectiveEndMinuteOfDay
+        return if (startMinute <= endMinute) {
+            minuteOfDay in startMinute until endMinute
         } else {
-            hour >= schedule.startHour || hour < schedule.endHour
+            minuteOfDay >= startMinute || minuteOfDay < endMinute
         }
     }
 

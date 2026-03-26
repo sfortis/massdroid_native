@@ -391,6 +391,28 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    fun startSongRadio(trackUri: String) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.RADIO_SMART)
+                musicRepository.playMedia(queueId, trackUri, radioMode = true)
+            } catch (e: Exception) {
+                Log.w(TAG, "startSongRadio failed: ${e.message}")
+            }
+        }
+    }
+
+    fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                musicRepository.setDontStopTheMusic(queueId, enabled)
+            } catch (e: Exception) {
+                Log.w(TAG, "setDontStopTheMusic failed: ${e.message}")
+            }
+        }
+    }
+
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
             try {
