@@ -812,11 +812,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 val trackImg = queueTracking[it.playerId]?.track?.imageUrl
                 it.toDomain(wsClient, trackImg)
             }
-            val serverIds = fromServer.map { it.playerId }.toSet()
-            _players.update { currentList ->
-                val eventOnly = currentList.filter { it.playerId !in serverIds }
-                fromServer + eventOnly
-            }
+            _players.value = fromServer
 
             if (selectedPlayerId != null) {
                 _selectedPlayer.value = _players.value.find { it.playerId == selectedPlayerId }

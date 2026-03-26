@@ -55,9 +55,10 @@ fun AddToPlaylistDialog(
     onPlaylistClick: (Playlist) -> Unit,
     onCreatePlaylist: (String) -> Unit = {},
     onRemoveFromPlaylist: (Playlist) -> Unit = {},
-    containsTrack: Set<String> = emptySet()
+    containsTrack: Set<String> = emptySet(),
+    suggestedName: String = ""
 ) {
-    var newPlaylistName by remember { mutableStateOf("") }
+    var newPlaylistName by remember { mutableStateOf(suggestedName) }
     var showCreateField by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,

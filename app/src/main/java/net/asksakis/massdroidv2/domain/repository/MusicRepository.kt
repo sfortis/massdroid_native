@@ -42,6 +42,7 @@ interface MusicRepository {
     suspend fun shuffleQueue(queueId: String, enabled: Boolean)
     suspend fun repeatQueue(queueId: String, mode: RepeatMode)
     suspend fun clearQueue(queueId: String)
+    suspend fun saveQueueAsPlaylist(queueId: String, name: String)
     suspend fun transferQueue(sourceQueueId: String, targetQueueId: String)
     suspend fun deleteQueueItem(queueId: String, itemIdOrIndex: String)
     suspend fun moveQueueItem(queueId: String, queueItemId: String, posShift: Int)

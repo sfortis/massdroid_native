@@ -59,6 +59,7 @@ object MaCommands {
         const val PLAY_INDEX = "player_queues/play_index"
         const val GET_ACTIVE_QUEUE = "player_queues/get_active_queue"
         const val DONT_STOP_THE_MUSIC = "player_queues/dont_stop_the_music"
+        const val SAVE_AS_PLAYLIST = "player_queues/save_as_playlist"
     }
 
     object Players {

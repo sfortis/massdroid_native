@@ -93,6 +93,11 @@ fun RoomSetupScreen(
     var roomName by remember { mutableStateOf("") }
     var selectedPlayer by remember { mutableStateOf<Player?>(null) }
     var initialized by remember { mutableStateOf(roomId == null) }
+    val missingStoredPlayerName = remember(existingRoom, selectedPlayer, players) {
+        existingRoom?.takeIf {
+            selectedPlayer == null && players.none { player -> player.playerId == it.playerId }
+        }?.playerName
+    }
 
     LaunchedEffect(existingRoom, players) {
         if (!initialized && existingRoom != null) {
@@ -160,8 +165,9 @@ fun RoomSetupScreen(
             )
 
             PlayerDropdown(
-                players = players.filter { it.available },
+                players = players,
                 selected = selectedPlayer,
+                missingSelectedLabel = missingStoredPlayerName,
                 onSelect = { selectedPlayer = it },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1107,10 +1113,17 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
 private fun PlayerDropdown(
     players: List<Player>,
     selected: Player?,
+    missingSelectedLabel: String? = null,
     onSelect: (Player) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val selectedLabel = when {
+        selected != null && selected.available -> selected.displayName
+        selected != null -> "${selected.displayName} (offline)"
+        !missingSelectedLabel.isNullOrBlank() -> "$missingSelectedLabel (missing)"
+        else -> ""
+    }
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -1118,10 +1131,15 @@ private fun PlayerDropdown(
         modifier = modifier
     ) {
         OutlinedTextField(
-            value = selected?.displayName ?: "",
+            value = selectedLabel,
             onValueChange = {},
             readOnly = true,
             label = { Text("Speaker") },
+            supportingText = {
+                if (!missingSelectedLabel.isNullOrBlank() && selected == null) {
+                    Text("Stored speaker no longer exists. Select a new speaker.")
+                }
+            },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -1133,7 +1151,11 @@ private fun PlayerDropdown(
         ) {
             players.sortedBy { it.displayName.lowercase() }.forEach { player ->
                 DropdownMenuItem(
-                    text = { Text(player.displayName) },
+                    text = {
+                        Text(
+                            if (player.available) player.displayName else "${player.displayName} (offline)"
+                        )
+                    },
                     onClick = {
                         onSelect(player)
                         expanded = false

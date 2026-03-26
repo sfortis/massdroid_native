@@ -272,27 +272,21 @@ class QueueViewModel @Inject constructor(
     }
 
     fun saveQueueToNewPlaylist(name: String) {
-        val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
-        if (trackUris.isEmpty()) return
+        val id = queueId ?: return
+        if (_queueItems.value.isEmpty()) return
         viewModelScope.launch {
-            var added = 0
             try {
-                val playlist = musicRepository.createPlaylist(name)
-                for (uri in trackUris) {
-                    musicRepository.addTrackToPlaylist(playlist, uri)
-                    added++
-                }
-                _error.tryEmit("Created '$name' with $added tracks")
+                musicRepository.saveQueueAsPlaylist(id, name)
+                _error.tryEmit("Created '$name' with ${_queueItems.value.size} tracks")
             } catch (e: Exception) {
                 Log.w(TAG, "saveQueueToNewPlaylist failed: ${e.message}")
-                _error.tryEmit(
-                    if (added > 0) {
-                        "Created '$name' and added $added of ${trackUris.size} tracks, then failed"
-                    } else {
-                        "Failed to create playlist: ${e.message}"
-                    }
-                )
+                _error.tryEmit("Failed to create playlist: ${e.message}")
             }
         }
+    }
+
+    fun suggestedPlaylistName(): String {
+        val trackName = playerRepository.queueState.value?.currentItem?.track?.name
+        return if (trackName != null) "$trackName's Playlist" else "My Queue"
     }
 }

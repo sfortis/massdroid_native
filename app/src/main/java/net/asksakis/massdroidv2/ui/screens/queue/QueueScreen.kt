@@ -478,7 +478,8 @@ fun QueueScreen(
             onCreatePlaylist = { name ->
                 viewModel.saveQueueToNewPlaylist(name)
                 showSaveQueueDialog = false
-            }
+            },
+            suggestedName = viewModel.suggestedPlaylistName()
         )
     }
 }

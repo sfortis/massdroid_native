@@ -282,6 +282,16 @@ class MusicRepositoryImpl @Inject constructor(
         wsClient.sendCommand(MaCommands.PlayerQueues.CLEAR, QueueIdArgs(queueId))
     }
 
+    override suspend fun saveQueueAsPlaylist(queueId: String, name: String) {
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.SAVE_AS_PLAYLIST,
+            buildJsonObject {
+                put("queue_id", queueId)
+                put("name", name)
+            }
+        )
+    }
+
     override suspend fun transferQueue(sourceQueueId: String, targetQueueId: String) {
         wsClient.sendCommand(
             MaCommands.PlayerQueues.TRANSFER,

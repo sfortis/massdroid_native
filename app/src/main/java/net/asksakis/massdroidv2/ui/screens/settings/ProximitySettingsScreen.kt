@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Speaker
@@ -59,6 +60,7 @@ import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
+import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.service.PlaybackService
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
@@ -74,6 +76,10 @@ fun ProximitySettingsScreen(
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val currentRoom by viewModel.currentRoom.collectAsStateWithLifecycle()
+    val players by viewModel.players.collectAsStateWithLifecycle()
+    val missingSpeakerRooms = remember(config.rooms, players) {
+        config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
+    }
     var deleteTarget by remember { mutableStateOf<RoomConfig?>(null) }
     var showTuningWizard by remember { mutableStateOf(false) }
     val tuningSnapshots by viewModel.tuningSnapshots.collectAsStateWithLifecycle()
@@ -219,6 +225,45 @@ fun ProximitySettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
+                if (missingSpeakerRooms.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (missingSpeakerRooms.size == 1) "1 room needs attention" else "${missingSpeakerRooms.size} rooms need attention",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                    missingSpeakerRooms.joinToString { it.name } + " assigned to missing speaker.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 if (config.rooms.isEmpty()) {
                     Text(
                         "No rooms configured. Tap + to add one.",
@@ -230,6 +275,7 @@ fun ProximitySettingsScreen(
                     config.rooms.forEach { room ->
                         RoomCard(
                             room = room,
+                            players = players,
                             isCurrentRoom = currentRoom?.roomId == room.id,
                             onEdit = { onSetupRoom(room.id) },
                             onDelete = { deleteTarget = room }
@@ -600,10 +646,15 @@ private fun TimePickerDialog(
 @Composable
 private fun RoomCard(
     room: RoomConfig,
+    players: List<Player>,
     isCurrentRoom: Boolean = false,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val livePlayer = players.find { it.playerId == room.playerId }
+    val playerLabel = livePlayer?.displayName ?: room.playerName
+    val isMissingPlayer = livePlayer == null
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -650,6 +701,20 @@ private fun RoomCard(
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
+                    if (isMissingPlayer) {
+                        Text(
+                            "Missing speaker",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onError,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.error,
+                                    MaterialTheme.shapes.extraSmall
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -657,8 +722,11 @@ private fun RoomCard(
                 ) {
                     Icon(Icons.Default.Speaker, contentDescription = null, modifier = Modifier.size(14.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(room.playerName, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (isMissingPlayer) "$playerLabel (missing)" else playerLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isMissingPlayer) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
