@@ -63,9 +63,20 @@ class ProviderManifestCache @Inject constructor() {
                 kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
                 result
             )
-            _musicProviders.value = instances
+            val refreshedMusicProviders = instances
                 .filter { it.type == "music" && it.domain != "builtin" }
                 .map { MusicProvider(it.instanceId, it.domain, it.name, it.supportedFeatures.toSet()) }
+
+            if (refreshedMusicProviders.isEmpty() && _musicProviders.value.isNotEmpty()) {
+                Log.w(
+                    TAG,
+                    "Provider list refresh returned no music providers; keeping cached set: " +
+                        _musicProviders.value.map { it.name }
+                )
+                return
+            }
+
+            _musicProviders.value = refreshedMusicProviders
             Log.d(TAG, "Music providers: ${musicProviders.map { it.name }}")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch provider instances: ${e.message}")
