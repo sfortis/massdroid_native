@@ -27,17 +27,23 @@ data class AudioFormatSpec(
     @SerialName("bit_depth") val bitDepth: Int = 16
 )
 
+private val defaultFormats = listOf(
+    AudioFormatSpec(codec = "opus", sampleRate = 48000, bitDepth = 16, channels = 2),
+    AudioFormatSpec(codec = "flac", sampleRate = 48000, bitDepth = 24, channels = 2),
+    AudioFormatSpec(codec = "pcm", sampleRate = 48000, bitDepth = 16, channels = 2)
+)
+
 @Serializable
 data class PlayerV1Support(
-    @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec> = listOf(AudioFormatSpec()),
-    @SerialName("buffer_capacity") val bufferCapacity: Int = 524288,
+    @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec> = defaultFormats,
+    @SerialName("buffer_capacity") val bufferCapacity: Int = 2097152,
     @SerialName("supported_commands") val supportedCommands: List<String> = listOf("volume", "mute")
 )
 
 @Serializable
 data class DeviceInfo(
-    @SerialName("product_name") val productName: String = "MassDroid",
-    val manufacturer: String = "MassDroid",
+    @SerialName("product_name") val productName: String = "Mobile Application",
+    val manufacturer: String = "asksakis.net",
     @SerialName("software_version") val softwareVersion: String = "1.0.0"
 )
 
@@ -46,7 +52,7 @@ data class ClientHelloPayload(
     @SerialName("client_id") val clientId: String,
     val name: String,
     val version: Int = 1,
-    @SerialName("supported_roles") val supportedRoles: List<String> = listOf("player@v1"),
+    @SerialName("supported_roles") val supportedRoles: List<String> = listOf("player@v1", "metadata@v1"),
     @SerialName("device_info") val deviceInfo: DeviceInfo = DeviceInfo(),
     @SerialName("player@v1_support") val playerV1Support: PlayerV1Support = PlayerV1Support()
 )

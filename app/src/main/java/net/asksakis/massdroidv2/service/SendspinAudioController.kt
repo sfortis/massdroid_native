@@ -241,7 +241,7 @@ class SendspinAudioController(
         // Collector 3: Immediate audio pause/resume when app UI controls the sendspin player
         collectorJobs += scope.launch {
             playerRepository.playbackIntent.collect { willPlay ->
-                val selectedId = playerRepository.selectedPlayer.value?.playerId
+                val selectedId = playerRepository.selectedPlayer.value?.playerId ?: return@collect
                 if (selectedId != sendspinPlayerId) return@collect
                 if (willPlay) {
                     currentIsPlaying = true
