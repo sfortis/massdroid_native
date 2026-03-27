@@ -110,7 +110,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Edge-to-edge only on API 30+; on older APIs (e.g. Android 10) Compose
+        // WindowInsets don't report system bar sizes, causing layout overlap (#26)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            enableEdgeToEdge()
+        }
         if (savedInstanceState == null) {
             requestNotificationPermission()
             requestFollowMePermissionsIfNeeded()
@@ -125,19 +129,21 @@ class MainActivity : ComponentActivity() {
                 else -> androidx.compose.foundation.isSystemInDarkTheme()
             }
             // Update status bar icons to match app theme (not system theme)
-            LaunchedEffect(darkTheme) {
-                enableEdgeToEdge(
-                    statusBarStyle = if (darkTheme) {
-                        androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-                    } else {
-                        androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
-                    },
-                    navigationBarStyle = if (darkTheme) {
-                        androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-                    } else {
-                        androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
-                    }
-                )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                LaunchedEffect(darkTheme) {
+                    enableEdgeToEdge(
+                        statusBarStyle = if (darkTheme) {
+                            androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                        } else {
+                            androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                        },
+                        navigationBarStyle = if (darkTheme) {
+                            androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                        } else {
+                            androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                        }
+                    )
+                }
             }
             androidx.compose.runtime.CompositionLocalProvider(
                 LocalProviderManifestCache provides providerManifestCache
