@@ -26,11 +26,21 @@ class AudioStreamManager {
     private var frameCount = 0
     private var decodedFrameCount = 0
     private val codecLock = ReentrantLock()
+    private var activeCodec = "opus"
+    private var activeBitDepth = 16
 
-    fun configure(sampleRate: Int = 48000, channels: Int = 2, codecHeader: String? = null) {
+    fun configure(
+        codecName: String = "opus",
+        sampleRate: Int = 48000,
+        channels: Int = 2,
+        bitDepth: Int = 16,
+        codecHeader: String? = null
+    ) {
         codecLock.lock()
         try {
             release_internal()
+            activeCodec = codecName
+            activeBitDepth = bitDepth
 
             val channelConfig = if (channels == 2) {
                 AudioFormat.CHANNEL_OUT_STEREO
@@ -38,12 +48,9 @@ class AudioStreamManager {
                 AudioFormat.CHANNEL_OUT_MONO
             }
 
-            // Create AudioTrack
-            val bufferSize = AudioTrack.getMinBufferSize(
-                sampleRate,
-                channelConfig,
-                AudioFormat.ENCODING_PCM_16BIT
-            ) * 4
+            val encoding = AudioFormat.ENCODING_PCM_16BIT
+
+            val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding) * 4
 
             val createdAudioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
@@ -56,47 +63,22 @@ class AudioStreamManager {
                     AudioFormat.Builder()
                         .setSampleRate(sampleRate)
                         .setChannelMask(channelConfig)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setEncoding(encoding)
                         .build()
                 )
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            // Create Opus MediaCodec decoder
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, channels)
-
-            // CSD-0: OpusHead header
-            val csd0 = if (codecHeader != null) {
-                try {
-                    Base64.decode(codecHeader, Base64.DEFAULT)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to decode codec_header, using default OpusHead")
-                    createOpusHeader(channels, sampleRate)
+            val createdCodec = when (codecName) {
+                "opus" -> createOpusDecoder(sampleRate, channels, codecHeader)
+                "flac" -> createFlacDecoder(sampleRate, channels, bitDepth, codecHeader)
+                "pcm" -> null // PCM needs no decoder
+                else -> {
+                    Log.w(TAG, "Unknown codec $codecName, falling back to opus")
+                    activeCodec = "opus"
+                    createOpusDecoder(sampleRate, channels, codecHeader)
                 }
-            } else {
-                createOpusHeader(channels, sampleRate)
-            }
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
-            Log.d(TAG, "CSD-0 OpusHead: ${csd0.size} bytes, first=${csd0.take(8).map { it.toInt() and 0xFF }}")
-
-            // CSD-1: Pre-skip in nanoseconds (64-bit native byte order)
-            val preSkipNs = 3840L * 1_000_000_000L / sampleRate.toLong() // 80ms for 48kHz
-            val csd1 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder())
-            csd1.putLong(preSkipNs)
-            csd1.rewind()
-            format.setByteBuffer("csd-1", csd1)
-
-            // CSD-2: Seek pre-roll in nanoseconds (64-bit native byte order)
-            val seekPreRollNs = 80_000_000L // 80ms
-            val csd2 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder())
-            csd2.putLong(seekPreRollNs)
-            csd2.rewind()
-            format.setByteBuffer("csd-2", csd2)
-
-            val createdCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS).apply {
-                configure(format, null, null, 0)
-                start()
             }
 
             createdAudioTrack.play()
@@ -106,7 +88,7 @@ class AudioStreamManager {
             playbackActive = true
             frameCount = 0
             decodedFrameCount = 0
-            Log.d(TAG, "Audio pipeline configured: ${sampleRate}Hz ${channels}ch, buffer=$bufferSize, preSkip=${preSkipNs}ns")
+            Log.d(TAG, "Audio pipeline configured: $codecName ${sampleRate}Hz/${bitDepth}bit ${channels}ch, buffer=$bufferSize")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to configure audio pipeline", e)
             release_internal()
@@ -116,14 +98,72 @@ class AudioStreamManager {
         }
     }
 
+    private fun createOpusDecoder(sampleRate: Int, channels: Int, codecHeader: String?): MediaCodec {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, channels)
+
+        val csd0 = if (codecHeader != null) {
+            try {
+                Base64.decode(codecHeader, Base64.DEFAULT)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to decode codec_header, using default OpusHead")
+                createOpusHeader(channels, sampleRate)
+            }
+        } else {
+            createOpusHeader(channels, sampleRate)
+        }
+        format.setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
+        Log.d(TAG, "CSD-0 OpusHead: ${csd0.size} bytes, first=${csd0.take(8).map { it.toInt() and 0xFF }}")
+
+        val preSkipNs = 3840L * 1_000_000_000L / sampleRate.toLong()
+        val csd1 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder())
+        csd1.putLong(preSkipNs)
+        csd1.rewind()
+        format.setByteBuffer("csd-1", csd1)
+
+        val seekPreRollNs = 80_000_000L
+        val csd2 = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder())
+        csd2.putLong(seekPreRollNs)
+        csd2.rewind()
+        format.setByteBuffer("csd-2", csd2)
+
+        return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS).apply {
+            configure(format, null, null, 0)
+            start()
+        }
+    }
+
+    private fun createFlacDecoder(
+        sampleRate: Int,
+        channels: Int,
+        bitDepth: Int,
+        codecHeader: String?
+    ): MediaCodec {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, channels)
+        format.setInteger("bit-depth", bitDepth)
+
+        if (codecHeader != null) {
+            try {
+                val headerBytes = Base64.decode(codecHeader, Base64.DEFAULT)
+                format.setByteBuffer("csd-0", ByteBuffer.wrap(headerBytes))
+                Log.d(TAG, "FLAC CSD-0: ${headerBytes.size} bytes")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to decode FLAC codec_header: ${e.message}")
+            }
+        }
+
+        return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_FLAC).apply {
+            configure(format, null, null, 0)
+            start()
+        }
+    }
+
     private fun createOpusHeader(channels: Int, sampleRate: Int): ByteArray {
-        // Minimal OpusHead per RFC 7845
         val header = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
-        header.put("OpusHead".toByteArray()) // magic
+        header.put("OpusHead".toByteArray())
         header.put(1) // version
-        header.put(channels.toByte()) // channel count
+        header.put(channels.toByte())
         header.putShort(3840.toShort()) // pre-skip
-        header.putInt(sampleRate) // input sample rate
+        header.putInt(sampleRate)
         header.putShort(0) // output gain
         header.put(0) // channel mapping family
         return header.array()
@@ -138,50 +178,68 @@ class AudioStreamManager {
 
         frameCount++
 
-        val opusPayload = data.copyOfRange(HEADER_SIZE, data.size)
-        if (opusPayload.isEmpty()) {
-            Log.w(TAG, "Empty opus payload in frame #$frameCount")
+        val payload = data.copyOfRange(HEADER_SIZE, data.size)
+        if (payload.isEmpty()) {
+            Log.w(TAG, "Empty payload in frame #$frameCount")
             return
         }
 
         if (frameCount <= 5) {
             val type = data[0].toInt() and 0xFF
-            Log.d(TAG, "Frame #$frameCount: type=$type, total=${data.size}, " +
-                    "payload=${opusPayload.size}, TOC=0x${"%02X".format(opusPayload[0])}")
+            Log.d(TAG, "Frame #$frameCount ($activeCodec): type=$type, total=${data.size}, payload=${payload.size}")
         }
         if (frameCount % 500 == 0) {
-            Log.d(TAG, "Frame #$frameCount: payload=${opusPayload.size}, decoded=$decodedFrameCount")
+            Log.d(TAG, "Frame #$frameCount ($activeCodec): payload=${payload.size}, decoded=$decodedFrameCount")
         }
 
-        // tryLock: skip frame if codec is being flushed/reconfigured
         if (!codecLock.tryLock()) return
         try {
-            decodeAndPlay(opusPayload)
+            if (activeCodec == "pcm") {
+                playPcm(payload)
+            } else {
+                decodeAndPlay(payload)
+            }
         } finally {
             codecLock.unlock()
         }
     }
 
-    private fun decodeAndPlay(opusData: ByteArray) {
+    private fun playPcm(pcmData: ByteArray) {
+        val track = audioTrack ?: return
+        val output = if (activeBitDepth == 24) convertPcm24To16(pcmData) else pcmData
+        track.write(output, 0, output.size)
+        decodedFrameCount++
+    }
+
+    private fun convertPcm24To16(data: ByteArray): ByteArray {
+        val sampleCount = data.size / 3
+        val out = ByteArray(sampleCount * 2)
+        for (i in 0 until sampleCount) {
+            // 24-bit LE: take high 2 bytes (bytes 1,2 of each 3-byte sample)
+            out[i * 2] = data[i * 3 + 1]
+            out[i * 2 + 1] = data[i * 3 + 2]
+        }
+        return out
+    }
+
+    private fun decodeAndPlay(encodedData: ByteArray) {
         val mc = codec ?: return
         val track = audioTrack ?: return
 
         try {
-            // Feed opus data to decoder
             val inputIndex = mc.dequeueInputBuffer(5000)
             if (inputIndex >= 0) {
                 val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
                 inputBuffer.clear()
-                inputBuffer.put(opusData)
-                mc.queueInputBuffer(inputIndex, 0, opusData.size, presentationTimeUs, 0)
-                presentationTimeUs += 20_000 // 20ms per Opus frame
+                inputBuffer.put(encodedData)
+                mc.queueInputBuffer(inputIndex, 0, encodedData.size, presentationTimeUs, 0)
+                presentationTimeUs += 20_000
             } else {
                 if (frameCount <= 20) {
                     Log.w(TAG, "No input buffer for frame #$frameCount")
                 }
             }
 
-            // ALWAYS try to drain output, even if input wasn't queued
             drainOutput(mc, track)
         } catch (e: Exception) {
             Log.e(TAG, "Decode error: ${e.message}")
@@ -222,7 +280,6 @@ class AudioStreamManager {
     fun setPaused(paused: Boolean) {
         if (!configured) return
         if (paused) {
-            // Set flag FIRST to immediately block new frames on any thread
             playbackActive = false
             try {
                 audioTrack?.stop()
@@ -237,7 +294,6 @@ class AudioStreamManager {
             } catch (e: Exception) {
                 Log.e(TAG, "setPaused(false) error: ${e.message}")
             }
-            // Set flag AFTER track is ready to accept data
             playbackActive = true
             Log.d(TAG, "Playback resumed")
         }
@@ -260,8 +316,6 @@ class AudioStreamManager {
                 codec?.flush()
                 audioTrack?.play()
             } else {
-                // Paused/stopped: only flush codec, don't restart AudioTrack
-                // (Samsung BT stack monitors AudioTrack state for AVRCP)
                 codec?.flush()
             }
             Log.d(TAG, "Buffer cleared (playbackActive=$playbackActive)")

@@ -28,14 +28,18 @@ import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 
 @Composable
 fun PlayerSettingsDialog(
     player: Player,
     initialDstmEnabled: Boolean?,
+    isLocalPlayer: Boolean = false,
+    initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.SMART,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDstmChanged: ((enabled: Boolean) -> Unit)?,
+    onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
@@ -43,6 +47,7 @@ fun PlayerSettingsDialog(
     var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember { mutableStateOf(false) }
     var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
+    var audioFormat by remember { mutableStateOf(initialAudioFormat) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -119,6 +124,34 @@ fun PlayerSettingsDialog(
                             )
                         }
                     }
+
+                    if (isLocalPlayer) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Audio format", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                when (audioFormat) {
+                                    SendspinAudioFormat.SMART -> "FLAC on WiFi, Opus on mobile data"
+                                    SendspinAudioFormat.OPUS -> "Low bandwidth (~128kbps)"
+                                    SendspinAudioFormat.FLAC -> "Lossless (~800kbps)"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            SendspinAudioFormat.entries.forEachIndexed { index, fmt ->
+                                SegmentedButton(
+                                    selected = audioFormat == fmt,
+                                    onClick = { audioFormat = fmt },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = index,
+                                        count = SendspinAudioFormat.entries.size
+                                    ),
+                                    label = { Text(fmt.label, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -135,6 +168,9 @@ fun PlayerSettingsDialog(
                     onSave(player.playerId, values)
                     if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
                         onDstmChanged?.invoke(dontStopTheMusic)
+                    }
+                    if (isLocalPlayer && audioFormat != initialAudioFormat) {
+                        onAudioFormatChanged?.invoke(audioFormat)
                     }
                     onDismiss()
                 },

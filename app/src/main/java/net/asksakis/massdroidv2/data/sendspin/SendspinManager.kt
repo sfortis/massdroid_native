@@ -112,7 +112,7 @@ class SendspinManager(
                 val info = incoming.payload.player
                 Log.d(TAG, "Stream start: ${info.codec} ${info.sampleRate}Hz/${info.bitDepth}bit ${info.channels}ch, " +
                         "codecHeader=${info.codecHeader != null}")
-                audio.configure(info.sampleRate, info.channels, info.codecHeader)
+                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader)
                 audio.setVolume(if (muted) 0f else currentVolume / 100f)
                 client.updateState(SendspinState.STREAMING)
             }

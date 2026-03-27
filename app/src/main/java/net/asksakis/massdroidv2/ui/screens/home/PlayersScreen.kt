@@ -176,12 +176,16 @@ fun PlayersScreen(
                     }
 
                     settingsPlayer?.let { player ->
+                        val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = "SMART")
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
                             initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                            isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
+                            initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                             onDstmChanged = { viewModel.setDontStopTheMusic(player.playerId, it) },
+                            onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                             onDismiss = { settingsPlayer = null }
                         )
                     }

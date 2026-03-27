@@ -68,6 +68,7 @@ class PlayerRepositoryImpl @Inject constructor(
     @Volatile private var selectedPlayerId: String? = null
     @Volatile private var pendingRestoredPlayerId: String? = null
 
+
     // Position tracking for smooth seek bar updates
     @Volatile private var positionBaseTime = 0.0
     @Volatile private var positionBaseTimestamp = 0L
@@ -217,8 +218,8 @@ class PlayerRepositoryImpl @Inject constructor(
                             list.map { if (it.playerId == player.playerId) player else it }
                         } else list + player
                     }
-                    // Auto-select if this is the saved player and nothing is selected yet
-                    if (_selectedPlayer.value == null && player.playerId == pendingRestoredPlayerId) {
+                    // Auto-select if this is the saved player and nothing is selected yet.
+                    if (player.playerId == pendingRestoredPlayerId) {
                         selectPlayer(player.playerId)
                         pendingRestoredPlayerId = null
                         Log.d(TAG, "Auto-selected late-arriving player: ${player.displayName}")
@@ -815,11 +816,35 @@ class PlayerRepositoryImpl @Inject constructor(
             _players.value = fromServer
 
             if (selectedPlayerId != null) {
-                _selectedPlayer.value = _players.value.find { it.playerId == selectedPlayerId }
+                val refreshedSelected = _players.value.find { it.playerId == selectedPlayerId }
+                if (refreshedSelected != null) {
+                    _selectedPlayer.value = refreshedSelected
+                    if (pendingRestoredPlayerId == refreshedSelected.playerId) {
+                        pendingRestoredPlayerId = null
+                    }
+                } else if (pendingRestoredPlayerId == selectedPlayerId) {
+                    Log.d(TAG, "Selected player not in refresh snapshot yet, waiting for late-arriving player: $selectedPlayerId")
+                } else {
+                    clearSelectedPlayer("Selected player missing after refresh")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to refresh players: ${e.message}", e)
         }
+    }
+
+    private fun clearSelectedPlayer(reason: String) {
+        Log.d(TAG, reason)
+        selectedPlayerId = null
+        pendingRestoredPlayerId = null
+        _selectedPlayer.value = null
+        _queueState.value = null
+        _elapsedTime.value = 0.0
+        trackDuration = 0.0
+        favoriteOverride = null
+        favoriteOverrideUri = null
+        stopPositionTicker()
+        scope.launch { settingsRepository.setSelectedPlayerId(null) }
     }
 
     override fun selectPlayer(playerId: String) {
@@ -964,7 +989,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 crossfadeMode = CrossfadeMode.fromApi(
                     values?.get("smart_fades_mode")?.configValue() ?: "disabled"
                 ),
-                volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false
+                volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
+                sendspinFormat = values?.get("preferred_sendspin_format")?.configValue()
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")

@@ -49,6 +49,7 @@ import net.asksakis.massdroidv2.data.proximity.MotionGate
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
+import net.asksakis.massdroidv2.data.proximity.RoomDetector.WifiMatchContext
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -91,6 +92,7 @@ class PlaybackService : MediaLibraryService() {
         private const val STARTUP_WARMUP_SNAPSHOTS = 3
         private const val STARTUP_WARMUP_INTERVAL_MS = 1_200L
         private const val PROXIMITY_COMMAND_DEDUPE_MS = 12_000L
+        private const val WIFI_ROOM_GRACE_MS = 10_000L
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -131,6 +133,10 @@ class PlaybackService : MediaLibraryService() {
     private var lastProximityTransferCommand: RecentProximityTransferCommand? = null
     private var lastRoomPlaybackCommand: RecentRoomPlaybackCommand? = null
     private var suppressNextProximityRoomAction = false
+    private var lastConfirmedWifiRoomId: String? = null
+    private var lastConfirmedWifiBssid: String? = null
+    private var lastConfirmedWifiSsid: String? = null
+    private var lastConfirmedWifiAtMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -144,10 +150,12 @@ class PlaybackService : MediaLibraryService() {
         observeSendspinEnabled()
         observeConnectionState()
         observeShortcutActions()
+        observeAudioFormatPreference()
         registerBtAudioDeviceCallback()
         createProximityNotificationChannel()
         registerReceiver(bleScanReceiver, android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION), RECEIVER_NOT_EXPORTED)
         observeProximityConfig()
+        observeBluetoothState()
         observeRoomActivity()
     }
 
@@ -207,9 +215,7 @@ class PlaybackService : MediaLibraryService() {
             musicRepository = musicRepository,
             wsClient = wsClient,
             onMetadataChanged = { _ -> },
-            onStateChanged = { _, _, _ ->
-                updateConnectionNotification()
-            }
+            onStateChanged = { _, _, _ -> updateConnectionNotification() }
         )
     }
 
@@ -246,6 +252,59 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
         }
+    }
+
+    private fun observeAudioFormatPreference() {
+        val connectivityManager = getSystemService(android.net.ConnectivityManager::class.java)
+        val wifiState = kotlinx.coroutines.flow.MutableStateFlow(isOnWifi(connectivityManager))
+
+        val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                caps: android.net.NetworkCapabilities
+            ) {
+                wifiState.value = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+            }
+
+            override fun onLost(network: android.net.Network) {
+                wifiState.value = isOnWifi(connectivityManager)
+            }
+        }
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
+
+        scope.launch {
+            kotlinx.coroutines.flow.combine(
+                settingsRepository.sendspinAudioFormat,
+                wifiState,
+                settingsRepository.sendspinClientId,
+                wsClient.connectionState
+            ) { format, wifi, clientId, connState ->
+                if (clientId == null || connState !is ConnectionState.Connected) null
+                else Triple(format, wifi, clientId)
+            }
+                .filterNotNull()
+                .distinctUntilChanged()
+                .collect { (formatName, isWifi, playerId) ->
+                    val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)
+                    val apiValue = format.toApiValue(isWifi)
+                    val isStreaming = sendspinController?.isStreaming == true
+                    if (isStreaming) {
+                        Log.d(TAG, "Audio format: $format, wifi=$isWifi -> $apiValue (deferred, streaming)")
+                        return@collect
+                    }
+                    Log.d(TAG, "Audio format: $format, wifi=$isWifi, sending $apiValue")
+                    try {
+                        playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to update audio format: ${e.message}")
+                    }
+                }
+        }
+    }
+
+    private fun isOnWifi(cm: android.net.ConnectivityManager): Boolean {
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
     }
 
     private fun observeShortcutActions() {
@@ -352,13 +411,19 @@ class PlaybackService : MediaLibraryService() {
                 proximityScanner.toScannedDevice(result)
             }
             logBleDevices("bg-receiver", backgroundDevices, config)
+            val currentWifi = currentConnectedWifi()
+            if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
+                Log.d(TAG, "Wi-Fi-only room hold (bg-receiver): keeping ${roomDetector.currentRoom.value?.roomName}")
+                return
+            }
             val rssiMap = buildDetectionAnchorSnapshot(backgroundDevices, config)
             val allowCommit = rssiMap.size >= BG_CONFIRM_MIN_DEVICES
+            val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
             when (val result = roomDetector.detectDetailed(
                 rssiMap,
                 config,
                 motionActive = motionGate.isMoving.value,
-                currentBssid = currentConnectedBssid(),
+                wifi = currentWifi.toWifiMatchContext(),
                 commitRoomChange = allowCommit
             )) {
                 is DetectResult.Confirmed -> {
@@ -372,7 +437,7 @@ class PlaybackService : MediaLibraryService() {
                         return
                     }
                     Log.d(TAG, "Background room change: ${result.room.roomName}")
-                    handleRoomChange(result.room, config)
+                    handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
                 }
                 is DetectResult.Borderline -> {
                     if (shouldQuickRetryBorderline(result.winner.roomId, motionGate.isMoving.value)) {
@@ -438,6 +503,22 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun observeBluetoothState() {
+        scope.launch {
+            proximityScanner.observeBluetoothState()
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (enabled) return@collect
+
+                    val config = proximityConfigStore.config.value
+                    if (!config.enabled) return@collect
+
+                    Log.d(TAG, "Bluetooth turned off: disabling Follow Me")
+                    proximityConfigStore.update { it.copy(enabled = false) }
+                }
+        }
+    }
+
     private fun shouldRunProximity(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig): Boolean {
         return config.enabled && config.rooms.isNotEmpty() && hasFollowMePermissions()
     }
@@ -488,6 +569,15 @@ class PlaybackService : MediaLibraryService() {
             // Startup warmup: use short high-accuracy snapshots instead of 4s burst spacing.
             if (isWithinSchedule()) {
                 runStartupWarmup()
+                val config = proximityConfigStore.config.value
+                val hasWifiOnlyRooms = config.rooms.any { room ->
+                    room.stickToConnectedWifi &&
+                        (!room.connectedBssid.isNullOrBlank() || !room.connectedSsid.isNullOrBlank())
+                }
+                if (roomDetector.currentRoom.value == null && hasWifiOnlyRooms) {
+                    suppressNextProximityRoomAction = true
+                    Log.d(TAG, "Proximity startup: suppressing first room action until Wi-Fi startup sync settles")
+                }
                 syncSelectedPlayerToCurrentRoom("engine-start")
                 Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
             }
@@ -565,7 +655,7 @@ class PlaybackService : MediaLibraryService() {
                     wl.acquire(15_000)
                     try {
                         ensurePersistentScan(lowPower = false)
-                        val bssid = currentConnectedBssid()
+                        val wifi = currentConnectedWifi()
                         val cfg = proximityConfigStore.config.value
                         for (burst in 1..2) {
                             val devices = readFastPathSnapshotWithWarmRetry(
@@ -573,12 +663,22 @@ class PlaybackService : MediaLibraryService() {
                                 detailPrefix = "motion $burst/2"
                             )
                             if (devices.isNotEmpty()) {
+                                if (shouldHoldWifiOnlyRoom(cfg, wifi)) {
+                                    Log.d(TAG, "Wi-Fi-only room hold (fast-path:motion-$burst): keeping ${roomDetector.currentRoom.value?.roomName}")
+                                    break
+                                }
                                 Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
                                 logBleDevices("fast-path:motion-$burst", devices, cfg)
                                 val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
-                                when (val result = roomDetector.detectDetailed(rssiMap, cfg, motionActive = true, currentBssid = bssid)) {
+                                val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
+                                when (val result = roomDetector.detectDetailed(
+                                    rssiMap,
+                                    cfg,
+                                    motionActive = true,
+                                    wifi = wifi.toWifiMatchContext()
+                                )) {
                                     is DetectResult.Confirmed -> {
-                                        handleRoomChange(result.room, cfg)
+                                        handleConfirmedRoom(result.room, cfg, hadCurrentRoomBeforeDetection)
                                         break
                                     }
                                     else -> Unit
@@ -613,7 +713,7 @@ class PlaybackService : MediaLibraryService() {
                 scanResults = rssi,
                 config = proximityConfigStore.config.value,
                 motionActive = false,
-                currentBssid = currentConnectedBssid()
+                wifi = currentConnectedWifi().toWifiMatchContext()
             )
             if (roomDetector.currentRoom.value != null) return
         }
@@ -652,10 +752,98 @@ class PlaybackService : MediaLibraryService() {
 
     private fun syncSelectedPlayerToCurrentRoom(reason: String) {
         val room = roomDetector.currentRoom.value ?: return
+        if (shouldBlockProximitySelectionForBt()) {
+            Log.d(TAG, "Proximity selected player skipped ($reason): BT A2DP sendspin active")
+            return
+        }
         if (!isPlayerAvailable(room.playerId)) return
         if (playerRepository.selectedPlayer.value?.playerId == room.playerId) return
         playerRepository.selectPlayer(room.playerId)
         Log.d(TAG, "Proximity selected player ($reason): ${room.playerName}")
+    }
+
+    private fun currentWifiOnlyRoomConfig(
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig
+    ): net.asksakis.massdroidv2.data.proximity.RoomConfig? {
+        val currentRoomId = roomDetector.currentRoom.value?.roomId ?: return null
+        return config.rooms.find { it.id == currentRoomId && it.stickToConnectedWifi }
+    }
+
+    private fun shouldHoldWifiOnlyRoom(
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig,
+        wifi: ProximityScanner.ConnectedWifiInfo?
+    ): Boolean {
+        val currentRoom = currentWifiOnlyRoomConfig(config) ?: return false
+        val expectedBssid = currentRoom.connectedBssid
+        val expectedSsid = currentRoom.connectedSsid
+
+        if (!expectedBssid.isNullOrBlank() && wifi?.bssid != null && expectedBssid.equals(wifi.bssid, ignoreCase = true)) {
+            lastConfirmedWifiRoomId = currentRoom.id
+            lastConfirmedWifiBssid = expectedBssid
+            lastConfirmedWifiSsid = expectedSsid
+            lastConfirmedWifiAtMs = System.currentTimeMillis()
+            return false
+        }
+
+        if (!expectedSsid.isNullOrBlank() && wifi?.ssid != null && expectedSsid.equals(wifi.ssid, ignoreCase = true)) {
+            lastConfirmedWifiRoomId = currentRoom.id
+            lastConfirmedWifiBssid = wifi.bssid
+            lastConfirmedWifiSsid = expectedSsid
+            lastConfirmedWifiAtMs = System.currentTimeMillis()
+            return false
+        }
+
+        if (wifi != null) return false
+
+        val now = System.currentTimeMillis()
+        return lastConfirmedWifiRoomId == currentRoom.id &&
+            (
+                (!expectedBssid.isNullOrBlank() && lastConfirmedWifiBssid == expectedBssid) ||
+                    (!expectedSsid.isNullOrBlank() && lastConfirmedWifiSsid == expectedSsid)
+                ) &&
+            now - lastConfirmedWifiAtMs <= WIFI_ROOM_GRACE_MS
+    }
+
+    private fun handleConfirmedRoom(
+        detected: DetectedRoom,
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig,
+        hadCurrentRoomBeforeDetection: Boolean
+    ) {
+        val roomConfig = config.rooms.find { it.id == detected.roomId }
+        val currentWifi = currentConnectedWifi()
+        if (roomConfig?.stickToConnectedWifi == true &&
+            (!roomConfig.connectedBssid.isNullOrBlank() || !roomConfig.connectedSsid.isNullOrBlank())
+        ) {
+            lastConfirmedWifiRoomId = roomConfig.id
+            lastConfirmedWifiBssid = currentWifi?.bssid ?: roomConfig.connectedBssid
+            lastConfirmedWifiSsid = currentWifi?.ssid ?: roomConfig.connectedSsid
+            lastConfirmedWifiAtMs = System.currentTimeMillis()
+            if ((!currentWifi?.ssid.isNullOrBlank() && roomConfig.connectedSsid != currentWifi?.ssid) ||
+                (!currentWifi?.bssid.isNullOrBlank() && roomConfig.connectedBssid != currentWifi?.bssid)
+            ) {
+                scope.launch {
+                    proximityConfigStore.update { cfg ->
+                        cfg.copy(
+                            rooms = cfg.rooms.map { room ->
+                                if (room.id == roomConfig.id) {
+                                    room.copy(
+                                        connectedBssid = currentWifi?.bssid ?: room.connectedBssid,
+                                        connectedSsid = currentWifi?.ssid ?: room.connectedSsid
+                                    )
+                                } else {
+                                    room
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        if (!hadCurrentRoomBeforeDetection && roomConfig?.stickToConnectedWifi == true) {
+            suppressNextProximityRoomAction = true
+            Log.d(TAG, "Proximity startup-sync: suppressing first Wi-Fi room action for ${detected.roomName}")
+        }
+        handleRoomChange(detected, config)
     }
 
     private fun updateHighAccuracyWindow(isMoving: Boolean): Boolean {
@@ -731,15 +919,21 @@ class PlaybackService : MediaLibraryService() {
                     )
                     if (devices.isNotEmpty()) {
                         val cfg = proximityConfigStore.config.value
+                        val currentWifi = currentConnectedWifi()
+                        if (shouldHoldWifiOnlyRoom(cfg, currentWifi)) {
+                            Log.d(TAG, "Wi-Fi-only room hold ($detailPrefix): keeping ${roomDetector.currentRoom.value?.roomName}")
+                            return
+                        }
                         logBleDevices("motion-boost:$detailPrefix", devices, cfg)
                         val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
+                        val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
                         when (val result = roomDetector.detectDetailed(
                             rssiMap,
                             cfg,
                             motionActive = true,
-                            currentBssid = currentConnectedBssid()
+                            wifi = currentWifi.toWifiMatchContext()
                         )) {
-                            is DetectResult.Confirmed -> handleRoomChange(result.room, cfg)
+                            is DetectResult.Confirmed -> handleConfirmedRoom(result.room, cfg, hadCurrentRoomBeforeDetection)
                             else -> Unit
                         }
                     }
@@ -765,12 +959,18 @@ class PlaybackService : MediaLibraryService() {
             } else {
                 proximityScanner.readSnapshot()
             }
+            val currentWifi = currentConnectedWifi()
+            if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
+                Log.d(TAG, "Wi-Fi-only room hold (burst:$trigger): keeping ${roomDetector.currentRoom.value?.roomName}")
+                return
+            }
             val rssiMap = buildDetectionAnchorSnapshot(devices, config)
             Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
             logBleDevices("snapshot:$trigger", devices, config)
 
-            when (val result = roomDetector.detectDetailed(rssiMap, config, motionActive, currentConnectedBssid())) {
-                is DetectResult.Confirmed -> handleRoomChange(result.room, config)
+            val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
+            when (val result = roomDetector.detectDetailed(rssiMap, config, motionActive, currentWifi.toWifiMatchContext())) {
+                is DetectResult.Confirmed -> handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
                 is DetectResult.Borderline -> {
                     if (shouldQuickRetryBorderline(result.winner.roomId, motionActive)) {
                         scheduleQuickProximityRetry("burst-$trigger:${result.reason}")
@@ -818,16 +1018,22 @@ class PlaybackService : MediaLibraryService() {
                     return@launch
                 }
                 logBleDevices("quick-retry:$reason", devices, config)
+                val currentWifi = currentConnectedWifi()
+                if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
+                    Log.d(TAG, "Wi-Fi-only room hold (quick-retry:$reason): keeping ${roomDetector.currentRoom.value?.roomName}")
+                    return@launch
+                }
 
+                val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
                 when (val result = roomDetector.detectDetailed(
                     buildDetectionAnchorSnapshot(devices, config),
                     config,
                     motionGate.isMoving.value,
-                    currentConnectedBssid()
+                    currentWifi.toWifiMatchContext()
                 )) {
                     is DetectResult.Confirmed -> {
                         Log.d(TAG, "Quick retry ($reason): confirmed ${result.room.roomName}")
-                        handleRoomChange(result.room, config)
+                        handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
                     }
                     is DetectResult.Borderline -> {
                         Log.d(TAG, "Quick retry ($reason): borderline ${result.winner.roomName} (${result.reason}) from ${devices.size} devices")
@@ -1010,7 +1216,11 @@ class PlaybackService : MediaLibraryService() {
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
         if (suppressNextProximityRoomAction) {
             suppressNextProximityRoomAction = false
-            if (isPlayerAvailable(detected.playerId) && playerRepository.selectedPlayer.value?.playerId != detected.playerId) {
+            if (
+                !shouldBlockProximitySelectionForBt() &&
+                isPlayerAvailable(detected.playerId) &&
+                playerRepository.selectedPlayer.value?.playerId != detected.playerId
+            ) {
                 playerRepository.selectPlayer(detected.playerId)
                 Log.d(TAG, "Proximity selected player (resume-sync): ${detected.playerName}")
             }
@@ -1027,13 +1237,11 @@ class PlaybackService : MediaLibraryService() {
 
         if (targetIsPlaying) {
             if (roomConfig?.playbackConfig?.playlistUri != null) {
-                scope.launch {
-                    try {
-                        performRoomPlayback(detected, roomConfig)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Same-player room playback failed: ${e.message}")
-                    }
-                }
+                Log.d(
+                    TAG,
+                    "Proximity room playback skipped: ${detected.playerName} is already playing; " +
+                        "keeping current queue for ${detected.roomName}"
+                )
             }
             return
         }
@@ -1068,6 +1276,10 @@ class PlaybackService : MediaLibraryService() {
         lastProximityTransferCommand = null
         lastRoomPlaybackCommand = null
         suppressNextProximityRoomAction = false
+        lastConfirmedWifiRoomId = null
+        lastConfirmedWifiBssid = null
+        lastConfirmedWifiSsid = null
+        lastConfirmedWifiAtMs = 0L
         getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
     }
 
@@ -1294,10 +1506,14 @@ class PlaybackService : MediaLibraryService() {
 
     // endregion
 
-    private fun currentConnectedBssid(): String? {
-        val wifi = proximityScanner.readWifiSnapshot()
-        return wifi.keys.firstOrNull()?.removePrefix("wifi:")
-    }
+    private fun currentConnectedWifi(): ProximityScanner.ConnectedWifiInfo? =
+        proximityScanner.readConnectedWifiInfo()
+
+    private fun ProximityScanner.ConnectedWifiInfo?.toWifiMatchContext(): WifiMatchContext =
+        WifiMatchContext(
+            bssid = this?.bssid,
+            ssid = this?.ssid
+        )
 
     private fun activePlayerId(): String? {
         return playerRepository.selectedPlayer.value?.playerId
@@ -1349,6 +1565,9 @@ class PlaybackService : MediaLibraryService() {
     private fun shouldRoutToSendspin(): Boolean =
         isBtA2dpActive() && sendspinActive && sendspinPlayerId != null
             && playerRepository.selectedPlayer.value?.playerId != sendspinPlayerId
+
+    private fun shouldBlockProximitySelectionForBt(): Boolean =
+        isBtA2dpActive() && sendspinActive && sendspinPlayerId != null
 
     private fun createRemotePlayer(): RemoteControlPlayer {
         return RemoteControlPlayer(

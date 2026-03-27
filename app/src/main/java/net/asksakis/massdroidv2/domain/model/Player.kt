@@ -22,7 +22,8 @@ enum class PlaybackState { IDLE, PLAYING, PAUSED }
 data class PlayerConfig(
     val name: String = "",
     val crossfadeMode: CrossfadeMode = CrossfadeMode.DISABLED,
-    val volumeNormalization: Boolean = false
+    val volumeNormalization: Boolean = false,
+    val sendspinFormat: String? = null
 )
 
 enum class CrossfadeMode(val apiValue: String, val label: String) {
@@ -33,6 +34,23 @@ enum class CrossfadeMode(val apiValue: String, val label: String) {
     companion object {
         fun fromApi(value: String): CrossfadeMode =
             entries.find { it.apiValue == value } ?: DISABLED
+    }
+}
+
+enum class SendspinAudioFormat(val label: String) {
+    SMART("Smart"),
+    OPUS("Opus"),
+    FLAC("FLAC");
+
+    fun toApiValue(isWifi: Boolean): String = when (this) {
+        SMART -> if (isWifi) "flac:48000:24:2" else "opus:48000:16:2"
+        OPUS -> "opus:48000:16:2"
+        FLAC -> "flac:48000:24:2"
+    }
+
+    companion object {
+        fun fromStored(value: String): SendspinAudioFormat =
+            entries.find { it.name.equals(value, ignoreCase = true) } ?: SMART
     }
 }
 

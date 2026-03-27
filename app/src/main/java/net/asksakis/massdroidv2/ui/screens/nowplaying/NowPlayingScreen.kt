@@ -45,7 +45,6 @@ import androidx.core.graphics.red
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.palette.graphics.Palette
-import coil.compose.AsyncImage
 import coil.imageLoader
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -63,9 +62,11 @@ import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
+import net.asksakis.massdroidv2.ui.components.MediaArtwork
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.VolumeSlider
 import kotlin.math.max
+import coil.compose.AsyncImage
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -313,12 +314,17 @@ fun NowPlayingScreen(
 
     player?.let { currentPlayer ->
         if (showPlayerSettingsDialog) {
+            val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
+            val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = "SMART")
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
+                initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                 onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
+                onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
@@ -747,7 +753,9 @@ private fun PlainLyricsContent(text: String) {
                 text = text,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
-                lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.4
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.4,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
@@ -793,6 +801,7 @@ private fun SyncedLyricsContent(lrc: String, elapsedTimeMs: Long) {
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 },
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 6.dp)
@@ -1172,9 +1181,10 @@ private fun SwipeableAlbumArt(
         val scale = 1f - 0.05f * kotlin.math.abs(progress)
         val alpha = 1f - 0.3f * kotlin.math.abs(progress)
 
-        AsyncImage(
+        MediaArtwork(
             model = imageRequest,
             contentDescription = "Album art",
+            fallbackIcon = Icons.Default.MusicNote,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -1182,8 +1192,9 @@ private fun SwipeableAlbumArt(
                     scaleX = scale
                     scaleY = scale
                     this.alpha = alpha
-                }
-                .clip(shape),
+                },
+            shape = shape,
+            iconSize = 64.dp,
             contentScale = ContentScale.Crop
         )
     }

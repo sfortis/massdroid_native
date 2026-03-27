@@ -44,6 +44,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_LIBRARY_FAV_ONLY = stringPreferencesKey("library_fav_only")
         private val KEY_LASTFM_API_KEY = stringPreferencesKey("lastfm_api_key")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
+        private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
     }
 
     private val safeData = context.dataStore.data
@@ -233,6 +234,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setThemeMode(mode: String) {
         context.dataStore.edit { it[KEY_THEME_MODE] = mode }
+    }
+
+    override val sendspinAudioFormat: Flow<String> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_AUDIO_FORMAT] ?: "SMART"
+    }
+
+    override suspend fun setSendspinAudioFormat(format: String) {
+        context.dataStore.edit { it[KEY_SENDSPIN_AUDIO_FORMAT] = format }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

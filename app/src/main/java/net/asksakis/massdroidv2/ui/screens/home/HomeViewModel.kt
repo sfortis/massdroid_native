@@ -36,6 +36,7 @@ class HomeViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
     val sendspinClientId = settingsRepository.sendspinClientId
+    val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val proximityConfig = proximityConfigStore.config
 
     private val _isInitializing = MutableStateFlow(true)
@@ -132,7 +133,11 @@ class HomeViewModel @Inject constructor(
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {
             try {
-                playerRepository.playPause(player.playerId)
+                if (player.state == net.asksakis.massdroidv2.domain.model.PlaybackState.PLAYING) {
+                    playerRepository.pause(player.playerId)
+                } else {
+                    playerRepository.play(player.playerId)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -193,6 +198,12 @@ class HomeViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "savePlayerConfig failed: ${e.message}")
             }
+        }
+    }
+
+    fun setAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinAudioFormat(format.name)
         }
     }
 

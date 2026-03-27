@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -33,6 +34,7 @@ class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val smartListeningRepository: SmartListeningRepository,
+    private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider
 ) : ViewModel() {
@@ -41,6 +43,8 @@ class NowPlayingViewModel @Inject constructor(
     val allPlayers: StateFlow<List<net.asksakis.massdroidv2.domain.model.Player>> = playerRepository.players
     val queueState = playerRepository.queueState
     val elapsedTime = playerRepository.elapsedTime
+    val sendspinClientId = settingsRepository.sendspinClientId
+    val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
@@ -79,7 +83,11 @@ class NowPlayingViewModel @Inject constructor(
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {
             try {
-                playerRepository.playPause(player.playerId)
+                if (player.state == PlaybackState.PLAYING) {
+                    playerRepository.pause(player.playerId)
+                } else {
+                    playerRepository.play(player.playerId)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -410,6 +418,12 @@ class NowPlayingViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "setDontStopTheMusic failed: ${e.message}")
             }
+        }
+    }
+
+    fun setAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinAudioFormat(format.name)
         }
     }
 
