@@ -50,7 +50,7 @@ class AudioStreamManager {
 
             val encoding = AudioFormat.ENCODING_PCM_16BIT
 
-            val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding) * 4
+            val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding) * 16
 
             val createdAudioTrack = AudioTrack.Builder()
                 .setAudioAttributes(

@@ -212,7 +212,6 @@ class PlaybackService : MediaLibraryService() {
             sendspinManager = sendspinManager,
             settingsRepository = settingsRepository,
             playerRepository = playerRepository,
-            musicRepository = musicRepository,
             wsClient = wsClient,
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> updateConnectionNotification() }

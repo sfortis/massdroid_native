@@ -33,7 +33,6 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
-import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import java.util.UUID
@@ -54,7 +53,6 @@ class SendspinAudioController(
     private val sendspinManager: SendspinManager,
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
-    private val musicRepository: MusicRepository,
     private val wsClient: MaWebSocketClient,
     private val onMetadataChanged: (SendspinMetadata) -> Unit,
     private val onStateChanged: (ready: Boolean, streaming: Boolean, playing: Boolean) -> Unit
@@ -62,9 +60,6 @@ class SendspinAudioController(
     companion object {
         private const val TAG = "SendspinCtrl"
         private const val PAUSE_DEBOUNCE_MS = 400L
-        private const val RECONNECT_STORM_WINDOW_MS = 30_000L
-        private const val RECONNECT_STORM_THRESHOLD = 4
-        private const val RECONNECT_COOLDOWN_MS = 10_000L
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
     }
 
@@ -85,7 +80,6 @@ class SendspinAudioController(
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 Log.d(TAG, "Audio becoming noisy (headset unplugged), pausing")
                 val id = sendspinPlayerId ?: return
-                resumeAborted = true
                 currentIsPlaying = false
                 sendspinManager.pauseAudio()
                 optimisticUntil = System.currentTimeMillis() + 1000
@@ -104,11 +98,7 @@ class SendspinAudioController(
     private var currentArtUrl: String? = null
     var isStreaming = false; private set
     var isReady = false; private set
-    private var wasPlayingBeforeDisconnect = false
     private var lastSendspinReportedPlaying = false
-    private var resumePositionSeconds = 0.0
-    private var resumeTrackUri: String? = null
-    private var resumeQueueTrackUris: List<String> = emptyList()
     private var currentTrackUri: String? = null
     private var currentTitle = ""
     private var currentArtist = ""
@@ -118,13 +108,8 @@ class SendspinAudioController(
     var currentIsPlaying = false; private set
     private var optimisticUntil = 0L
     var sendspinPlayerId: String? = null; private set
-    private var lastKnownSendspinQueueTrackUris: List<String> = emptyList()
     private val collectorJobs = mutableListOf<Job>()
     private var lastPlayingAtMs = 0L
-    private val reconnectDropLock = Any()
-    private val reconnectDropTimestampsMs = ArrayDeque<Long>()
-    private var reconnectCooldownUntilMs = 0L
-    @Volatile private var resumeAborted = false
 
     fun start() {
         if (collectorJobs.isNotEmpty()) {
@@ -152,19 +137,7 @@ class SendspinAudioController(
                 }
                 if (wasStreaming && !isStreaming) {
                     releaseLocks()
-                    val sendspinWasPlaying = playerRepository.players.value
-                        .firstOrNull { it.playerId == sendspinPlayerId }
-                        ?.state == PlaybackState.PLAYING
-                    wasPlayingBeforeDisconnect = sendspinWasPlaying
-                    resumePositionSeconds = currentPositionMs / 1000.0
-                    resumeTrackUri = currentTrackUri
-                    resumeQueueTrackUris = lastKnownSendspinQueueTrackUris
-                    registerReconnectDrop()
-                    Log.d(
-                        TAG,
-                        "Sendspin dropped while streaming, sendspinWasPlaying=$sendspinWasPlaying, " +
-                                "currentIsPlaying=$currentIsPlaying, pos=${resumePositionSeconds}s, uri=$resumeTrackUri"
-                    )
+                    Log.d(TAG, "Sendspin dropped while streaming")
                 }
 
                 val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
@@ -261,15 +234,7 @@ class SendspinAudioController(
             }
         }
 
-        // Collector 4: Queue snapshot on change
-        collectorJobs += scope.launch {
-            playerRepository.queueItemsChanged.collect { queueId ->
-                if (queueId != sendspinPlayerId) return@collect
-                snapshotSendspinQueue(queueId)
-            }
-        }
-
-        // Collector 5: Read settings and start sendspin
+        // Collector 4: Read settings and start sendspin
         collectorJobs += scope.launch {
             val url = settingsRepository.serverUrl.first()
             val token = wsClient.authToken ?: settingsRepository.authToken.first()
@@ -307,21 +272,15 @@ class SendspinAudioController(
                         .map { list -> list.any { it.playerId == clientId } }
                         .first { it }
                 }
-                restoreStartupSendspinSnapshotIfNeeded(clientId)
             }
         }
 
-        // Collector 6: Resume playback when MA reconnects after a drop
+        // Collector 6: Restart Sendspin WebSocket when MA reconnects
         collectorJobs += scope.launch {
             var connectedBefore = false
             wsClient.connectionState.collect { state ->
                 val isConnected = state is ConnectionState.Connected
                 if (isConnected && connectedBefore) {
-                    waitForReconnectCooldownIfNeeded()
-                    if (wsClient.connectionState.value !is ConnectionState.Connected) {
-                        Log.d(TAG, "Reconnect cooldown ended after connection changed, skipping cycle")
-                        return@collect
-                    }
                     val url = settingsRepository.serverUrl.first()
                     val token = wsClient.authToken ?: settingsRepository.authToken.first()
                     var clientId = settingsRepository.sendspinClientId.first()
@@ -337,108 +296,7 @@ class SendspinAudioController(
                             sendspinManager.start(url, token, clientId, "MassDroid")
                         }
                     } else {
-                        Log.d(TAG, "MA reconnected, sendspin already $currentSsState, skipping restart")
-                    }
-
-                    Log.d(TAG, "Reconnect: clientId=$clientId, wasPlaying=$wasPlayingBeforeDisconnect")
-                    if (wasPlayingBeforeDisconnect) {
-                        wasPlayingBeforeDisconnect = false
-                        if (resumeAborted) {
-                            Log.d(TAG, "Resume aborted by explicit pause before reconnect, skipping")
-                            return@collect
-                        }
-                        val ssReady = withTimeoutOrNull(10000) {
-                            sendspinManager.connectionState
-                                .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                        }
-                        if (ssReady == null) {
-                            Log.w(TAG, "Reconnect: sendspin didn't reach ready state, skipping auto-resume")
-                        } else {
-                            Log.d(TAG, "Reconnect: sendspin reached $ssReady")
-                            val readyPlayer = withTimeoutOrNull(5000) {
-                                playerRepository.players
-                                    .map { list -> list.find { it.playerId == clientId } }
-                                    .first { it != null && it.state != PlaybackState.PLAYING }
-                            }
-                            Log.d(TAG, "Reconnect: sendspin player state=${readyPlayer?.state ?: "timeout"}")
-                            val seekTo = resumePositionSeconds
-                            val trackUri = resumeTrackUri
-                            Log.d(TAG, "Resuming on sendspin $clientId at ${seekTo}s, uri=$trackUri")
-                            var resumed = false
-                            for (attempt in 1..3) {
-                                if (resumeAborted) {
-                                    Log.d(TAG, "Resume aborted by explicit pause, stopping")
-                                    break
-                                }
-                                val ssState = sendspinManager.connectionState.value
-                                if (ssState != SendspinState.SYNCING && ssState != SendspinState.STREAMING) {
-                                    Log.d(TAG, "Sendspin no longer ready ($ssState), aborting resume")
-                                    break
-                                }
-                                try {
-                                    if (trackUri != null) {
-                                        val idx = waitForQueueTrackIndex(clientId, trackUri)
-                                        if (resumeAborted) {
-                                            Log.d(TAG, "Resume aborted by explicit pause after queue check, stopping")
-                                            break
-                                        }
-                                        if (idx >= 0) {
-                                            Log.d(TAG, "Found track at queue index $idx, using play_index")
-                                            musicRepository.playQueueIndex(clientId, idx)
-                                        } else if (restoreSavedQueueSnapshot(clientId, trackUri)) {
-                                            val restoredIdx = waitForQueueTrackIndex(clientId, trackUri)
-                                            if (resumeAborted) {
-                                                Log.d(TAG, "Resume aborted by explicit pause after snapshot restore, stopping")
-                                                break
-                                            }
-                                            if (restoredIdx >= 0) {
-                                                Log.d(TAG, "Restored saved queue snapshot, using play_index=$restoredIdx")
-                                                musicRepository.playQueueIndex(clientId, restoredIdx)
-                                            } else {
-                                                Log.w(TAG, "Saved queue snapshot restored but track still missing, aborting auto-resume")
-                                                break
-                                            }
-                                        } else {
-                                            Log.w(TAG, "Track not found in queue and no saved snapshot available, aborting auto-resume")
-                                            break
-                                        }
-                                    } else {
-                                        Log.d(TAG, "No track URI saved, using generic play")
-                                        playerRepository.play(clientId)
-                                    }
-                                    if (seekTo > 1.0 && trackUri != null) {
-                                        val streaming = withTimeoutOrNull(5000) {
-                                            sendspinManager.connectionState
-                                                .first { it == SendspinState.STREAMING }
-                                        }
-                                        if (streaming != null && currentTrackUri == trackUri) {
-                                            Log.d(TAG, "Stream active, correct track, seeking to ${seekTo}s")
-                                            playerRepository.seek(clientId, seekTo)
-                                        } else if (streaming != null) {
-                                            Log.w(TAG, "Track changed after resume (now=$currentTrackUri, expected=$trackUri), skipping seek")
-                                        } else {
-                                            Log.w(TAG, "Stream didn't start in 5s, skipping seek")
-                                        }
-                                    }
-                                    resumed = true
-                                    Log.d(TAG, "Resume succeeded (attempt $attempt)")
-                                    break
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Resume attempt $attempt failed: ${e.message}")
-                                    if (attempt < 3) {
-                                        delay(1500)
-                                        val postDelaySs = sendspinManager.connectionState.value
-                                        if (postDelaySs != SendspinState.SYNCING && postDelaySs != SendspinState.STREAMING) {
-                                            Log.d(TAG, "Sendspin disconnected during retry delay ($postDelaySs), aborting")
-                                            break
-                                        }
-                                    }
-                                }
-                            }
-                            if (!resumed) Log.e(TAG, "Resume failed after 3 attempts")
-                        }
-                    } else {
-                        Log.d(TAG, "Reconnect: skipping auto-resume, was not playing before disconnect")
+                        Log.d(TAG, "MA reconnected, sendspin already $currentSsState")
                     }
                 }
                 if (isConnected) connectedBefore = true
@@ -449,12 +307,7 @@ class SendspinAudioController(
     fun stop() {
         for (job in collectorJobs) job.cancel(CancellationException("Sendspin stop"))
         collectorJobs.clear()
-        wasPlayingBeforeDisconnect = false
         lastSendspinReportedPlaying = false
-        synchronized(reconnectDropLock) {
-            reconnectDropTimestampsMs.clear()
-        }
-        reconnectCooldownUntilMs = 0L
         abandonAudioFocus()
         unregisterNoisyReceiver()
         releaseLocks()
@@ -475,7 +328,7 @@ class SendspinAudioController(
 
     fun handlePlay() {
         val id = sendspinPlayerId ?: return
-        resumeAborted = false
+
         playerRepository.selectPlayer(id)
         currentIsPlaying = true
         lastPlayingAtMs = System.currentTimeMillis()
@@ -491,7 +344,7 @@ class SendspinAudioController(
 
     fun handlePause() {
         val id = sendspinPlayerId ?: return
-        resumeAborted = true
+
         currentIsPlaying = false
         optimisticUntil = System.currentTimeMillis() + 1000
         notifyStateChanged()
@@ -503,7 +356,7 @@ class SendspinAudioController(
         val id = sendspinPlayerId ?: return
         val wantPlay = !currentIsPlaying
         if (wantPlay) {
-            resumeAborted = false
+    
             currentIsPlaying = true
             lastPlayingAtMs = System.currentTimeMillis()
             if (!hasAudioFocus) requestAudioFocus()
@@ -561,7 +414,7 @@ class SendspinAudioController(
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.d(TAG, "Audio focus lost permanently")
-                        resumeAborted = true
+                
                         hasAudioFocus = false
                         if (isStreaming) {
                             val id = sendspinPlayerId
@@ -685,110 +538,6 @@ class SendspinAudioController(
     }
 
     // endregion
-
-    // region Queue helpers
-
-    private suspend fun waitForQueueTrackIndex(queueId: String, trackUri: String): Int {
-        repeat(8) { attempt ->
-            val queueItems = musicRepository.getQueueItems(queueId)
-            val idx = queueItems.indexOfFirst { it.track?.uri == trackUri }
-            if (idx >= 0) return idx
-            if (attempt < 7) delay(350)
-        }
-        return -1
-    }
-
-    private suspend fun restoreSavedQueueSnapshot(queueId: String, trackUri: String): Boolean {
-        var snapshotUris = resumeQueueTrackUris
-            .filter { it.isNotBlank() }
-            .distinct()
-        if (snapshotUris.isEmpty()) {
-            Log.d(TAG, "In-memory snapshot empty, trying persisted snapshot from DataStore")
-            snapshotUris = settingsRepository.sendspinSnapshotQueueUris.first()
-                .filter { it.isNotBlank() }
-                .distinct()
-        }
-        if (snapshotUris.isEmpty() || trackUri !in snapshotUris) return false
-        Log.d(TAG, "Restoring saved sendspin queue snapshot (${snapshotUris.size} tracks)")
-        musicRepository.playMedia(queueId, snapshotUris, option = "replace")
-        return true
-    }
-
-    private suspend fun snapshotSendspinQueue(queueId: String) {
-        try {
-            val uris = musicRepository.getQueueItems(queueId, limit = 500, offset = 0)
-                .mapNotNull { it.track?.uri?.takeIf { uri -> uri.isNotBlank() } }
-            if (uris.isNotEmpty()) {
-                lastKnownSendspinQueueTrackUris = uris
-                settingsRepository.setSendspinSnapshot(
-                    trackUri = currentTrackUri,
-                    positionSeconds = currentPositionMs / 1000.0,
-                    queueUris = uris
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to snapshot sendspin queue: ${e.message}")
-        }
-    }
-
-    private suspend fun restoreStartupSendspinSnapshotIfNeeded(queueId: String) {
-        val selectedPlayerId = settingsRepository.selectedPlayerId.first()
-        if (selectedPlayerId != queueId) return
-
-        val snapshotTrackUri = settingsRepository.sendspinSnapshotTrackUri.first()
-        val snapshotQueueUris = settingsRepository.sendspinSnapshotQueueUris.first()
-        val snapshotPositionSeconds = settingsRepository.sendspinSnapshotPositionSeconds.first()
-        if (snapshotTrackUri.isNullOrBlank() || snapshotQueueUris.isEmpty()) return
-
-        val currentQueueUris = try {
-            musicRepository.getQueueItems(queueId, limit = 500, offset = 0)
-                .mapNotNull { it.track?.uri?.takeIf { uri -> uri.isNotBlank() } }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to inspect sendspin queue before startup restore: ${e.message}")
-            emptyList()
-        }
-
-        lastKnownSendspinQueueTrackUris = if (currentQueueUris.isNotEmpty()) {
-            currentQueueUris
-        } else {
-            snapshotQueueUris
-        }
-        resumeTrackUri = snapshotTrackUri
-        resumePositionSeconds = snapshotPositionSeconds
-        Log.d(TAG, "Startup snapshot loaded (${lastKnownSendspinQueueTrackUris.size} tracks, no playback triggered)")
-    }
-
-    // endregion
-
-    // region Reconnect storm detection
-
-    private fun registerReconnectDrop(nowMs: Long = System.currentTimeMillis()) {
-        synchronized(reconnectDropLock) {
-            reconnectDropTimestampsMs.addLast(nowMs)
-            while (reconnectDropTimestampsMs.isNotEmpty() &&
-                nowMs - reconnectDropTimestampsMs.first() > RECONNECT_STORM_WINDOW_MS
-            ) {
-                reconnectDropTimestampsMs.removeFirst()
-            }
-            if (reconnectDropTimestampsMs.size >= RECONNECT_STORM_THRESHOLD) {
-                reconnectCooldownUntilMs = maxOf(reconnectCooldownUntilMs, nowMs + RECONNECT_COOLDOWN_MS)
-                Log.w(
-                    TAG,
-                    "Reconnect storm detected (${reconnectDropTimestampsMs.size} drops in ${RECONNECT_STORM_WINDOW_MS}ms), " +
-                            "cooling down for ${RECONNECT_COOLDOWN_MS}ms"
-                )
-                reconnectDropTimestampsMs.clear()
-            }
-        }
-    }
-
-    private suspend fun waitForReconnectCooldownIfNeeded() {
-        val remainingMs = reconnectCooldownUntilMs - System.currentTimeMillis()
-        if (remainingMs > 0) {
-            Log.w(TAG, "Reconnect cooldown active, delaying auto-resume by ${remainingMs}ms")
-            delay(remainingMs)
-        }
-    }
 
     // endregion
 

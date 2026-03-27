@@ -35,9 +35,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
-        private val KEY_SENDSPIN_SNAPSHOT_TRACK_URI = stringPreferencesKey("sendspin_snapshot_track_uri")
-        private val KEY_SENDSPIN_SNAPSHOT_POSITION = stringPreferencesKey("sendspin_snapshot_position")
-        private val KEY_SENDSPIN_SNAPSHOT_QUEUE = stringPreferencesKey("sendspin_snapshot_queue")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -134,49 +131,6 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinClientId(clientId: String) {
         context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
-    }
-
-    override val sendspinSnapshotTrackUri: Flow<String?> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_SNAPSHOT_TRACK_URI]
-    }
-
-    override val sendspinSnapshotPositionSeconds: Flow<Double> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_SNAPSHOT_POSITION]?.toDoubleOrNull() ?: 0.0
-    }
-
-    override val sendspinSnapshotQueueUris: Flow<List<String>> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_SNAPSHOT_QUEUE]
-            ?.split("\n")
-            ?.map { it.trim() }
-            ?.filter { it.isNotBlank() }
-            ?: emptyList()
-    }
-
-    override suspend fun setSendspinSnapshot(
-        trackUri: String?,
-        positionSeconds: Double,
-        queueUris: List<String>
-    ) {
-        context.dataStore.edit {
-            if (!trackUri.isNullOrBlank()) it[KEY_SENDSPIN_SNAPSHOT_TRACK_URI] = trackUri
-            else it.remove(KEY_SENDSPIN_SNAPSHOT_TRACK_URI)
-            it[KEY_SENDSPIN_SNAPSHOT_POSITION] = positionSeconds.coerceAtLeast(0.0).toString()
-            val encodedQueue = queueUris
-                .map { uri -> uri.trim() }
-                .filter { uri -> uri.isNotBlank() }
-                .distinct()
-                .joinToString("\n")
-            if (encodedQueue.isNotBlank()) it[KEY_SENDSPIN_SNAPSHOT_QUEUE] = encodedQueue
-            else it.remove(KEY_SENDSPIN_SNAPSHOT_QUEUE)
-        }
-    }
-
-    override suspend fun clearSendspinSnapshot() {
-        context.dataStore.edit {
-            it.remove(KEY_SENDSPIN_SNAPSHOT_TRACK_URI)
-            it.remove(KEY_SENDSPIN_SNAPSHOT_POSITION)
-            it.remove(KEY_SENDSPIN_SNAPSHOT_QUEUE)
-        }
     }
 
     override val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>> = safeData.map { prefs ->
