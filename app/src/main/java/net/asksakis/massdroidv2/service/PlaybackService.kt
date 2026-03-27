@@ -287,11 +287,6 @@ class PlaybackService : MediaLibraryService() {
                 .collect { (formatName, isWifi, playerId) ->
                     val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)
                     val apiValue = format.toApiValue(isWifi)
-                    val isStreaming = sendspinController?.isStreaming == true
-                    if (isStreaming) {
-                        Log.d(TAG, "Audio format: $format, wifi=$isWifi -> $apiValue (deferred, streaming)")
-                        return@collect
-                    }
                     Log.d(TAG, "Audio format: $format, wifi=$isWifi, sending $apiValue")
                     try {
                         playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))

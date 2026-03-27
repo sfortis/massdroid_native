@@ -560,9 +560,10 @@ private fun NowPlayingLandscape(
 @Composable
 private fun AudioQualityBadges(
     audioFormat: AudioFormatInfo?,
+    outputCodec: String? = null,
     compact: Boolean = false
 ) {
-    val badges = remember(audioFormat) { buildAudioQualityBadges(audioFormat) }
+    val badges = remember(audioFormat, outputCodec) { buildAudioQualityBadges(audioFormat, outputCodec) }
     if (badges.isEmpty()) return
 
     Row(
@@ -639,7 +640,11 @@ private fun QualityActionRow(
                     )
                 }
             }
-            AudioQualityBadges(audioFormat = audioFormat, compact = compact)
+            val streamCodec by viewModel.sendspinStreamCodec.collectAsStateWithLifecycle(initialValue = null)
+            val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
+            val selectedPlayer by viewModel.selectedPlayer.collectAsStateWithLifecycle()
+            val outputCodec = if (ssClientId != null && selectedPlayer?.playerId == ssClientId) streamCodec else null
+            AudioQualityBadges(audioFormat = audioFormat, outputCodec = outputCodec, compact = compact)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
                 IconButton(
@@ -810,23 +815,34 @@ private fun SyncedLyricsContent(lrc: String, elapsedTimeMs: Long) {
     }
 }
 
-private fun buildAudioQualityBadges(audioFormat: AudioFormatInfo?): List<String> {
-    if (audioFormat == null) return emptyList()
+private fun buildAudioQualityBadges(audioFormat: AudioFormatInfo?, outputCodec: String? = null): List<String> {
+    if (audioFormat == null && outputCodec == null) return emptyList()
 
-    val codec = audioFormat.contentType
+    val sourceCodec = audioFormat?.contentType
         ?.replace('_', ' ')
         ?.uppercase()
         ?.takeIf { it.isNotBlank() && it != "?" }
 
     val qualityLabel = when {
-        (audioFormat.bitDepth ?: 0) >= 24 -> "HQ"
-        (audioFormat.contentType ?: "").equals("flac", ignoreCase = true) -> "HQ"
-        (audioFormat.bitRate ?: 0) >= 900_000 -> "HQ"
-        else -> "LQ"
+        (audioFormat?.bitDepth ?: 0) >= 24 -> "HQ"
+        (audioFormat?.contentType ?: "").equals("flac", ignoreCase = true) -> "HQ"
+        (audioFormat?.bitRate ?: 0) >= 900_000 -> "HQ"
+        audioFormat != null -> "LQ"
+        else -> null
     }
 
-    val primary = listOfNotNull(qualityLabel, codec).joinToString(" • ").ifBlank { null }
-    return listOfNotNull(primary)
+    val parts = mutableListOf<String>()
+    if (qualityLabel != null) parts += qualityLabel
+    if (sourceCodec != null && outputCodec != null && sourceCodec != outputCodec) {
+        parts += "$sourceCodec \u2192 $outputCodec"
+    } else if (sourceCodec != null) {
+        parts += sourceCodec
+    } else if (outputCodec != null) {
+        parts += outputCodec
+    }
+
+    val badge = parts.joinToString(" \u2022 ").ifBlank { null }
+    return listOfNotNull(badge)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

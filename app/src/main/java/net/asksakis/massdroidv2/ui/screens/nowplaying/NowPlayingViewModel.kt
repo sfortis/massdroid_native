@@ -36,7 +36,8 @@ class NowPlayingViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val wsClient: MaWebSocketClient,
-    private val lyricsProvider: LyricsProvider
+    private val lyricsProvider: LyricsProvider,
+    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
@@ -45,6 +46,7 @@ class NowPlayingViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+    val sendspinStreamCodec = sendspinManager.streamCodec
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())

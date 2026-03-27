@@ -32,6 +32,9 @@ class SendspinManager(
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
+    private val _streamCodec = MutableStateFlow<String?>(null)
+    val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
+
     private var currentVolume = 100
     private var muted = false
     private var clientId: String = ""
@@ -114,6 +117,7 @@ class SendspinManager(
                         "codecHeader=${info.codecHeader != null}")
                 audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader)
                 audio.setVolume(if (muted) 0f else currentVolume / 100f)
+                _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
             }
 
@@ -199,6 +203,7 @@ class SendspinManager(
         client.disconnect()
         audio.release()
         _connectionState.value = SendspinState.DISCONNECTED
+        _streamCodec.value = null
         Log.d(TAG, "Sendspin stopped")
     }
 }
