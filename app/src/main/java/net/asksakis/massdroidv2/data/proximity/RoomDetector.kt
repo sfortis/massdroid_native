@@ -30,6 +30,11 @@ sealed interface DetectResult {
 /** Room classifier using weighted Gaussian likelihood scoring over anchor fingerprints. */
 @Singleton
 class RoomDetector @Inject constructor() {
+    data class WifiMatchContext(
+        val bssid: String? = null,
+        val ssid: String? = null
+    )
+
     private data class WifiOverrideMatch(
         val room: RoomConfig,
         val detected: DetectedRoom,
@@ -64,8 +69,8 @@ class RoomDetector @Inject constructor() {
         scanResults: Map<String, Int>,
         config: ProximityConfig,
         motionActive: Boolean = false,
-        currentBssid: String? = null
-    ): DetectedRoom? = when (val result = detectDetailed(scanResults, config, motionActive, currentBssid)) {
+        wifi: WifiMatchContext = WifiMatchContext()
+    ): DetectedRoom? = when (val result = detectDetailed(scanResults, config, motionActive, wifi)) {
         is DetectResult.Confirmed -> result.room
         else -> null
     }
@@ -74,18 +79,18 @@ class RoomDetector @Inject constructor() {
         scanResults: Map<String, Int>,
         config: ProximityConfig,
         motionActive: Boolean = false,
-        currentBssid: String? = null,
+        wifi: WifiMatchContext = WifiMatchContext(),
         commitRoomChange: Boolean = true
     ): DetectResult {
         assertMainThread()
         if (suppressed || config.rooms.isEmpty()) return DetectResult.NoDecision
-        resolveWifiOverride(config.rooms, currentBssid)?.let { match ->
+        resolveWifiOverride(config.rooms, wifi)?.let { match ->
             consecutiveWinnerId = match.room.id
             consecutiveWinCount = maxOf(consecutiveWinCount, 1)
             if (commitRoomChange) {
                 _currentRoom.value = match.detected
             }
-            Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via $currentBssid")
+            Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via ${wifi.bssid ?: wifi.ssid ?: "unknown"}")
             return if (match.changed) DetectResult.Confirmed(match.detected) else DetectResult.NoDecision
         }
 
@@ -102,7 +107,7 @@ class RoomDetector @Inject constructor() {
             eligibleRooms = eligibleRooms,
             scanResults = scanResults,
             roomPrimaryBleAnchors = roomPrimaryBleAnchors,
-            currentBssid = currentBssid
+            wifi = wifi
         )
 
         if (roomFits.isEmpty()) {
@@ -196,17 +201,24 @@ class RoomDetector @Inject constructor() {
 
     private fun resolveWifiOverride(
         rooms: List<RoomConfig>,
-        currentBssid: String?
+        wifi: WifiMatchContext
     ): WifiOverrideMatch? {
-        val wifiOnlyMatches = rooms.filter { room ->
-            room.stickToConnectedWifi &&
-                room.connectedBssid != null &&
-                currentBssid != null &&
-                room.connectedBssid == currentBssid
+        val exactBssidMatches = rooms.filter { room -> room.matchesWifi(wifi, allowSsidFallback = false) }
+        val wifiOnlyMatches = if (exactBssidMatches.isNotEmpty()) {
+            exactBssidMatches
+        } else {
+            rooms.filter { room -> room.matchesWifi(wifi, allowSsidFallback = true) }
         }
         if (wifiOnlyMatches.isEmpty()) return null
         if (wifiOnlyMatches.size > 1) {
-            Log.w(TAG, "Multiple rooms matched connected Wi-Fi AP $currentBssid: ${wifiOnlyMatches.joinToString { it.name }}")
+            val currentRoomMatch = wifiOnlyMatches.find { it.id == _currentRoom.value?.roomId }
+            if (currentRoomMatch == null) {
+                Log.w(
+                    TAG,
+                    "Multiple rooms matched connected Wi-Fi ${wifi.bssid ?: wifi.ssid}: ${wifiOnlyMatches.joinToString { it.name }}"
+                )
+                return null
+            }
         }
         val winnerRoom = wifiOnlyMatches.find { it.id == _currentRoom.value?.roomId } ?: wifiOnlyMatches.first()
         return WifiOverrideMatch(
@@ -238,7 +250,7 @@ class RoomDetector @Inject constructor() {
         eligibleRooms: List<RoomConfig>,
         scanResults: Map<String, Int>,
         roomPrimaryBleAnchors: Map<String, Set<String>>,
-        currentBssid: String?
+        wifi: WifiMatchContext
     ): List<RoomFit> {
         val roomFits = mutableListOf<RoomFit>()
         for (room in eligibleRooms) {
@@ -247,7 +259,7 @@ class RoomDetector @Inject constructor() {
             if (bleMatched < room.detectionPolicy.rules().minBleCoverage) continue
 
             val fit = RoomFitScorer.score(room.id, scanResults, room.beaconProfiles, primaryAnchors)
-            roomFits.add(fit.copy(score = adjustedRoomScore(room, fit.score, currentBssid)))
+            roomFits.add(fit.copy(score = adjustedRoomScore(room, fit.score, wifi)))
         }
         return roomFits
     }
@@ -255,14 +267,29 @@ class RoomDetector @Inject constructor() {
     private fun adjustedRoomScore(
         room: RoomConfig,
         rawScore: Double,
-        currentBssid: String?
+        wifi: WifiMatchContext
     ): Double {
         val stayAdjustedScore = if (_currentRoom.value?.roomId == room.id) rawScore * STAY_BIAS_FACTOR else rawScore
         return when {
-            room.connectedBssid == null || currentBssid == null -> stayAdjustedScore
-            room.connectedBssid == currentBssid -> stayAdjustedScore + 0.05
+            room.matchesWifi(wifi, allowSsidFallback = false) -> stayAdjustedScore + 0.05
+            room.matchesWifi(wifi, allowSsidFallback = true) -> stayAdjustedScore + 0.03
+            wifi.bssid == null && wifi.ssid == null -> stayAdjustedScore
             else -> stayAdjustedScore - 0.05
         }
+    }
+
+    private fun RoomConfig.matchesWifi(
+        wifi: WifiMatchContext,
+        allowSsidFallback: Boolean
+    ): Boolean {
+        if (!stickToConnectedWifi) return false
+        if (!connectedBssid.isNullOrBlank() && !wifi.bssid.isNullOrBlank() && connectedBssid.equals(wifi.bssid, ignoreCase = true)) {
+            return true
+        }
+        if (!allowSsidFallback) return false
+        return !connectedSsid.isNullOrBlank() &&
+            !wifi.ssid.isNullOrBlank() &&
+            connectedSsid.equals(wifi.ssid, ignoreCase = true)
     }
 
     private fun RoomConfig.toDetectedRoom(): DetectedRoom =

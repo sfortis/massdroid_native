@@ -96,6 +96,7 @@ data class RoomConfig(
     val detectionPolicy: DetectionPolicy = DetectionPolicy.STRICT,
     val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig(),
     val connectedBssid: String? = null,
+    val connectedSsid: String? = null,
     val stickToConnectedWifi: Boolean = false
 )
 

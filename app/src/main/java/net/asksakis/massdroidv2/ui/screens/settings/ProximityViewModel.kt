@@ -204,7 +204,7 @@ class ProximityViewModel @Inject constructor(
                 }
 
                 val devices = scanner.scanOnce(lowPower = false)
-                val connectedBssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
+                val connectedBssid = scanner.readConnectedWifiInfo()?.bssid
                 val rankedProfiles = rankBeaconProfilesForDetection(
                     room.beaconProfiles.filter { !it.anchorKey.startsWith("wifi:") }
                 )
@@ -325,9 +325,12 @@ class ProximityViewModel @Inject constructor(
                     Log.d(TAG, "  $addr seen=$seen name=${name ?: "(unnamed)"} cat=$cat addr=$addrType")
                 }
 
-                val wifiSnapshot = scanner.readWifiSnapshot()
-                val bssid = wifiSnapshot.keys.firstOrNull()?.removePrefix("wifi:")
-                if (bssid != null) Log.d(TAG, "Connected WiFi BSSID: $bssid")
+                val connectedWifi = scanner.readConnectedWifiInfo()
+                val bssid = connectedWifi?.bssid
+                val ssid = connectedWifi?.ssid
+                if (bssid != null) {
+                    Log.d(TAG, "Connected WiFi BSSID: $bssid${ssid?.let { " ($it)" } ?: ""}")
+                }
 
                 // Accept stable addresses normally, and allow private-address devices
                 // only when they look empirically stable enough for room anchoring.
@@ -354,7 +357,14 @@ class ProximityViewModel @Inject constructor(
                     if (bssid != null) {
                         configStore.update { cfg ->
                             cfg.copy(rooms = cfg.rooms.map { r ->
-                                if (r.id == roomId) r.copy(connectedBssid = bssid) else r
+                                if (r.id == roomId) {
+                                    r.copy(
+                                        connectedBssid = bssid,
+                                        connectedSsid = ssid ?: r.connectedSsid
+                                    )
+                                } else {
+                                    r
+                                }
                             })
                         }
                     }
@@ -381,8 +391,13 @@ class ProximityViewModel @Inject constructor(
                     configStore.update { cfg ->
                         val updated = cfg.rooms.map { r ->
                             if (r.id != roomId) return@map r
-                            r.copy(fingerprints = fingerprints, beaconProfiles = profiles,
-                                calibrationQuality = quality, connectedBssid = bssid ?: r.connectedBssid)
+                            r.copy(
+                                fingerprints = fingerprints,
+                                beaconProfiles = profiles,
+                                calibrationQuality = quality,
+                                connectedBssid = bssid ?: r.connectedBssid,
+                                connectedSsid = ssid ?: r.connectedSsid
+                            )
                         }
                         cfg.copy(rooms = updated)
                     }
@@ -424,7 +439,8 @@ class ProximityViewModel @Inject constructor(
         val categories: Map<String, ProximityScanner.DeviceCategory>,
         val anchorTypes: Map<String, AnchorType> = emptyMap(),
         val addressTypes: Map<String, ProximityScanner.AddressType> = emptyMap(),
-        val connectedBssid: String? = null
+        val connectedBssid: String? = null,
+        val connectedSsid: String? = null
     )
 
     data class TuningResult(
@@ -482,10 +498,24 @@ class ProximityViewModel @Inject constructor(
                     }
                 }
 
-                val bssid = scanner.readWifiSnapshot().keys.firstOrNull()?.removePrefix("wifi:")
-                val training = RoomTrainingData(roomId, roomName, rawScans, nameMap, categoryMap, anchorTypeMap, addrTypeMap, bssid)
+                val connectedWifi = scanner.readConnectedWifiInfo()
+                val training = RoomTrainingData(
+                    roomId = roomId,
+                    roomName = roomName,
+                    rawScans = rawScans,
+                    names = nameMap,
+                    categories = categoryMap,
+                    anchorTypes = anchorTypeMap,
+                    addressTypes = addrTypeMap,
+                    connectedBssid = connectedWifi?.bssid,
+                    connectedSsid = connectedWifi?.ssid
+                )
                 _tuningSnapshots.value = _tuningSnapshots.value + training
-                Log.d(TAG, "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices, wifi=${bssid ?: "none"}")
+                Log.d(
+                    TAG,
+                    "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices, " +
+                        "wifi=${connectedWifi?.bssid ?: "none"}${connectedWifi?.ssid?.let { " ($it)" } ?: ""}"
+                )
                 onDone()
             } finally {
                 _autoFingerprintProgress.value = null
@@ -559,9 +589,13 @@ class ProximityViewModel @Inject constructor(
                                 "w=${String.format("%.2f", p.weight)}")
                         }
 
-                        room.copy(fingerprints = fingerprints, beaconProfiles = profiles,
+                        room.copy(
+                            fingerprints = fingerprints,
+                            beaconProfiles = profiles,
                             calibrationQuality = quality,
-                            connectedBssid = training.connectedBssid ?: room.connectedBssid)
+                            connectedBssid = training.connectedBssid ?: room.connectedBssid,
+                            connectedSsid = training.connectedSsid ?: room.connectedSsid
+                        )
                     }
                     config.copy(rooms = updatedRooms)
                 }

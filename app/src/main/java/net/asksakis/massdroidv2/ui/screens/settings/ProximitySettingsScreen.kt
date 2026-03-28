@@ -77,8 +77,10 @@ fun ProximitySettingsScreen(
     val config by viewModel.config.collectAsStateWithLifecycle()
     val currentRoom by viewModel.currentRoom.collectAsStateWithLifecycle()
     val players by viewModel.players.collectAsStateWithLifecycle()
-    val missingSpeakerRooms = remember(config.rooms, players) {
-        config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
+    val canEvaluateMissingSpeakers = players.isNotEmpty()
+    val missingSpeakerRooms = remember(config.rooms, players, canEvaluateMissingSpeakers) {
+        if (!canEvaluateMissingSpeakers) emptyList()
+        else config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
     }
     var deleteTarget by remember { mutableStateOf<RoomConfig?>(null) }
     var showTuningWizard by remember { mutableStateOf(false) }
@@ -141,7 +143,8 @@ fun ProximitySettingsScreen(
                 headlineContent = { Text("Enable Follow Me") },
                 supportingContent = {
                     Text(
-                        if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
+                        if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
+                        else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
                         else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
                         else "Detect room changes and control speaker hand-offs."
                     )
@@ -225,7 +228,7 @@ fun ProximitySettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (missingSpeakerRooms.isNotEmpty()) {
+                if (canEvaluateMissingSpeakers && missingSpeakerRooms.isNotEmpty()) {
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -276,6 +279,7 @@ fun ProximitySettingsScreen(
                         RoomCard(
                             room = room,
                             players = players,
+                            canEvaluateMissingPlayer = canEvaluateMissingSpeakers,
                             isCurrentRoom = currentRoom?.roomId == room.id,
                             onEdit = { onSetupRoom(room.id) },
                             onDelete = { deleteTarget = room }
@@ -647,13 +651,14 @@ private fun TimePickerDialog(
 private fun RoomCard(
     room: RoomConfig,
     players: List<Player>,
+    canEvaluateMissingPlayer: Boolean,
     isCurrentRoom: Boolean = false,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val livePlayer = players.find { it.playerId == room.playerId }
     val playerLabel = livePlayer?.displayName ?: room.playerName
-    val isMissingPlayer = livePlayer == null
+    val isMissingPlayer = canEvaluateMissingPlayer && livePlayer == null
 
     Card(
         modifier = Modifier

@@ -40,6 +40,11 @@ private val MULTISPACE_REGEX = Regex("\\s+")
 class ProximityScanner @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    data class ConnectedWifiInfo(
+        val bssid: String,
+        val ssid: String?,
+        val rssi: Int
+    )
     enum class DeviceCategory { STATIONARY, MOBILE, UNKNOWN }
     enum class AddressType { PUBLIC, RANDOM_STATIC, RPA, NRPA, AMBIGUOUS }
 
@@ -397,26 +402,36 @@ class ProximityScanner @Inject constructor(
         awaitClose { try { context.unregisterReceiver(receiver) } catch (_: Exception) { } }
     }
 
-    /** Get connected WiFi AP BSSID + RSSI. No scanning needed. */
+    /** Get connected WiFi AP BSSID/SSID + RSSI. No scanning needed. */
     @SuppressLint("MissingPermission")
-    fun readWifiSnapshot(): Map<String, Int> {
+    fun readConnectedWifiInfo(): ConnectedWifiInfo? {
         val wifiManager = context.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-            ?: return emptyMap()
+            ?: return null
         return try {
             @Suppress("DEPRECATION")
             val info = wifiManager.connectionInfo
             val bssid = info?.bssid
             val rssi = info?.rssi ?: -100
             if (bssid != null && bssid != INVALID_WIFI_BSSID && rssi > MIN_CONNECTED_WIFI_RSSI) {
-                mapOf("wifi:$bssid" to rssi)
+                ConnectedWifiInfo(
+                    bssid = bssid,
+                    ssid = info?.ssid
+                        ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
+                        ?.trim('"'),
+                    rssi = rssi
+                )
             } else {
-                emptyMap()
+                null
             }
         } catch (e: SecurityException) {
             Log.w(TAG, "WiFi: permission denied: ${e.message}")
-            emptyMap()
+            null
         }
     }
+
+    /** Get connected WiFi AP BSSID + RSSI. No scanning needed. */
+    fun readWifiSnapshot(): Map<String, Int> =
+        readConnectedWifiInfo()?.let { mapOf("wifi:${it.bssid}" to it.rssi) } ?: emptyMap()
 
 
     @kotlin.OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
