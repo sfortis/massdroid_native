@@ -7,11 +7,11 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 - **Follow Me**: Walk between rooms and your music follows. Detects which room you are in using nearby Bluetooth devices and automatically transfers playback to the right speaker.
-- **Smarter detection**: Improved room matching with signal smoothing, better scoring, and faster response to movement.
-- **Per-room settings**: Assign a player, playlist, volume level, and detection sensitivity to each room.
+- **Smarter detection**: Improved room-fit scoring, cleaner BLE anchor matching, and faster response to movement.
+- **Per-room settings**: Assign a player, playlist, volume level, and detection mode to each room.
 - **Calibration wizard**: Guided room calibration with quality feedback so you know when a room is ready.
 - **WiFi location awareness**: Prevents false room detection when you are at a different location (e.g. office vs home).
-- **Time schedule**: Set active days and hours so Follow Me only runs when you need it.
+- **Time schedule**: Set active days and times so Follow Me only runs when you need it.
 - **Start Song Radio**: Start a radio station based on the currently playing track, directly from the player menu.
 - **Save queue to playlist**: Save your current queue as a new or existing playlist, with duplicate detection.
 - **Redesigned Players screen**: Richer player cards with room badges and streamlined controls.
@@ -54,10 +54,10 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 Walk between rooms and your music follows you. MassDroid uses BLE fingerprinting to detect which room you are in and automatically transfer playback or notify you to switch speakers.
 
-- **BLE Room Detection** : Scans nearby Bluetooth devices (TVs, speakers, routers, IoT) and matches their signal pattern against calibrated room fingerprints using k-NN classification.
+- **BLE Room Detection** : Scans nearby Bluetooth devices (TVs, speakers, routers, IoT) and compares the live BLE anchor snapshot against calibrated room fingerprints using room-fit scoring.
 - **Per-Room Configuration** : Assign a Music Assistant player to each room, set a preferred playlist for auto-play, configure volume level, and toggle shuffle.
-- **Calibration Wizard** : Walk through each room while the app collects 10 BLE scans, builds weighted fingerprints, and computes beacon profiles with quality assessment (Good/Weak).
-- **Time Schedule** : Set active days and hours so proximity detection only runs when you want it.
+- **Calibration Wizard** : Walk through each room while the app collects 20 BLE sampling windows, builds anchor fingerprints, and computes beacon profiles with quality assessment (Good/Weak).
+- **Time Schedule** : Set active days and times so proximity detection only runs when you want it.
 - **Auto-Transfer** : Optionally transfer the queue automatically without notification when you change rooms.
 - **Screen-Off Detection** : Works with screen off using PendingIntent BLE scans (OS-managed, no wake locks).
 - **Motion Gating** : Sensor hub (significant motion + step detector) triggers scans only when you are actually moving, saving battery.
@@ -80,7 +80,7 @@ To get reliable room detection, treat each room like a BLE fingerprinting proble
 
 MassDroid includes a few built-in tools to help you tune room detection without guessing:
 
-- **Calibration Data** : Shows the saved room fingerprint, number of beacons, number of samples, and whether the room currently looks `Good` or `Weak`.
+- **Calibration Data** : Shows the saved room fingerprint, anchor profiles, sample count, and whether the room currently looks `Good` or `Weak`.
 - **Recalibrate** : Rebuilds the room fingerprint from fresh BLE scans. Use this after moving devices or if a room keeps misdetecting.
 - **Inspect BLE** : Runs a high-accuracy BLE scan and shows:
   - which devices Follow Me would use as room anchors right now
