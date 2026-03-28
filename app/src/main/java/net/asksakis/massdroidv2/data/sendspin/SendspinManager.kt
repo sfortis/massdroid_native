@@ -18,13 +18,21 @@ class SendspinManager(
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
+        private const val TIME_SYNC_INTERVAL_MS = 1000L
+        private const val TIME_SYNC_SAMPLES = 8
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var heartbeatJob: Job? = null
+    private var timeSyncJob: Job? = null
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
     private var stateJob: Job? = null
+
+    // Clock sync: offset = server_clock - local_clock (microseconds)
+    private val offsetSamples = mutableListOf<Long>()
+    @Volatile var clockOffsetUs: Long = 0L; private set
+    @Volatile var clockSynced: Boolean = false; private set
 
     private val _connectionState = MutableStateFlow(SendspinState.DISCONNECTED)
     val connectionState: StateFlow<SendspinState> = _connectionState.asStateFlow()
@@ -76,6 +84,7 @@ class SendspinManager(
                 if (binaryCount <= 3 || binaryCount % 1000 == 0) {
                     Log.d(TAG, "Binary message #$binaryCount: ${data.size} bytes")
                 }
+                audio.clockOffsetUs = clockOffsetUs
                 audio.onBinaryMessage(data)
             }
         }
@@ -101,10 +110,25 @@ class SendspinManager(
                 client.updateState(SendspinState.SYNCING)
                 client.sendClientState(volume = currentVolume, muted = muted)
                 startHeartbeat()
+                startTimeSync()
             }
 
             is SendspinIncoming.ServerTime -> {
-                // Time sync not used on mobile (unreliable)
+                val now = System.nanoTime() / 1000 // local monotonic microseconds
+                val t1 = incoming.payload.clientTransmitted
+                val t2 = incoming.payload.serverReceived
+                val t3 = incoming.payload.serverTransmitted
+                val t4 = now
+                val offset = ((t2 - t1) + (t3 - t4)) / 2
+                synchronized(offsetSamples) {
+                    offsetSamples.add(offset)
+                    if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeFirst()
+                    clockOffsetUs = offsetSamples.sorted()[offsetSamples.size / 2] // median
+                    clockSynced = offsetSamples.size >= 3
+                }
+                if (offsetSamples.size <= 3 || offsetSamples.size % 8 == 0) {
+                    Log.d(TAG, "Clock sync: offset=${clockOffsetUs}us, samples=${offsetSamples.size}")
+                }
             }
 
             is SendspinIncoming.GroupUpdate -> {
@@ -172,6 +196,21 @@ class SendspinManager(
         }
     }
 
+    private fun startTimeSync() {
+        timeSyncJob?.cancel()
+        synchronized(offsetSamples) {
+            offsetSamples.clear()
+            clockSynced = false
+        }
+        timeSyncJob = scope.launch {
+            while (true) {
+                val clientTimeUs = System.nanoTime() / 1000
+                client.sendTimeRequest(clientTimeUs)
+                delay(TIME_SYNC_INTERVAL_MS)
+            }
+        }
+    }
+
     fun pauseAudio() {
         audio.setPaused(true)
     }
@@ -193,10 +232,12 @@ class SendspinManager(
     fun stop() {
         _enabled.value = false
         heartbeatJob?.cancel()
+        timeSyncJob?.cancel()
         messageJob?.cancel()
         binaryJob?.cancel()
         stateJob?.cancel()
         heartbeatJob = null
+        timeSyncJob = null
         messageJob = null
         binaryJob = null
         stateJob = null

@@ -33,9 +33,14 @@ class AudioStreamManager {
     private var activeCodec = "opus"
     private var activeBitDepth = 16
 
-    private val pcmQueue = ConcurrentLinkedQueue<ByteArray>()
+    private data class TimestampedChunk(val playAtUs: Long, val pcm: ByteArray)
+
+    private val pcmQueue = ConcurrentLinkedQueue<TimestampedChunk>()
     private val pcmQueueBytes = AtomicLong(0)
     private var playbackThread: Thread? = null
+    @Volatile var clockOffsetUs: Long = 0L
+    @Volatile private var lastEnqueuedTimestampUs = 0L
+    @Volatile private var pendingStreamRestart = false
 
     private var activeSampleRate = 0
     private var activeChannels = 0
@@ -52,18 +57,38 @@ class AudioStreamManager {
             if (configured && codecName == activeCodec && sampleRate == activeSampleRate
                 && channels == activeChannels && bitDepth == activeBitDepth
             ) {
-                // Same codec: keep pipeline but clear buffer (new stream = new position)
-                pcmQueue.clear()
-                pcmQueueBytes.set(0)
-                playbackStarted = false
-                audioTrack?.pause()
-                audioTrack?.flush()
+                // Same codec: keep pipeline + buffer, check timestamp continuity on next frame
+                pendingStreamRestart = true
                 codec?.flush()
                 frameCount = 0
                 decodedFrameCount = 0
-                Log.d(TAG, "Same codec, buffer cleared for new stream ($codecName ${sampleRate}Hz/${bitDepth}bit)")
+                Log.d(TAG, "Same codec stream restart, checking timestamp continuity ($codecName)")
                 return
             }
+            // Codec change: rebuild decoder only, keep AudioTrack + PCM buffer
+            val codecOnly = configured && sampleRate == activeSampleRate && channels == activeChannels
+            if (codecOnly) {
+                try { codec?.stop() } catch (_: Exception) {}
+                try { codec?.release() } catch (_: Exception) {}
+                codec = null
+                activeCodec = codecName
+                activeBitDepth = bitDepth
+                pendingStreamRestart = true
+                codec = when (codecName) {
+                    "opus" -> createOpusDecoder(sampleRate, channels, codecHeader)
+                    "flac" -> createFlacDecoder(sampleRate, channels, bitDepth, codecHeader)
+                    "pcm" -> null
+                    else -> {
+                        activeCodec = "opus"
+                        createOpusDecoder(sampleRate, channels, codecHeader)
+                    }
+                }
+                frameCount = 0
+                decodedFrameCount = 0
+                Log.d(TAG, "Codec switch $activeCodec -> $codecName, buffer preserved (${bufferDurationMs()}ms)")
+                return
+            }
+
             release_internal()
             activeCodec = codecName
             activeBitDepth = bitDepth
@@ -130,7 +155,7 @@ class AudioStreamManager {
                     if (pcmQueueBytes.get() >= PRE_FILL_BYTES) {
                         track.play()
                         playbackStarted = true
-                        Log.d(TAG, "Pre-fill complete, playback started (${pcmQueueBytes.get() / 1000}KB)")
+                        Log.d(TAG, "Pre-fill complete, playback started (${pcmQueueBytes.get() / 1000}KB, ${bufferDurationMs()}ms)")
                     } else {
                         try { Thread.sleep(1) } catch (_: InterruptedException) { break }
                         continue
@@ -138,9 +163,10 @@ class AudioStreamManager {
                 }
                 val chunk = pcmQueue.poll()
                 if (chunk != null) {
-                    pcmQueueBytes.addAndGet(-chunk.size.toLong())
+                    pcmQueueBytes.addAndGet(-chunk.pcm.size.toLong())
                     try {
-                        track.write(chunk, 0, chunk.size)
+                        // AudioTrack.write() blocks when buffer full, providing natural pacing
+                        track.write(chunk.pcm, 0, chunk.pcm.size)
                     } catch (_: Exception) { break }
                 } else if (!playbackActive) {
                     break
@@ -154,10 +180,13 @@ class AudioStreamManager {
         }
     }
 
-    private fun enqueuePcm(pcmData: ByteArray) {
+    private var currentChunkTimestampUs = 0L
+
+    private fun enqueuePcm(playAtUs: Long, pcmData: ByteArray) {
         if (pcmQueueBytes.get() >= MAX_BUFFER_BYTES) return
-        pcmQueue.offer(pcmData)
+        pcmQueue.offer(TimestampedChunk(playAtUs, pcmData))
         pcmQueueBytes.addAndGet(pcmData.size.toLong())
+        lastEnqueuedTimestampUs = playAtUs + clockOffsetUs // store as server timestamp
     }
 
     fun bufferDurationMs(): Long = pcmQueueBytes.get() * 1000 / 192000
@@ -209,13 +238,41 @@ class AudioStreamManager {
         return header.array()
     }
 
+    private fun parseTimestampUs(data: ByteArray): Long {
+        // Bytes 1-8: big-endian int64 (server clock microseconds)
+        var ts = 0L
+        for (i in 1..8) ts = (ts shl 8) or (data[i].toLong() and 0xFF)
+        return ts
+    }
+
     fun onBinaryMessage(data: ByteArray) {
         if (!configured || !playbackActive) return
         if (data.size < HEADER_SIZE) return
 
         frameCount++
+        val serverTimestampUs = parseTimestampUs(data)
+        val playAtUs = serverTimestampUs - clockOffsetUs
         val payload = data.copyOfRange(HEADER_SIZE, data.size)
         if (payload.isEmpty()) return
+
+        // Check timestamp continuity on stream restart
+        if (pendingStreamRestart) {
+            pendingStreamRestart = false
+            val lastTs = lastEnqueuedTimestampUs
+            val gap = serverTimestampUs - lastTs
+            if (lastTs > 0 && gap in -5_000_000..5_000_000) {
+                // Continuous: keep buffer, append new frames
+                Log.d(TAG, "Timestamp continuous (gap=${gap / 1000}ms), keeping ${bufferDurationMs()}ms buffer")
+            } else {
+                // Discontinuous: new position, clear buffer
+                Log.d(TAG, "Timestamp discontinuous (gap=${gap / 1000}ms), clearing buffer")
+                pcmQueue.clear()
+                pcmQueueBytes.set(0)
+                playbackStarted = false
+                audioTrack?.pause()
+                audioTrack?.flush()
+            }
+        }
 
         if (frameCount <= 50 || frameCount % 500 == 0) {
             Log.d(TAG, "Frame #$frameCount ($activeCodec): payload=${payload.size}, buf=${bufferDurationMs()}ms")
@@ -223,9 +280,10 @@ class AudioStreamManager {
 
         if (!codecLock.tryLock()) return
         try {
+            currentChunkTimestampUs = playAtUs
             if (activeCodec == "pcm") {
                 val output = if (activeBitDepth == 24) convertPcm24To16(payload) else payload
-                enqueuePcm(output)
+                enqueuePcm(playAtUs, output)
                 decodedFrameCount++
             } else {
                 decodeAndEnqueue(payload)
@@ -270,7 +328,7 @@ class AudioStreamManager {
                             val outputBuffer = mc.getOutputBuffer(outputIndex) ?: break
                             val pcmData = ByteArray(bufferInfo.size)
                             outputBuffer.get(pcmData)
-                            enqueuePcm(pcmData)
+                            enqueuePcm(currentChunkTimestampUs, pcmData)
                             decodedFrameCount++
                         }
                         mc.releaseOutputBuffer(outputIndex, false)
