@@ -55,6 +55,7 @@ class AudioStreamManager {
     private var codec: MediaCodec? = null
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
+    private val playbackThreadLock = Any()
 
     // State
     private var configured = false
@@ -304,7 +305,10 @@ class AudioStreamManager {
     // ── Playback thread: decode + write (blocking pacing) ──
 
     private fun startPlaybackThread(track: AudioTrack) {
-        playbackThread = Thread({
+        synchronized(playbackThreadLock) {
+            val existing = playbackThread
+            if (existing?.isAlive == true) return
+            playbackThread = Thread({
             while (playbackActive || frameQueue.isNotEmpty()) {
                 // Wait for enough encoded buffer before starting
                 if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING) {
@@ -352,9 +356,10 @@ class AudioStreamManager {
                     try { Thread.sleep(1) } catch (_: InterruptedException) { break }
                 }
             }
-        }, "AudioPlayback").apply {
-            priority = Thread.MAX_PRIORITY
-            start()
+            }, "AudioPlayback").apply {
+                priority = Thread.MAX_PRIORITY
+                start()
+            }
         }
     }
 
@@ -455,9 +460,13 @@ class AudioStreamManager {
     fun setPaused(paused: Boolean) {
         if (!configured) return
         if (paused) {
-            playbackActive = false
-            try { playbackThread?.join(500) } catch (_: Exception) {}
-            playbackThread = null
+            val threadToJoin = synchronized(playbackThreadLock) {
+                if (!playbackActive && playbackThread == null) return
+                playbackActive = false
+                playbackThread?.interrupt()
+                playbackThread.also { playbackThread = null }
+            }
+            try { threadToJoin?.join(500) } catch (_: Exception) {}
             frameQueue.clear(); frameQueueBytes.set(0)
             try { audioTrack?.stop(); audioTrack?.flush() } catch (_: Exception) {}
             playbackStarted = false
@@ -540,8 +549,11 @@ class AudioStreamManager {
 
     private fun release_internal() {
         playbackActive = false; configured = false; playbackStarted = false
-        try { playbackThread?.join(500) } catch (_: Exception) {}
-        playbackThread = null
+        val threadToJoin = synchronized(playbackThreadLock) {
+            playbackThread?.interrupt()
+            playbackThread.also { playbackThread = null }
+        }
+        try { threadToJoin?.join(500) } catch (_: Exception) {}
         frameQueue.clear(); frameQueueBytes.set(0)
         synchronized(codecLock) {
             try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
