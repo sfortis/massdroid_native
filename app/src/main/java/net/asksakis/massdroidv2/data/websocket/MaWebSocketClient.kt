@@ -173,8 +173,18 @@ class MaWebSocketClient(
             .replace("http://", "ws://")
             .replace("https://", "wss://") + "/ws"
 
+        // Relax hostname verification for private/local hosts (cert may not match local hostname)
+        val host = try { java.net.URI(url).host } catch (_: Exception) { null }
+        val client = if (host != null && isPrivateHost(host)) {
+            okHttpClient.newBuilder()
+                .hostnameVerifier { _, _ -> true }
+                .build()
+        } else {
+            okHttpClient
+        }
+
         val request = Request.Builder().url(wsUrl).build()
-        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (gen != connectionGeneration) return
@@ -210,9 +220,18 @@ class MaWebSocketClient(
                 if (gen != connectionGeneration) return
                 Log.e(TAG, "WebSocket failure: ${t.message}")
                 this@MaWebSocketClient.webSocket = null
+                failAllPending("Connection lost")
+
+                if (isPermanentSslError(t)) {
+                    Log.e(TAG, "Permanent SSL/TLS error, not retrying")
+                    _connectionState.value = ConnectionState.Error(
+                        "TLS certificate mismatch. The server certificate doesn't match this hostname."
+                    )
+                    return
+                }
+
                 _connectionState.value = ConnectionState.Error(t.message ?: "Connection failed")
                 maybeResetBackoffForStableConnection()
-                failAllPending("Connection lost")
                 scheduleReconnect()
             }
         })
@@ -525,8 +544,15 @@ class MaWebSocketClient(
         .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
+    private fun isPermanentSslError(t: Throwable): Boolean {
+        val cause = t.cause ?: t
+        return cause is javax.net.ssl.SSLPeerUnverifiedException ||
+            (cause is javax.net.ssl.SSLHandshakeException &&
+                cause.message?.contains("not verified", ignoreCase = true) == true)
+    }
+
     private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".ts.net")) return true
+        if (host == "localhost" || host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".ts.net")) return true
         val parts = host.split(".")
         if (parts.size != 4) return false
         val nums = parts.mapNotNull { it.toIntOrNull() }

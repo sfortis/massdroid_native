@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.ui.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
@@ -11,13 +12,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 
 @Composable
@@ -48,12 +47,15 @@ fun MiniPlayer(
                 .height(56.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AsyncImage(
+            MediaArtwork(
                 model = imageUrl,
                 contentDescription = null,
+                fallbackIcon = Icons.Default.MusicNote,
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(MaterialTheme.shapes.small),
+                    .size(48.dp),
+                shape = MaterialTheme.shapes.small,
+                iconSize = 22.dp,
+                variant = ArtworkPlaceholderVariant.TRACK,
                 contentScale = ContentScale.Crop
             )
 

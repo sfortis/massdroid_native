@@ -5,11 +5,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -21,10 +25,19 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.CachePolicy
 import net.asksakis.massdroidv2.data.provider.ProviderManifestCache
+
+private fun artworkPlaceholderVariantForIcon(
+    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector
+): ArtworkPlaceholderVariant = when (fallbackIcon) {
+    Icons.Default.Person -> ArtworkPlaceholderVariant.ARTIST
+    Icons.Default.Album,
+    Icons.Default.Radio,
+    Icons.Default.QueueMusic -> ArtworkPlaceholderVariant.COLLECTION
+    else -> ArtworkPlaceholderVariant.TRACK
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -47,6 +60,7 @@ fun MediaItemRow(
 ) {
     val context = LocalContext.current
     val showProviderBadges = providerCache != null && providerDomains.distinct().size > 1
+    val resolvedFallbackIcon = fallbackIcon ?: Icons.Default.MusicNote
     val imageModel = remember(imageUrl, context) {
         ImageRequest.Builder(context)
             .data(imageUrl)
@@ -94,30 +108,18 @@ fun MediaItemRow(
         leadingContent = {
             Box(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(MaterialTheme.shapes.small)
-                    .then(
-                        if (imageUrl.isNullOrBlank() && fallbackIcon != null)
-                            Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
-                        else Modifier
-                    ),
+                    .size(48.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (imageUrl.isNullOrBlank() && fallbackIcon != null) {
-                    Icon(
-                        fallbackIcon,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    AsyncImage(
-                        model = imageModel,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                }
+                MediaArtwork(
+                    model = imageModel,
+                    contentDescription = null,
+                    fallbackIcon = resolvedFallbackIcon,
+                    modifier = Modifier.fillMaxSize(),
+                    shape = MaterialTheme.shapes.small,
+                    iconSize = 24.dp,
+                    variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
+                )
                 if (showEqualizer) {
                     Box(
                         modifier = Modifier
@@ -196,6 +198,7 @@ fun MediaItemGrid(
     fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
 ) {
     val context = LocalContext.current
+    val resolvedFallbackIcon = fallbackIcon ?: Icons.Default.MusicNote
     val imageModel = remember(imageUrl, context) {
         ImageRequest.Builder(context)
             .data(imageUrl)
@@ -212,35 +215,17 @@ fun MediaItemGrid(
             onLongClick = onLongClick
         )
     ) {
-        Box {
-            if (imageUrl.isNullOrBlank() && fallbackIcon != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .clip(MaterialTheme.shapes.medium)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        fallbackIcon,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                AsyncImage(
-                    model = imageModel,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .clip(MaterialTheme.shapes.medium),
-                    contentScale = ContentScale.Crop
-                )
-            }
-        }
+        MediaArtwork(
+            model = imageModel,
+            contentDescription = null,
+            fallbackIcon = resolvedFallbackIcon,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f),
+            shape = MaterialTheme.shapes.medium,
+            iconSize = 48.dp,
+            variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
+        )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = title,

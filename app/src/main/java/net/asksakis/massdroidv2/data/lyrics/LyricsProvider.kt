@@ -46,7 +46,11 @@ class LyricsProvider @Inject constructor(
         } ?: return LyricsResult(null, null).also { cache(trackUri, it) }
 
         val plain = arr.getOrNull(0)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
-        val lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
+        var lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
+        // Server may put LRC-formatted text in the plain field (embedded tags)
+        if (lrc == null && plain != null && looksLikeLrc(plain)) {
+            lrc = plain
+        }
         return LyricsResult(plain, lrc).also { cache(trackUri, it) }
     }
 
@@ -61,6 +65,13 @@ class LyricsProvider @Inject constructor(
     }
 
     companion object {
+        private val LRC_LINE_PATTERN = Regex("""\[\d+:\d+[.:]\d+]""")
+
+        fun looksLikeLrc(text: String): Boolean {
+            val firstLines = text.lineSequence().take(5).toList()
+            return firstLines.count { LRC_LINE_PATTERN.containsMatchIn(it) } >= 2
+        }
+
         fun parseLrc(lrc: String): List<LrcLine> {
             val regex = Regex("""\[(\d+):(\d+)[.:](\d+)](.*)""")
             return lrc.lines().mapNotNull { line ->

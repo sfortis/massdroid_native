@@ -279,7 +279,29 @@ class LibraryViewModel @Inject constructor(
     }
 
     private fun providerFilterArgs(): List<String>? =
-        _selectedProviders.value.takeIf { it.isNotEmpty() }?.toList()
+        selectedProviderDomains().takeIf { it.isNotEmpty() }
+
+    private fun selectedProviderDomains(): List<String> {
+        if (_selectedProviders.value.isEmpty()) return emptyList()
+        val providersForTab = providerManifestCache.musicProvidersForTab(_currentTab.value)
+        return _selectedProviders.value
+            .mapNotNull { selectedId ->
+                providersForTab.firstOrNull { it.instanceId == selectedId }?.domain
+                    ?: providersForTab.firstOrNull { it.domain == selectedId }?.domain
+            }
+            .distinct()
+    }
+
+    private fun <T> filterBySelectedProviders(
+        items: List<T>,
+        providerDomains: (T) -> List<String>
+    ): List<T> {
+        val selectedDomains = selectedProviderDomains().toSet()
+        if (selectedDomains.isEmpty()) return items
+        return items.filter { item ->
+            providerDomains(item).any { it in selectedDomains }
+        }
+    }
 
     fun toggleLibraryDisplayMode() {
         val current = _displayModes.value[_currentTab.value] ?: LibraryDisplayMode.LIST
@@ -342,7 +364,7 @@ class LibraryViewModel @Inject constructor(
                     apiResults + genreArtists.filter { seenUris.add(it.uri) }
                 } else apiResults
 
-                _artists.value = merged
+                _artists.value = filterBySelectedProviders(merged) { it.providerDomains }
                 hasMoreArtists = apiResults.size >= PAGE_SIZE
                 lastFmLibraryEnricher.enrichInBackground(apiResults)
             } catch (_: Exception) {}
@@ -356,9 +378,14 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val items = musicRepository.getArtists(
-                    search = currentSearch, limit = PAGE_SIZE, offset = _artists.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = _artists.value.size,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _artists.value = _artists.value + items
+                _artists.value = _artists.value + filterBySelectedProviders(items) { it.providerDomains }
                 hasMoreArtists = items.size >= PAGE_SIZE
                 lastFmLibraryEnricher.enrichInBackground(items)
             } catch (_: Exception) {
@@ -400,7 +427,7 @@ class LibraryViewModel @Inject constructor(
                     apiResults + genreAlbums.filter { seenUris.add(it.uri) }
                 } else apiResults
 
-                _albums.value = merged
+                _albums.value = filterBySelectedProviders(merged) { it.providerDomains }
                 hasMoreAlbums = apiResults.size >= PAGE_SIZE
             } catch (_: Exception) {}
             _isLoading.value = false
@@ -413,9 +440,14 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val items = musicRepository.getAlbums(
-                    search = currentSearch, limit = PAGE_SIZE, offset = _albums.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = _albums.value.size,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _albums.value = _albums.value + items
+                _albums.value = _albums.value + filterBySelectedProviders(items) { it.providerDomains }
                 hasMoreAlbums = items.size >= PAGE_SIZE
             } catch (_: Exception) {
             } finally {
@@ -456,7 +488,7 @@ class LibraryViewModel @Inject constructor(
                     apiResults + genreTracks.filter { seenUris.add(it.uri) }
                 } else apiResults
 
-                _tracks.value = merged
+                _tracks.value = filterBySelectedProviders(merged) { it.providerDomains }
                 hasMoreTracks = apiResults.size >= PAGE_SIZE
             } catch (_: Exception) {}
             _isLoading.value = false
@@ -469,9 +501,14 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val items = musicRepository.getTracks(
-                    search = currentSearch, limit = PAGE_SIZE, offset = _tracks.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = _tracks.value.size,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _tracks.value = _tracks.value + items
+                _tracks.value = _tracks.value + filterBySelectedProviders(items) { it.providerDomains }
                 hasMoreTracks = items.size >= PAGE_SIZE
             } catch (_: Exception) {
             } finally {
@@ -485,9 +522,14 @@ class LibraryViewModel @Inject constructor(
             _isLoading.value = true
             try {
                 val items = musicRepository.getPlaylists(
-                    search = currentSearch, limit = PAGE_SIZE, offset = 0, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = 0,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _playlists.value = items
+                _playlists.value = filterBySelectedProviders(items) { it.providerDomains }
                 hasMorePlaylists = items.size >= PAGE_SIZE
             } catch (_: Exception) {}
             _isLoading.value = false
@@ -500,9 +542,14 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val items = musicRepository.getPlaylists(
-                    search = currentSearch, limit = PAGE_SIZE, offset = _playlists.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = _playlists.value.size,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _playlists.value = _playlists.value + items
+                _playlists.value = _playlists.value + filterBySelectedProviders(items) { it.providerDomains }
                 hasMorePlaylists = items.size >= PAGE_SIZE
             } catch (_: Exception) {
             } finally {
@@ -544,7 +591,7 @@ class LibraryViewModel @Inject constructor(
                         }
                 } else libraryResults
 
-                _radios.value = merged
+                _radios.value = filterBySelectedProviders(merged) { it.providerDomains }
                 hasMoreRadios = libraryResults.size >= PAGE_SIZE
             } catch (_: Exception) {}
             _isLoading.value = false
@@ -557,9 +604,14 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val items = musicRepository.getRadios(
-                    search = currentSearch, limit = PAGE_SIZE, offset = _radios.value.size, orderBy = currentOrderBy, favoriteOnly = currentFavoriteOnly
+                    search = currentSearch,
+                    limit = PAGE_SIZE,
+                    offset = _radios.value.size,
+                    orderBy = currentOrderBy,
+                    favoriteOnly = currentFavoriteOnly,
+                    providerFilter = providerFilterArgs()
                 )
-                _radios.value = _radios.value + items
+                _radios.value = _radios.value + filterBySelectedProviders(items) { it.providerDomains }
                 hasMoreRadios = items.size >= PAGE_SIZE
             } catch (_: Exception) {
             } finally {
