@@ -908,6 +908,11 @@ class PlayerRepositoryImpl @Inject constructor(
         _playbackIntent.tryEmit(willPlay)
         playerCmd("play_pause", playerId)
     }
+
+    override fun notifyPlaybackIntent(willPlay: Boolean) {
+        _playbackIntent.tryEmit(willPlay)
+    }
+
     override suspend fun next(playerId: String) {
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))

@@ -384,7 +384,7 @@ class DiscoverViewModel @Inject constructor(
                         PlayerRepository.QueueFilterMode.SMART_GENERATED
                     )
                     lastSmartMixSelection = mixResult.tracks
-                    musicRepository.playMedia(queueId, trackUris, option = "replace")
+                    musicRepository.playMedia(queueId, trackUris, option = "play")
                 } finally {
                     if (hadDstm) {
                         musicRepository.setDontStopTheMusic(queueId, true)

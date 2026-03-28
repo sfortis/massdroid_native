@@ -141,6 +141,11 @@ class AudioStreamManager {
         if (configured && codecName == activeCodec && sampleRate == activeSampleRate
             && channels == activeChannels && bitDepth == activeBitDepth
         ) {
+            if (!playbackActive || playbackThread?.isAlive != true) {
+                playbackActive = true
+                playbackStarted = false
+                audioTrack?.let { startPlaybackThread(it) }
+            }
             pendingContinuityCheck = true
             Log.d(TAG, "Same codec stream/start, buf=${bufferDurationMs()}ms ($codecName)")
             return

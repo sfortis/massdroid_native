@@ -160,6 +160,9 @@ class MusicRepositoryImpl @Inject constructor(
         if (option == null || option == "play" || option == "replace") {
             playerRepository.get().notifyQueueReplacement(queueId)
         }
+        if (option == null || option == "play") {
+            playerRepository.get().notifyPlaybackIntent(true)
+        }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
@@ -177,6 +180,9 @@ class MusicRepositoryImpl @Inject constructor(
     ) {
         if (option == null || option == "play" || option == "replace") {
             playerRepository.get().notifyQueueReplacement(queueId)
+        }
+        if (option == null || option == "play") {
+            playerRepository.get().notifyPlaybackIntent(true)
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,

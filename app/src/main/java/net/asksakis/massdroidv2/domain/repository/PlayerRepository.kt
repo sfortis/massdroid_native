@@ -49,6 +49,7 @@ interface PlayerRepository {
     suspend fun play(playerId: String)
     suspend fun pause(playerId: String)
     suspend fun playPause(playerId: String)
+    fun notifyPlaybackIntent(willPlay: Boolean)
     suspend fun next(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
