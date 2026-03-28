@@ -30,14 +30,19 @@ class AudioStreamManager {
 
     companion object {
         private const val TAG = "AudioStream"
+        private const val DBG = "AudioSwitchDbg"
         private const val HEADER_SIZE = 9
         private const val MAX_ENCODED_BUFFER_BYTES = 8_000_000L // ~30s flac or ~minutes of opus
         private const val NORMAL_SYNC_BUFFER_MS_LOSSLESS = 2_000L
-        private const val NORMAL_SYNC_BUFFER_MS_OPUS = 1_000L
+        private const val NORMAL_SYNC_BUFFER_MS_OPUS = 1_500L
+        private const val DEFERRED_SWITCH_SYNC_BUFFER_MS_LOSSLESS = 1_500L
+        private const val DEFERRED_SWITCH_SYNC_BUFFER_MS_OPUS = 1_500L
         private const val RECOVERY_SYNC_BUFFER_MS = 5_000L
         private const val HOLDOVER_MIN_BUFFER_MS = 750L
+        private const val HOLDOVER_CODEC_SWITCH_BUFFER_MS = 2_000L
         private const val HARD_MAX_LIVE_BUFFER_MS = 6_000L
         private const val LATE_CHUNK_DROP_GRACE_MS = 120L
+        private const val STARTUP_ENQUEUE_GRACE_MS = 500L
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
@@ -45,6 +50,14 @@ class AudioStreamManager {
         override fun compareTo(other: EncodedFrame): Int =
             serverTimestampUs.compareTo(other.serverTimestampUs)
     }
+
+    private data class PendingConfigure(
+        val codecName: String,
+        val sampleRate: Int,
+        val channels: Int,
+        val bitDepth: Int,
+        val codecHeader: String?
+    )
 
     // Encoded frame queue (filled by WS thread, consumed by playback thread)
     private val frameQueue = PriorityBlockingQueue<EncodedFrame>()
@@ -56,9 +69,10 @@ class AudioStreamManager {
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
     private val playbackThreadLock = Any()
+    @Volatile private var playbackGeneration = 0L
 
     // State
-    private var configured = false
+    @Volatile private var configured = false
     @Volatile private var playbackActive = true
     @Volatile private var playbackStarted = false
     private var activeCodec = "opus"
@@ -76,6 +90,9 @@ class AudioStreamManager {
     @Volatile private var forceDiscontinuityReason = ""
     @Volatile private var requiredSyncBufferMs = NORMAL_SYNC_BUFFER_MS_LOSSLESS
     @Volatile private var lateDropCount = 0L
+    @Volatile private var enqueueLateDropGraceUntilUs = 0L
+    @Volatile private var pendingConfigure: PendingConfigure? = null
+    @Volatile private var deferredSwitchWarmStart = false
     private var presentationTimeUs = 0L
 
     // Sync state per spec
@@ -103,6 +120,11 @@ class AudioStreamManager {
 
     private fun shouldDropLateFrame(serverTimestampUs: Long): Boolean {
         return leadToLocalNowMs(serverTimestampUs) < -LATE_CHUNK_DROP_GRACE_MS
+    }
+
+    private fun shouldDropLateFrameOnEnqueue(serverTimestampUs: Long): Boolean {
+        if (nowLocalUs() < enqueueLateDropGraceUntilUs) return false
+        return shouldDropLateFrame(serverTimestampUs)
     }
 
     private fun logLateDrop(serverTimestampUs: Long, source: String) {
@@ -141,6 +163,11 @@ class AudioStreamManager {
         if (configured && codecName == activeCodec && sampleRate == activeSampleRate
             && channels == activeChannels && bitDepth == activeBitDepth
         ) {
+            Log.d(
+                DBG,
+                "configure same-codec codec=$codecName playbackActive=$playbackActive started=$playbackStarted " +
+                    "threadAlive=${playbackThread?.isAlive == true} sync=$syncState buf=${bufferDurationMs()}ms"
+            )
             if (!playbackActive || playbackThread?.isAlive != true) {
                 playbackActive = true
                 playbackStarted = false
@@ -153,11 +180,36 @@ class AudioStreamManager {
 
         // Different codec or first configure: full rebuild
         // Encoded frames from old codec can't be decoded with new codec, so clear queue
+        if (configured &&
+            codecName != activeCodec &&
+            activeCodec == "opus" &&
+            codecName == "flac" &&
+            syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER &&
+            playbackStarted &&
+            bufferDurationMs() > HOLDOVER_CODEC_SWITCH_BUFFER_MS
+        ) {
+            pendingConfigure = PendingConfigure(codecName, sampleRate, channels, bitDepth, codecHeader)
+            Log.d(
+                DBG,
+                "configure deferred oldCodec=$activeCodec newCodec=$codecName holdoverBuf=${bufferDurationMs()}ms " +
+                    "switchAt<=${HOLDOVER_CODEC_SWITCH_BUFFER_MS}ms"
+            )
+            return
+        }
+        pendingConfigure = null
+        val warmStart = deferredSwitchWarmStart
+        deferredSwitchWarmStart = false
+        Log.d(
+            DBG,
+            "configure rebuild oldCodec=${if (configured) activeCodec else "none"} newCodec=$codecName " +
+                "playbackActive=$playbackActive started=$playbackStarted sync=$syncState buf=${bufferDurationMs()}ms"
+        )
         release_internal()
         activeCodec = codecName
         activeBitDepth = bitDepth
         activeSampleRate = sampleRate
         activeChannels = channels
+        enqueueLateDropGraceUntilUs = nowLocalUs() + (STARTUP_ENQUEUE_GRACE_MS * 1000L)
 
         val channelConfig = if (channels == 2) AudioFormat.CHANNEL_OUT_STEREO
             else AudioFormat.CHANNEL_OUT_MONO
@@ -201,9 +253,18 @@ class AudioStreamManager {
         frameCount = 0
         decodedFrameCount = 0
         presentationTimeUs = 0L
-        requiredSyncBufferMs = defaultSyncBufferMs()
+        requiredSyncBufferMs = if (warmStart) {
+            if (activeCodec == "opus") DEFERRED_SWITCH_SYNC_BUFFER_MS_OPUS else DEFERRED_SWITCH_SYNC_BUFFER_MS_LOSSLESS
+        } else {
+            defaultSyncBufferMs()
+        }
         startPlaybackThread(createdAudioTrack)
         Log.d(TAG, "Pipeline: $codecName ${sampleRate}Hz/${bitDepth}bit ${channels}ch, trackBuf=$bufferSize")
+        Log.d(
+            DBG,
+            "configure ready codec=$codecName requiredSync=${requiredSyncBufferMs}ms " +
+                "playbackActive=$playbackActive started=$playbackStarted warmStart=$warmStart"
+        )
     }
 
     // ── WS callback: just enqueue encoded frame (fast, no decode) ──
@@ -230,7 +291,9 @@ class AudioStreamManager {
             discardUntilTimestampUs = 0L
         }
 
-        if (shouldDropLateFrame(serverTimestampUs)) {
+        if (pendingConfigure != null) return
+
+        if (shouldDropLateFrameOnEnqueue(serverTimestampUs)) {
             logLateDrop(serverTimestampUs, "enqueue")
             return
         }
@@ -265,6 +328,11 @@ class AudioStreamManager {
         val lastTs = lastEnqueuedTimestampUs
         val gap = serverTimestampUs - lastTs
         val bufMs = bufferDurationMs()
+        Log.d(
+            DBG,
+            "continuity codec=$activeCodec gapMs=${gap / 1000} buf=${bufMs}ms sync=$syncState " +
+                "discardUntil=${discardUntilTimestampUs / 1000}ms"
+        )
         when {
             lastTs == 0L -> {
                 Log.d(TAG, "Reconnect: first-stream")
@@ -292,6 +360,11 @@ class AudioStreamManager {
     }
 
     private fun flushForRebuffer() {
+        Log.d(
+            DBG,
+            "flushForRebuffer codec=$activeCodec sync=$syncState started=$playbackStarted " +
+                "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
+        )
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         frameQueue.clear()
         frameQueueBytes.set(0)
@@ -305,6 +378,8 @@ class AudioStreamManager {
         }
         presentationTimeUs = 0L
         estimatedFrameDurationUs = 20_000L
+        enqueueLateDropGraceUntilUs = 0L
+        lateDropCount = 0L
     }
 
     // ── Playback thread: decode + write (blocking pacing) ──
@@ -312,13 +387,45 @@ class AudioStreamManager {
     private fun startPlaybackThread(track: AudioTrack) {
         synchronized(playbackThreadLock) {
             val existing = playbackThread
-            if (existing?.isAlive == true) return
+            if (existing?.isAlive == true) {
+                Log.d(DBG, "startPlaybackThread skipped existingAlive=true codec=$activeCodec")
+                return
+            }
+            val generation = playbackGeneration
+            Log.d(
+                DBG,
+                "startPlaybackThread launch codec=$activeCodec playbackActive=$playbackActive " +
+                    "started=$playbackStarted sync=$syncState buf=${bufferDurationMs()}ms"
+            )
             playbackThread = Thread({
-            while (playbackActive || frameQueue.isNotEmpty()) {
+            while ((playbackActive || frameQueue.isNotEmpty()) && generation == playbackGeneration) {
+                val deferred = pendingConfigure
+                if (deferred != null && (frameQueue.isEmpty() || bufferDurationMs() <= HOLDOVER_CODEC_SWITCH_BUFFER_MS)) {
+                    deferredSwitchWarmStart = true
+                    Log.d(
+                        DBG,
+                        "apply deferred configure oldCodec=$activeCodec newCodec=${deferred.codecName} " +
+                        "buf=${bufferDurationMs()}ms"
+                    )
+                    configure(
+                        codecName = deferred.codecName,
+                        sampleRate = deferred.sampleRate,
+                        channels = deferred.channels,
+                        bitDepth = deferred.bitDepth,
+                        codecHeader = deferred.codecHeader
+                    )
+                    break
+                }
                 // Wait for enough encoded buffer before starting
                 if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING) {
                     if (bufferDurationMs() >= requiredSyncBufferMs) {
+                        if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
                         if (!playbackStarted) {
+                            Log.d(
+                                DBG,
+                                "playbackThread track.play codec=$activeCodec buf=${bufferDurationMs()}ms " +
+                                    "required=${requiredSyncBufferMs}ms sync=$syncState"
+                            )
                             track.play()
                             playbackStarted = true
                         }
@@ -338,7 +445,7 @@ class AudioStreamManager {
                         logLateDrop(frame.serverTimestampUs, "playout")
                         continue
                     }
-                    decodeAndWrite(frame.payload, track)
+                    decodeAndWrite(frame.payload, track, generation)
 
                     // Starvation check: no frames for >1s AND queue empty
                     val silenceMs = System.currentTimeMillis() - lastFrameReceivedMs
@@ -346,6 +453,11 @@ class AudioStreamManager {
                         (syncState == SyncState.SYNCHRONIZED || syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
                         && frameQueue.isEmpty() && silenceMs > 1000
                     ) {
+                        Log.d(
+                            DBG,
+                            "starvation codec=$activeCodec silence=${silenceMs}ms sync=$syncState " +
+                                "buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
+                        )
                         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
                         playbackStarted = false
                         synchronized(codecLock) {
@@ -368,8 +480,9 @@ class AudioStreamManager {
         }
     }
 
-    private fun decodeAndWrite(encodedData: ByteArray, track: AudioTrack) {
+    private fun decodeAndWrite(encodedData: ByteArray, track: AudioTrack, generation: Long) {
         if (activeCodec == "pcm") {
+            if (generation != playbackGeneration || track !== audioTrack || !playbackActive) return
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
             track.write(pcm, 0, pcm.size)
             decodedFrameCount++
@@ -379,6 +492,7 @@ class AudioStreamManager {
         val mc = codec ?: return
         try {
             synchronized(codecLock) {
+                if (generation != playbackGeneration || mc !== codec || track !== audioTrack || !playbackActive) return
                 val inputIndex = mc.dequeueInputBuffer(5000)
                 if (inputIndex >= 0) {
                     val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
@@ -387,27 +501,44 @@ class AudioStreamManager {
                     mc.queueInputBuffer(inputIndex, 0, encodedData.size, presentationTimeUs, 0)
                     presentationTimeUs += 20_000
                 }
+            }
 
-                // Drain all decoded PCM to AudioTrack
-                val bufferInfo = MediaCodec.BufferInfo()
-                while (true) {
+            // Drain decoded PCM, but do AudioTrack writes outside codecLock so codec
+            // flush/release on reconnect or codec switch is not blocked by paced output writes.
+            val bufferInfo = MediaCodec.BufferInfo()
+            while (true) {
+                val pcmToWrite: ByteArray? = synchronized(codecLock) {
+                    if (generation != playbackGeneration || mc !== codec || track !== audioTrack || !playbackActive) return@synchronized null
                     val outputIndex = mc.dequeueOutputBuffer(bufferInfo, 1000)
                     when {
                         outputIndex >= 0 -> {
-                            if (bufferInfo.size > 0) {
-                                val outputBuffer = mc.getOutputBuffer(outputIndex) ?: break
-                                val pcm = ByteArray(bufferInfo.size)
-                                outputBuffer.get(pcm)
-                                track.write(pcm, 0, pcm.size) // blocks when AudioTrack full = pacing
-                                decodedFrameCount++
+                            val pcm = if (bufferInfo.size > 0) {
+                                val outputBuffer = mc.getOutputBuffer(outputIndex)
+                                ByteArray(bufferInfo.size).also { out ->
+                                    if (out.isNotEmpty() && outputBuffer != null) outputBuffer.get(out)
+                                }
+                            } else {
+                                null
                             }
                             mc.releaseOutputBuffer(outputIndex, false)
+                            pcm
                         }
                         outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             val fmt = mc.outputFormat
                             Log.d(TAG, "Output: ${fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)}Hz ${fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}ch")
+                            ByteArray(0)
                         }
-                        else -> break
+                        else -> null
+                    }
+                }
+
+                when {
+                    pcmToWrite == null -> break
+                    pcmToWrite.isEmpty() -> continue
+                    else -> {
+                        if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive) break
+                        track.write(pcmToWrite, 0, pcmToWrite.size) // blocks when AudioTrack full = pacing
+                        decodedFrameCount++
                     }
                 }
             }
@@ -467,11 +598,16 @@ class AudioStreamManager {
         if (paused) {
             val threadToJoin = synchronized(playbackThreadLock) {
                 if (!playbackActive && playbackThread == null) return
+                playbackGeneration++
                 playbackActive = false
                 playbackThread?.interrupt()
                 playbackThread.also { playbackThread = null }
             }
-            try { threadToJoin?.join(500) } catch (_: Exception) {}
+            if (threadToJoin != Thread.currentThread()) {
+                try { threadToJoin?.join(500) } catch (_: Exception) {}
+            }
+            pendingConfigure = null
+            deferredSwitchWarmStart = false
             frameQueue.clear(); frameQueueBytes.set(0)
             try { audioTrack?.stop(); audioTrack?.flush() } catch (_: Exception) {}
             playbackStarted = false
@@ -508,9 +644,18 @@ class AudioStreamManager {
         presentationTimeUs = 0L
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         Log.d(TAG, "Buffer cleared")
+        enqueueLateDropGraceUntilUs = 0L
+        lateDropCount = 0L
+        pendingConfigure = null
+        deferredSwitchWarmStart = false
     }
 
     fun onStreamEnd() {
+        Log.d(
+            DBG,
+            "onStreamEnd codec=$activeCodec sync=$syncState started=$playbackStarted " +
+                "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
+        )
         frameQueue.clear()
         frameQueueBytes.set(0)
         playbackStarted = false
@@ -528,6 +673,10 @@ class AudioStreamManager {
         presentationTimeUs = 0L
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         Log.d(TAG, "Stream ended, buffer cleared")
+        enqueueLateDropGraceUntilUs = 0L
+        lateDropCount = 0L
+        pendingConfigure = null
+        deferredSwitchWarmStart = false
     }
 
     fun expectDiscontinuity(reason: String) {
@@ -535,12 +684,19 @@ class AudioStreamManager {
         forceDiscontinuityReason = ""
         requiredSyncBufferMs = defaultSyncBufferMs()
         Log.d(TAG, "Discontinuity armed: $reason, flushing immediately")
+        pendingConfigure = null
+        deferredSwitchWarmStart = false
         flushForRebuffer()
     }
 
     fun onTransportFailure() {
         requiredSyncBufferMs = RECOVERY_SYNC_BUFFER_MS
         val bufMs = bufferDurationMs()
+        Log.d(
+            DBG,
+            "onTransportFailure codec=$activeCodec sync=$syncState started=$playbackStarted " +
+                "buf=${bufMs}ms queueBytes=${frameQueueBytes.get()} required=${requiredSyncBufferMs}ms"
+        )
         if (bufMs <= HOLDOVER_MIN_BUFFER_MS) {
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             Log.d(TAG, "Transport failure, insufficient holdover (${bufMs}ms), recovery threshold=${requiredSyncBufferMs}ms")
@@ -553,19 +709,35 @@ class AudioStreamManager {
     fun release() { release_internal() }
 
     private fun release_internal() {
+        Log.d(
+            DBG,
+            "release_internal codec=$activeCodec configured=$configured sync=$syncState " +
+                "started=$playbackStarted playbackActive=$playbackActive buf=${bufferDurationMs()}ms"
+        )
+        playbackGeneration++
         playbackActive = false; configured = false; playbackStarted = false
+        val oldTrack = audioTrack
+        val oldCodec = codec
+        audioTrack = null
+        codec = null
         val threadToJoin = synchronized(playbackThreadLock) {
             playbackThread?.interrupt()
             playbackThread.also { playbackThread = null }
         }
-        try { threadToJoin?.join(500) } catch (_: Exception) {}
-        frameQueue.clear(); frameQueueBytes.set(0)
-        synchronized(codecLock) {
-            try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
-            try { audioTrack?.release() } catch (_: Exception) {}
-            try { codec?.stop() } catch (_: Exception) {}
-            try { codec?.release() } catch (_: Exception) {}
+        try { oldTrack?.pause(); oldTrack?.flush() } catch (_: Exception) {}
+        if (threadToJoin != Thread.currentThread()) {
+            try { threadToJoin?.join(500) } catch (_: Exception) {}
         }
-        audioTrack = null; codec = null
+        frameQueue.clear(); frameQueueBytes.set(0)
+        enqueueLateDropGraceUntilUs = 0L
+        lateDropCount = 0L
+        pendingConfigure = null
+        deferredSwitchWarmStart = false
+        synchronized(codecLock) {
+            try { oldTrack?.pause(); oldTrack?.flush() } catch (_: Exception) {}
+            try { oldTrack?.release() } catch (_: Exception) {}
+            try { oldCodec?.stop() } catch (_: Exception) {}
+            try { oldCodec?.release() } catch (_: Exception) {}
+        }
     }
 }

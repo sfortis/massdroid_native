@@ -13,9 +13,9 @@ class ClockSynchronizer {
 
     // Kalman filter state
     private var estimatedOffset: Double = 0.0
-    private var estimateError: Double = 1_000_000.0 // large initial uncertainty
-    private val processNoise: Double = 100.0
-    private val measurementNoise: Double = 5000.0
+    private var estimateError: Double = 1_000_000.0 // uncertainty in microseconds
+    private val processNoise: Double = 5_000.0
+    private val minimumMeasurementNoise: Double = 2_500.0
 
     private var synced = false
     private var sampleCount = 0
@@ -28,6 +28,7 @@ class ClockSynchronizer {
     /**
      * NTP-style 3-timestamp calculation.
      */
+    @Synchronized
     fun processTimeResponse(
         clientTransmittedUs: Long,
         serverReceivedUs: Long,
@@ -37,6 +38,22 @@ class ClockSynchronizer {
         val rtt = (clientReceivedUs - clientTransmittedUs) - (serverTransmittedUs - serverReceivedUs)
         val measuredOffset = ((serverReceivedUs - clientTransmittedUs) +
                 (serverTransmittedUs - clientReceivedUs)) / 2.0
+        val maxErrorUs = (rtt.coerceAtLeast(0L) / 2.0).coerceAtLeast(1.0)
+        val measurementNoise = maxOf(minimumMeasurementNoise, maxErrorUs)
+
+        if (!synced) {
+            estimatedOffset = measuredOffset
+            estimateError = measurementNoise
+            sampleCount = 1
+            synced = true
+            currentSyncIntervalMs = INITIAL_SYNC_INTERVAL_MS
+            Log.d(
+                TAG,
+                "Sync #$sampleCount seeded offset=${estimatedOffset.toLong()}us " +
+                    "error=${estimateError.toLong()} rtt=${rtt}us interval=${currentSyncIntervalMs}ms"
+            )
+            return
+        }
 
         // Kalman predict
         val predictedError = estimateError + processNoise
@@ -47,7 +64,6 @@ class ClockSynchronizer {
         estimateError = (1.0 - kalmanGain) * predictedError
 
         sampleCount++
-        synced = true
 
         // Adaptive sync interval: fast for initial samples, then back off
         currentSyncIntervalMs = if (sampleCount < FAST_SYNC_SAMPLES) {
@@ -63,12 +79,21 @@ class ClockSynchronizer {
         }
     }
 
+    @Synchronized
     fun serverToLocalUs(serverTimestampUs: Long): Long {
         return serverTimestampUs - estimatedOffset.toLong()
     }
 
+    @Synchronized
+    fun currentOffsetUs(): Long = estimatedOffset.toLong()
+
+    @Synchronized
     fun isSynced(): Boolean = synced
 
+    @Synchronized
+    fun currentSampleCount(): Int = sampleCount
+
+    @Synchronized
     fun reset() {
         estimatedOffset = 0.0
         estimateError = 1_000_000.0

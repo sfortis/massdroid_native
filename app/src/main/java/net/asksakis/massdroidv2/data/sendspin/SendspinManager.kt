@@ -20,6 +20,7 @@ class SendspinManager(
         private const val HEARTBEAT_INTERVAL_MS = 2000L
         private const val TIME_SYNC_INTERVAL_MS = 1000L
         private const val TIME_SYNC_SAMPLES = 8
+        private const val MAX_TIME_SYNC_RTT_US = 150_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -28,11 +29,13 @@ class SendspinManager(
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
     private var stateJob: Job? = null
+    private val clockSynchronizer = ClockSynchronizer()
 
     // Clock sync: offset = server_clock - local_clock (microseconds)
     private val offsetSamples = mutableListOf<Long>()
     @Volatile var clockOffsetUs: Long = 0L; private set
     @Volatile var clockSynced: Boolean = false; private set
+    @Volatile var filteredClockOffsetUs: Long = 0L; private set
 
     private val _connectionState = MutableStateFlow(SendspinState.DISCONNECTED)
     val connectionState: StateFlow<SendspinState> = _connectionState.asStateFlow()
@@ -131,6 +134,22 @@ class SendspinManager(
                 val t3 = incoming.payload.serverTransmitted
                 val t4 = now
                 val offset = ((t2 - t1) + (t3 - t4)) / 2
+                val rttUs = (t4 - t1) - (t3 - t2)
+                clockSynchronizer.processTimeResponse(
+                    clientTransmittedUs = t1,
+                    serverReceivedUs = t2,
+                    serverTransmittedUs = t3,
+                    clientReceivedUs = t4
+                )
+                filteredClockOffsetUs = clockSynchronizer.currentOffsetUs()
+                if (rttUs > MAX_TIME_SYNC_RTT_US) {
+                    Log.d(
+                        TAG,
+                        "Clock sync sample ignored: rtt=${rttUs}us offset=${offset}us " +
+                            "current=${clockOffsetUs}us samples=${offsetSamples.size}"
+                    )
+                    return
+                }
                 synchronized(offsetSamples) {
                     offsetSamples.add(offset)
                     if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeFirst()
@@ -139,7 +158,12 @@ class SendspinManager(
                 }
                 audio.clockOffsetUs = clockOffsetUs
                 if (offsetSamples.size <= 3 || offsetSamples.size % 8 == 0) {
-                    Log.d(TAG, "Clock sync: offset=${clockOffsetUs}us, samples=${offsetSamples.size}")
+                    Log.d(
+                        TAG,
+                        "Clock sync: median=${clockOffsetUs}us filtered=${filteredClockOffsetUs}us " +
+                            "delta=${filteredClockOffsetUs - clockOffsetUs}us samples=${offsetSamples.size} " +
+                            "applied=${audio.clockOffsetUs}us"
+                    )
                 }
             }
 
@@ -218,17 +242,24 @@ class SendspinManager(
 
     private fun startTimeSync() {
         timeSyncJob?.cancel()
+        val previousOffsetUs = clockOffsetUs
         synchronized(offsetSamples) {
             offsetSamples.clear()
             clockSynced = false
+            if (previousOffsetUs != 0L) {
+                offsetSamples.add(previousOffsetUs)
+                clockOffsetUs = previousOffsetUs
+                clockSynced = true
+            }
         }
-        clockOffsetUs = 0L
-        audio.clockOffsetUs = 0L
+        filteredClockOffsetUs = previousOffsetUs
+        clockSynchronizer.reset()
+        audio.clockOffsetUs = clockOffsetUs
         timeSyncJob = scope.launch {
             while (true) {
                 val clientTimeUs = System.nanoTime() / 1000
                 client.sendTimeRequest(clientTimeUs)
-                delay(TIME_SYNC_INTERVAL_MS)
+                delay(clockSynchronizer.currentSyncIntervalMs)
             }
         }
     }
