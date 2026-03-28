@@ -46,6 +46,7 @@ class NowPlayingViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+    val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
     val sendspinStreamCodec = sendspinManager.streamCodec
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
@@ -130,6 +131,12 @@ class NowPlayingViewModel @Inject constructor(
                 Log.w(TAG, "seek failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
             }
+        }
+    }
+
+    fun setSendspinStaticDelayMs(delayMs: Int) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinStaticDelayMs(delayMs)
         }
     }
 

@@ -37,6 +37,7 @@ class HomeViewModel @Inject constructor(
     val queueState = playerRepository.queueState
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+    val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
     val proximityConfig = proximityConfigStore.config
 
     private val _isInitializing = MutableStateFlow(true)
@@ -204,6 +205,12 @@ class HomeViewModel @Inject constructor(
     fun setAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
         viewModelScope.launch {
             settingsRepository.setSendspinAudioFormat(format.name)
+        }
+    }
+
+    fun setSendspinStaticDelayMs(delayMs: Int) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinStaticDelayMs(delayMs)
         }
     }
 

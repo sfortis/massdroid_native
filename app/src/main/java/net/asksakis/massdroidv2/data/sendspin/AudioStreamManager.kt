@@ -15,8 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 enum class SyncState {
     SYNCHRONIZED,
     HOLDOVER_PLAYING_FROM_BUFFER,
-    SYNC_ERROR_REBUFFERING,
-    CATCHUP_DISCARDING
+    SYNC_ERROR_REBUFFERING
 }
 
 /**
@@ -33,11 +32,10 @@ class AudioStreamManager {
         private const val TAG = "AudioStream"
         private const val HEADER_SIZE = 9
         private const val MAX_ENCODED_BUFFER_BYTES = 8_000_000L // ~30s flac or ~minutes of opus
-        private const val NORMAL_SYNC_BUFFER_MS = 2_000L
+        private const val NORMAL_SYNC_BUFFER_MS_LOSSLESS = 2_000L
+        private const val NORMAL_SYNC_BUFFER_MS_OPUS = 1_000L
         private const val RECOVERY_SYNC_BUFFER_MS = 5_000L
         private const val HOLDOVER_MIN_BUFFER_MS = 750L
-        private const val HOLDOVER_REPLAY_CATCHUP_MIN_BUFFER_MS = 1_500L
-        private const val NORMAL_REPLAY_CATCHUP_MIN_BUFFER_MS = 2_000L
         private const val HARD_MAX_LIVE_BUFFER_MS = 6_000L
         private const val LATE_CHUNK_DROP_GRACE_MS = 120L
     }
@@ -51,6 +49,7 @@ class AudioStreamManager {
     // Encoded frame queue (filled by WS thread, consumed by playback thread)
     private val frameQueue = PriorityBlockingQueue<EncodedFrame>()
     private val frameQueueBytes = AtomicLong(0)
+    private val codecLock = Any()
 
     // Audio output
     private var codec: MediaCodec? = null
@@ -74,7 +73,7 @@ class AudioStreamManager {
     @Volatile private var lastFrameReceivedMs = 0L
     @Volatile private var forceDiscontinuityUntilMs = 0L
     @Volatile private var forceDiscontinuityReason = ""
-    @Volatile private var requiredSyncBufferMs = NORMAL_SYNC_BUFFER_MS
+    @Volatile private var requiredSyncBufferMs = NORMAL_SYNC_BUFFER_MS_LOSSLESS
     @Volatile private var lateDropCount = 0L
     private var presentationTimeUs = 0L
 
@@ -84,6 +83,7 @@ class AudioStreamManager {
 
     // Clock sync
     @Volatile var clockOffsetUs: Long = 0L
+    @Volatile var staticDelayMs: Int = 0
 
     fun bufferDurationMs(): Long {
         val headTs = frameQueue.peek()?.serverTimestampUs ?: return 0L
@@ -94,7 +94,8 @@ class AudioStreamManager {
 
     private fun nowLocalUs(): Long = System.nanoTime() / 1000L
 
-    private fun targetLocalPlayUs(serverTimestampUs: Long): Long = serverTimestampUs - clockOffsetUs
+    private fun targetLocalPlayUs(serverTimestampUs: Long): Long =
+        serverTimestampUs - clockOffsetUs - (staticDelayMs.toLong() * 1000L)
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
         (targetLocalPlayUs(serverTimestampUs) - nowLocalUs()) / 1000L
@@ -119,9 +120,13 @@ class AudioStreamManager {
         syncState = newState
         Log.d(TAG, "Sync: $old -> $newState (buf=${bufferDurationMs()}ms, ${frameQueueBytes.get() / 1000}KB)")
         if (newState == SyncState.SYNCHRONIZED) {
-            requiredSyncBufferMs = NORMAL_SYNC_BUFFER_MS
+            requiredSyncBufferMs = defaultSyncBufferMs()
         }
         onSyncStateChanged?.invoke(newState)
+    }
+
+    private fun defaultSyncBufferMs(): Long {
+        return if (activeCodec == "opus") NORMAL_SYNC_BUFFER_MS_OPUS else NORMAL_SYNC_BUFFER_MS_LOSSLESS
     }
 
     fun configure(
@@ -190,6 +195,7 @@ class AudioStreamManager {
         frameCount = 0
         decodedFrameCount = 0
         presentationTimeUs = 0L
+        requiredSyncBufferMs = defaultSyncBufferMs()
         startPlaybackThread(createdAudioTrack)
         Log.d(TAG, "Pipeline: $codecName ${sampleRate}Hz/${bitDepth}bit ${channels}ch, trackBuf=$bufferSize")
     }
@@ -212,14 +218,10 @@ class AudioStreamManager {
             handleContinuityCheck(serverTimestampUs)
         }
 
-        // Discard frames during replay catchup
-        if (discardUntilTimestampUs > 0) {
+        if (discardUntilTimestampUs > 0L) {
             if (serverTimestampUs < discardUntilTimestampUs) return
-            Log.d(TAG, "Catchup complete at frame #$frameCount, buf=${bufferDurationMs()}ms")
-            discardUntilTimestampUs = 0
-            if (syncState == SyncState.CATCHUP_DISCARDING) {
-                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
-            }
+            Log.d(TAG, "Holdover overlap discard complete at frame #$frameCount, buf=${bufferDurationMs()}ms")
+            discardUntilTimestampUs = 0L
         }
 
         if (shouldDropLateFrame(serverTimestampUs)) {
@@ -257,12 +259,6 @@ class AudioStreamManager {
         val lastTs = lastEnqueuedTimestampUs
         val gap = serverTimestampUs - lastTs
         val bufMs = bufferDurationMs()
-        val replayCatchupThresholdMs = if (syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER) {
-            HOLDOVER_REPLAY_CATCHUP_MIN_BUFFER_MS
-        } else {
-            NORMAL_REPLAY_CATCHUP_MIN_BUFFER_MS
-        }
-
         when {
             lastTs == 0L -> {
                 Log.d(TAG, "Reconnect: first-stream")
@@ -277,16 +273,14 @@ class AudioStreamManager {
                 Log.d(TAG, "Reconnect: FORWARD(${gap / 1000}ms), buf=${bufMs}ms flushed")
                 flushForRebuffer()
             }
-            bufMs >= replayCatchupThresholdMs -> {
-                // Large replay with healthy buffer: discard new until catchup
+            gap < 0 && syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER && bufMs > HOLDOVER_MIN_BUFFER_MS -> {
                 discardUntilTimestampUs = lastTs
-                transitionSyncState(SyncState.CATCHUP_DISCARDING)
-                Log.d(TAG, "Reconnect: REPLAY(${gap / 1000}ms), buf=${bufMs}ms, catchup(threshold=${replayCatchupThresholdMs}ms)")
+                Log.d(TAG, "Reconnect: HOLDOVER_OVERLAP(${gap / 1000}ms), buf=${bufMs}ms, discarding until tail")
             }
             else -> {
-                // Large replay, low buffer: flush and rebuffer
-                Log.d(TAG, "Reconnect: REPLAY(${gap / 1000}ms), buf=${bufMs}ms, rebuffer(threshold=${replayCatchupThresholdMs}ms)")
-                flushForRebuffer()
+                // Protocol baseline: reconnect should deliver future chunks only.
+                // Keep the queue and let playout-time late-drop discard anything stale.
+                Log.d(TAG, "Reconnect: OVERLAP(${gap / 1000}ms), buf=${bufMs}ms kept")
             }
         }
     }
@@ -296,9 +290,13 @@ class AudioStreamManager {
         frameQueue.clear()
         frameQueueBytes.set(0)
         playbackStarted = false
-        audioTrack?.pause()
-        audioTrack?.flush()
-        codec?.flush()
+        lastEnqueuedTimestampUs = 0L
+        discardUntilTimestampUs = 0L
+        synchronized(codecLock) {
+            audioTrack?.pause()
+            audioTrack?.flush()
+            codec?.flush()
+        }
         presentationTimeUs = 0L
         estimatedFrameDurationUs = 20_000L
     }
@@ -325,13 +323,6 @@ class AudioStreamManager {
 
                 val frame = frameQueue.peek()
                 if (frame != null) {
-                    val leadMs = leadToLocalNowMs(frame.serverTimestampUs)
-                    if (leadMs > estimatedFrameDurationUs / 1000L) {
-                        val sleepMs = minOf(leadMs, 10L).coerceAtLeast(1L)
-                        try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { break }
-                        continue
-                    }
-
                     frameQueue.poll()
                     frameQueueBytes.addAndGet(-frame.payload.size.toLong())
                     if (shouldDropLateFrame(frame.serverTimestampUs)) {
@@ -348,8 +339,10 @@ class AudioStreamManager {
                     ) {
                         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
                         playbackStarted = false
-                        try { track.pause(); track.flush() } catch (_: Exception) {}
-                        try { codec?.flush() } catch (_: Exception) {}
+                        synchronized(codecLock) {
+                            try { track.pause(); track.flush() } catch (_: Exception) {}
+                            try { codec?.flush() } catch (_: Exception) {}
+                        }
                         presentationTimeUs = 0L
                         Log.d(TAG, "Starvation (${silenceMs}ms silence), rebuffering")
                     }
@@ -375,35 +368,37 @@ class AudioStreamManager {
 
         val mc = codec ?: return
         try {
-            val inputIndex = mc.dequeueInputBuffer(5000)
-            if (inputIndex >= 0) {
-                val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
-                inputBuffer.clear()
-                inputBuffer.put(encodedData)
-                mc.queueInputBuffer(inputIndex, 0, encodedData.size, presentationTimeUs, 0)
-                presentationTimeUs += 20_000
-            }
+            synchronized(codecLock) {
+                val inputIndex = mc.dequeueInputBuffer(5000)
+                if (inputIndex >= 0) {
+                    val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
+                    inputBuffer.clear()
+                    inputBuffer.put(encodedData)
+                    mc.queueInputBuffer(inputIndex, 0, encodedData.size, presentationTimeUs, 0)
+                    presentationTimeUs += 20_000
+                }
 
-            // Drain all decoded PCM to AudioTrack
-            val bufferInfo = MediaCodec.BufferInfo()
-            while (true) {
-                val outputIndex = mc.dequeueOutputBuffer(bufferInfo, 1000)
-                when {
-                    outputIndex >= 0 -> {
-                        if (bufferInfo.size > 0) {
-                            val outputBuffer = mc.getOutputBuffer(outputIndex) ?: break
-                            val pcm = ByteArray(bufferInfo.size)
-                            outputBuffer.get(pcm)
-                            track.write(pcm, 0, pcm.size) // blocks when AudioTrack full = pacing
-                            decodedFrameCount++
+                // Drain all decoded PCM to AudioTrack
+                val bufferInfo = MediaCodec.BufferInfo()
+                while (true) {
+                    val outputIndex = mc.dequeueOutputBuffer(bufferInfo, 1000)
+                    when {
+                        outputIndex >= 0 -> {
+                            if (bufferInfo.size > 0) {
+                                val outputBuffer = mc.getOutputBuffer(outputIndex) ?: break
+                                val pcm = ByteArray(bufferInfo.size)
+                                outputBuffer.get(pcm)
+                                track.write(pcm, 0, pcm.size) // blocks when AudioTrack full = pacing
+                                decodedFrameCount++
+                            }
+                            mc.releaseOutputBuffer(outputIndex, false)
                         }
-                        mc.releaseOutputBuffer(outputIndex, false)
+                        outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val fmt = mc.outputFormat
+                            Log.d(TAG, "Output: ${fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)}Hz ${fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}ch")
+                        }
+                        else -> break
                     }
-                    outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val fmt = mc.outputFormat
-                        Log.d(TAG, "Output: ${fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)}Hz ${fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}ch")
-                    }
-                    else -> break
                 }
             }
         } catch (e: Exception) {
@@ -478,24 +473,55 @@ class AudioStreamManager {
     fun clearBuffer() {
         frameQueue.clear(); frameQueueBytes.set(0)
         playbackStarted = false
+        lastEnqueuedTimestampUs = 0L
         discardUntilTimestampUs = 0L
         pendingContinuityCheck = false
         forceDiscontinuityUntilMs = 0L
         forceDiscontinuityReason = ""
-        requiredSyncBufferMs = NORMAL_SYNC_BUFFER_MS
+        requiredSyncBufferMs = defaultSyncBufferMs()
         estimatedFrameDurationUs = 20_000L
         if (playbackActive) {
-            audioTrack?.pause(); audioTrack?.flush(); codec?.flush()
-        } else { codec?.flush() }
+            synchronized(codecLock) {
+                audioTrack?.pause()
+                audioTrack?.flush()
+                codec?.flush()
+            }
+        } else {
+            synchronized(codecLock) {
+                codec?.flush()
+            }
+        }
         presentationTimeUs = 0L
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         Log.d(TAG, "Buffer cleared")
     }
 
+    fun onStreamEnd() {
+        frameQueue.clear()
+        frameQueueBytes.set(0)
+        playbackStarted = false
+        lastEnqueuedTimestampUs = 0L
+        discardUntilTimestampUs = 0L
+        pendingContinuityCheck = false
+        forceDiscontinuityUntilMs = 0L
+        forceDiscontinuityReason = ""
+        requiredSyncBufferMs = defaultSyncBufferMs()
+        estimatedFrameDurationUs = 20_000L
+        synchronized(codecLock) {
+            try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
+            try { codec?.flush() } catch (_: Exception) {}
+        }
+        presentationTimeUs = 0L
+        transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+        Log.d(TAG, "Stream ended, buffer cleared")
+    }
+
     fun expectDiscontinuity(reason: String) {
-        forceDiscontinuityUntilMs = System.currentTimeMillis() + 10_000L
-        forceDiscontinuityReason = reason
-        Log.d(TAG, "Discontinuity armed: $reason")
+        forceDiscontinuityUntilMs = 0L
+        forceDiscontinuityReason = ""
+        requiredSyncBufferMs = defaultSyncBufferMs()
+        Log.d(TAG, "Discontinuity armed: $reason, flushing immediately")
+        flushForRebuffer()
     }
 
     fun onTransportFailure() {
@@ -517,10 +543,12 @@ class AudioStreamManager {
         try { playbackThread?.join(500) } catch (_: Exception) {}
         playbackThread = null
         frameQueue.clear(); frameQueueBytes.set(0)
-        try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
-        try { audioTrack?.release() } catch (_: Exception) {}
-        try { codec?.stop() } catch (_: Exception) {}
-        try { codec?.release() } catch (_: Exception) {}
+        synchronized(codecLock) {
+            try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
+            try { audioTrack?.release() } catch (_: Exception) {}
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+        }
         audioTrack = null; codec = null
     }
 }

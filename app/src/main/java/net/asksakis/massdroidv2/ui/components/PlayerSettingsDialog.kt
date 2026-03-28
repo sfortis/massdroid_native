@@ -25,6 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -36,10 +38,12 @@ fun PlayerSettingsDialog(
     initialDstmEnabled: Boolean?,
     isLocalPlayer: Boolean = false,
     initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.SMART,
+    initialStaticDelayMs: Int = 0,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDstmChanged: ((enabled: Boolean) -> Unit)?,
     onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
+    onStaticDelayChanged: ((Int) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
@@ -48,6 +52,7 @@ fun PlayerSettingsDialog(
     var volumeNormalization by remember { mutableStateOf(false) }
     var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
     var audioFormat by remember { mutableStateOf(initialAudioFormat) }
+    var staticDelayMsText by remember { mutableStateOf(initialStaticDelayMs.toString()) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -151,6 +156,17 @@ fun PlayerSettingsDialog(
                                 )
                             }
                         }
+
+                        OutlinedTextField(
+                            value = staticDelayMsText,
+                            onValueChange = { value ->
+                                staticDelayMsText = value.filter { it.isDigit() }.take(4)
+                            },
+                            label = { Text("Static delay (ms)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }
@@ -171,6 +187,12 @@ fun PlayerSettingsDialog(
                     }
                     if (isLocalPlayer && audioFormat != initialAudioFormat) {
                         onAudioFormatChanged?.invoke(audioFormat)
+                    }
+                    if (isLocalPlayer) {
+                        val parsedStaticDelayMs = staticDelayMsText.toIntOrNull()?.coerceIn(0, 5000) ?: 0
+                        if (parsedStaticDelayMs != initialStaticDelayMs) {
+                            onStaticDelayChanged?.invoke(parsedStaticDelayMs)
+                        }
                     }
                     onDismiss()
                 },

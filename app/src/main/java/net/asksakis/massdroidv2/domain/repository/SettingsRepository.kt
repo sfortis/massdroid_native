@@ -22,6 +22,7 @@ interface SettingsRepository {
     val lastFmApiKey: Flow<String>
     val themeMode: Flow<String>
     val sendspinAudioFormat: Flow<String>
+    val sendspinStaticDelayMs: Flow<Int>
 
     suspend fun setServerUrl(url: String)
     suspend fun setAuthToken(token: String)
@@ -40,4 +41,5 @@ interface SettingsRepository {
     suspend fun setLastFmApiKey(key: String)
     suspend fun setThemeMode(mode: String)
     suspend fun setSendspinAudioFormat(format: String)
+    suspend fun setSendspinStaticDelayMs(delayMs: Int)
 }

@@ -142,6 +142,12 @@ class SendspinAudioController(
         // Immediately start sendspin connection
         scope.launch { ensureSendspinConnected() }
 
+        collectorJobs += scope.launch {
+            settingsRepository.sendspinStaticDelayMs.collect { delayMs ->
+                sendspinManager.setStaticDelayMs(delayMs)
+            }
+        }
+
         // Collector 1: Observe connection state
         collectorJobs += scope.launch {
             sendspinManager.connectionState.collect { state ->

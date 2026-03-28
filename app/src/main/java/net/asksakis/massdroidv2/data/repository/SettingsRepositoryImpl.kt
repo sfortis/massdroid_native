@@ -42,6 +42,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_LASTFM_API_KEY = stringPreferencesKey("lastfm_api_key")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
+        private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
     }
 
     private val safeData = context.dataStore.data
@@ -196,6 +197,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinAudioFormat(format: String) {
         context.dataStore.edit { it[KEY_SENDSPIN_AUDIO_FORMAT] = format }
+    }
+
+    override val sendspinStaticDelayMs: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_STATIC_DELAY_MS]?.toIntOrNull()?.coerceIn(0, 5000) ?: 0
+    }
+
+    override suspend fun setSendspinStaticDelayMs(delayMs: Int) {
+        context.dataStore.edit { it[KEY_SENDSPIN_STATIC_DELAY_MS] = delayMs.coerceIn(0, 5000).toString() }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

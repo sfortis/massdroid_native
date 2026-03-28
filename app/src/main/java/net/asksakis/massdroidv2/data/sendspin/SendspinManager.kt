@@ -125,7 +125,7 @@ class SendspinManager(
             }
 
             is SendspinIncoming.ServerTime -> {
-                val now = System.nanoTime() / 1000 // local monotonic microseconds
+                val now = System.nanoTime() / 1000
                 val t1 = incoming.payload.clientTransmitted
                 val t2 = incoming.payload.serverReceived
                 val t3 = incoming.payload.serverTransmitted
@@ -134,9 +134,10 @@ class SendspinManager(
                 synchronized(offsetSamples) {
                     offsetSamples.add(offset)
                     if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeFirst()
-                    clockOffsetUs = offsetSamples.sorted()[offsetSamples.size / 2] // median
+                    clockOffsetUs = offsetSamples.sorted()[offsetSamples.size / 2]
                     clockSynced = offsetSamples.size >= 3
                 }
+                audio.clockOffsetUs = clockOffsetUs
                 if (offsetSamples.size <= 3 || offsetSamples.size % 8 == 0) {
                     Log.d(TAG, "Clock sync: offset=${clockOffsetUs}us, samples=${offsetSamples.size}")
                 }
@@ -157,7 +158,7 @@ class SendspinManager(
             }
 
             is SendspinIncoming.StreamEnd -> {
-                Log.d(TAG, "Stream ended, draining buffered audio (${audio.bufferDurationMs()}ms)")
+                audio.onStreamEnd()
             }
 
             is SendspinIncoming.StreamClear -> {
@@ -221,6 +222,8 @@ class SendspinManager(
             offsetSamples.clear()
             clockSynced = false
         }
+        clockOffsetUs = 0L
+        audio.clockOffsetUs = 0L
         timeSyncJob = scope.launch {
             while (true) {
                 val clientTimeUs = System.nanoTime() / 1000
@@ -248,6 +251,11 @@ class SendspinManager(
         audio.setMuted(muted)
     }
 
+    fun setStaticDelayMs(delayMs: Int) {
+        audio.staticDelayMs = delayMs.coerceIn(0, 5000)
+        Log.d(TAG, "Static delay set to ${audio.staticDelayMs}ms")
+    }
+
     fun expectDiscontinuity(reason: String) {
         audio.expectDiscontinuity(reason)
     }
@@ -266,7 +274,6 @@ class SendspinManager(
                 SyncState.SYNCHRONIZED -> "synchronized"
                 SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
                 SyncState.SYNC_ERROR_REBUFFERING -> "error"
-                SyncState.CATCHUP_DISCARDING -> "synchronized" // still "playing" from server perspective
             }
             client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
         }
@@ -277,7 +284,6 @@ class SendspinManager(
             SyncState.SYNCHRONIZED -> "synchronized"
             SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
             SyncState.SYNC_ERROR_REBUFFERING -> "error"
-            SyncState.CATCHUP_DISCARDING -> "synchronized"
         }
     }
 

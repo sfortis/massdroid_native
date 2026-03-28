@@ -316,15 +316,18 @@ fun NowPlayingScreen(
         if (showPlayerSettingsDialog) {
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
             val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = "SMART")
+            val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
+                initialStaticDelayMs = staticDelayMs,
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                 onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
+                onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
