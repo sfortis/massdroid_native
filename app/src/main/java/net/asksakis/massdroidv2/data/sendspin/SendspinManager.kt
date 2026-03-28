@@ -42,6 +42,10 @@ class SendspinManager(
 
     private val _streamCodec = MutableStateFlow<String?>(null)
     val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
+    private val _syncState = MutableStateFlow(audio.syncState)
+    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+    private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
+    val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
 
     private var currentVolume = 100
     private var muted = false
@@ -54,10 +58,12 @@ class SendspinManager(
         _enabled.value = true
         _connectionState.value = SendspinState.CONNECTING
 
-        // Cancel ALL existing jobs including heartbeat from previous session
+        // Cancel ALL existing jobs including heartbeat/timesync from previous session
         // to prevent them from sending non-auth messages on the new WebSocket
         heartbeatJob?.cancel()
         heartbeatJob = null
+        timeSyncJob?.cancel()
+        timeSyncJob = null
 
         // Observe client state changes
         stateJob?.cancel()
@@ -108,7 +114,12 @@ class SendspinManager(
             is SendspinIncoming.ServerHello -> {
                 Log.d(TAG, "Server hello received")
                 client.updateState(SendspinState.SYNCING)
-                client.sendClientState(volume = currentVolume, muted = muted)
+                setupSyncStateCallback()
+                client.sendClientState(
+                    volume = currentVolume,
+                    muted = muted,
+                    syncState = currentSyncStatePayloadValue()
+                )
                 startHeartbeat()
                 startTimeSync()
             }
@@ -146,13 +157,17 @@ class SendspinManager(
             }
 
             is SendspinIncoming.StreamEnd -> {
-                Log.d(TAG, "Stream ended")
-                audio.clearBuffer()
+                Log.d(TAG, "Stream ended, draining buffered audio (${audio.bufferDurationMs()}ms)")
             }
 
             is SendspinIncoming.StreamClear -> {
                 Log.d(TAG, "Stream clear")
+                _serverMetadata.value = null
                 audio.clearBuffer()
+            }
+
+            is SendspinIncoming.ServerState -> {
+                _serverMetadata.value = incoming.payload.metadata
             }
 
             is SendspinIncoming.ServerCommand -> {
@@ -191,7 +206,11 @@ class SendspinManager(
         heartbeatJob = scope.launch {
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
-                client.sendClientState(volume = currentVolume, muted = muted)
+                client.sendClientState(
+                    volume = currentVolume,
+                    muted = muted,
+                    syncState = currentSyncStatePayloadValue()
+                )
             }
         }
     }
@@ -229,6 +248,39 @@ class SendspinManager(
         audio.setMuted(muted)
     }
 
+    fun expectDiscontinuity(reason: String) {
+        audio.expectDiscontinuity(reason)
+    }
+
+    fun onTransportFailure() {
+        audio.onTransportFailure()
+        _syncState.value = audio.syncState
+    }
+
+    fun bufferedAudioMs(): Long = audio.bufferDurationMs()
+
+    fun setupSyncStateCallback() {
+        audio.onSyncStateChanged = { state ->
+            _syncState.value = state
+            val stateStr = when (state) {
+                SyncState.SYNCHRONIZED -> "synchronized"
+                SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
+                SyncState.SYNC_ERROR_REBUFFERING -> "error"
+                SyncState.CATCHUP_DISCARDING -> "synchronized" // still "playing" from server perspective
+            }
+            client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
+        }
+    }
+
+    private fun currentSyncStatePayloadValue(): String {
+        return when (_syncState.value) {
+            SyncState.SYNCHRONIZED -> "synchronized"
+            SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
+            SyncState.SYNC_ERROR_REBUFFERING -> "error"
+            SyncState.CATCHUP_DISCARDING -> "synchronized"
+        }
+    }
+
     fun stop() {
         _enabled.value = false
         heartbeatJob?.cancel()
@@ -245,6 +297,8 @@ class SendspinManager(
         audio.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null
+        _syncState.value = audio.syncState
+        _serverMetadata.value = null
         Log.d(TAG, "Sendspin stopped")
     }
 }

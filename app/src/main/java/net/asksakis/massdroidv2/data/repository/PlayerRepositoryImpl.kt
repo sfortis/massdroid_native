@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -58,6 +59,9 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _noPlayerSelectedEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     override val noPlayerSelectedEvent: SharedFlow<Unit> = _noPlayerSelectedEvent.asSharedFlow()
+
+    private val _discontinuityCommands = MutableSharedFlow<PlayerDiscontinuityCommand>(extraBufferCapacity = 4)
+    override val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand> = _discontinuityCommands.asSharedFlow()
 
     override fun requireSelectedPlayerId(): String? {
         val id = selectedPlayer.value?.playerId
@@ -813,7 +817,13 @@ class PlayerRepositoryImpl @Inject constructor(
                 val trackImg = queueTracking[it.playerId]?.track?.imageUrl
                 it.toDomain(wsClient, trackImg)
             }
-            _players.value = fromServer
+            // Merge: server snapshot + recently event-added players not yet in snapshot
+            val serverIds = fromServer.map { it.playerId }.toSet()
+            val retained = _players.value.filter { it.playerId !in serverIds && it.available }
+            if (retained.isNotEmpty()) {
+                Log.d(TAG, "Retaining ${retained.size} event-added players: ${retained.map { it.displayName }}")
+            }
+            _players.value = fromServer + retained
 
             if (selectedPlayerId != null) {
                 val refreshedSelected = _players.value.find { it.playerId == selectedPlayerId }
@@ -900,15 +910,18 @@ class PlayerRepositoryImpl @Inject constructor(
     }
     override suspend fun next(playerId: String) {
         maybeRecordManualSkip(playerId)
+        _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))
         playerCmd("next", playerId)
     }
 
     override suspend fun previous(playerId: String) {
         maybeRecordManualSkip(playerId)
+        _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.PREVIOUS))
         playerCmd("previous", playerId)
     }
 
     override suspend fun seek(playerId: String, position: Double) {
+        _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.SEEK))
         sendPlayerCommandWithRetry(
             MaCommands.Players.CMD_SEEK,
             SeekArgs(playerId = playerId, position = position)

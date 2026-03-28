@@ -262,37 +262,50 @@ class PlaybackService : MediaLibraryService() {
                 network: android.net.Network,
                 caps: android.net.NetworkCapabilities
             ) {
-                wifiState.value = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                val wifi = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                if (wifi != wifiState.value) {
+                    Log.d(TAG, "Network changed: ${if (wifi) "WiFi" else "Mobile"}")
+                }
+                wifiState.value = wifi
             }
 
             override fun onLost(network: android.net.Network) {
-                wifiState.value = isOnWifi(connectivityManager)
+                val wifi = isOnWifi(connectivityManager)
+                Log.d(TAG, "Network lost, fallback: ${if (wifi) "WiFi" else "Mobile/None"}")
+                wifiState.value = wifi
             }
         }
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
 
+        // Apply format on user preference change only (not network change).
+        // Network-based format (Smart mode) is applied at next stream start via Sendspin hello.
         scope.launch {
-            kotlinx.coroutines.flow.combine(
-                settingsRepository.sendspinAudioFormat,
-                wifiState,
-                settingsRepository.sendspinClientId,
-                wsClient.connectionState
-            ) { format, wifi, clientId, connState ->
-                if (clientId == null || connState !is ConnectionState.Connected) null
-                else Triple(format, wifi, clientId)
-            }
-                .filterNotNull()
+            settingsRepository.sendspinAudioFormat
                 .distinctUntilChanged()
-                .collect { (formatName, isWifi, playerId) ->
+                .collect { formatName ->
+                    val playerId = settingsRepository.sendspinClientId.first() ?: return@collect
+                    if (wsClient.connectionState.value !is ConnectionState.Connected) return@collect
                     val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)
+                    val isWifi = wifiState.value
                     val apiValue = format.toApiValue(isWifi)
-                    Log.d(TAG, "Audio format: $format, wifi=$isWifi, sending $apiValue")
+                    val netType = if (isWifi) "WiFi" else "Mobile"
+                    Log.d(TAG, "Audio format preference changed: $format, network=$netType, sending $apiValue")
                     try {
                         playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to update audio format: ${e.message}")
                     }
                 }
+        }
+        // On network change, just log. Format will be applied at next Sendspin connect.
+        scope.launch {
+            wifiState.collect { isWifi ->
+                val netType = if (isWifi) "WiFi" else "Mobile"
+                val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(
+                    settingsRepository.sendspinAudioFormat.first()
+                )
+                Log.d(TAG, "Network: $netType (format $format will apply at next connect)")
+            }
         }
     }
 
@@ -1683,13 +1696,29 @@ class PlaybackService : MediaLibraryService() {
                 val isSendspinPlayer = sendspinPlayerId != null &&
                     player.playerId == sendspinPlayerId
 
+                val sendspinMeta = if (isSendspinPlayer && sendspinActive) sendspinController else null
+
                 val currentTrack = queue?.currentItem?.track
-                val title = currentTrack?.name ?: player.currentMedia?.title ?: ""
-                val artist = currentTrack?.artistNames ?: player.currentMedia?.artist ?: ""
-                val album = currentTrack?.albumName ?: player.currentMedia?.album ?: ""
-                val duration = currentTrack?.duration ?: queue?.currentItem?.duration
-                    ?: player.currentMedia?.duration ?: 0.0
-                val imageUrl = currentTrack?.imageUrl
+                val title = sendspinMeta?.currentDisplayedTitle?.takeIf { it.isNotBlank() }
+                    ?: currentTrack?.name
+                    ?: player.currentMedia?.title
+                    ?: ""
+                val artist = sendspinMeta?.currentDisplayedArtist?.takeIf { it.isNotBlank() }
+                    ?: currentTrack?.artistNames
+                    ?: player.currentMedia?.artist
+                    ?: ""
+                val album = sendspinMeta?.currentDisplayedAlbum?.takeIf { it.isNotBlank() }
+                    ?: currentTrack?.albumName
+                    ?: player.currentMedia?.album
+                    ?: ""
+                val duration = sendspinMeta?.currentDisplayedDurationMs?.takeIf { it > 0 }
+                    ?.div(1000.0)
+                    ?: currentTrack?.duration
+                    ?: queue?.currentItem?.duration
+                    ?: player.currentMedia?.duration
+                    ?: 0.0
+                val imageUrl = sendspinMeta?.currentDisplayedArtUrl
+                    ?: currentTrack?.imageUrl
                     ?: queue?.currentItem?.imageUrl
                     ?: player.currentMedia?.imageUrl
 
@@ -1715,12 +1744,12 @@ class PlaybackService : MediaLibraryService() {
                 }
 
                 remotePlayer?.updateState(
-                    isPlaying = player.state == PlaybackState.PLAYING,
+                    isPlaying = sendspinMeta?.currentIsPlaying ?: (player.state == PlaybackState.PLAYING),
                     title = title,
                     artist = artist,
                     album = album,
                     durationMs = (duration * 1000).toLong(),
-                    positionMs = (elapsed * 1000).toLong(),
+                    positionMs = sendspinMeta?.currentDisplayedPositionMs ?: (elapsed * 1000).toLong(),
                     artworkData = cachedArtworkData,
                     volumeLevel = effectiveVolume,
                     isMuted = player.volumeMuted,

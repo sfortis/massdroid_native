@@ -17,9 +17,11 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -30,6 +32,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -98,6 +101,8 @@ class SendspinAudioController(
     private var currentArtUrl: String? = null
     var isStreaming = false; private set
     var isReady = false; private set
+    private var transportState = SendspinState.DISCONNECTED
+    private var localSyncState = SyncState.SYNC_ERROR_REBUFFERING
     private var lastSendspinReportedPlaying = false
     private var currentTrackUri: String? = null
     private var currentTitle = ""
@@ -105,11 +110,25 @@ class SendspinAudioController(
     private var currentAlbum = ""
     private var currentDurationMs = 0L
     private var currentPositionMs = 0L
+    val currentDisplayedTitle: String get() = currentTitle
+    val currentDisplayedArtist: String get() = currentArtist
+    val currentDisplayedAlbum: String get() = currentAlbum
+    val currentDisplayedDurationMs: Long get() = currentDurationMs
+    val currentDisplayedPositionMs: Long get() = currentPositionMs
+    val currentDisplayedArtUrl: String? get() = currentArtUrl
     var currentIsPlaying = false; private set
     private var optimisticUntil = 0L
     var sendspinPlayerId: String? = null; private set
     private val collectorJobs = mutableListOf<Job>()
+    private var autoRecoveryJob: Job? = null
+    private var reconnectJob: Deferred<Boolean>? = null
     private var lastPlayingAtMs = 0L
+
+    private fun audiblePositionMs(rawPositionMs: Long): Long {
+        if (rawPositionMs <= 0L) return 0L
+        val bufferedMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L)
+        return (rawPositionMs - bufferedMs.coerceAtMost(rawPositionMs)).coerceAtLeast(0L)
+    }
 
     fun start() {
         if (collectorJobs.isNotEmpty()) {
@@ -126,18 +145,36 @@ class SendspinAudioController(
         // Collector 1: Observe connection state
         collectorJobs += scope.launch {
             sendspinManager.connectionState.collect { state ->
-                val wasStreaming = isStreaming
-                isStreaming = state == SendspinState.STREAMING
-                val wasReady = isReady
-                isReady = state == SendspinState.SYNCING || state == SendspinState.STREAMING
-                Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady")
+                val wasStreaming = transportState == SendspinState.STREAMING
+                val wasError = transportState == SendspinState.ERROR
+                transportState = state
+                recomputeAvailability()
+                Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady, sync=$localSyncState")
 
-                if (!wasStreaming && isStreaming) {
+                if (!wasStreaming && transportState == SendspinState.STREAMING) {
                     acquireLocks()
                 }
-                if (wasStreaming && !isStreaming) {
+                if (wasStreaming && transportState != SendspinState.STREAMING) {
                     releaseLocks()
                     Log.d(TAG, "Sendspin dropped while streaming")
+                }
+
+                // Auto-recover Sendspin if it fails while MA WS is still connected
+                if (state == SendspinState.ERROR && !wasError) {
+                    sendspinManager.onTransportFailure()
+                }
+
+                if (state == SendspinState.ERROR &&
+                    wsClient.connectionState.value is ConnectionState.Connected
+                ) {
+                    autoRecoveryJob?.cancel()
+                    autoRecoveryJob = scope.launch {
+                        delay(2000)
+                        if (sendspinManager.connectionState.value == SendspinState.ERROR) {
+                            Log.d(TAG, "Sendspin ERROR while MA connected, auto-recovering")
+                            ensureSendspinConnected()
+                        }
+                    }
                 }
 
                 val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
@@ -148,15 +185,77 @@ class SendspinAudioController(
                     }
                 } else if (wasStreaming && state == SendspinState.SYNCING) {
                     if (outsideOptimistic) currentIsPlaying = false
-                } else if (!isStreaming && state != SendspinState.SYNCING) {
-                    if (outsideOptimistic) currentIsPlaying = false
-                    currentTitle = ""
-                    currentArtist = ""
-                    currentAlbum = ""
-                    currentDurationMs = 0
-                    currentPositionMs = 0
+                } else if (!isStreaming && state != SendspinState.SYNCING && outsideOptimistic) {
+                    currentIsPlaying = false
                 }
                 notifyStateChanged()
+            }
+        }
+
+        collectorJobs += scope.launch {
+            sendspinManager.syncState
+                .collect { state ->
+                    localSyncState = state
+                    recomputeAvailability()
+                    if (state == SyncState.SYNC_ERROR_REBUFFERING &&
+                        System.currentTimeMillis() >= optimisticUntil
+                    ) {
+                        currentIsPlaying = false
+                    } else if (state == SyncState.HOLDOVER_PLAYING_FROM_BUFFER &&
+                        System.currentTimeMillis() >= optimisticUntil
+                    ) {
+                        currentIsPlaying = true
+                    }
+                    notifyStateChanged()
+                }
+        }
+
+        collectorJobs += scope.launch {
+            sendspinManager.serverMetadata.collect { metadata ->
+                if (metadata == null) return@collect
+
+                val title = metadata.title?.takeIf { it.isNotBlank() } ?: currentTitle
+                val artist = metadata.artist ?: currentArtist
+                val album = metadata.album ?: currentAlbum
+                val durationMs = metadata.progress?.trackDuration ?: currentDurationMs
+                val rawPositionMs = metadata.progress?.trackProgress
+                val positionMs = rawPositionMs?.let(::audiblePositionMs) ?: currentPositionMs
+                val artUrl = metadata.artworkUrl ?: currentArtUrl
+                val artChanged = artUrl != currentArtUrl
+
+                currentTitle = title
+                currentArtist = artist
+                currentAlbum = album
+                currentDurationMs = durationMs
+                currentPositionMs = positionMs
+
+                if (artChanged) {
+                    currentArtUrl = artUrl
+                    currentArt = loadArt(artUrl)
+                }
+
+                val playbackSpeed = metadata.progress?.playbackSpeed
+                if (playbackSpeed != null && System.currentTimeMillis() >= optimisticUntil) {
+                    currentIsPlaying = playbackSpeed > 0
+                    if (currentIsPlaying) {
+                        lastPlayingAtMs = System.currentTimeMillis()
+                    }
+                }
+
+                notifyMetadataChanged()
+                notifyStateChanged()
+            }
+        }
+
+        collectorJobs += scope.launch {
+            playerRepository.discontinuityCommands.collect { command ->
+                if (command.playerId != sendspinPlayerId) return@collect
+                val reason = when (command.kind) {
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.NEXT -> "next"
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.PREVIOUS -> "previous"
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK -> "seek"
+                }
+                sendspinManager.expectDiscontinuity(reason)
             }
         }
 
@@ -185,9 +284,18 @@ class SendspinAudioController(
                     }
                     if (!isStreaming || player == null) return@collect
                     val media = player.currentMedia
-                    val title = media?.title ?: "MassDroid Speaker"
-                    val artist = media?.artist ?: ""
-                    val album = media?.album ?: ""
+                    val hasMeaningfulMetadata =
+                        media?.title?.isNotBlank() == true ||
+                        media?.artist?.isNotBlank() == true ||
+                        media?.album?.isNotBlank() == true ||
+                        media?.imageUrl != null
+                    if (!hasMeaningfulMetadata) {
+                        notifyStateChanged()
+                        return@collect
+                    }
+                    val title = media?.title?.takeIf { it.isNotBlank() } ?: currentTitle.ifBlank { "MassDroid Speaker" }
+                    val artist = media?.artist?.takeIf { it.isNotBlank() } ?: currentArtist
+                    val album = media?.album?.takeIf { it.isNotBlank() } ?: currentAlbum
                     val durationMs = ((media?.duration ?: 0.0) * 1000).toLong()
                     val artUrl = media?.imageUrl
 
@@ -197,14 +305,14 @@ class SendspinAudioController(
                     currentArtist = artist
                     currentAlbum = album
                     currentDurationMs = durationMs
-                    currentTrackUri = media?.uri
+                    currentTrackUri = media?.uri ?: currentTrackUri
 
-                    if (artChanged) {
+                    if (artChanged && artUrl != null) {
                         currentArtUrl = artUrl
                         currentArt = loadArt(artUrl)
                     }
 
-                    currentPositionMs = ((media?.elapsedTime ?: 0.0) * 1000).toLong()
+                    currentPositionMs = audiblePositionMs(((media?.elapsedTime ?: 0.0) * 1000).toLong())
 
                     notifyMetadataChanged()
                     notifyStateChanged()
@@ -293,7 +401,7 @@ class SendspinAudioController(
                     if (currentSsState == SendspinState.DISCONNECTED || currentSsState == SendspinState.ERROR) {
                         Log.d(TAG, "MA reconnected, sendspin is $currentSsState, restarting")
                         if (url.isNotBlank() && token.isNotBlank()) {
-                            sendspinManager.start(url, token, clientId, "MassDroid")
+                            ensureSendspinConnected()
                         }
                     } else {
                         Log.d(TAG, "MA reconnected, sendspin already $currentSsState")
@@ -307,6 +415,10 @@ class SendspinAudioController(
     fun stop() {
         for (job in collectorJobs) job.cancel(CancellationException("Sendspin stop"))
         collectorJobs.clear()
+        autoRecoveryJob?.cancel()
+        autoRecoveryJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
         lastSendspinReportedPlaying = false
         abandonAudioFocus()
         unregisterNoisyReceiver()
@@ -337,7 +449,11 @@ class SendspinAudioController(
         if (!hasAudioFocus) requestAudioFocus()
         if (isReady) sendspinManager.resumeAudio()
         scope.launch {
-            if (!isReady) ensureSendspinConnected()
+            if (!isReady && !ensureSendspinConnected()) {
+                currentIsPlaying = false
+                notifyStateChanged()
+                return@launch
+            }
             playerRepository.play(id)
         }
     }
@@ -368,7 +484,11 @@ class SendspinAudioController(
         optimisticUntil = System.currentTimeMillis() + 1000
         notifyStateChanged()
         scope.launch {
-            if (wantPlay && !isReady) ensureSendspinConnected()
+            if (wantPlay && !isReady && !ensureSendspinConnected()) {
+                currentIsPlaying = false
+                notifyStateChanged()
+                return@launch
+            }
             playerRepository.playPause(id)
         }
     }
@@ -509,9 +629,34 @@ class SendspinAudioController(
 
     // endregion
 
+    // region Format + connection helpers
+
+    private suspend fun applyPreferredFormatForCurrentNetwork(playerId: String) {
+        try {
+            val formatName = settingsRepository.sendspinAudioFormat.first()
+            val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)
+            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+            val isWifi = cm?.getNetworkCapabilities(cm.activeNetwork)
+                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
+            val apiValue = format.toApiValue(isWifi)
+            playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
+            Log.d(TAG, "Applied format $format ($apiValue) for ${if (isWifi) "WiFi" else "Mobile"}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Format apply failed: ${e.message}")
+        }
+    }
+
     // region Sendspin connection helpers
 
     private suspend fun ensureSendspinConnected(): Boolean {
+        reconnectJob?.let { existing ->
+            if (existing.isActive) {
+                Log.d(TAG, "Reconnect already in progress, waiting")
+                return existing.await()
+            }
+            reconnectJob = null
+        }
+
         val state = sendspinManager.connectionState.value
         if (state == SendspinState.SYNCING || state == SendspinState.STREAMING) return true
 
@@ -528,13 +673,22 @@ class SendspinAudioController(
         val clientId = sendspinPlayerId ?: return false
         if (url.isBlank() || token.isBlank()) return false
 
-        Log.d(TAG, "Restarting sendspin for playback (was $state)")
-        sendspinManager.start(url, token, clientId, "MassDroid")
+        val job = scope.async {
+            applyPreferredFormatForCurrentNetwork(clientId)
+            Log.d(TAG, "Restarting sendspin for playback (was $state)")
+            sendspinManager.start(url, token, clientId, "MassDroid")
 
-        return withTimeoutOrNull(10000) {
-            sendspinManager.connectionState
-                .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-        } != null
+            withTimeoutOrNull(10000) {
+                sendspinManager.connectionState
+                    .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+            } != null
+        }
+        reconnectJob = job
+        return try {
+            job.await()
+        } finally {
+            if (reconnectJob === job) reconnectJob = null
+        }
     }
 
     // endregion
@@ -579,6 +733,12 @@ class SendspinAudioController(
 
     private fun notifyStateChanged() {
         onStateChanged(isReady, isStreaming, currentIsPlaying)
+    }
+
+    private fun recomputeAvailability() {
+        isStreaming = transportState == SendspinState.STREAMING
+        isReady = (transportState == SendspinState.SYNCING || transportState == SendspinState.STREAMING) &&
+            localSyncState != SyncState.SYNC_ERROR_REBUFFERING
     }
 
     // endregion

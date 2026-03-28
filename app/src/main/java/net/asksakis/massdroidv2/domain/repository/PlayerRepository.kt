@@ -7,6 +7,17 @@ import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueState
 
+data class PlayerDiscontinuityCommand(
+    val playerId: String,
+    val kind: Kind
+) {
+    enum class Kind {
+        NEXT,
+        PREVIOUS,
+        SEEK
+    }
+}
+
 interface PlayerRepository {
     val players: StateFlow<List<Player>>
     val selectedPlayer: StateFlow<Player?>
@@ -21,6 +32,9 @@ interface PlayerRepository {
 
     /** Emits the queue ID whenever QUEUE_ITEMS_UPDATED or QUEUE_UPDATED fires for the selected player. */
     val queueItemsChanged: SharedFlow<String>
+
+    /** Emits explicit discontinuities like next/previous/seek so buffered local playback can reset policy. */
+    val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand>
 
     enum class QueueFilterMode {
         NORMAL,

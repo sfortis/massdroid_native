@@ -36,7 +36,7 @@ private val defaultFormats = listOf(
 @Serializable
 data class PlayerV1Support(
     @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec> = defaultFormats,
-    @SerialName("buffer_capacity") val bufferCapacity: Int = 2097152,
+    @SerialName("buffer_capacity") val bufferCapacity: Int = 8000000,
     @SerialName("supported_commands") val supportedCommands: List<String> = listOf("volume", "mute")
 )
 
@@ -129,6 +129,33 @@ data class ServerCommandPayload(
     val player: PlayerCommandPayload? = null
 )
 
+@Serializable
+data class MetadataProgressPayload(
+    @SerialName("track_progress") val trackProgress: Long? = null,
+    @SerialName("track_duration") val trackDuration: Long? = null,
+    @SerialName("playback_speed") val playbackSpeed: Int? = null
+)
+
+@Serializable
+data class ServerMetadataPayload(
+    val timestamp: Long? = null,
+    val title: String? = null,
+    val artist: String? = null,
+    @SerialName("album_artist") val albumArtist: String? = null,
+    val album: String? = null,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    val year: Int? = null,
+    val track: Int? = null,
+    val progress: MetadataProgressPayload? = null,
+    val repeat: String? = null,
+    val shuffle: Boolean? = null
+)
+
+@Serializable
+data class ServerStatePayload(
+    val metadata: ServerMetadataPayload? = null
+)
+
 // Goodbye
 
 @Serializable
@@ -153,6 +180,7 @@ sealed class SendspinIncoming {
     data class StreamStart(val payload: StreamStartPayload) : SendspinIncoming()
     data object StreamEnd : SendspinIncoming()
     data object StreamClear : SendspinIncoming()
+    data class ServerState(val payload: ServerStatePayload) : SendspinIncoming()
     data class ServerCommand(val payload: ServerCommandPayload) : SendspinIncoming()
     data class Unknown(val type: String) : SendspinIncoming()
 
@@ -182,6 +210,12 @@ sealed class SendspinIncoming {
                 )
                 "stream/end" -> StreamEnd
                 "stream/clear" -> StreamClear
+                "server/state" -> ServerState(
+                    json.decodeFromJsonElement(
+                        ServerStatePayload.serializer(),
+                        obj["payload"]!!
+                    )
+                )
                 "server/command" -> ServerCommand(
                     json.decodeFromJsonElement(
                         ServerCommandPayload.serializer(),
