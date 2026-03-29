@@ -20,7 +20,8 @@ fun VolumeSlider(
     onVolumeChange: (Int) -> Unit,
     onMuteToggle: () -> Unit,
     modifier: Modifier = Modifier,
-    compact: Boolean = false
+    compact: Boolean = false,
+    enabled: Boolean = true
 ) {
     val haptic = LocalHapticFeedback.current
     val iconSize = if (compact) 20.dp else 24.dp
@@ -33,7 +34,8 @@ fun VolumeSlider(
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onMuteToggle()
             },
-            modifier = if (compact) Modifier.size(32.dp) else Modifier
+            modifier = if (compact) Modifier.size(32.dp) else Modifier,
+            enabled = enabled
         ) {
             Icon(
                 imageVector = when {
@@ -56,6 +58,7 @@ fun VolumeSlider(
                 onVolumeChange(sliderValue.toInt())
             },
             valueRange = 0f..100f,
+            enabled = enabled,
             modifier = Modifier.weight(1f).let { if (compact) it.height(28.dp) else it }
         )
 

@@ -97,12 +97,48 @@ class NowPlayingViewModel @Inject constructor(
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
     val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> = _cachedTrackDisplay.asStateFlow()
 
+    // Optimistic elapsed time: continues ticking during MA disconnect while sendspin plays
+    private var optimisticBaseTime = 0.0
+    private var optimisticBaseTimestamp = 0L
+    private var optimisticDuration = 0.0
+    private val _optimisticElapsed = MutableStateFlow<Double?>(null)
+    val optimisticElapsed: StateFlow<Double?> = _optimisticElapsed.asStateFlow()
+
     init {
         viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
         viewModelScope.launch {
             sendspinClientId.collect { cachedSendspinClientId = it }
+        }
+        // Cache elapsed time for optimistic tick during MA disconnect
+        viewModelScope.launch {
+            elapsedTime.collect { time ->
+                if (time > 0.0) {
+                    optimisticBaseTime = time
+                    optimisticBaseTimestamp = System.currentTimeMillis()
+                    optimisticDuration = queueState.value?.currentItem?.duration
+                        ?: selectedPlayer.value?.currentMedia?.duration ?: 0.0
+                    _optimisticElapsed.value = null // live data available, no need for optimistic
+                } else if (optimisticBaseTimestamp > 0L && sendspinManager.enabled.value) {
+                    // Live elapsed reset to 0 (MA disconnect), start optimistic immediately
+                    val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
+                    _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
+                }
+            }
+        }
+        // Optimistic elapsed tick: when elapsedTime stops (MA disconnect) but sendspin plays
+        viewModelScope.launch {
+            while (true) {
+                delay(500)
+                val liveElapsed = elapsedTime.value
+                if (liveElapsed > 0.0 || optimisticBaseTimestamp == 0L) continue
+                if (!sendspinManager.enabled.value) continue
+                val syncState = sendspinManager.syncState.value
+                if (syncState != SyncState.SYNCHRONIZED && syncState != SyncState.HOLDOVER_PLAYING_FROM_BUFFER) continue
+                val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
+                _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
+            }
         }
         viewModelScope.launch {
             sendspinAudioFormat.collect { cachedSendspinAudioFormat = it }

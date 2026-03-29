@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.Canvas
@@ -82,7 +83,10 @@ fun NowPlayingScreen(
 ) {
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
-    val elapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
+    val liveElapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
+    val optimisticElapsed by viewModel.optimisticElapsed.collectAsStateWithLifecycle()
+    val elapsedTime = if (liveElapsedTime > 0.0 || optimisticElapsed == null) liveElapsedTime
+        else optimisticElapsed ?: 0.0
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val isLoadingPlaylists by viewModel.isLoadingPlaylists.collectAsStateWithLifecycle()
@@ -185,6 +189,7 @@ fun NowPlayingScreen(
                     elapsedTime = elapsedTime,
                     duration = duration,
                     player = player,
+                    controlsEnabled = player != null,
                     viewModel = viewModel,
                     onBack = onBack,
                     onNavigateToQueue = onNavigateToQueue,
@@ -215,6 +220,7 @@ fun NowPlayingScreen(
                     elapsedTime = elapsedTime,
                     duration = duration,
                     player = player,
+                    controlsEnabled = player != null,
                     viewModel = viewModel,
                     onShowPlaylistDialog = {
                         showPlaylistDialog = true
@@ -375,6 +381,7 @@ private fun NowPlayingPortrait(
     elapsedTime: Double,
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
+    controlsEnabled: Boolean,
     viewModel: NowPlayingViewModel,
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
@@ -395,8 +402,8 @@ private fun NowPlayingPortrait(
 
         SwipeableAlbumArt(
             imageUrl = imageUrl,
-            onNext = { viewModel.next() },
-            onPrevious = { viewModel.previous() },
+            onNext = { if (controlsEnabled) viewModel.next() },
+            onPrevious = { if (controlsEnabled) viewModel.previous() },
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
@@ -409,7 +416,8 @@ private fun NowPlayingPortrait(
             onShowPlaylistDialog = onShowPlaylistDialog,
             onShowLyrics = onShowLyrics,
             onNavigateToQueue = onNavigateToQueue,
-            onShowSendspinStatus = onShowSendspinStatus
+            onShowSendspinStatus = onShowSendspinStatus,
+            enabled = controlsEnabled
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -428,7 +436,8 @@ private fun NowPlayingPortrait(
         SeekBar(
             elapsed = elapsedTime,
             duration = duration,
-            onSeek = { viewModel.seek(it) },
+            onSeek = { if (controlsEnabled) viewModel.seek(it) },
+            enabled = controlsEnabled,
             compact = true
         )
 
@@ -438,6 +447,7 @@ private fun NowPlayingPortrait(
             isPlaying = isPlaying,
             queueState = queueState,
             viewModel = viewModel,
+            enabled = controlsEnabled,
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
@@ -448,6 +458,7 @@ private fun NowPlayingPortrait(
             isMuted = player?.volumeMuted ?: false,
             onVolumeChange = { viewModel.setVolume(it) },
             onMuteToggle = { viewModel.toggleMute() },
+            enabled = controlsEnabled,
             compact = true
         )
     }
@@ -467,6 +478,7 @@ private fun NowPlayingLandscape(
     elapsedTime: Double,
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
+    controlsEnabled: Boolean,
     viewModel: NowPlayingViewModel,
     onBack: () -> Unit,
     onNavigateToQueue: () -> Unit,
@@ -495,8 +507,8 @@ private fun NowPlayingLandscape(
         ) {
             SwipeableAlbumArt(
                 imageUrl = imageUrl,
-                onNext = { viewModel.next() },
-                onPrevious = { viewModel.previous() },
+                onNext = { if (controlsEnabled) viewModel.next() },
+                onPrevious = { if (controlsEnabled) viewModel.previous() },
                 onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
                 fillMaxWidth = false
             )
@@ -543,6 +555,7 @@ private fun NowPlayingLandscape(
                 onShowLyrics = onShowLyrics,
                 onNavigateToQueue = onNavigateToQueue,
                 onShowSendspinStatus = onShowSendspinStatus,
+                enabled = controlsEnabled,
                 compact = true
             )
 
@@ -559,7 +572,8 @@ private fun NowPlayingLandscape(
             SeekBar(
                 elapsed = elapsedTime,
                 duration = duration,
-                onSeek = { viewModel.seek(it) },
+                onSeek = { if (controlsEnabled) viewModel.seek(it) },
+                enabled = controlsEnabled,
                 compact = true
             )
 
@@ -567,6 +581,7 @@ private fun NowPlayingLandscape(
                 isPlaying = isPlaying,
                 queueState = queueState,
                 viewModel = viewModel,
+                enabled = controlsEnabled,
                 compact = true,
                 onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
             )
@@ -576,6 +591,7 @@ private fun NowPlayingLandscape(
                 isMuted = player?.volumeMuted ?: false,
                 onVolumeChange = { viewModel.setVolume(it) },
                 onMuteToggle = { viewModel.toggleMute() },
+                enabled = controlsEnabled,
                 compact = true
             )
         }
@@ -623,6 +639,7 @@ private fun QualityActionRow(
     onShowLyrics: () -> Unit,
     onNavigateToQueue: () -> Unit,
     onShowSendspinStatus: () -> Unit,
+    enabled: Boolean = true,
     compact: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
@@ -644,7 +661,8 @@ private fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onShowPlaylistDialog()
                     },
-                    modifier = Modifier.size(actionButtonSize)
+                    modifier = Modifier.size(actionButtonSize),
+                    enabled = enabled
                 ) {
                     Icon(
                         Icons.Default.Add,
@@ -658,7 +676,8 @@ private fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onShowLyrics()
                     },
-                    modifier = Modifier.size(actionButtonSize)
+                    modifier = Modifier.size(actionButtonSize),
+                    enabled = enabled
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Subject,
@@ -683,7 +702,8 @@ private fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onNavigateToQueue()
                     },
-                    modifier = Modifier.size(actionButtonSize)
+                    modifier = Modifier.size(actionButtonSize),
+                    enabled = enabled
                 ) {
                     Icon(
                         Icons.Default.QueueMusic,
@@ -697,7 +717,8 @@ private fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         viewModel.toggleFavorite()
                     },
-                    modifier = Modifier.size(actionButtonSize)
+                    modifier = Modifier.size(actionButtonSize),
+                    enabled = enabled
                 ) {
                     Icon(
                         if (currentTrack?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -1164,6 +1185,7 @@ private fun TransportControls(
     isPlaying: Boolean,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
     viewModel: NowPlayingViewModel,
+    enabled: Boolean = true,
     compact: Boolean = false,
     onHaptic: () -> Unit = {}
 ) {
@@ -1180,7 +1202,7 @@ private fun TransportControls(
         IconButton(onClick = {
             onHaptic()
             viewModel.toggleShuffle()
-        }) {
+        }, enabled = enabled) {
             Icon(
                 Icons.Default.Shuffle,
                 contentDescription = "Shuffle",
@@ -1193,14 +1215,14 @@ private fun TransportControls(
         IconButton(onClick = {
             onHaptic()
             viewModel.previous()
-        }, modifier = Modifier.size(buttonSize)) {
+        }, modifier = Modifier.size(buttonSize), enabled = enabled) {
             Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(iconSize))
         }
 
         FilledIconButton(onClick = {
             onHaptic()
             viewModel.playPause()
-        }, modifier = Modifier.size(playSize)) {
+        }, modifier = Modifier.size(playSize), enabled = enabled) {
             Icon(
                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (isPlaying) "Pause" else "Play",
@@ -1211,14 +1233,14 @@ private fun TransportControls(
         IconButton(onClick = {
             onHaptic()
             viewModel.next()
-        }, modifier = Modifier.size(buttonSize)) {
+        }, modifier = Modifier.size(buttonSize), enabled = enabled) {
             Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(iconSize))
         }
 
         IconButton(onClick = {
             onHaptic()
             viewModel.cycleRepeat()
-        }) {
+        }, enabled = enabled) {
             Icon(
                 when (queueState?.repeatMode) {
                     RepeatMode.ONE -> Icons.Default.RepeatOne
@@ -1414,6 +1436,7 @@ private fun SeekBar(
     elapsed: Double,
     duration: Double,
     onSeek: (Double) -> Unit,
+    enabled: Boolean = true,
     compact: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1448,6 +1471,7 @@ private fun SeekBar(
                 seeking = false
             },
             valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
+            enabled = enabled,
             modifier = if (compact) Modifier.height(28.dp) else Modifier
         )
 
