@@ -205,6 +205,7 @@ class AudioStreamManager {
                     "threadAlive=${playbackThread?.isAlive == true} sync=$syncState buf=${bufferDurationMs()}ms"
             )
             configureGeneration++
+            lastEnqueuedTimestampUs = 0L
             if (!playbackActive || playbackThread?.isAlive != true) {
                 playbackActive = true
                 playbackStarted = false
@@ -390,8 +391,8 @@ class AudioStreamManager {
                 "discardUntil=${discardUntilTimestampUs / 1000}ms"
         )
         when {
-            lastTs == 0L -> {
-                Log.d(TAG, "Reconnect: first-frame, accepting")
+            lastTs == 0L || syncState == SyncState.SYNC_ERROR_REBUFFERING -> {
+                Log.d(TAG, "Reconnect: first-frame (lastTs=${lastTs / 1000}ms, sync=$syncState), accepting")
             }
             gap < 0 && syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER && bufMs > HOLDOVER_MIN_BUFFER_MS
                     && gap > -5_000_000 -> {
@@ -805,12 +806,15 @@ class AudioStreamManager {
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         configureGeneration++
-        synchronized(codecLock) {
-            try { audioTrack?.setVolume(0f) } catch (_: Exception) {}
-            try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
-            try { codec?.flush() } catch (_: Exception) {}
+        // Only flush if not already rebuffering (expectDiscontinuity may have flushed already)
+        if (syncState != SyncState.SYNC_ERROR_REBUFFERING) {
+            synchronized(codecLock) {
+                try { audioTrack?.setVolume(0f) } catch (_: Exception) {}
+                try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
+                try { codec?.flush() } catch (_: Exception) {}
+            }
+            transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         }
-        transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         frameQueue.clear()
         frameQueueBytes.set(0)
         playbackStarted = false
