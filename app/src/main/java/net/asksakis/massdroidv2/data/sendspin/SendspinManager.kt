@@ -53,6 +53,7 @@ class SendspinManager(
     private var currentVolume = 100
     private var muted = false
     @Volatile private var lastSentSyncState = ""
+    @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
     private var clientName: String = ""
 
@@ -233,6 +234,7 @@ class SendspinManager(
         heartbeatJob = scope.launch {
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
+                if (System.currentTimeMillis() - lastCallbackSentAtMs < 500L) continue
                 client.sendClientState(
                     volume = currentVolume,
                     muted = muted,
@@ -321,6 +323,7 @@ class SendspinManager(
             }
             if (stateStr != lastSentSyncState) {
                 lastSentSyncState = stateStr
+                lastCallbackSentAtMs = System.currentTimeMillis()
                 Log.d(TAG, "Sending client/state: $stateStr (from $state)")
                 client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
             }

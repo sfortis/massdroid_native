@@ -91,7 +91,6 @@ class AudioStreamManager {
     @Volatile private var enqueueLateDropGraceUntilUs = 0L
     @Volatile private var lastFlacLowBufferLogMs = 0L
     private var presentationTimeUs = 0L
-    private var transportFailureAtMs = 0L
 
     // Sync state per spec
     @Volatile var syncState = SyncState.SYNC_ERROR_REBUFFERING; private set
@@ -853,7 +852,6 @@ class AudioStreamManager {
     }
 
     fun onTransportFailure() {
-        transportFailureAtMs = System.currentTimeMillis()
         val bufMs = bufferDurationMs()
         Log.d(
             DBG,
@@ -868,13 +866,6 @@ class AudioStreamManager {
             transitionSyncState(SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
             Log.d(TAG, "Transport failure, holdover active (${bufMs}ms)")
         }
-    }
-
-    /** Adaptive recovery buffer: proportional to interruption duration, not fixed 5s. */
-    private fun computeRecoveryBufferMs(): Long {
-        val gapMs = System.currentTimeMillis() - transportFailureAtMs
-        val adaptive = (gapMs * 2).coerceIn(defaultSyncBufferMs(), RECOVERY_SYNC_BUFFER_MS)
-        return adaptive
     }
 
     fun release() { release_internal() }

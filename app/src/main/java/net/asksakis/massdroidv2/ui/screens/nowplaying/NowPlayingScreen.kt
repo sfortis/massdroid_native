@@ -102,20 +102,24 @@ fun NowPlayingScreen(
     var showLyricsSheet by remember { mutableStateOf(false) }
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
-    val title = currentTrack?.name ?: player?.currentMedia?.title ?: "No track"
-    val artist = currentTrack?.artistNames ?: player?.currentMedia?.artist ?: ""
-    val album = currentTrack?.albumName ?: player?.currentMedia?.album ?: ""
+    val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
+    val cachedTrackDisplay by viewModel.cachedTrackDisplay.collectAsStateWithLifecycle()
+    val title = currentTrack?.name ?: player?.currentMedia?.title
+        ?: cachedTrackDisplay?.title ?: "No track"
+    val artist = currentTrack?.artistNames ?: player?.currentMedia?.artist
+        ?: cachedTrackDisplay?.artist ?: ""
+    val album = currentTrack?.albumName ?: player?.currentMedia?.album
+        ?: cachedTrackDisplay?.album ?: ""
     val imageUrl = currentTrack?.imageUrl ?: queueState?.currentItem?.imageUrl
-        ?: player?.currentMedia?.imageUrl
+        ?: player?.currentMedia?.imageUrl ?: cachedTrackDisplay?.imageUrl
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
-        ?: player?.currentMedia?.duration ?: 0.0
+        ?: player?.currentMedia?.duration ?: cachedTrackDisplay?.duration ?: 0.0
     val audioFormat = queueState?.currentItem?.audioFormat
     val isPlaying = player?.state == PlaybackState.PLAYING
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showPlayerSettingsDialog by remember { mutableStateOf(false) }
     var showSendspinStatusSheet by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
-    val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.error.collectLatest { message ->
@@ -665,9 +669,7 @@ private fun QualityActionRow(
                 }
             }
             val streamCodec by viewModel.sendspinStreamCodec.collectAsStateWithLifecycle(initialValue = null)
-            val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
-            val selectedPlayer by viewModel.selectedPlayer.collectAsStateWithLifecycle()
-            val outputCodec = if (ssClientId != null && selectedPlayer?.playerId == ssClientId) streamCodec else null
+            val outputCodec = streamCodec
             AudioQualityBadges(
                 audioFormat = audioFormat,
                 outputCodec = outputCodec,

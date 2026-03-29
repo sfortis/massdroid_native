@@ -33,6 +33,14 @@ import javax.inject.Inject
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
 
+data class CachedTrackDisplay(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val imageUrl: String?,
+    val duration: Double
+)
+
 data class SendspinStatusUi(
     val connectionState: SendspinState,
     val syncState: SyncState,
@@ -86,6 +94,8 @@ class NowPlayingViewModel @Inject constructor(
     private var cachedSendspinAudioFormat = "SMART"
     private var cachedSendspinStaticDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
+    private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
+    val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> = _cachedTrackDisplay.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -109,11 +119,35 @@ class NowPlayingViewModel @Inject constructor(
                     lyricsProvider.clearCache()
                 }
         }
+        // Cache track display for holdover (MA WS may disconnect while Sendspin still plays)
+        viewModelScope.launch {
+            queueState.collect { qs ->
+                val track = qs?.currentItem?.track ?: return@collect
+                _cachedTrackDisplay.value = CachedTrackDisplay(
+                    title = track.name, artist = track.artistNames,
+                    album = track.albumName,
+                    imageUrl = track.imageUrl ?: qs.currentItem?.imageUrl,
+                    duration = track.duration ?: qs.currentItem?.duration ?: 0.0
+                )
+            }
+        }
+        viewModelScope.launch {
+            sendspinManager.serverMetadata.collect { meta ->
+                if (meta?.title?.isNotBlank() == true && selectedPlayer.value == null) {
+                    _cachedTrackDisplay.value = CachedTrackDisplay(
+                        title = meta.title ?: "", artist = meta.artist ?: "",
+                        album = meta.album ?: "", imageUrl = meta.artworkUrl,
+                        duration = (meta.progress?.trackDuration?.toDouble() ?: 0.0) / 1000.0
+                    )
+                }
+            }
+        }
+        // Don't clear cache on disconnect/error: keep showing last track info
+        // until a new track replaces it (via queueState or serverMetadata collectors)
         viewModelScope.launch {
             while (true) {
-                val selected = selectedPlayer.value
                 val clientId = cachedSendspinClientId
-                val isLocalSendspin = clientId != null && selected?.playerId == clientId
+                val isLocalSendspin = clientId != null && sendspinManager.enabled.value
                 _sendspinStatus.value = if (isLocalSendspin) {
                     SendspinStatusUi(
                         connectionState = sendspinManager.connectionState.value,
