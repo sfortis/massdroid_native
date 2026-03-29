@@ -170,11 +170,13 @@ class NowPlayingViewModel @Inject constructor(
         viewModelScope.launch {
             sendspinManager.serverMetadata.collect { meta ->
                 if (meta?.title?.isNotBlank() == true && selectedPlayer.value == null) {
+                    val dur = (meta.progress?.trackDuration?.toDouble() ?: 0.0) / 1000.0
                     _cachedTrackDisplay.value = CachedTrackDisplay(
                         title = meta.title ?: "", artist = meta.artist ?: "",
                         album = meta.album ?: "", imageUrl = meta.artworkUrl,
-                        duration = (meta.progress?.trackDuration?.toDouble() ?: 0.0) / 1000.0
+                        duration = dur
                     )
+                    if (dur > 0.0) optimisticDuration = dur
                 }
             }
         }
