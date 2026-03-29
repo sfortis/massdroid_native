@@ -14,6 +14,7 @@ import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 
 enum class SyncState {
+    IDLE,
     SYNCHRONIZED,
     HOLDOVER_PLAYING_FROM_BUFFER,
     SYNC_ERROR_REBUFFERING
@@ -93,7 +94,7 @@ class AudioStreamManager {
     private var presentationTimeUs = 0L
 
     // Sync state per spec
-    @Volatile var syncState = SyncState.SYNC_ERROR_REBUFFERING; private set
+    @Volatile var syncState = SyncState.IDLE; private set
     var onSyncStateChanged: ((SyncState) -> Unit)? = null
 
     // Volume
@@ -511,7 +512,7 @@ class AudioStreamManager {
             try {
             while ((playbackActive || frameQueue.isNotEmpty()) && generation == playbackGeneration) {
                 // Wait for enough encoded buffer before starting
-                if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING) {
+                if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING || syncState == SyncState.IDLE) {
                     if (dropLateHeadFramesForStartup()) {
                         continue
                     }
@@ -818,15 +819,15 @@ class AudioStreamManager {
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         configureGeneration++
-        // Only flush if not already rebuffering (expectDiscontinuity may have flushed already)
-        if (syncState != SyncState.SYNC_ERROR_REBUFFERING) {
+        // Only flush if not already rebuffering/idle (expectDiscontinuity may have flushed already)
+        if (syncState != SyncState.SYNC_ERROR_REBUFFERING && syncState != SyncState.IDLE) {
             synchronized(codecLock) {
                 try { audioTrack?.setVolume(0f) } catch (_: Exception) {}
                 try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) {}
                 try { codec?.flush() } catch (_: Exception) {}
             }
-            transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         }
+        transitionSyncState(SyncState.IDLE)
         frameQueue.clear()
         frameQueueBytes.set(0)
         playbackStarted = false

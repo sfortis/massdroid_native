@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.service.SleepTimerBridge
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
@@ -59,7 +60,8 @@ class NowPlayingViewModel @Inject constructor(
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
-    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager
+    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    val sleepTimerBridge: SleepTimerBridge
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer

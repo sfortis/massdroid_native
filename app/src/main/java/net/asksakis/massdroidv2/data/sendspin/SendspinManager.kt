@@ -317,6 +317,7 @@ class SendspinManager(
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
             val stateStr = when (state) {
+                SyncState.IDLE -> "synchronized"
                 SyncState.SYNCHRONIZED -> "synchronized"
                 SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
                 SyncState.SYNC_ERROR_REBUFFERING -> "error"
@@ -332,6 +333,7 @@ class SendspinManager(
 
     private fun currentSyncStatePayloadValue(): String {
         return when (_syncState.value) {
+            SyncState.IDLE -> "synchronized"
             SyncState.SYNCHRONIZED -> "synchronized"
             SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
             SyncState.SYNC_ERROR_REBUFFERING -> "error"

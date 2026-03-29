@@ -57,6 +57,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.service.SleepTimerBridge
+import net.asksakis.massdroidv2.ui.components.SleepTimerSheet
+import androidx.compose.material.icons.filled.Bedtime
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Playlist
@@ -120,9 +123,20 @@ fun NowPlayingScreen(
         ?: player?.currentMedia?.duration ?: cachedTrackDisplay?.duration ?: 0.0
     val audioFormat = queueState?.currentItem?.audioFormat
     val isPlaying = player?.state == PlaybackState.PLAYING
+    val sleepTimerState by viewModel.sleepTimerBridge.state.collectAsStateWithLifecycle()
+    val sleepTimerRemainingMs = viewModel.sleepTimerBridge.remainingMs()
+    val sleepTimerRemainingMin = (sleepTimerRemainingMs / 60_000).toInt()
+    val sleepTimerActive = sleepTimerState !is SleepTimerBridge.State.Idle
+    val sleepTimerLabel = when {
+        sleepTimerRemainingMin >= 60 -> "${sleepTimerRemainingMin / 60}h ${sleepTimerRemainingMin % 60}min"
+        sleepTimerRemainingMin > 0 -> "${sleepTimerRemainingMin}min"
+        sleepTimerRemainingMs > 0 -> "${sleepTimerRemainingMs / 1000}s"
+        else -> ""
+    }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showPlayerSettingsDialog by remember { mutableStateOf(false) }
     var showSendspinStatusSheet by remember { mutableStateOf(false) }
+    var showSleepTimerDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -151,7 +165,20 @@ fun NowPlayingScreen(
         topBar = {
             if (!isLandscape) {
                 TopAppBar(
-                    title = { Text(player?.displayName ?: "Now Playing") },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(player?.displayName ?: "Now Playing")
+                            if (sleepTimerActive) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    Icons.Default.Bedtime,
+                                    contentDescription = "Sleep timer active",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -190,6 +217,7 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     controlsEnabled = player != null,
+                    sleepTimerActive = sleepTimerActive,
                     viewModel = viewModel,
                     onBack = onBack,
                     onNavigateToQueue = onNavigateToQueue,
@@ -201,7 +229,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
                     onShowPlayerMenu = { showPlayerMenu = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -230,7 +258,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
                     onNavigateToQueue = onNavigateToQueue,
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -267,6 +295,8 @@ fun NowPlayingScreen(
             artistBlocked = artistBlocked,
             canToggleArtistBlock = canToggleArtistBlock,
             hasOtherPlayers = otherPlayers.isNotEmpty(),
+            sleepTimerActive = sleepTimerActive,
+            sleepTimerLabel = sleepTimerLabel,
             onDismiss = { showPlayerMenu = false },
             onPlayerSettings = {
                 showPlayerMenu = false
@@ -276,6 +306,7 @@ fun NowPlayingScreen(
                 showPlayerMenu = false
                 showTransferSheet = true
             },
+            onSleepTimer = { showSleepTimerDialog = true },
             onStartSongRadio = currentTrack?.uri?.let { uri ->
                 { viewModel.startSongRadio(uri) }
             },
@@ -363,6 +394,16 @@ fun NowPlayingScreen(
         SendspinStatusSheet(
             status = sendspinStatus!!,
             onDismiss = { showSendspinStatusSheet = false }
+        )
+    }
+
+    if (showSleepTimerDialog) {
+        SleepTimerSheet(
+            isActive = sleepTimerActive,
+            remainingMinutes = sleepTimerRemainingMin,
+            onStart = { viewModel.sleepTimerBridge.requestStart(it) },
+            onCancel = { viewModel.sleepTimerBridge.requestCancel() },
+            onDismiss = { showSleepTimerDialog = false }
         )
     }
 }
@@ -479,6 +520,7 @@ private fun NowPlayingLandscape(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
+    sleepTimerActive: Boolean,
     viewModel: NowPlayingViewModel,
     onBack: () -> Unit,
     onNavigateToQueue: () -> Unit,
@@ -531,17 +573,28 @@ private fun NowPlayingLandscape(
                 IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp))
                 }
-                Text(
-                    text = player?.displayName ?: "Now Playing",
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
-                        .align(Alignment.CenterVertically),
-                    textAlign = TextAlign.Center
-                )
+                Row(
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = player?.displayName ?: "Now Playing",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                    if (sleepTimerActive) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            Icons.Default.Bedtime,
+                            contentDescription = "Sleep timer active",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
                 IconButton(onClick = onShowPlayerMenu, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(20.dp))
                 }
@@ -693,7 +746,7 @@ private fun QualityActionRow(
                 audioFormat = audioFormat,
                 outputCodec = outputCodec,
                 compact = compact,
-                onClick = onShowSendspinStatus
+                onClick = if (outputCodec != null) onShowSendspinStatus else null
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
@@ -744,6 +797,7 @@ private fun SendspinStatusSheet(
     val maxSeconds = 30f
     val bufferColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
     val stateLabel = when (status.syncState) {
+        SyncState.IDLE -> "Idle"
         SyncState.SYNCHRONIZED -> "Synchronized"
         SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "Holdover"
         SyncState.SYNC_ERROR_REBUFFERING -> "Rebuffering"
@@ -1004,9 +1058,12 @@ private fun PlayerOptionsSheet(
     artistBlocked: Boolean,
     canToggleArtistBlock: Boolean,
     hasOtherPlayers: Boolean,
+    sleepTimerActive: Boolean,
+    sleepTimerLabel: String,
     onDismiss: () -> Unit,
     onPlayerSettings: () -> Unit,
     onTransferQueue: () -> Unit,
+    onSleepTimer: () -> Unit,
     onStartSongRadio: (() -> Unit)?,
     onClick: () -> Unit
 ) {
@@ -1091,6 +1148,30 @@ private fun PlayerOptionsSheet(
             ListItem(
                 colors = SheetDefaults.listItemColors(),
                 headlineContent = {
+                    Text(if (sleepTimerActive) "Sleep Timer ($sleepTimerLabel)" else "Sleep Timer")
+                },
+                supportingContent = {
+                    Text(
+                        if (sleepTimerActive) "Tap to change or cancel" else "Stop playback after a set time",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = null,
+                        tint = if (sleepTimerActive) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                modifier = Modifier.clickable {
+                    onSleepTimer()
+                    onDismiss()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = {
                     Text(
                         if (artistBlocked) "Allow Artist Again" else "Block This Artist",
                         color = if (artistBlocked) {
@@ -1123,6 +1204,7 @@ private fun PlayerOptionsSheet(
         }
     }
 }
+
 
 @Composable
 private fun TrackInfoSection(

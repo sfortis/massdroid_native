@@ -97,6 +97,7 @@ class PlaybackService : MediaLibraryService() {
 
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var sendspinManager: SendspinManager
+    @Inject lateinit var sleepTimerBridge: SleepTimerBridge
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
@@ -119,6 +120,8 @@ class PlaybackService : MediaLibraryService() {
     private var volumeOverrideUntil: Long = 0
     private var sendspinController: SendspinAudioController? = null
     private var sendspinActive = false
+    private lateinit var sleepTimerManager: SleepTimerManager
+    private val sleepTimerOriginalVolumes = mutableMapOf<String, Int>()
     private var proximityJob: Job? = null
     private var proximityQuickRetryJob: Job? = null
     private var noRoomStopJob: Job? = null
@@ -147,6 +150,7 @@ class PlaybackService : MediaLibraryService() {
         observePlayerState()
         observeQueueItems()
         createSendspinController()
+        createSleepTimer()
         observeSendspinEnabled()
         observeConnectionState()
         observeShortcutActions()
@@ -216,6 +220,64 @@ class PlaybackService : MediaLibraryService() {
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> updateConnectionNotification() }
         )
+    }
+
+    private fun createSleepTimer() {
+        sleepTimerManager = SleepTimerManager(
+            context = this,
+            scope = scope,
+            bridge = sleepTimerBridge,
+            onFadeFraction = { fraction ->
+                // Cache original volumes on first fade call, restore on fraction=1.0
+                if (fraction < 1f && sleepTimerOriginalVolumes.isEmpty()) {
+                    for (p in playerRepository.players.value) {
+                        if (p.state == net.asksakis.massdroidv2.domain.model.PlaybackState.PLAYING
+                            || p.playerId == sendspinPlayerId) {
+                            sleepTimerOriginalVolumes[p.playerId] = p.volumeLevel
+                        }
+                    }
+                }
+                val originals = sleepTimerOriginalVolumes
+                for ((id, origVol) in originals) {
+                    val targetVol = (origVol * fraction).toInt()
+                    if (id == sendspinPlayerId) {
+                        sendspinManager.setVolume(targetVol)
+                    } else {
+                        scope.launch {
+                            try { playerRepository.setVolume(id, targetVol) } catch (_: Exception) {}
+                        }
+                    }
+                }
+                if (fraction >= 1f) sleepTimerOriginalVolumes.clear()
+            },
+            onStop = {
+                // Stop ALL playing players, not just selected
+                val playingPlayers = playerRepository.players.value.filter {
+                    it.state == net.asksakis.massdroidv2.domain.model.PlaybackState.PLAYING
+                }
+                for (p in playingPlayers) {
+                    try { playerRepository.pause(p.playerId) } catch (_: Exception) {}
+                }
+                if (sendspinActive) {
+                    sendspinController?.handlePause()
+                }
+            }
+        )
+
+        // Register cancel broadcast receiver
+        val filter = android.content.IntentFilter(SleepTimerManager.ACTION_CANCEL)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this, sleepTimerCancelReceiver, filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private val sleepTimerCancelReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
+            if (intent.action == SleepTimerManager.ACTION_CANCEL) {
+                sleepTimerManager.cancel()
+            }
+        }
     }
 
     private fun observeSendspinEnabled() {

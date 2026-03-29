@@ -102,7 +102,7 @@ class SendspinAudioController(
     var isStreaming = false; private set
     var isReady = false; private set
     private var transportState = SendspinState.DISCONNECTED
-    private var localSyncState = SyncState.SYNC_ERROR_REBUFFERING
+    private var localSyncState = SyncState.IDLE
     private var lastSendspinReportedPlaying = false
     private var currentTrackUri: String? = null
     private var currentTitle = ""
@@ -744,7 +744,7 @@ class SendspinAudioController(
     private fun recomputeAvailability() {
         isStreaming = transportState == SendspinState.STREAMING
         isReady = (transportState == SendspinState.SYNCING || transportState == SendspinState.STREAMING) &&
-            localSyncState != SyncState.SYNC_ERROR_REBUFFERING
+            localSyncState != SyncState.SYNC_ERROR_REBUFFERING && localSyncState != SyncState.IDLE
     }
 
     // endregion
