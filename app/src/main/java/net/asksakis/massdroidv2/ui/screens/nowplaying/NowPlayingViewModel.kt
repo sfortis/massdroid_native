@@ -17,6 +17,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
+import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -29,6 +31,18 @@ import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 
 private const val TAG = "NowPlayingVM"
+private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
+
+data class SendspinStatusUi(
+    val connectionState: SendspinState,
+    val syncState: SyncState,
+    val codec: String?,
+    val configuredFormat: String,
+    val activeBufferMs: Long,
+    val bufferBytes: Long,
+    val staticDelayMs: Int
+)
+
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
@@ -66,10 +80,25 @@ class NowPlayingViewModel @Inject constructor(
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+    private val _sendspinStatus = MutableStateFlow<SendspinStatusUi?>(null)
+    val sendspinStatus: StateFlow<SendspinStatusUi?> = _sendspinStatus.asStateFlow()
+    private var cachedSendspinClientId: String? = null
+    private var cachedSendspinAudioFormat = "SMART"
+    private var cachedSendspinStaticDelayMs = 0
+    private var lastSendspinStatusLogAtMs = 0L
 
     init {
         viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
+        }
+        viewModelScope.launch {
+            sendspinClientId.collect { cachedSendspinClientId = it }
+        }
+        viewModelScope.launch {
+            sendspinAudioFormat.collect { cachedSendspinAudioFormat = it }
+        }
+        viewModelScope.launch {
+            sendspinStaticDelayMs.collect { cachedSendspinStaticDelayMs = it }
         }
         viewModelScope.launch {
             queueState
@@ -79,6 +108,28 @@ class NowPlayingViewModel @Inject constructor(
                     _lyrics.value = null
                     lyricsProvider.clearCache()
                 }
+        }
+        viewModelScope.launch {
+            while (true) {
+                val selected = selectedPlayer.value
+                val clientId = cachedSendspinClientId
+                val isLocalSendspin = clientId != null && selected?.playerId == clientId
+                _sendspinStatus.value = if (isLocalSendspin) {
+                    SendspinStatusUi(
+                        connectionState = sendspinManager.connectionState.value,
+                        syncState = sendspinManager.syncState.value,
+                        codec = sendspinManager.streamCodec.value,
+                        configuredFormat = cachedSendspinAudioFormat,
+                        activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
+                        bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
+                        staticDelayMs = cachedSendspinStaticDelayMs
+                    ).also { maybeLogSendspinUiStatus(it) }
+                } else {
+                    lastSendspinStatusLogAtMs = 0L
+                    null
+                }
+                delay(300)
+            }
         }
     }
 
@@ -449,5 +500,18 @@ class NowPlayingViewModel @Inject constructor(
                 _error.tryEmit("Failed to save player settings")
             }
         }
+    }
+
+    private fun maybeLogSendspinUiStatus(status: SendspinStatusUi) {
+        val now = System.currentTimeMillis()
+        if (now - lastSendspinStatusLogAtMs < 1000L) return
+        lastSendspinStatusLogAtMs = now
+        Log.d(
+            SENDSPIN_UI_DBG,
+            "transport=${status.connectionState} playback=${status.syncState} codec=${status.codec ?: "unknown"} " +
+                "mode=${status.configuredFormat} delay=${status.staticDelayMs}ms " +
+                "buf=${String.format(java.util.Locale.US, "%.1f", status.activeBufferMs / 1000f)}s " +
+                "bytes=${status.bufferBytes}"
+        )
     }
 }

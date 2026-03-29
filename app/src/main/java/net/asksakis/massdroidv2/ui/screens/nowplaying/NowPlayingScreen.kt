@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -54,6 +55,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
+import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
@@ -110,7 +113,9 @@ fun NowPlayingScreen(
     val isPlaying = player?.state == PlaybackState.PLAYING
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var showPlayerSettingsDialog by remember { mutableStateOf(false) }
+    var showSendspinStatusSheet by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.error.collectLatest { message ->
@@ -187,6 +192,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onShowPlayerMenu = { showPlayerMenu = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -214,6 +220,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onNavigateToQueue = onNavigateToQueue,
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -341,6 +348,13 @@ fun NowPlayingScreen(
             onDismiss = { showLyricsSheet = false }
         )
     }
+
+    if (showSendspinStatusSheet && sendspinStatus != null) {
+        SendspinStatusSheet(
+            status = sendspinStatus!!,
+            onDismiss = { showSendspinStatusSheet = false }
+        )
+    }
 }
 
 @Composable
@@ -360,6 +374,7 @@ private fun NowPlayingPortrait(
     viewModel: NowPlayingViewModel,
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
+    onShowSendspinStatus: () -> Unit,
     onNavigateToQueue: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
@@ -389,7 +404,8 @@ private fun NowPlayingPortrait(
             viewModel = viewModel,
             onShowPlaylistDialog = onShowPlaylistDialog,
             onShowLyrics = onShowLyrics,
-            onNavigateToQueue = onNavigateToQueue
+            onNavigateToQueue = onNavigateToQueue,
+            onShowSendspinStatus = onShowSendspinStatus
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -452,6 +468,7 @@ private fun NowPlayingLandscape(
     onNavigateToQueue: () -> Unit,
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
+    onShowSendspinStatus: () -> Unit,
     onShowPlayerMenu: () -> Unit,
     onNavigateToArtist: (String, String, String) -> Unit,
     onNavigateToAlbum: (String, String, String) -> Unit
@@ -521,6 +538,7 @@ private fun NowPlayingLandscape(
                 onShowPlaylistDialog = onShowPlaylistDialog,
                 onShowLyrics = onShowLyrics,
                 onNavigateToQueue = onNavigateToQueue,
+                onShowSendspinStatus = onShowSendspinStatus,
                 compact = true
             )
 
@@ -564,12 +582,14 @@ private fun NowPlayingLandscape(
 private fun AudioQualityBadges(
     audioFormat: AudioFormatInfo?,
     outputCodec: String? = null,
-    compact: Boolean = false
+    compact: Boolean = false,
+    onClick: (() -> Unit)? = null
 ) {
     val badges = remember(audioFormat, outputCodec) { buildAudioQualityBadges(audioFormat, outputCodec) }
     if (badges.isEmpty()) return
 
     Row(
+        modifier = if (onClick != null) Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() } else Modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -598,6 +618,7 @@ private fun QualityActionRow(
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
     onNavigateToQueue: () -> Unit,
+    onShowSendspinStatus: () -> Unit,
     compact: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
@@ -647,7 +668,12 @@ private fun QualityActionRow(
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
             val selectedPlayer by viewModel.selectedPlayer.collectAsStateWithLifecycle()
             val outputCodec = if (ssClientId != null && selectedPlayer?.playerId == ssClientId) streamCodec else null
-            AudioQualityBadges(audioFormat = audioFormat, outputCodec = outputCodec, compact = compact)
+            AudioQualityBadges(
+                audioFormat = audioFormat,
+                outputCodec = outputCodec,
+                compact = compact,
+                onClick = onShowSendspinStatus
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
                 IconButton(
@@ -681,6 +707,107 @@ private fun QualityActionRow(
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SendspinStatusSheet(
+    status: SendspinStatusUi,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val bufferSeconds = status.activeBufferMs / 1000f
+    val maxSeconds = 30f
+    val bufferColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+    val stateLabel = when (status.syncState) {
+        SyncState.SYNCHRONIZED -> "Synchronized"
+        SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "Holdover"
+        SyncState.SYNC_ERROR_REBUFFERING -> "Rebuffering"
+    }
+    val transportLabel = when (status.connectionState) {
+        SendspinState.STREAMING -> "Streaming"
+        SendspinState.SYNCING -> "Syncing"
+        SendspinState.HANDSHAKING -> "Handshaking"
+        SendspinState.AUTHENTICATING -> "Authenticating"
+        SendspinState.CONNECTING -> "Connecting"
+        SendspinState.ERROR -> "Error"
+        SendspinState.DISCONNECTED -> "Disconnected"
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = SheetDefaults.containerColor()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            SheetDefaults.HeaderTitle(
+                text = "Streaming Status",
+                modifier = Modifier.padding(
+                    horizontal = SheetDefaults.HeaderHorizontalPadding,
+                    vertical = SheetDefaults.HeaderVerticalPadding
+                )
+            )
+
+            StatusLine(label = "Transport", value = transportLabel)
+            StatusLine(label = "Playback", value = stateLabel)
+            StatusLine(label = "Codec", value = status.codec ?: "Unknown")
+            StatusLine(label = "Mode", value = status.configuredFormat)
+            StatusLine(label = "Static delay", value = "${status.staticDelayMs} ms")
+            StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            ) {
+                val progress = (bufferSeconds / maxSeconds).coerceIn(0f, 1f)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawRoundRect(
+                        color = bufferColor,
+                        size = androidx.compose.ui.geometry.Size(size.width * progress, size.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f, size.height / 2f)
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("0s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("30s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            StatusLine(label = "Buffered bytes", value = "${status.bufferBytes / 1000} KB")
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun StatusLine(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
     }
 }
 

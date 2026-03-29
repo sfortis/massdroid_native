@@ -52,6 +52,7 @@ class SendspinManager(
 
     private var currentVolume = 100
     private var muted = false
+    @Volatile private var lastSentSyncState = ""
     private var clientId: String = ""
     private var clientName: String = ""
 
@@ -90,11 +91,12 @@ class SendspinManager(
         binaryJob = scope.launch {
             client.binaryMessages.collect { data ->
                 binaryCount++
+                val gen = audio.currentConfigureGeneration()
                 if (binaryCount <= 3 || binaryCount % 1000 == 0) {
                     Log.d(TAG, "Binary message #$binaryCount: ${data.size} bytes")
                 }
                 audio.clockOffsetUs = clockOffsetUs
-                audio.onBinaryMessage(data)
+                audio.onBinaryMessage(data, gen)
             }
         }
 
@@ -176,7 +178,7 @@ class SendspinManager(
                 Log.d(TAG, "Stream start: ${info.codec} ${info.sampleRate}Hz/${info.bitDepth}bit ${info.channels}ch, " +
                         "codecHeader=${info.codecHeader != null}")
                 audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader)
-                audio.setVolume(if (muted) 0f else currentVolume / 100f)
+                audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
                 _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
             }
@@ -211,7 +213,7 @@ class SendspinManager(
             "volume" -> {
                 val vol = playerCmd.volume ?: return
                 currentVolume = vol
-                if (!muted) audio.setVolume(vol / 100f)
+                if (!muted) audio.setVolume(perceptualGain(vol))
                 Log.d(TAG, "Volume set to $vol")
             }
             "mute" -> {
@@ -272,9 +274,18 @@ class SendspinManager(
         audio.setPaused(false)
     }
 
+    private fun perceptualGain(volume: Int): Float {
+        val linear = (volume.coerceIn(0, 100)) / 100f
+        return linear * linear
+    }
+
     fun setVolume(volume: Int) {
         currentVolume = volume
-        if (!muted) audio.setVolume(volume / 100f)
+        if (!muted) audio.setVolume(perceptualGain(volume))
+    }
+
+    fun restoreVolume() {
+        if (!muted) audio.setVolume(perceptualGain(currentVolume))
     }
 
     fun setMuted(muted: Boolean) {
@@ -298,6 +309,8 @@ class SendspinManager(
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
 
+    fun bufferedAudioBytes(): Long = audio.bufferedBytes()
+
     fun setupSyncStateCallback() {
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
@@ -306,7 +319,11 @@ class SendspinManager(
                 SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
                 SyncState.SYNC_ERROR_REBUFFERING -> "error"
             }
-            client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
+            if (stateStr != lastSentSyncState) {
+                lastSentSyncState = stateStr
+                Log.d(TAG, "Sending client/state: $stateStr (from $state)")
+                client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
+            }
         }
     }
 

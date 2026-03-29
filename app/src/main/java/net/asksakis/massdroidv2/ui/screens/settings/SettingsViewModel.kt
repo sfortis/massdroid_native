@@ -333,14 +333,14 @@ class SettingsViewModel @Inject constructor(
         Log.d(TAG, "Validating Last.fm API key...")
         _lastFmValidation.value = LastFmValidation.Validating
         viewModelScope.launch {
-            val valid = lastFmGenreResolver.validateApiKey(trimmed)
-            if (valid) {
+            val error = lastFmGenreResolver.validateApiKey(trimmed)
+            if (error == null) {
                 Log.d(TAG, "Last.fm API key validated, saving")
                 settingsRepository.setLastFmApiKey(trimmed)
                 _lastFmValidation.value = LastFmValidation.Valid
             } else {
-                Log.w(TAG, "Last.fm API key validation failed")
-                _lastFmValidation.value = LastFmValidation.Invalid
+                Log.w(TAG, "Last.fm API key validation failed: $error")
+                _lastFmValidation.value = LastFmValidation.Invalid(error)
             }
         }
     }
@@ -429,5 +429,5 @@ sealed interface LastFmValidation {
     data object Idle : LastFmValidation
     data object Validating : LastFmValidation
     data object Valid : LastFmValidation
-    data object Invalid : LastFmValidation
+    data class Invalid(val reason: String) : LastFmValidation
 }

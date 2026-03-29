@@ -279,10 +279,15 @@ class PlaybackService : MediaLibraryService() {
 
         // Apply format on user preference change only (not network change).
         // Network-based format (Smart mode) is applied at next stream start via Sendspin hello.
+        // Wait for DataStore to load before collecting, so we don't send the default "SMART"
+        // to the server on startup (overriding the user's saved preference).
         scope.launch {
+            var lastFormat = settingsRepository.sendspinAudioFormat.first()
             settingsRepository.sendspinAudioFormat
                 .distinctUntilChanged()
                 .collect { formatName ->
+                    if (formatName == lastFormat) { lastFormat = formatName; return@collect }
+                    lastFormat = formatName
                     val playerId = settingsRepository.sendspinClientId.first() ?: return@collect
                     if (wsClient.connectionState.value !is ConnectionState.Connected) return@collect
                     val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)

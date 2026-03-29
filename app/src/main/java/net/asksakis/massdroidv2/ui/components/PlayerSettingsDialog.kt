@@ -51,8 +51,8 @@ fun PlayerSettingsDialog(
     var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember { mutableStateOf(false) }
     var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
-    var audioFormat by remember { mutableStateOf(initialAudioFormat) }
-    var staticDelayMsText by remember { mutableStateOf(initialStaticDelayMs.toString()) }
+    var audioFormat by remember(initialAudioFormat) { mutableStateOf(initialAudioFormat) }
+    var staticDelayMsText by remember(initialStaticDelayMs) { mutableStateOf(initialStaticDelayMs.toString()) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)

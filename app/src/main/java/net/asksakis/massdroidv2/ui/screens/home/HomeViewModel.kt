@@ -36,8 +36,11 @@ class HomeViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
     val sendspinClientId = settingsRepository.sendspinClientId
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
     val proximityConfig = proximityConfigStore.config
 
     private val _isInitializing = MutableStateFlow(true)

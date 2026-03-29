@@ -97,7 +97,10 @@ class LastFmGenreResolver @Inject constructor(
         return fetchFromApi(apiKey, artistName)
     }
 
-    suspend fun validateApiKey(apiKey: String): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Returns null on success, or an error description on failure.
+     */
+    suspend fun validateApiKey(apiKey: String): String? = withContext(Dispatchers.IO) {
         try {
             val url = "https://ws.audioscrobbler.com/2.0/".toHttpUrlOrNull()
                 ?.newBuilder()
@@ -105,16 +108,23 @@ class LastFmGenreResolver @Inject constructor(
                 ?.addQueryParameter("artist", "Radiohead")
                 ?.addQueryParameter("api_key", apiKey)
                 ?.addQueryParameter("format", "json")
-                ?.build() ?: return@withContext false
+                ?.build() ?: return@withContext "Invalid URL"
 
             val request = Request.Builder().url(url).build()
             okHttpClient.newCall(request).execute().use { response ->
                 Log.d(TAG, "API key validation: ${response.code}")
-                response.isSuccessful
+                when {
+                    response.isSuccessful -> null
+                    response.code == 403 -> "Key not recognized by Last.fm. Make sure you copied the API Key (not the Shared Secret)."
+                    response.code == 429 -> "Last.fm rate limit. Wait a minute and try again."
+                    else -> "Last.fm returned HTTP ${response.code}"
+                }
             }
+        } catch (e: java.net.UnknownHostException) {
+            "Cannot reach Last.fm. Check your internet connection."
         } catch (e: Exception) {
             Log.w(TAG, "API key validation failed: ${e.message}")
-            false
+            "Connection failed: ${e.message}"
         }
     }
 

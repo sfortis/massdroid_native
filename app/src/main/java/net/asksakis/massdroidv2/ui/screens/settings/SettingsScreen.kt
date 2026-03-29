@@ -659,7 +659,7 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                         if (apiKeyInput.isNotBlank()) {
                             IconButton(onClick = {
                                 apiKeyInput = ""
-                                viewModel.clearLastFmApiKey()
+                                viewModel.clearLastFmValidation()
                             }) {
                                 Icon(Icons.Filled.Close, contentDescription = "Clear")
                             }
@@ -679,16 +679,30 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                         { Text("API key verified", color = MaterialTheme.colorScheme.primary) }
                     }
                     is LastFmValidation.Invalid -> {
-                        { Text("Invalid API key") }
+                        { Text("Validation failed", color = MaterialTheme.colorScheme.error) }
                     }
                     else -> null
                 }
             )
+            if (lastFmValidation is LastFmValidation.Invalid) {
+                val reason = (lastFmValidation as LastFmValidation.Invalid).reason
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        reason,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
             Button(
                 onClick = { viewModel.setLastFmApiKey(apiKeyInput) },
-                enabled = apiKeyInput.trim() != lastFmApiKey
-                    && apiKeyInput.isNotBlank()
-                    && !isValidating
+                enabled = apiKeyInput.trim() != lastFmApiKey && !isValidating
             ) {
                 if (isValidating) {
                     CircularProgressIndicator(

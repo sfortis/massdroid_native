@@ -61,7 +61,7 @@ fun PlayersScreen(
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
-    val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
+    val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
@@ -176,13 +176,14 @@ fun PlayersScreen(
                     }
 
                     settingsPlayer?.let { player ->
-                        val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = "SMART")
+                        val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
                         val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+                        if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
                             initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
                             isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
-                            initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
+                            initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),
                             initialStaticDelayMs = staticDelayMs,
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },

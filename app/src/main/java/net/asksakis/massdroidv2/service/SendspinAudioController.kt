@@ -535,7 +535,7 @@ class SendspinAudioController(
                         hasAudioFocus = true
                         if (isStreaming) {
                             sendspinManager.resumeAudio()
-                            sendspinManager.setVolume(100)
+                            sendspinManager.restoreVolume()
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
