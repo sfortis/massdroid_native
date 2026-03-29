@@ -206,9 +206,22 @@ class AudioStreamManager {
             )
             configureGeneration++
             lastEnqueuedTimestampUs = 0L
+            // Clear both encoded queue and AudioTrack hardware buffer. The server
+            // sends from its current position after reconnect, which is behind our
+            // holdover position. Without flushing, old holdover PCM in the hardware
+            // buffer plays before the new audio, causing an audible position jump.
+            frameQueue.clear()
+            frameQueueBytes.set(0)
+            synchronized(codecLock) {
+                try { audioTrack?.setVolume(0f) } catch (_: Exception) {}
+                try { audioTrack?.flush() } catch (_: Exception) {}
+                try { codec?.flush() } catch (_: Exception) {}
+            }
+            presentationTimeUs = 0L
+            playbackStarted = false
+            requiredSyncBufferMs = defaultSyncBufferMs()
             if (!playbackActive || playbackThread?.isAlive != true) {
                 playbackActive = true
-                playbackStarted = false
                 audioTrack?.let { startPlaybackThread(it) }
             }
             pendingContinuityCheck = true
