@@ -50,7 +50,8 @@ class SendspinManager(
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
     val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
 
-    private var currentVolume = 100
+    var currentVolume = 100
+        private set
     private var muted = false
     @Volatile private var lastSentSyncState = ""
     @Volatile private var lastCallbackSentAtMs = 0L

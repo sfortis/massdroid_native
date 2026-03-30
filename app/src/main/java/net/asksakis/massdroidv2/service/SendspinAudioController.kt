@@ -366,6 +366,11 @@ class SendspinAudioController(
             sendspinPlayerId = clientId
             val ssState = sendspinManager.connectionState.value
             if (ssState == SendspinState.DISCONNECTED || ssState == SendspinState.ERROR) {
+                // Init sendspin volume from phone volume so server doesn't reset to 100%
+                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val phonePercent = if (maxVol > 0) (curVol * 100 / maxVol) else 50
+                sendspinManager.setVolume(phonePercent)
                 sendspinManager.start(url, token, clientId, "MassDroid")
                 Log.d(TAG, "Sendspin started, playerId=$clientId")
             } else {

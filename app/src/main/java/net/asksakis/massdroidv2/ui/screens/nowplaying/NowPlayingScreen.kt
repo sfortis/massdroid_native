@@ -854,13 +854,7 @@ private fun SendspinStatusSheet(
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            SheetDefaults.HeaderTitle(
-                text = "Streaming Status",
-                modifier = Modifier.padding(
-                    horizontal = SheetDefaults.HeaderHorizontalPadding,
-                    vertical = SheetDefaults.HeaderVerticalPadding
-                )
-            )
+            SheetDefaults.HeaderTitle(text = "Streaming Status")
 
             StatusLine(label = "Transport", value = transportLabel)
             StatusLine(label = "Playback", value = stateLabel)

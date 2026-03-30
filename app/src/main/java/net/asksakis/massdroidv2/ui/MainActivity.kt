@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.media.AudioManager
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -93,6 +95,10 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker
     @Inject lateinit var settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
     @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
+    @Inject lateinit var playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository
+
+    private val volumeStep = 5
+    @Volatile private var cachedSsClientId: String? = null
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -127,6 +133,25 @@ class MainActivity : ComponentActivity() {
         }
         checkBatteryOptimization()
         handleShortcutIntent(intent)
+
+        // Cache sendspin client ID and sync phone volume for local player
+        lifecycleScope.launch {
+            settingsRepository.sendspinClientId.collect { cachedSsClientId = it }
+        }
+        lifecycleScope.launch {
+            var initialized = false
+            playerRepository.selectedPlayer.collect { player ->
+                val ssId = cachedSsClientId
+                if (player == null || ssId == null || player.playerId != ssId) return@collect
+                if (!initialized) {
+                    // Skip first emission (startup) to avoid overriding phone volume
+                    initialized = true
+                    return@collect
+                }
+                syncPhoneVolume(player.volumeLevel)
+            }
+        }
+
         setContent {
             val themeMode by settingsRepository.themeMode.collectAsStateWithLifecycle(initialValue = "auto")
             val darkTheme = when (themeMode) {
@@ -185,6 +210,44 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShortcutIntent(intent)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val keyCode = event.keyCode
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                val player = playerRepository.selectedPlayer.value
+                if (player != null) {
+                    val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
+                    if (isLocal) {
+                        // Local speaker: let system handle HW volume, then mirror to MA
+                        val result = super.dispatchKeyEvent(event)
+                        val maVol = readPhoneVolumePercent()
+                        lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
+                        return result
+                    }
+                    // Remote speaker: route to MA player
+                    val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
+                    val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
+                    lifecycleScope.launch { playerRepository.setVolume(player.playerId, newVol) }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun readPhoneVolumePercent(): Int {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        return if (max > 0) (current * 100 / max) else 0
+    }
+
+    private fun syncPhoneVolume(maVolumePercent: Int) {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val targetVol = (maVolumePercent * maxVol / 100).coerceIn(0, maxVol)
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
     }
 
     private fun handleShortcutIntent(intent: Intent?) {

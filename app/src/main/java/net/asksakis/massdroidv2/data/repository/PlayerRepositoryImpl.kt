@@ -185,7 +185,14 @@ class PlayerRepositoryImpl @Inject constructor(
                         json.decodeFromJsonElement<ServerPlayer>(it)
                     } ?: return@collect
                     val trackImg = queueTracking[serverPlayer.playerId]?.track?.imageUrl
-                    val player = serverPlayer.toDomain(wsClient, trackImg)
+                    var player = serverPlayer.toDomain(wsClient, trackImg)
+                    // During volume cooldown, preserve local optimistic volume
+                    if (System.currentTimeMillis() < volumeOverrideUntilMs) {
+                        val localVol = _players.value.firstOrNull { it.playerId == player.playerId }?.volumeLevel
+                        if (localVol != null) {
+                            player = player.copy(volumeLevel = localVol)
+                        }
+                    }
                     _players.update { list ->
                         list.map { if (it.playerId == player.playerId) player else it }
                     }
@@ -933,7 +940,17 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
+    @Volatile private var volumeOverrideUntilMs = 0L
+
     override suspend fun setVolume(playerId: String, volumeLevel: Int) {
+        // Optimistic update with cooldown to prevent bounce from stale server responses
+        volumeOverrideUntilMs = System.currentTimeMillis() + 800
+        _players.update { list ->
+            list.map { if (it.playerId == playerId) it.copy(volumeLevel = volumeLevel) else it }
+        }
+        if (_selectedPlayer.value?.playerId == playerId) {
+            _selectedPlayer.update { it?.copy(volumeLevel = volumeLevel) }
+        }
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_SET,
             VolumeSetArgs(playerId = playerId, volumeLevel = volumeLevel)
