@@ -386,7 +386,11 @@ private fun MassDroidApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    val showNav = currentRoute in navItems.map { it.route }
+    val hideNav = currentRoute == Routes.NOW_PLAYING ||
+        currentRoute == Routes.SETTINGS ||
+        currentRoute == Routes.RECOMMENDATION_INSIGHTS ||
+        currentRoute?.startsWith("room_setup") == true
+    val showNav = !hideNav && currentRoute != null
     val showMiniPlayer = currentRoute != Routes.NOW_PLAYING &&
         currentRoute != Routes.SETTINGS &&
         currentRoute != Routes.RECOMMENDATION_INSIGHTS &&
@@ -427,7 +431,7 @@ private fun MassDroidApp(
                 showMiniPlayer = false, // handled by ExpandingPlayerSheet
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
-                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp
+                extraBottomPadding = if (showMiniPlayer && showNav) 88.dp else if (showMiniPlayer) 80.dp else 0.dp
             )
         } else {
             PortraitLayout(
@@ -437,7 +441,7 @@ private fun MassDroidApp(
                 showMiniPlayer = false, // handled by ExpandingPlayerSheet
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
-                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp
+                extraBottomPadding = if (showMiniPlayer && showNav) 88.dp else if (showMiniPlayer) 80.dp else 0.dp
             )
         }
 
@@ -445,7 +449,8 @@ private fun MassDroidApp(
         ExpandingPlayerSheet(
             miniPlayerViewModel = miniPlayerViewModel,
             navController = navController,
-            showMiniPlayer = showMiniPlayer
+            showMiniPlayer = showMiniPlayer,
+            showNav = showNav
         )
     }
 }

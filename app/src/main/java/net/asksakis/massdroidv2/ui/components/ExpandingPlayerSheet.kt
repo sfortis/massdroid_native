@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,6 +55,7 @@ fun ExpandingPlayerSheet(
     miniPlayerViewModel: MiniPlayerViewModel,
     navController: NavHostController,
     showMiniPlayer: Boolean,
+    showNav: Boolean = true,
     bottomNavHeightDp: Float = 80f
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
@@ -66,14 +68,14 @@ fun ExpandingPlayerSheet(
     val screenWDp = config.screenWidthDp.toFloat()
     val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-    // In landscape there's no bottom nav bar (SideNavRail instead)
-    val effectiveBottomNav = if (isLandscape) 0f else bottomNavHeightDp
+    // No bottom nav in landscape (SideNavRail) or on detail screens
+    val effectiveBottomNav = if (isLandscape || !showNav) 0f else bottomNavHeightDp
 
     // Collapsed: badge floating above nav bar with margin
-    val cTop = screenHDp - effectiveBottomNav - 56f - 24f
+    val cTop = screenHDp - effectiveBottomNav - 72f - 24f
     val cLeft = 8f
     val cWidth = screenWDp - 16f
-    val cHeight = 56f
+    val cHeight = 72f
 
     // Expanded: near full screen
     val eTop = if (isLandscape) 0f else screenHDp * 0.08f
@@ -85,6 +87,20 @@ fun ExpandingPlayerSheet(
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(false) }
     var showQueueSheet by remember { mutableStateOf(false) }
+    var expandAfterRoute by remember { mutableStateOf<String?>(null) }
+
+    // Re-expand when returning from detail screen navigated from NowPlaying
+    LaunchedEffect(Unit) {
+        navController.currentBackStackEntryFlow.collect { entry ->
+            val route = entry.destination.route
+            val pending = expandAfterRoute
+            if (pending != null && route != pending && !expanded) {
+                expandAfterRoute = null
+                expanded = true
+                animatable.animateTo(1f, tween(400, easing = FastOutSlowInEasing))
+            }
+        }
+    }
 
     BackHandler(enabled = expanded) {
         expanded = false
@@ -158,6 +174,7 @@ fun ExpandingPlayerSheet(
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {
+                                    expandAfterRoute = Routes.ARTIST_DETAIL
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.artistDetail(id, prov, name))
@@ -165,6 +182,7 @@ fun ExpandingPlayerSheet(
                             },
                             onNavigateToAlbum = { id, prov, name ->
                                 scope.launch {
+                                    expandAfterRoute = Routes.ALBUM_DETAIL
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.albumDetail(id, prov, name))
@@ -185,17 +203,20 @@ fun ExpandingPlayerSheet(
                                 indication = null
                             ) { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } }
                             .fillMaxWidth()
-                            .height(56.dp)
+                            .height(72.dp)
                     ) {
                         MiniPlayer(
                             title = miniPlayerUiState.title,
                             artist = miniPlayerUiState.artist,
+                            playerName = miniPlayerUiState.playerName,
                             imageUrl = miniPlayerUiState.imageUrl,
                             isPlaying = miniPlayerUiState.isPlaying,
                             onPlayPause = { miniPlayerViewModel.playPause() },
                             onNext = { miniPlayerViewModel.next() },
                             onQueue = { showQueueSheet = true },
-                            onClick = { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } }
+                            onClick = { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } },
+                            onSwipeLeft = { miniPlayerViewModel.switchPlayer(1) },
+                            onSwipeRight = { miniPlayerViewModel.switchPlayer(-1) }
                         )
                     }
                 }

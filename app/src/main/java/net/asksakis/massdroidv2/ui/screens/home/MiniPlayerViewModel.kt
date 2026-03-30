@@ -27,7 +27,8 @@ data class MiniPlayerUiState(
     val title: String = "",
     val artist: String = "",
     val imageUrl: String? = null,
-    val isPlaying: Boolean = false
+    val isPlaying: Boolean = false,
+    val playerName: String = ""
 )
 
 @HiltViewModel
@@ -55,7 +56,8 @@ class MiniPlayerViewModel @Inject constructor(
             ?: selectedPlayer?.displayName.orEmpty(),
             artist = currentTrack?.artistNames ?: selectedPlayer?.currentMedia?.artist.orEmpty(),
             imageUrl = currentTrack?.imageUrl ?: selectedPlayer?.currentMedia?.imageUrl,
-            isPlaying = selectedPlayer?.state == PlaybackState.PLAYING
+            isPlaying = selectedPlayer?.state == PlaybackState.PLAYING,
+            playerName = selectedPlayer?.displayName.orEmpty()
         )
     }
         .distinctUntilChanged()
@@ -73,6 +75,21 @@ class MiniPlayerViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
             }
+        }
+    }
+
+    fun switchPlayer(direction: Int) {
+        val current = playerRepository.selectedPlayer.value ?: return
+        val available = playerRepository.players.value.filter { it.available }
+            .sortedBy { it.displayName.lowercase() }
+        if (available.size <= 1) return
+        val currentIdx = available.indexOfFirst { it.playerId == current.playerId }
+        if (currentIdx < 0) return
+        val nextIdx = (currentIdx + direction).mod(available.size)
+        val target = available[nextIdx]
+        playerRepository.selectPlayer(target.playerId)
+        viewModelScope.launch {
+            try { settingsRepository.setSelectedPlayerId(target.playerId) } catch (_: Exception) {}
         }
     }
 

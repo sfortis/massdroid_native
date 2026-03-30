@@ -170,29 +170,34 @@ fun NowPlayingScreen(
                 TopAppBar(
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(player?.displayName ?: "Now Playing")
+                            Text(
+                                player?.displayName ?: "Now Playing",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                             if (sleepTimerActive) {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Icon(
                                     Icons.Default.Bedtime,
                                     contentDescription = "Sleep timer active",
-                                    modifier = Modifier.size(18.dp),
+                                    modifier = Modifier.size(16.dp),
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
+                        IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showPlayerMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Player options")
+                        IconButton(onClick = { showPlayerMenu = true }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(22.dp))
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                    expandedHeight = 48.dp,
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                    windowInsets = WindowInsets(0, 0, 0, 0)
                 )
             }
         },
@@ -449,7 +454,7 @@ private fun NowPlayingPortrait(
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         SwipeableAlbumArt(
             imageUrl = imageUrl,
@@ -656,7 +661,7 @@ private fun NowPlayingLandscape(
                     compact = true
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 TransportControls(
                     isPlaying = isPlaying,
@@ -667,7 +672,7 @@ private fun NowPlayingLandscape(
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 VolumeSlider(
                     volume = player?.volumeLevel ?: 0,

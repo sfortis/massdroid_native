@@ -171,7 +171,10 @@ fun ArtistDetailScreen(
                 }
             }
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 100.dp)
+            ) {
                 item {
                     Column(
                         modifier = Modifier
