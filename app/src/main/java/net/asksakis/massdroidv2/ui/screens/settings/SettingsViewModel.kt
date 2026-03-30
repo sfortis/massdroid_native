@@ -345,14 +345,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun clearLastFmApiKey() {
-        Log.d(TAG, "Last.fm API key cleared by user")
-        viewModelScope.launch {
-            settingsRepository.setLastFmApiKey("")
-        }
-        _lastFmValidation.value = LastFmValidation.Idle
-    }
-
     fun clearLastFmValidation() {
         _lastFmValidation.value = LastFmValidation.Idle
     }

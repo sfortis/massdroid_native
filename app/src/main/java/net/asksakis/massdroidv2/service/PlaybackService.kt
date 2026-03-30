@@ -120,6 +120,7 @@ class PlaybackService : MediaLibraryService() {
     private var volumeOverrideUntil: Long = 0
     private var sendspinController: SendspinAudioController? = null
     private var sendspinActive = false
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private lateinit var sleepTimerManager: SleepTimerManager
     private val sleepTimerOriginalVolumes = mutableMapOf<String, Int>()
     private var proximityJob: Job? = null
@@ -319,7 +320,7 @@ class PlaybackService : MediaLibraryService() {
         val connectivityManager = getSystemService(android.net.ConnectivityManager::class.java)
         val wifiState = kotlinx.coroutines.flow.MutableStateFlow(isOnWifi(connectivityManager))
 
-        val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(
                 network: android.net.Network,
                 caps: android.net.NetworkCapabilities
@@ -337,7 +338,8 @@ class PlaybackService : MediaLibraryService() {
                 wifiState.value = wifi
             }
         }
-        connectivityManager.registerDefaultNetworkCallback(networkCallback)
+        networkCallback = callback
+        connectivityManager.registerDefaultNetworkCallback(callback)
 
         // Apply format on user preference change only (not network change).
         // Network-based format (Smart mode) is applied at next stream start via Sendspin hello.
@@ -1937,6 +1939,10 @@ class PlaybackService : MediaLibraryService() {
         }
         stopProximityEngine()
         try { unregisterReceiver(bleScanReceiver) } catch (_: Exception) { }
+        try { unregisterReceiver(sleepTimerCancelReceiver) } catch (_: Exception) { }
+        networkCallback?.let {
+            try { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } catch (_: Exception) { }
+        }
         sendspinController?.destroy()
         sendspinController = null
         val manager = getSystemService(NotificationManager::class.java)

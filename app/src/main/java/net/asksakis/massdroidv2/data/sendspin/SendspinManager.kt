@@ -18,7 +18,6 @@ class SendspinManager(
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
-        private const val TIME_SYNC_INTERVAL_MS = 1000L
         private const val TIME_SYNC_SAMPLES = 8
         private const val MAX_TIME_SYNC_RTT_US = 150_000L
     }
@@ -287,6 +286,14 @@ class SendspinManager(
         if (!muted) audio.setVolume(perceptualGain(volume))
     }
 
+    fun duck() {
+        // Lower AudioTrack gain without changing currentVolume, so restoreVolume() recovers
+        val originalGain = perceptualGain(currentVolume)
+        val duckedGain = originalGain * 0.5f
+        Log.d(TAG, "Duck: vol=$currentVolume gain=$originalGain -> ducked=$duckedGain")
+        if (!muted) audio.setVolume(duckedGain)
+    }
+
     fun restoreVolume() {
         if (!muted) audio.setVolume(perceptualGain(currentVolume))
     }
@@ -354,6 +361,7 @@ class SendspinManager(
         binaryJob = null
         stateJob = null
         client.disconnect()
+        audio.onSyncStateChanged = null
         audio.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null

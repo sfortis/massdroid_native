@@ -230,10 +230,11 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
                         return result
                     }
-                    // Remote speaker: route to MA player
+                    // Remote speaker: route to MA player, don't change phone volume
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
                     val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
                     lifecycleScope.launch { playerRepository.setVolume(player.playerId, newVol) }
+                    return true
                 }
             }
         }

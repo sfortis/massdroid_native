@@ -99,11 +99,11 @@ class SendspinAudioController(
     // State
     private var currentArt: Bitmap? = null
     private var currentArtUrl: String? = null
-    var isStreaming = false; private set
-    var isReady = false; private set
-    private var transportState = SendspinState.DISCONNECTED
-    private var localSyncState = SyncState.IDLE
-    private var lastSendspinReportedPlaying = false
+    @Volatile var isStreaming = false; private set
+    @Volatile var isReady = false; private set
+    @Volatile private var transportState = SendspinState.DISCONNECTED
+    @Volatile private var localSyncState = SyncState.IDLE
+    @Volatile private var lastSendspinReportedPlaying = false
     private var currentTrackUri: String? = null
     private var currentTitle = ""
     private var currentArtist = ""
@@ -185,6 +185,7 @@ class SendspinAudioController(
 
                 val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
                 if (isStreaming && !wasStreaming) {
+                    if (!hasAudioFocus) requestAudioFocus()
                     if (outsideOptimistic) {
                         currentIsPlaying = true
                         lastPlayingAtMs = System.currentTimeMillis()
@@ -563,8 +564,8 @@ class SendspinAudioController(
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                        Log.d(TAG, "Audio focus: ducking")
-                        sendspinManager.setVolume(30)
+                        Log.d(TAG, "Audio focus: ducking (pre-duck vol=${sendspinManager.currentVolume})")
+                        sendspinManager.duck()
                     }
                 }
             }

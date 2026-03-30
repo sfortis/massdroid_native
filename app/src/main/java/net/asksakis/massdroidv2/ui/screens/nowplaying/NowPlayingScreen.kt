@@ -393,9 +393,10 @@ fun NowPlayingScreen(
         )
     }
 
-    if (showSendspinStatusSheet && sendspinStatus != null) {
+    val statusSnapshot = sendspinStatus
+    if (showSendspinStatusSheet && statusSnapshot != null) {
         SendspinStatusSheet(
-            status = sendspinStatus!!,
+            status = statusSnapshot,
             onDismiss = { showSendspinStatusSheet = false }
         )
     }
