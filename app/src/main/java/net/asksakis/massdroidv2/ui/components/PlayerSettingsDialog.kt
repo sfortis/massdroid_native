@@ -10,6 +10,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -19,14 +20,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -52,7 +52,7 @@ fun PlayerSettingsDialog(
     var volumeNormalization by remember { mutableStateOf(false) }
     var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
     var audioFormat by remember(initialAudioFormat) { mutableStateOf(initialAudioFormat) }
-    var staticDelayMsText by remember(initialStaticDelayMs) { mutableStateOf(initialStaticDelayMs.toString()) }
+    var staticDelayMs by remember(initialStaticDelayMs) { mutableIntStateOf(initialStaticDelayMs) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -157,16 +157,19 @@ fun PlayerSettingsDialog(
                             }
                         }
 
-                        OutlinedTextField(
-                            value = staticDelayMsText,
-                            onValueChange = { value ->
-                                staticDelayMsText = value.filter { it.isDigit() }.take(4)
-                            },
-                            label = { Text("Static delay (ms)") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "Sync offset: ${if (staticDelayMs >= 0) "+$staticDelayMs" else "$staticDelayMs"} ms",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Slider(
+                                value = staticDelayMs.toFloat(),
+                                onValueChange = { staticDelayMs = it.toInt() },
+                                valueRange = -500f..500f,
+                                steps = 0,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
@@ -188,11 +191,8 @@ fun PlayerSettingsDialog(
                     if (isLocalPlayer && audioFormat != initialAudioFormat) {
                         onAudioFormatChanged?.invoke(audioFormat)
                     }
-                    if (isLocalPlayer) {
-                        val parsedStaticDelayMs = staticDelayMsText.toIntOrNull()?.coerceIn(0, 5000) ?: 0
-                        if (parsedStaticDelayMs != initialStaticDelayMs) {
-                            onStaticDelayChanged?.invoke(parsedStaticDelayMs)
-                        }
+                    if (isLocalPlayer && staticDelayMs != initialStaticDelayMs) {
+                        onStaticDelayChanged?.invoke(staticDelayMs)
                     }
                     onDismiss()
                 },

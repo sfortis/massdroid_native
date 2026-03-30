@@ -11,6 +11,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -196,22 +198,16 @@ fun LibraryScreen(
             )
         }
 
-        ScrollableTabRow(
-            selectedTabIndex = selectedTab,
-            edgePadding = 8.dp,
-            modifier = if (isLandscape) Modifier.height(38.dp) else Modifier
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
+            itemsIndexed(tabs) { index, title ->
+                FilterChip(
                     selected = selectedTab == index,
                     onClick = { viewModel.setCurrentTab(index) },
-                    text = {
-                        Text(
-                            text = title,
-                            style = if (isLandscape) MaterialTheme.typography.labelMedium
-                            else MaterialTheme.typography.bodyMedium
-                        )
-                    }
+                    label = { Text(title) }
                 )
             }
         }
