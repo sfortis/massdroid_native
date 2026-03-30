@@ -17,6 +17,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.automirrored.filled.Subject
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -79,11 +82,11 @@ import coil.compose.AsyncImage
 @Composable
 fun NowPlayingScreen(
     onBack: () -> Unit,
-    onNavigateToQueue: () -> Unit,
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
+    var showQueueSheet by remember { mutableStateOf(false) }
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     val liveElapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
@@ -220,7 +223,7 @@ fun NowPlayingScreen(
                     sleepTimerActive = sleepTimerActive,
                     viewModel = viewModel,
                     onBack = onBack,
-                    onNavigateToQueue = onNavigateToQueue,
+                    onNavigateToQueue = { showQueueSheet = true },
                     onShowPlaylistDialog = {
                         showPlaylistDialog = true
                         viewModel.loadPlaylists(force = true)
@@ -259,7 +262,7 @@ fun NowPlayingScreen(
                         viewModel.loadLyrics()
                     },
                     onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
-                    onNavigateToQueue = onNavigateToQueue,
+                    onNavigateToQueue = { showQueueSheet = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
                 )
@@ -406,6 +409,12 @@ fun NowPlayingScreen(
             onDismiss = { showSleepTimerDialog = false }
         )
     }
+
+    if (showQueueSheet) {
+        net.asksakis.massdroidv2.ui.screens.queue.QueueSheet(
+            onDismiss = { showQueueSheet = false }
+        )
+    }
 }
 
 @Composable
@@ -536,81 +545,77 @@ private fun NowPlayingLandscape(
         modifier = Modifier
             .fillMaxSize()
             .padding(paddingValues)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: album art (fills available height)
+        // Left: close/name overlay + centered album art
         Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
-                .padding(8.dp),
-            contentAlignment = Alignment.Center
+                .padding(8.dp)
         ) {
-            SwipeableAlbumArt(
-                imageUrl = imageUrl,
-                onNext = { if (controlsEnabled) viewModel.next() },
-                onPrevious = { if (controlsEnabled) viewModel.previous() },
-                onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
-                fillMaxWidth = false
-            )
-        }
-
-        // Right: controls
-        Column(
-            modifier = Modifier
-                .weight(1.2f)
-                .fillMaxHeight()
-                .padding(start = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceEvenly
-        ) {
-            // Back + queue row
+            // Close + player name (overlay, doesn't affect art centering)
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier.fillMaxWidth().align(Alignment.TopStart),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close", modifier = Modifier.size(20.dp))
+                IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                 }
-                Row(
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = player?.displayName ?: "Now Playing",
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center
+                Text(
+                    text = player?.displayName ?: "Now Playing",
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (sleepTimerActive) {
+                    Icon(
+                        Icons.Default.Bedtime,
+                        contentDescription = "Sleep timer active",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    if (sleepTimerActive) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            Icons.Default.Bedtime,
-                            contentDescription = "Sleep timer active",
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                IconButton(onClick = onShowPlayerMenu, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(20.dp))
                 }
             }
 
-            QualityActionRow(
-                audioFormat = audioFormat,
-                currentTrack = currentTrack,
-                viewModel = viewModel,
-                onShowPlaylistDialog = onShowPlaylistDialog,
-                onShowLyrics = onShowLyrics,
-                onNavigateToQueue = onNavigateToQueue,
-                onShowSendspinStatus = onShowSendspinStatus,
-                enabled = controlsEnabled,
-                compact = true
-            )
+            // Album art (true center)
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                SwipeableAlbumArt(
+                    imageUrl = imageUrl,
+                    onNext = { if (controlsEnabled) viewModel.next() },
+                    onPrevious = { if (controlsEnabled) viewModel.previous() },
+                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
+                    fillMaxWidth = false
+                )
+            }
+        }
+
+        // Right: track info + controls (grouped, constrained width)
+        Box(
+            modifier = Modifier
+                .weight(1.2f)
+                .fillMaxHeight()
+                .padding(start = 16.dp, end = 8.dp)
+        ) {
+            // Menu overlay top-right (doesn't affect centering)
+            IconButton(
+                onClick = onShowPlayerMenu,
+                modifier = Modifier.size(36.dp).align(Alignment.TopEnd)
+            ) {
+                Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(20.dp))
+            }
+
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
 
             TrackInfoSection(
                 title = title,
@@ -622,31 +627,57 @@ private fun NowPlayingLandscape(
                 compact = true
             )
 
-            SeekBar(
-                elapsed = elapsedTime,
-                duration = duration,
-                onSeek = { if (controlsEnabled) viewModel.seek(it) },
-                enabled = controlsEnabled,
-                compact = true
-            )
+            Spacer(modifier = Modifier.height(32.dp))
 
-            TransportControls(
-                isPlaying = isPlaying,
-                queueState = queueState,
-                viewModel = viewModel,
-                enabled = controlsEnabled,
-                compact = true,
-                onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
-            )
+            // Constrained controls block
+            Column(
+                modifier = Modifier.fillMaxWidth(0.75f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                SeekBar(
+                    elapsed = elapsedTime,
+                    duration = duration,
+                    onSeek = { if (controlsEnabled) viewModel.seek(it) },
+                    enabled = controlsEnabled,
+                    compact = true
+                )
 
-            VolumeSlider(
-                volume = player?.volumeLevel ?: 0,
-                isMuted = player?.volumeMuted ?: false,
-                onVolumeChange = { viewModel.setVolume(it) },
-                onMuteToggle = { viewModel.toggleMute() },
-                enabled = controlsEnabled,
-                compact = true
-            )
+                // Action row (playlist, lyrics, badges, queue) below seekbar
+                QualityActionRow(
+                    audioFormat = audioFormat,
+                    currentTrack = currentTrack,
+                    viewModel = viewModel,
+                    onShowPlaylistDialog = onShowPlaylistDialog,
+                    onShowLyrics = onShowLyrics,
+                    onNavigateToQueue = onNavigateToQueue,
+                    onShowSendspinStatus = onShowSendspinStatus,
+                    enabled = controlsEnabled,
+                    compact = true
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                TransportControls(
+                    isPlaying = isPlaying,
+                    queueState = queueState,
+                    viewModel = viewModel,
+                    enabled = controlsEnabled,
+                    compact = true,
+                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                VolumeSlider(
+                    volume = player?.volumeLevel ?: 0,
+                    isMuted = player?.volumeMuted ?: false,
+                    onVolumeChange = { viewModel.setVolume(it) },
+                    onMuteToggle = { viewModel.toggleMute() },
+                    enabled = controlsEnabled,
+                    compact = true
+                )
+            }
+            }
         }
     }
 }
@@ -1222,9 +1253,11 @@ private fun TrackInfoSection(
     val artistClickable = currentTrack?.artistItemId != null && currentTrack.artistProvider != null
     val albumClickable = currentTrack?.albumItemId != null && currentTrack.albumProvider != null
 
+    // Title: bold, centered, marquee
     Text(
         text = title,
         style = titleStyle,
+        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
         maxLines = 1,
         textAlign = TextAlign.Center,
         modifier = Modifier
@@ -1232,33 +1265,72 @@ private fun TrackInfoSection(
             .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
     )
     Spacer(modifier = Modifier.height(if (compact) 4.dp else 8.dp))
-    Text(
-        text = artist,
-        style = artistStyle,
-        color = if (artistClickable) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        textAlign = TextAlign.Center,
-        modifier = (if (artistClickable) {
-            Modifier.clickable {
-                onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
-            }
-        } else Modifier).fillMaxWidth()
-    )
-    if (album.isNotBlank()) {
-        Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
+
+    if (compact && album.isNotBlank() && artist.isNotBlank()) {
+        // Landscape: "Album · Artist" on one line, centered, with overflow protection
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = album,
+                style = albumStyle,
+                color = if (albumClickable) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = if (albumClickable) Modifier.clickable {
+                    onNavigateToAlbum(currentTrack.albumItemId!!, currentTrack.albumProvider!!, album)
+                } else Modifier
+            )
+            Text(
+                text = " · ",
+                style = albumStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = artist,
+                style = albumStyle,
+                color = if (artistClickable) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = if (artistClickable) Modifier.clickable {
+                    onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
+                } else Modifier
+            )
+        }
+    } else {
+        // Portrait (or compact without album): separate lines
         Text(
-            text = album,
-            style = albumStyle,
-            color = if (albumClickable) MaterialTheme.colorScheme.primary
+            text = artist,
+            style = artistStyle,
+            color = if (artistClickable) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = if (albumClickable) Modifier.clickable {
-                onNavigateToAlbum(currentTrack.albumItemId!!, currentTrack.albumProvider!!, album)
-            } else Modifier
+            textAlign = TextAlign.Center,
+            modifier = (if (artistClickable) {
+                Modifier.clickable {
+                    onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
+                }
+            } else Modifier).fillMaxWidth()
         )
+        if (album.isNotBlank()) {
+            Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
+            Text(
+                text = album,
+                style = albumStyle,
+                color = if (albumClickable) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = if (albumClickable) Modifier.clickable {
+                    onNavigateToAlbum(currentTrack.albumItemId!!, currentTrack.albumProvider!!, album)
+                } else Modifier
+            )
+        }
     }
 }
 

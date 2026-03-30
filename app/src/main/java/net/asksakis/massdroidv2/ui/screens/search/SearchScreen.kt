@@ -98,11 +98,12 @@ fun SearchScreen(
                     .padding(horizontal = 8.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val hasChips = hasResults && !isSearching
                 TextField(
                     value = query,
                     onValueChange = { viewModel.updateQuery(it) },
                     modifier = Modifier
-                        .width(180.dp)
+                        .then(if (hasChips) Modifier.widthIn(min = 200.dp, max = 320.dp) else Modifier.weight(1f))
                         .height(44.dp)
                         .focusRequester(focusRequester),
                     placeholder = { Text("Global search...", style = MaterialTheme.typography.labelSmall) },

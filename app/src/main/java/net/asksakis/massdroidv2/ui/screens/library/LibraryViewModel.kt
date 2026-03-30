@@ -127,8 +127,8 @@ class LibraryViewModel @Inject constructor(
 
     private val _displayModes = MutableStateFlow<Map<Int, LibraryDisplayMode>>(emptyMap())
     val displayMode: StateFlow<LibraryDisplayMode> = combine(_displayModes, _currentTab) { modes, tab ->
-        modes[tab] ?: LibraryDisplayMode.LIST
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryDisplayMode.LIST)
+        modes[tab] ?: if (tab <= 1) LibraryDisplayMode.GRID else LibraryDisplayMode.LIST
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryDisplayMode.GRID)
 
     val players = playerRepository.players
 
@@ -304,7 +304,8 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun toggleLibraryDisplayMode() {
-        val current = _displayModes.value[_currentTab.value] ?: LibraryDisplayMode.LIST
+        val tab = _currentTab.value
+        val current = _displayModes.value[tab] ?: if (tab <= 1) LibraryDisplayMode.GRID else LibraryDisplayMode.LIST
         val newMode = when (current) {
             LibraryDisplayMode.LIST -> LibraryDisplayMode.GRID
             LibraryDisplayMode.GRID -> LibraryDisplayMode.LIST

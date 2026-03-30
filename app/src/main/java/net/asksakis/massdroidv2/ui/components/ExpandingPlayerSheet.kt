@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -60,17 +61,22 @@ fun ExpandingPlayerSheet(
     if (!hasMiniPlayer) return
 
     val density = LocalDensity.current
-    val screenHDp = LocalConfiguration.current.screenHeightDp.toFloat()
-    val screenWDp = LocalConfiguration.current.screenWidthDp.toFloat()
+    val config = LocalConfiguration.current
+    val screenHDp = config.screenHeightDp.toFloat()
+    val screenWDp = config.screenWidthDp.toFloat()
+    val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    // In landscape there's no bottom nav bar (SideNavRail instead)
+    val effectiveBottomNav = if (isLandscape) 0f else bottomNavHeightDp
 
     // Collapsed: badge floating above nav bar with margin
-    val cTop = screenHDp - bottomNavHeightDp - 56f - 24f
+    val cTop = screenHDp - effectiveBottomNav - 56f - 24f
     val cLeft = 8f
     val cWidth = screenWDp - 16f
     val cHeight = 56f
 
     // Expanded: near full screen
-    val eTop = screenHDp * 0.08f
+    val eTop = if (isLandscape) 0f else screenHDp * 0.08f
     val eLeft = 0f
     val eWidth = screenWDp
     val eHeight = screenHDp - eTop
@@ -78,6 +84,7 @@ fun ExpandingPlayerSheet(
     val animatable = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(false) }
+    var showQueueSheet by remember { mutableStateOf(false) }
 
     BackHandler(enabled = expanded) {
         expanded = false
@@ -149,13 +156,6 @@ fun ExpandingPlayerSheet(
                     Box(modifier = Modifier.graphicsLayer { alpha = fullA }.fillMaxSize()) {
                         NowPlayingScreen(
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
-                            onNavigateToQueue = {
-                                scope.launch {
-                                    expanded = false
-                                    animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
-                                    navController.navigate(Routes.QUEUE) { launchSingleTop = true }
-                                }
-                            },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {
                                     expanded = false
@@ -194,12 +194,18 @@ fun ExpandingPlayerSheet(
                             isPlaying = miniPlayerUiState.isPlaying,
                             onPlayPause = { miniPlayerViewModel.playPause() },
                             onNext = { miniPlayerViewModel.next() },
-                            onQueue = { navController.navigate(Routes.QUEUE) { launchSingleTop = true } },
+                            onQueue = { showQueueSheet = true },
                             onClick = { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } }
                         )
                     }
                 }
             }
         }
+    }
+
+    if (showQueueSheet) {
+        net.asksakis.massdroidv2.ui.screens.queue.QueueSheet(
+            onDismiss = { showQueueSheet = false }
+        )
     }
 }

@@ -14,7 +14,6 @@ import net.asksakis.massdroidv2.ui.screens.library.ArtistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.LibraryScreen
 import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
-import net.asksakis.massdroidv2.ui.screens.queue.QueueScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
 import net.asksakis.massdroidv2.ui.screens.settings.ProximitySettingsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
@@ -27,7 +26,6 @@ object Routes {
     const val LIBRARY = "library"
     const val SEARCH = "search"
     const val NOW_PLAYING = "now_playing"
-    const val QUEUE = "queue"
     const val SETTINGS = "settings"
     const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
     const val ROOM_SETUP = "room_setup?roomId={roomId}"
@@ -111,11 +109,6 @@ fun MassDroidNavHost(
         composable(Routes.NOW_PLAYING) {
             NowPlayingScreen(
                 onBack = { navController.popBackStack() },
-                onNavigateToQueue = {
-                    navController.navigate(Routes.QUEUE) {
-                        launchSingleTop = true
-                    }
-                },
                 onNavigateToArtist = { itemId, provider, name ->
                     navController.navigate(Routes.artistDetail(itemId, provider, name))
                 },
@@ -123,10 +116,6 @@ fun MassDroidNavHost(
                     navController.navigate(Routes.albumDetail(itemId, provider, name))
                 }
             )
-        }
-
-        composable(Routes.QUEUE) {
-            QueueScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.SETTINGS) {

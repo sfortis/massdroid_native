@@ -1,47 +1,46 @@
 package net.asksakis.massdroidv2.ui.screens.queue
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SpeakerGroup
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tv
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -49,13 +48,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,10 +76,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
@@ -100,10 +98,11 @@ private data class QueueActionItem(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QueueScreen(
-    onBack: () -> Unit,
+fun QueueSheet(
+    onDismiss: () -> Unit,
     viewModel: QueueViewModel = hiltViewModel()
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val items by viewModel.queueItems.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
@@ -157,26 +156,31 @@ fun QueueScreen(
         }
     )
 
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Queue")
-                        Text(
-                            text = "${items.size} tracks",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Queue", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = "${items.size} tracks",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row {
                     IconButton(onClick = {
                         viewModel.getPlaylists()
                         showSaveQueueDialog = true
@@ -190,107 +194,110 @@ fun QueueScreen(
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear queue")
                     }
                 }
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { paddingValues ->
-        if (isLoading) {
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
             }
-        } else {
-            LazyColumn(
-                state = lazyListState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                val currentIndex = effectiveItems.indexOfFirst { it.queueItemId == currentQueueItemId }
-                itemsIndexed(effectiveItems, key = { _, item -> item.queueItemId }) { index, item ->
-                    val isPlayed = currentIndex >= 0 && index < currentIndex
-                    ReorderableItem(
-                        state = reorderableLazyListState,
-                        key = item.queueItemId
-                    ) { isDragging ->
-                        Surface(
-                            tonalElevation = if (isDragging) 8.dp else 0.dp,
-                            shadowElevation = if (isDragging) 12.dp else 0.dp,
-                            color = if (isDragging) {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
-                            } else {
-                                Color.Transparent
-                            },
-                            modifier = Modifier
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                .then(if (isPlayed) Modifier.alpha(0.5f) else Modifier)
-                        ) {
-                            MediaItemRow(
-                                title = item.track?.name ?: item.name,
-                                subtitle = item.track?.artistNames ?: "",
-                                imageUrl = item.track?.imageUrl ?: item.imageUrl,
-                                onClick = { viewModel.playIndex(index) },
-                                titleColor = if (item.queueItemId == currentQueueItemId) {
-                                    MaterialTheme.colorScheme.primary
+
+            HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
+
+            // Snackbar host
+            SnackbarHost(snackbarHostState)
+
+            // Queue list
+            if (isLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                LazyColumn(
+                    state = lazyListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                ) {
+                    val currentIndex = effectiveItems.indexOfFirst { it.queueItemId == currentQueueItemId }
+                    itemsIndexed(effectiveItems, key = { _, item -> item.queueItemId }) { index, item ->
+                        val isPlayed = currentIndex >= 0 && index < currentIndex
+                        ReorderableItem(
+                            state = reorderableLazyListState,
+                            key = item.queueItemId
+                        ) { isDragging ->
+                            Surface(
+                                tonalElevation = if (isDragging) 8.dp else 0.dp,
+                                shadowElevation = if (isDragging) 12.dp else 0.dp,
+                                color = if (isDragging) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
                                 } else {
-                                    Color.Unspecified
+                                    Color.Transparent
                                 },
-                                showEqualizer = item.queueItemId == currentQueueItemId && isPlaying,
-                                onMoreClick = {
-                                    actionSheetItem = QueueActionItem(
-                                        queueItemId = item.queueItemId,
-                                        name = item.track?.name ?: item.name,
-                                        artistNames = item.track?.artistNames ?: "",
-                                        imageUrl = item.track?.imageUrl ?: item.imageUrl,
-                                        index = index
-                                    )
-                                },
-                                dragHandle = {
-                                    Icon(
-                                        Icons.Default.DragHandle,
-                                        contentDescription = "Reorder",
-                                        tint = if (isDragging) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .longPressDraggableHandle(
-                                                onDragStarted = {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    displayItems.clear()
-                                                    displayItems.addAll(items)
-                                                    dragStartIndex = index
-                                                    draggingQueueItemId = item.queueItemId
-                                                },
-                                                onDragStopped = {
-                                                    val queueItemId = draggingQueueItemId
-                                                    val fromIndex = dragStartIndex
-                                                    val toIndex = queueItemId?.let { id ->
-                                                        displayItems.indexOfFirst { it.queueItemId == id }
-                                                    } ?: -1
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .then(if (isPlayed) Modifier.alpha(0.5f) else Modifier)
+                            ) {
+                                MediaItemRow(
+                                    title = item.track?.name ?: item.name,
+                                    subtitle = item.track?.artistNames ?: "",
+                                    imageUrl = item.track?.imageUrl ?: item.imageUrl,
+                                    onClick = { viewModel.playIndex(index) },
+                                    titleColor = if (item.queueItemId == currentQueueItemId) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        Color.Unspecified
+                                    },
+                                    showEqualizer = item.queueItemId == currentQueueItemId && isPlaying,
+                                    onMoreClick = {
+                                        actionSheetItem = QueueActionItem(
+                                            queueItemId = item.queueItemId,
+                                            name = item.track?.name ?: item.name,
+                                            artistNames = item.track?.artistNames ?: "",
+                                            imageUrl = item.track?.imageUrl ?: item.imageUrl,
+                                            index = index
+                                        )
+                                    },
+                                    dragHandle = {
+                                        Icon(
+                                            Icons.Default.DragHandle,
+                                            contentDescription = "Reorder",
+                                            tint = if (isDragging) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .longPressDraggableHandle(
+                                                    onDragStarted = {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        displayItems.clear()
+                                                        displayItems.addAll(items)
+                                                        dragStartIndex = index
+                                                        draggingQueueItemId = item.queueItemId
+                                                    },
+                                                    onDragStopped = {
+                                                        val queueItemId = draggingQueueItemId
+                                                        val fromIndex = dragStartIndex
+                                                        val toIndex = queueItemId?.let { id ->
+                                                            displayItems.indexOfFirst { it.queueItemId == id }
+                                                        } ?: -1
 
-                                                    draggingQueueItemId = null
-                                                    dragStartIndex = -1
+                                                        draggingQueueItemId = null
+                                                        dragStartIndex = -1
 
-                                                    if (queueItemId != null &&
-                                                        fromIndex >= 0 &&
-                                                        toIndex >= 0 &&
-                                                        fromIndex != toIndex
-                                                    ) {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                        viewModel.moveItem(queueItemId, fromIndex, toIndex)
+                                                        if (queueItemId != null &&
+                                                            fromIndex >= 0 &&
+                                                            toIndex >= 0 &&
+                                                            fromIndex != toIndex
+                                                        ) {
+                                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                            viewModel.moveItem(queueItemId, fromIndex, toIndex)
+                                                        }
                                                     }
-                                                }
-                                            )
-                                    )
-                                }
-                            )
+                                                )
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -298,6 +305,7 @@ fun QueueScreen(
         }
     }
 
+    // Track action sheet
     actionSheetItem?.let { item ->
         ModalBottomSheet(
             onDismissRequest = { actionSheetItem = null },
@@ -409,6 +417,7 @@ fun QueueScreen(
         }
     }
 
+    // Transfer queue sheet
     if (showQueueMenu) {
         val otherPlayers = players.filter { it.available && it.playerId != viewModel.selectedPlayerId }
             .sortedBy { it.displayName.lowercase() }
@@ -462,6 +471,7 @@ fun QueueScreen(
         }
     }
 
+    // Save queue to playlist dialog
     if (showSaveQueueDialog) {
         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
 
@@ -481,29 +491,6 @@ fun QueueScreen(
             },
             suggestedName = viewModel.suggestedPlaylistName()
         )
-    }
-}
-
-private fun queueTransferIcon(player: Player): ImageVector {
-    val normalized = player.icon?.replace(":", "-")?.lowercase()
-    return when {
-        normalized == "mdi-speaker-group" || normalized == "mdi-speaker-multiple" -> Icons.Default.SpeakerGroup
-        normalized == "mdi-speaker" -> Icons.Default.Speaker
-        normalized == "mdi-cast" -> Icons.Default.Cast
-        normalized == "mdi-cast-connected" -> Icons.Default.CastConnected
-        normalized == "mdi-television" || normalized == "mdi-tv" -> Icons.Default.Tv
-        normalized == "mdi-cellphone" || normalized == "mdi-phone" || normalized == "mdi-cellphone-sound" -> Icons.Default.PhoneAndroid
-        normalized == "mdi-laptop" -> Icons.Default.Laptop
-        normalized == "mdi-radio" -> Icons.Default.Radio
-        normalized == "mdi-headphones" -> Icons.Default.Headphones
-        normalized == "mdi-bluetooth" || normalized == "mdi-bluetooth-audio" -> Icons.Default.Headphones
-        normalized == "mdi-music" || normalized == "mdi-music-note" -> Icons.Default.MusicNote
-        normalized == "mdi-monitor" -> Icons.Default.Monitor
-        else -> when (player.type) {
-            PlayerType.GROUP -> Icons.Default.SpeakerGroup
-            PlayerType.STEREO_PAIR -> Icons.Default.Speaker
-            PlayerType.PLAYER -> Icons.Default.Speaker
-        }
     }
 }
 

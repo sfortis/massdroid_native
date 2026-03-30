@@ -344,17 +344,18 @@ private fun MassDroidApp(
         }
     }
 
-    if (isLandscape) {
-        LandscapeLayout(
-            navController = navController,
-            currentRoute = currentRoute,
-            showNav = showNav,
-            showMiniPlayer = showMiniPlayer,
-            miniPlayerViewModel = miniPlayerViewModel,
-            snackbarHostState = snackbarHostState
-        )
-    } else {
-        Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (isLandscape) {
+            LandscapeLayout(
+                navController = navController,
+                currentRoute = currentRoute,
+                showNav = showNav,
+                showMiniPlayer = false, // handled by ExpandingPlayerSheet
+                miniPlayerViewModel = miniPlayerViewModel,
+                snackbarHostState = snackbarHostState,
+                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp
+            )
+        } else {
             PortraitLayout(
                 navController = navController,
                 currentRoute = currentRoute,
@@ -362,16 +363,16 @@ private fun MassDroidApp(
                 showMiniPlayer = false, // handled by ExpandingPlayerSheet
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
-                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp // space for floating player
-            )
-
-            // Floating expanding player overlay (on top of everything)
-            ExpandingPlayerSheet(
-                miniPlayerViewModel = miniPlayerViewModel,
-                navController = navController,
-                showMiniPlayer = showMiniPlayer
+                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp
             )
         }
+
+        // Floating expanding player overlay (on top of everything, both orientations)
+        ExpandingPlayerSheet(
+            miniPlayerViewModel = miniPlayerViewModel,
+            navController = navController,
+            showMiniPlayer = showMiniPlayer
+        )
     }
 }
 
@@ -398,7 +399,6 @@ private fun PortraitLayout(
                 MiniPlayerContainer(
                     showMiniPlayer = showMiniPlayer,
                     miniPlayerViewModel = miniPlayerViewModel,
-                    onQueue = { navController.navigate(Routes.QUEUE) { launchSingleTop = true } },
                     onClick = { navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true } }
                 )
                 if (showNav) {
@@ -421,17 +421,20 @@ private fun LandscapeLayout(
     showNav: Boolean,
     showMiniPlayer: Boolean,
     miniPlayerViewModel: MiniPlayerViewModel,
-    snackbarHostState: SnackbarHostState
+    snackbarHostState: SnackbarHostState,
+    extraBottomPadding: Dp = 0.dp
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                if (extraBottomPadding > 0.dp) {
+                    Spacer(modifier = Modifier.height(extraBottomPadding))
+                }
                 MiniPlayerContainer(
                     showMiniPlayer = showMiniPlayer,
                     miniPlayerViewModel = miniPlayerViewModel,
-                    onQueue = { navController.navigate(Routes.QUEUE) { launchSingleTop = true } },
                     onClick = { navController.navigate(Routes.NOW_PLAYING) { launchSingleTop = true } }
                 )
             }
@@ -457,12 +460,13 @@ private fun LandscapeLayout(
 private fun MiniPlayerContainer(
     showMiniPlayer: Boolean,
     miniPlayerViewModel: MiniPlayerViewModel,
-    onQueue: () -> Unit,
     onClick: () -> Unit
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.connected && miniPlayerUiState.hasPlayer
     if (!hasMiniPlayer) return
+
+    var showQueueSheet by remember { mutableStateOf(false) }
 
     MiniPlayer(
         title = miniPlayerUiState.title,
@@ -471,9 +475,15 @@ private fun MiniPlayerContainer(
         isPlaying = miniPlayerUiState.isPlaying,
         onPlayPause = { miniPlayerViewModel.playPause() },
         onNext = { miniPlayerViewModel.next() },
-        onQueue = onQueue,
+        onQueue = { showQueueSheet = true },
         onClick = onClick
     )
+
+    if (showQueueSheet) {
+        net.asksakis.massdroidv2.ui.screens.queue.QueueSheet(
+            onDismiss = { showQueueSheet = false }
+        )
+    }
 }
 
 @Composable
