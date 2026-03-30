@@ -45,7 +45,7 @@ class AudioStreamManager {
         private const val NORMAL_SYNC_BUFFER_MS_OPUS = 1_500L
         private const val RECOVERY_SYNC_BUFFER_MS = 5_000L
         private const val HOLDOVER_MIN_BUFFER_MS = 750L
-        private const val LATE_CHUNK_DROP_GRACE_MS = 120L
+        private const val LATE_CHUNK_DROP_GRACE_MS = 200L
         private const val STARTUP_ENQUEUE_GRACE_MS = 500L
     }
 
@@ -83,6 +83,9 @@ class AudioStreamManager {
     @Volatile private var lastEnqueuedTimestampUs = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
     @Volatile private var pendingContinuityCheck = false
+    @Volatile private var pendingAudioTrackFlush = false
+    @Volatile private var holdoverEndTimestampUs = 0L
+    @Volatile private var lastPlayedServerTimestampUs = 0L
     @Volatile private var discardUntilTimestampUs = 0L
     @Volatile private var lastFrameReceivedMs = 0L
     @Volatile private var forceDiscontinuityUntilMs = 0L
@@ -206,20 +209,29 @@ class AudioStreamManager {
             )
             configureGeneration++
             lastEnqueuedTimestampUs = 0L
-            // Clear both encoded queue and AudioTrack hardware buffer. The server
-            // sends from its current position after reconnect, which is behind our
-            // holdover position. Without flushing, old holdover PCM in the hardware
-            // buffer plays before the new audio, causing an audible position jump.
             frameQueue.clear()
             frameQueueBytes.set(0)
             synchronized(codecLock) {
-                try { audioTrack?.setVolume(0f) } catch (_: Exception) {}
-                try { audioTrack?.flush() } catch (_: Exception) {}
                 try { codec?.flush() } catch (_: Exception) {}
             }
             presentationTimeUs = 0L
-            playbackStarted = false
-            requiredSyncBufferMs = defaultSyncBufferMs()
+            lateDropCount = 0L
+            lastFrameReceivedMs = System.currentTimeMillis()
+
+            if (syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER) {
+                // Holdover reconnect: adaptive alignment using timestamp comparison.
+                // AudioTrack keeps playing, late frames dropped, on-time frames resume.
+                holdoverEndTimestampUs = lastPlayedServerTimestampUs
+                pendingAudioTrackFlush = true
+            } else {
+                // IDLE/REBUFFERING reconnect: standard startup path.
+                holdoverEndTimestampUs = 0L
+                pendingAudioTrackFlush = false
+                playbackStarted = false
+                requiredSyncBufferMs = defaultSyncBufferMs()
+            }
+            // Keep playbackStarted for holdover so playback thread continues decode loop
+            // late-drop naturally.
             if (!playbackActive || playbackThread?.isAlive != true) {
                 playbackActive = true
                 audioTrack?.let { startPlaybackThread(it) }
@@ -482,6 +494,7 @@ class AudioStreamManager {
         if (silenceMs > 2000) {
             // Stage 2: hardware buffer likely exhausted, full rebuffer
             Log.d(DBG, "starvation stage2 codec=$activeCodec silence=${silenceMs}ms, rebuffering")
+            pendingAudioTrackFlush = false // cancel deferred flush, startup path handles it
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             playbackStarted = false
             synchronized(codecLock) {
@@ -541,10 +554,23 @@ class AudioStreamManager {
                 if (frame != null) {
                     frameQueue.poll()
                     frameQueueBytes.addAndGet(-frame.payload.size.toLong())
-                    if (shouldDropLateFrame(frame.serverTimestampUs)) {
+                    if (pendingAudioTrackFlush) {
+                        // Reconnect alignment: drop frames already played by holdover.
+                        // Compare against holdoverEndTimestampUs (exact, no clock heuristics).
+                        if (holdoverEndTimestampUs > 0 && frame.serverTimestampUs < holdoverEndTimestampUs) {
+                            logLateDrop(frame.serverTimestampUs, "reconnect-align")
+                            continue
+                        }
+                        pendingAudioTrackFlush = false
+                        holdoverEndTimestampUs = 0L
+                        transitionSyncState(SyncState.SYNCHRONIZED)
+                        val lead = leadToLocalNowMs(frame.serverTimestampUs)
+                        Log.d(TAG, "Reconnect aligned: lead=${lead}ms, ts=${frame.serverTimestampUs}us, buf=${bufferDurationMs()}ms")
+                    } else if (shouldDropLateFrame(frame.serverTimestampUs)) {
                         logLateDrop(frame.serverTimestampUs, "playout")
                         continue
                     }
+                    lastPlayedServerTimestampUs = frame.serverTimestampUs
                     if (!decodeAndWrite(frame, track, generation)) {
                         consecutiveDecodeFailures++
                         Log.d(

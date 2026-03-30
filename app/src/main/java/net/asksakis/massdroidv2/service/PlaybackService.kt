@@ -121,6 +121,7 @@ class PlaybackService : MediaLibraryService() {
     private var sendspinController: SendspinAudioController? = null
     private var sendspinActive = false
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var volumeObserver: android.database.ContentObserver? = null
     private lateinit var sleepTimerManager: SleepTimerManager
     private val sleepTimerOriginalVolumes = mutableMapOf<String, Int>()
     private var proximityJob: Job? = null
@@ -158,6 +159,7 @@ class PlaybackService : MediaLibraryService() {
         observeAudioFormatPreference()
         registerBtAudioDeviceCallback()
         createProximityNotificationChannel()
+        observePhoneVolumeForSendspin()
         registerReceiver(bleScanReceiver, android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION), RECEIVER_NOT_EXPORTED)
         observeProximityConfig()
         observeBluetoothState()
@@ -1609,6 +1611,24 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private fun observePhoneVolumeForSendspin() {
+        val audio = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                val ssId = sendspinPlayerId ?: return
+                if (!sendspinActive) return
+                val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                val cur = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+                val percent = if (max > 0) ((cur * 100f / max) + 0.5f).toInt() else 0
+                scope.launch { playerRepository.setVolume(ssId, percent) }
+            }
+        }
+        volumeObserver = observer
+        contentResolver.registerContentObserver(
+            android.provider.Settings.System.CONTENT_URI, true, observer
+        )
+    }
+
     private var btAudioCallback: android.media.AudioDeviceCallback? = null
 
     private fun registerBtAudioDeviceCallback() {
@@ -1940,6 +1960,7 @@ class PlaybackService : MediaLibraryService() {
         stopProximityEngine()
         try { unregisterReceiver(bleScanReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(sleepTimerCancelReceiver) } catch (_: Exception) { }
+        volumeObserver?.let { contentResolver.unregisterContentObserver(it) }
         networkCallback?.let {
             try { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } catch (_: Exception) { }
         }
