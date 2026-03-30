@@ -457,7 +457,7 @@ private fun NowPlayingPortrait(
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         QualityActionRow(
             audioFormat = audioFormat,
@@ -470,7 +470,7 @@ private fun NowPlayingPortrait(
             enabled = controlsEnabled
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         TrackInfoSection(
             title = title,
@@ -481,7 +481,7 @@ private fun NowPlayingPortrait(
             onNavigateToAlbum = onNavigateToAlbum
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         SeekBar(
             elapsed = elapsedTime,

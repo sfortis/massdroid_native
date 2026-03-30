@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
 
     private val volumeStep = 5
     @Volatile private var cachedSsClientId: String? = null
+    @Volatile private var hwVolumeChangeUntilMs = 0L
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -148,6 +149,8 @@ class MainActivity : ComponentActivity() {
                     initialized = true
                     return@collect
                 }
+                // Skip sync if change originated from HW buttons (avoid round-trip bounce)
+                if (System.currentTimeMillis() < hwVolumeChangeUntilMs) return@collect
                 syncPhoneVolume(player.volumeLevel)
             }
         }
@@ -221,6 +224,7 @@ class MainActivity : ComponentActivity() {
                     val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
                     if (isLocal) {
                         // Local speaker: let system handle HW volume, then mirror to MA
+                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val result = super.dispatchKeyEvent(event)
                         val maVol = readPhoneVolumePercent()
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
@@ -240,14 +244,17 @@ class MainActivity : ComponentActivity() {
         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        return if (max > 0) (current * 100 / max) else 0
+        return if (max > 0) ((current * 100f / max) + 0.5f).toInt() else 0
     }
 
     private fun syncPhoneVolume(maVolumePercent: Int) {
         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val targetVol = (maVolumePercent * maxVol / 100).coerceIn(0, maxVol)
-        audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+        val targetVol = ((maVolumePercent * maxVol / 100f) + 0.5f).toInt().coerceIn(0, maxVol)
+        val currentVol = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (targetVol != currentVol) {
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+        }
     }
 
     private fun handleShortcutIntent(intent: Intent?) {
@@ -526,7 +533,7 @@ private fun MiniPlayerContainer(
     onClick: () -> Unit
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
-    val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.connected && miniPlayerUiState.hasPlayer
+    val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
     if (!hasMiniPlayer) return
 
     var showQueueSheet by remember { mutableStateOf(false) }

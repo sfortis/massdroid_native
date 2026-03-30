@@ -57,7 +57,7 @@ fun ExpandingPlayerSheet(
     bottomNavHeightDp: Float = 80f
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
-    val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.connected && miniPlayerUiState.hasPlayer
+    val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
     if (!hasMiniPlayer) return
 
     val density = LocalDensity.current

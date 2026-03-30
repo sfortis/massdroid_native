@@ -135,11 +135,9 @@ class PlayerRepositoryImpl @Inject constructor(
             wsClient.connectionState.collect { state ->
                 when (state) {
                     is ConnectionState.Disconnected, is ConnectionState.Connecting -> {
-                        selectedPlayerId = null
-                        pendingRestoredPlayerId = null
+                        // Keep selectedPlayer and queueState for cached mini player display
+                        pendingRestoredPlayerId = selectedPlayerId
                         _players.value = emptyList()
-                        _selectedPlayer.value = null
-                        _queueState.value = null
                         _elapsedTime.value = 0.0
                         stopPositionTicker()
                         queueTracking.clear()
