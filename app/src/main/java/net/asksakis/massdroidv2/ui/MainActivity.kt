@@ -216,26 +216,29 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            val keyCode = event.keyCode
-            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                val player = playerRepository.selectedPlayer.value
-                if (player != null) {
-                    val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
-                    if (isLocal) {
-                        // Local speaker: let system handle HW volume, then mirror to MA
+        val keyCode = event.keyCode
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            val player = playerRepository.selectedPlayer.value
+            if (player != null) {
+                val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
+                if (isLocal) {
+                    // Local speaker: let system handle HW volume, then mirror to MA
+                    if (event.action == KeyEvent.ACTION_DOWN) {
                         hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val result = super.dispatchKeyEvent(event)
                         val maVol = readPhoneVolumePercent()
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
                         return result
                     }
-                    // Remote speaker: route to MA player, don't change phone volume
+                    return super.dispatchKeyEvent(event)
+                }
+                // Remote speaker: consume both DOWN and UP to prevent system volume change
+                if (event.action == KeyEvent.ACTION_DOWN) {
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
                     val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
                     lifecycleScope.launch { playerRepository.setVolume(player.playerId, newVol) }
-                    return true
                 }
+                return true
             }
         }
         return super.dispatchKeyEvent(event)
@@ -534,10 +537,9 @@ private fun MiniPlayerContainer(
     onClick: () -> Unit
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
+    var showQueueSheet by remember { mutableStateOf(false) }
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
     if (!hasMiniPlayer) return
-
-    var showQueueSheet by remember { mutableStateOf(false) }
 
     MiniPlayer(
         title = miniPlayerUiState.title,
