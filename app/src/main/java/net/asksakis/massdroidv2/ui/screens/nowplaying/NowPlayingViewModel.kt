@@ -92,8 +92,8 @@ class NowPlayingViewModel @Inject constructor(
     val error: SharedFlow<String> = _error.asSharedFlow()
     private val _sendspinStatus = MutableStateFlow<SendspinStatusUi?>(null)
     val sendspinStatus: StateFlow<SendspinStatusUi?> = _sendspinStatus.asStateFlow()
-    private var cachedSendspinClientId: String? = null
-    private var cachedSendspinAudioFormat = "SMART"
+    var cachedSendspinClientId: String? = null; private set
+    var cachedSendspinAudioFormat = "SMART"; private set
     private var cachedSendspinStaticDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)

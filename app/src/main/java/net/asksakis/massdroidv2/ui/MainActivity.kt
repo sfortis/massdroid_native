@@ -16,7 +16,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -55,6 +60,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.ui.components.ExpandingPlayerSheet
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
 import javax.inject.Inject
@@ -348,14 +354,24 @@ private fun MassDroidApp(
             snackbarHostState = snackbarHostState
         )
     } else {
-        PortraitLayout(
-            navController = navController,
-            currentRoute = currentRoute,
-            showNav = showNav,
-            showMiniPlayer = showMiniPlayer,
-            miniPlayerViewModel = miniPlayerViewModel,
-            snackbarHostState = snackbarHostState
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            PortraitLayout(
+                navController = navController,
+                currentRoute = currentRoute,
+                showNav = showNav,
+                showMiniPlayer = false, // handled by ExpandingPlayerSheet
+                miniPlayerViewModel = miniPlayerViewModel,
+                snackbarHostState = snackbarHostState,
+                extraBottomPadding = if (showMiniPlayer) 72.dp else 0.dp // space for floating player
+            )
+
+            // Floating expanding player overlay (on top of everything)
+            ExpandingPlayerSheet(
+                miniPlayerViewModel = miniPlayerViewModel,
+                navController = navController,
+                showMiniPlayer = showMiniPlayer
+            )
+        }
     }
 }
 
@@ -366,7 +382,8 @@ private fun PortraitLayout(
     showNav: Boolean,
     showMiniPlayer: Boolean,
     miniPlayerViewModel: MiniPlayerViewModel,
-    snackbarHostState: SnackbarHostState
+    snackbarHostState: SnackbarHostState,
+    extraBottomPadding: Dp = 0.dp
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -375,6 +392,9 @@ private fun PortraitLayout(
             Column(
                 modifier = if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier
             ) {
+                if (extraBottomPadding > 0.dp) {
+                    Spacer(modifier = Modifier.height(extraBottomPadding))
+                }
                 MiniPlayerContainer(
                     showMiniPlayer = showMiniPlayer,
                     miniPlayerViewModel = miniPlayerViewModel,

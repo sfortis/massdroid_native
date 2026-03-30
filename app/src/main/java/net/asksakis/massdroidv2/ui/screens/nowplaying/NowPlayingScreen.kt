@@ -181,7 +181,7 @@ fun NowPlayingScreen(
                     },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                         }
                     },
                     actions = {
@@ -362,13 +362,13 @@ fun NowPlayingScreen(
 
     player?.let { currentPlayer ->
         if (showPlayerSettingsDialog) {
-            val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
-            val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = "SMART")
+            val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinClientId)
+            val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinAudioFormat)
             val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
-                isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
+                isLocalPlayer = ssClientId != null,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
                 initialStaticDelayMs = staticDelayMs,
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
@@ -571,7 +571,7 @@ private fun NowPlayingLandscape(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close", modifier = Modifier.size(20.dp))
                 }
                 Row(
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
