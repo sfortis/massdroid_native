@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -24,7 +25,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +37,7 @@ import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -56,7 +57,7 @@ fun ExpandingPlayerSheet(
     navController: NavHostController,
     showMiniPlayer: Boolean,
     showNav: Boolean = true,
-    bottomNavHeightDp: Float = 80f
+    bottomBarHeight: Dp = 0.dp
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
@@ -64,24 +65,9 @@ fun ExpandingPlayerSheet(
 
     val density = LocalDensity.current
     val config = LocalConfiguration.current
-    val screenHDp = config.screenHeightDp.toFloat()
-    val screenWDp = config.screenWidthDp.toFloat()
     val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
-
-    // No bottom nav in landscape (SideNavRail) or on detail screens
-    val effectiveBottomNav = if (isLandscape || !showNav) 0f else bottomNavHeightDp
-
-    // Collapsed: badge floating above nav bar with margin
-    val cTop = screenHDp - effectiveBottomNav - 72f - 24f
-    val cLeft = 8f
-    val cWidth = screenWDp - 16f
-    val cHeight = 72f
-
-    // Expanded: near full screen
-    val eTop = if (isLandscape) 0f else screenHDp * 0.08f
-    val eLeft = 0f
-    val eWidth = screenWDp
-    val eHeight = screenHDp - eTop
+    val bottomBarDp = bottomBarHeight.value
+    val effectiveBottomBar = if (isLandscape) 0f else bottomBarDp
 
     val animatable = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
@@ -106,23 +92,38 @@ fun ExpandingPlayerSheet(
         expanded = false
         scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) }
     }
-    val range = (cTop - eTop).coerceAtLeast(1f)
 
     // f = current fraction (0=collapsed, 1=expanded), driven by drag OR animation
     val f = animatable.value.coerceIn(0f, 1f)
 
-    fun lerp(a: Float, b: Float) = a + (b - a) * f
-    val top = lerp(cTop, eTop)
-    val left = lerp(cLeft, eLeft)
-    val w = lerp(cWidth, eWidth)
-    val h = lerp(cHeight, eHeight)
-    val topR = lerp(16f, 28f)
-    val botR = lerp(16f, 0f)
-    val miniA = (1f - f / 0.4f).coerceIn(0f, 1f)
-    val fullA = ((f - 0.2f) / 0.8f).coerceIn(0f, 1f)
-    val scrimA = f * 0.5f
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val parentH = maxHeight.value
+        val parentW = maxWidth.value
 
-    Box(modifier = Modifier.fillMaxSize()) {
+        // Collapsed: above measured bottom bar + margin
+        val cTop = parentH - effectiveBottomBar - 72f - 8f
+        val cLeft = 8f
+        val cWidth = parentW - 16f
+        val cHeight = 72f
+
+        // Expanded: near full screen
+        val eTop = if (isLandscape) 0f else parentH * 0.08f
+        val eLeft = 0f
+        val eWidth = parentW
+        val eHeight = parentH - eTop
+
+        val range = (cTop - eTop).coerceAtLeast(1f)
+
+        fun lerp(a: Float, b: Float) = a + (b - a) * f
+        val top = lerp(cTop, eTop)
+        val left = lerp(cLeft, eLeft)
+        val w = lerp(cWidth, eWidth)
+        val h = lerp(cHeight, eHeight)
+        val topR = lerp(16f, 28f)
+        val botR = lerp(16f, 0f)
+        val miniA = (1f - f / 0.4f).coerceIn(0f, 1f)
+        val fullA = ((f - 0.2f) / 0.8f).coerceIn(0f, 1f)
+        val scrimA = f * 0.5f
         // Scrim
         if (scrimA > 0.01f) {
             Box(

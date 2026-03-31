@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
@@ -62,7 +64,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.CompositionLocalProvider
 import net.asksakis.massdroidv2.ui.components.ExpandingPlayerSheet
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
 import javax.inject.Inject
@@ -422,26 +426,34 @@ private fun MassDroidApp(
         }
     }
 
+    val miniPlayerCollapsedHeight = 72.dp
+    val miniPlayerMargin = 8.dp
+    var bottomBarHeight by remember { mutableStateOf(0.dp) }
+    val miniPlayerPadding = if (showMiniPlayer) miniPlayerCollapsedHeight + miniPlayerMargin else 0.dp
+
+    CompositionLocalProvider(LocalMiniPlayerPadding provides miniPlayerPadding) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLandscape) {
             LandscapeLayout(
                 navController = navController,
                 currentRoute = currentRoute,
                 showNav = showNav,
-                showMiniPlayer = false, // handled by ExpandingPlayerSheet
+                showMiniPlayer = false,
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
-                extraBottomPadding = if (showMiniPlayer && showNav) 88.dp else if (showMiniPlayer) 80.dp else 0.dp
+                extraBottomPadding = 0.dp,
+                onBottomBarHeightChanged = { bottomBarHeight = it }
             )
         } else {
             PortraitLayout(
                 navController = navController,
                 currentRoute = currentRoute,
                 showNav = showNav,
-                showMiniPlayer = false, // handled by ExpandingPlayerSheet
+                showMiniPlayer = false,
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
-                extraBottomPadding = if (showMiniPlayer && showNav) 88.dp else if (showMiniPlayer) 80.dp else 0.dp
+                extraBottomPadding = 0.dp,
+                onBottomBarHeightChanged = { bottomBarHeight = it }
             )
         }
 
@@ -450,9 +462,11 @@ private fun MassDroidApp(
             miniPlayerViewModel = miniPlayerViewModel,
             navController = navController,
             showMiniPlayer = showMiniPlayer,
-            showNav = showNav
+            showNav = showNav,
+            bottomBarHeight = if (showNav) bottomBarHeight else 0.dp
         )
     }
+    } // CompositionLocalProvider
 }
 
 @Composable
@@ -463,14 +477,19 @@ private fun PortraitLayout(
     showMiniPlayer: Boolean,
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
-    extraBottomPadding: Dp = 0.dp
+    extraBottomPadding: Dp = 0.dp,
+    onBottomBarHeightChanged: (Dp) -> Unit = {}
 ) {
+    val density = LocalDensity.current
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(
-                modifier = if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier
+                modifier = (if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier)
+                    .onSizeChanged { size ->
+                        onBottomBarHeightChanged(with(density) { size.height.toDp() })
+                    }
             ) {
                 if (extraBottomPadding > 0.dp) {
                     Spacer(modifier = Modifier.height(extraBottomPadding))
@@ -501,13 +520,20 @@ private fun LandscapeLayout(
     showMiniPlayer: Boolean,
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
-    extraBottomPadding: Dp = 0.dp
+    extraBottomPadding: Dp = 0.dp,
+    onBottomBarHeightChanged: (Dp) -> Unit = {}
 ) {
+    val density = LocalDensity.current
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+            Column(modifier = Modifier
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .onSizeChanged { size ->
+                    onBottomBarHeightChanged(with(density) { size.height.toDp() })
+                }
+            ) {
                 if (extraBottomPadding > 0.dp) {
                     Spacer(modifier = Modifier.height(extraBottomPadding))
                 }

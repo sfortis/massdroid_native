@@ -2,6 +2,9 @@ package net.asksakis.massdroidv2.ui.screens.settings
 
 import android.app.Activity
 import android.security.KeyChain
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +64,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -375,13 +380,15 @@ private fun ServerConnectionCard(
     var password by remember(savedPassword) { mutableStateOf(savedPassword) }
     var showPassword by remember { mutableStateOf(false) }
 
+    val reconnecting by viewModel.isReconnecting.collectAsStateWithLifecycle()
     val isConnected = connectionState is ConnectionState.Connected
-    val isRetryingConnection =
-        connectionState is ConnectionState.Connecting || connectionState is ConnectionState.Error
+    val isConnecting = connectionState is ConnectionState.Connecting
+    val isRetryingConnection = isConnecting || (connectionState is ConnectionState.Error && reconnecting)
     val hasToken = authToken.isNotBlank()
     val primaryConnectionButtonLabel = when {
         isConnected -> "Disconnect"
         isRetryingConnection -> "Abort"
+        connectionState is ConnectionState.Error -> "Retry"
         else -> "Connect"
     }
 
@@ -431,12 +438,13 @@ private fun ServerConnectionCard(
 
         if (hasToken) {
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            Text(
-                text = "Or login with different credentials:",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
+
+        Text(
+            text = "Music Assistant credentials",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         OutlinedTextField(
             value = username,
@@ -448,6 +456,7 @@ private fun ServerConnectionCard(
             singleLine = true,
             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
             modifier = Modifier.fillMaxWidth()
+                .semantics { contentType = ContentType.Username }
         )
 
         OutlinedTextField(
@@ -461,6 +470,7 @@ private fun ServerConnectionCard(
             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
             visualTransformation = if (showPassword) VisualTransformation.None
                 else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             trailingIcon = {
                 IconButton(onClick = { showPassword = !showPassword }) {
                     Icon(
@@ -471,9 +481,12 @@ private fun ServerConnectionCard(
                 }
             },
             modifier = Modifier.fillMaxWidth()
+                .semantics { contentType = ContentType.Password }
         )
 
-        loginError?.let { error ->
+        val displayError = loginError
+            ?: (connectionState as? ConnectionState.Error)?.message
+        displayError?.let { error ->
             Text(
                 text = error,
                 color = MaterialTheme.colorScheme.error,
@@ -648,7 +661,9 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                 },
                 label = { Text("API Key") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+                    .semantics { contentType = ContentType.Password },
                 visualTransformation = if (apiKeyVisible) {
                     VisualTransformation.None
                 } else {

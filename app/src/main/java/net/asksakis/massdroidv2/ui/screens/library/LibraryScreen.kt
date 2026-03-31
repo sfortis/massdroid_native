@@ -50,6 +50,8 @@ import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.ProviderBadges
+import net.asksakis.massdroidv2.domain.model.Album
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 
@@ -305,7 +307,13 @@ fun LibraryScreen(
                         subtitle = { "${it.artistNames} - ${it.albumName}".trimEnd(' ', '-') },
                         imageUrl = { it.imageUrl },
                         favorite = { it.favorite },
-                        onClick = { viewModel.playTrack(it) },
+                        onClick = { track ->
+                            if (track.albumItemId != null && track.albumProvider != null) {
+                                onAlbumClick(Album(itemId = track.albumItemId, provider = track.albumProvider, name = track.albumName, uri = ""))
+                            } else {
+                                viewModel.playTrack(track)
+                            }
+                        },
                         onLongClick = { track ->
                             actionSheetItem = ActionSheetItem(
                                 title = track.name,
@@ -961,7 +969,7 @@ private fun <T> MediaList(
         LibraryDisplayMode.LIST -> {
             val listState = rememberLazyListState()
             InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
-            LazyColumn(state = listState) {
+            LazyColumn(state = listState, contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
                 items(
                     items = items,
                     key = { key(it) },
@@ -991,7 +999,7 @@ private fun <T> MediaList(
             LazyVerticalGrid(
                 state = gridState,
                 columns = GridCells.Adaptive(minSize = 120.dp),
-                contentPadding = PaddingValues(8.dp),
+                contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = LocalMiniPlayerPadding.current),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1103,7 +1111,7 @@ private fun BrowseList(
                 CircularProgressIndicator()
             }
         } else {
-            LazyColumn {
+            LazyColumn(contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
                 items(items, key = { it.uri.ifBlank { it.name } }) { item ->
                     ListItem(
                         headlineContent = {

@@ -2,21 +2,48 @@ package net.asksakis.massdroidv2.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = Color(0xFFCCCCCC),
+    onPrimary = Color(0xFF222222),
+    primaryContainer = Color(0xFF3A3A3A),
+    onPrimaryContainer = Color(0xFFDDDDDD),
+    secondary = Color(0xFFAAAAAA),
+    secondaryContainer = Color(0xFF333333),
+    tertiary = Color(0xFF999999),
+    tertiaryContainer = Color(0xFF2E2E2E),
+    outline = Color(0xFF666666),
+    outlineVariant = Color(0xFF444444)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
+    primary = Color(0xFF333333),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFE0E0E0),
+    onPrimaryContainer = Color(0xFF222222),
+    secondary = Color(0xFF555555),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFE0E0E0),
+    onSecondaryContainer = Color(0xFF222222),
+    tertiary = Color(0xFF666666),
+    tertiaryContainer = Color(0xFFEEEEEE),
+    onBackground = Color(0xFF111111),
+    onSurface = Color(0xFF111111),
+    onSurfaceVariant = Color(0xFF444444),
+    background = Color(0xFFDDDDDD),
+    surface = Color(0xFFDDDDDD),
+    surfaceVariant = Color(0xFFCCCCCC),
+    surfaceContainerHigh = Color(0xFFC8C8C8),
+    surfaceContainer = Color(0xFFD5D5D5),
+    surfaceContainerLow = Color(0xFFDADADA),
+    outline = Color(0xFF888888),
+    outlineVariant = Color(0xFFBBBBBB)
 )
 
 @Composable
@@ -48,9 +75,18 @@ fun MassDroidTheme(
         else -> LightColorScheme
     }
 
+    val shapes = Shapes(
+        extraSmall = RoundedCornerShape(8.dp),
+        small = RoundedCornerShape(12.dp),
+        medium = RoundedCornerShape(16.dp),
+        large = RoundedCornerShape(20.dp),
+        extraLarge = RoundedCornerShape(28.dp)
+    )
+
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = shapes,
         content = content
     )
 }

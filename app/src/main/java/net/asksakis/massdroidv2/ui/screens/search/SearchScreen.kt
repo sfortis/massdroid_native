@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui.screens.search
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -314,7 +315,7 @@ private fun SearchResultsList(
     onTrackClick: (Track) -> Unit,
     onRadioClick: (Radio) -> Unit
 ) {
-    LazyColumn {
+    LazyColumn(contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
         if (filtered.artists.isNotEmpty()) {
             item { SectionHeader("Artists") }
             items(filtered.artists, key = { it.uri }) { artist ->
@@ -387,7 +388,7 @@ private fun SearchResultsGrid(
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 120.dp),
-        contentPadding = PaddingValues(8.dp),
+        contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = LocalMiniPlayerPadding.current),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {

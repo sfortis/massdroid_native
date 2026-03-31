@@ -64,6 +64,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val connectionState = wsClient.connectionState
+    val isReconnecting = wsClient.isReconnecting
 
     val sendspinState = sendspinManager.connectionState
     val sendspinEnabled = settingsRepository.sendspinEnabled
@@ -122,18 +123,21 @@ class SettingsViewModel @Inject constructor(
     // Token persistence is handled by MassDroidApp's connectionState observer
 
     fun login(url: String, username: String, password: String) {
-        if (url.isBlank() || username.isBlank() || password.isBlank()) {
+        val u = url.trim()
+        val user = username.trim()
+        val pass = password.trim()
+        if (u.isBlank() || user.isBlank() || pass.isBlank()) {
             _loginError.value = "Fill in all fields"
             return
         }
         _loginError.value = null
         viewModelScope.launch {
-            settingsRepository.setServerUrl(url)
-            settingsRepository.setUsername(username)
-            settingsRepository.setPassword(password)
+            settingsRepository.setServerUrl(u)
+            settingsRepository.setUsername(user)
+            settingsRepository.setPassword(pass)
         }
-        wsClient.setSavedCredentials(username, password)
-        wsClient.connectWithLogin(url, username, password) { token ->
+        wsClient.setSavedCredentials(user, pass)
+        wsClient.connectWithLogin(u, user, pass) { token ->
             viewModelScope.launch {
                 settingsRepository.setAuthToken(token)
             }
@@ -141,12 +145,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun connectWithToken(url: String? = null) {
-        val connectUrl = url ?: serverUrl.value
+        val connectUrl = (url ?: serverUrl.value).trim()
         val token = authToken.value
-        if (connectUrl.isNotBlank() && token.isNotBlank()) {
-            viewModelScope.launch { settingsRepository.setServerUrl(connectUrl) }
-            wsClient.connect(connectUrl, token)
+        if (connectUrl.isBlank()) {
+            _loginError.value = "Enter a server URL"
+            return
         }
+        if (token.isBlank()) {
+            _loginError.value = "No saved token. Login with credentials first."
+            return
+        }
+        _loginError.value = null
+        viewModelScope.launch { settingsRepository.setServerUrl(connectUrl) }
+        wsClient.connect(connectUrl, token)
     }
 
     fun disconnect() {

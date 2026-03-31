@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.ui.screens.library
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import androidx.compose.foundation.combinedClickable
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
@@ -140,7 +141,7 @@ fun AlbumDetailScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 100.dp)
+                contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
             ) {
                 item {
                     Column(

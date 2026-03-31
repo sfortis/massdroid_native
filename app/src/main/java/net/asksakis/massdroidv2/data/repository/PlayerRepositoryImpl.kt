@@ -371,13 +371,19 @@ class PlayerRepositoryImpl @Inject constructor(
                 artistProvider = mediaItem.artists?.firstOrNull()?.provider,
                 albumItemId = mediaItem.album?.itemId,
                 albumProvider = mediaItem.album?.provider,
-                artistUri = MediaIdentity.canonicalArtistKey(
-                    itemId = mediaItem.artists?.firstOrNull()?.itemId,
-                    uri = mediaItem.artists?.firstOrNull()?.uri
-                ),
+                artistUri = mediaItem.artists?.firstOrNull()?.let { a ->
+                    val rawKey = MediaIdentity.canonicalArtistKey(itemId = a.itemId, uri = a.uri)
+                    if (rawKey != null && !rawKey.startsWith("library://")) {
+                        resolveLibraryArtistUri(a.name, rawKey)
+                    } else rawKey
+                },
                 artistUris = mediaItem.artists
                     ?.mapNotNull { artist ->
-                        MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+                        val rawKey = MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+                            ?: return@mapNotNull null
+                        if (!rawKey.startsWith("library://")) {
+                            resolveLibraryArtistUri(artist.name, rawKey)
+                        } else rawKey
                     }
                     ?.distinct()
                     ?: emptyList(),

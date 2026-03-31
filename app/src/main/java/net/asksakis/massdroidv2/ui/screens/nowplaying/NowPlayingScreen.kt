@@ -55,6 +55,8 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
+import androidx.compose.animation.core.Animatable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -454,7 +456,7 @@ private fun NowPlayingPortrait(
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.weight(0.5f))
 
         SwipeableAlbumArt(
             imageUrl = imageUrl,
@@ -463,7 +465,7 @@ private fun NowPlayingPortrait(
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.weight(0.5f))
 
         QualityActionRow(
             audioFormat = audioFormat,
@@ -476,7 +478,7 @@ private fun NowPlayingPortrait(
             enabled = controlsEnabled
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
         TrackInfoSection(
             title = title,
@@ -487,7 +489,7 @@ private fun NowPlayingPortrait(
             onNavigateToAlbum = onNavigateToAlbum
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
         SeekBar(
             elapsed = elapsedTime,
@@ -509,14 +511,61 @@ private fun NowPlayingPortrait(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        VolumeSlider(
-            volume = player?.volumeLevel ?: 0,
-            isMuted = player?.volumeMuted ?: false,
-            onVolumeChange = { viewModel.setVolume(it) },
-            onMuteToggle = { viewModel.toggleMute() },
-            enabled = controlsEnabled,
-            compact = true
-        )
+        // Volume indicator: fade in on change, fade out after 2s
+        val currentVolume = player?.volumeLevel ?: 0
+        val volumeMuted = player?.volumeMuted ?: false
+        var lastShownVolume by remember { mutableIntStateOf(currentVolume) }
+        val volumeAlpha = remember { Animatable(0f) }
+
+        LaunchedEffect(currentVolume, volumeMuted) {
+            if (lastShownVolume != currentVolume) {
+                lastShownVolume = currentVolume
+                volumeAlpha.animateTo(1f, tween(300))
+                delay(2000)
+                volumeAlpha.animateTo(0f, tween(1000))
+            }
+        }
+
+        // Fixed height so it doesn't push other components
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.7f)
+                .height(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (volumeAlpha.value > 0.01f) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer { alpha = volumeAlpha.value },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        if (volumeMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LinearProgressIndicator(
+                        progress = { currentVolume / 100f },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(4.dp)
+                            .clip(MaterialTheme.shapes.small),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+                    )
+                    Text(
+                        text = "$currentVolume%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
     }
 }
 
@@ -672,16 +721,6 @@ private fun NowPlayingLandscape(
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                VolumeSlider(
-                    volume = player?.volumeLevel ?: 0,
-                    isMuted = player?.volumeMuted ?: false,
-                    onVolumeChange = { viewModel.setVolume(it) },
-                    onMuteToggle = { viewModel.toggleMute() },
-                    enabled = controlsEnabled,
-                    compact = true
-                )
             }
             }
         }

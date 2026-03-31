@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -164,7 +165,8 @@ fun HomeScreen(
         floatingActionButton = {
             SmartMixFab(
                 isBusy = isBuildingSmartMix,
-                onClick = { viewModel.makePlaylistForMe() }
+                onClick = { viewModel.makePlaylistForMe() },
+                modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
             )
         },
         topBar = {
@@ -233,8 +235,8 @@ fun HomeScreen(
                 ) {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
-                        contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
+                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = LocalMiniPlayerPadding.current)
                     ) {
                         itemsIndexed(
                             items = sections,
@@ -391,7 +393,8 @@ private fun EmptyStateView(onNavigateToSettings: () -> Unit) {
 @Composable
 private fun SmartMixFab(
     isBusy: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val sparkleScale = remember { Animatable(1f) }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -421,6 +424,7 @@ private fun SmartMixFab(
 
     ExtendedFloatingActionButton(
         onClick = { if (!isBusy) onClick() },
+        modifier = modifier,
         shape = CircleShape,
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
         contentColor = MaterialTheme.colorScheme.onSurface,

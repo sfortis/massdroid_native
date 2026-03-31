@@ -34,6 +34,7 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
 import net.asksakis.massdroidv2.ui.components.SoundWaveIcon
 import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
+import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -114,7 +115,7 @@ fun PlayersScreen(
 
                     LazyColumn(
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(start = 0.dp, top = 6.dp, end = 0.dp, bottom = 8.dp)
+                        contentPadding = PaddingValues(start = 0.dp, top = 6.dp, end = 0.dp, bottom = LocalMiniPlayerPadding.current)
                     ) {
                         items(
                             availablePlayers,

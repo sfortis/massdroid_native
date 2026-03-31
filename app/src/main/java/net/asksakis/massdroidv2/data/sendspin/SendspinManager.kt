@@ -155,7 +155,7 @@ class SendspinManager(
                 }
                 synchronized(offsetSamples) {
                     offsetSamples.add(offset)
-                    if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeFirst()
+                    if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeAt(0)
                     clockOffsetUs = offsetSamples.sorted()[offsetSamples.size / 2]
                     clockSynced = offsetSamples.size >= 3
                 }

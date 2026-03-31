@@ -44,6 +44,10 @@ class MaWebSocketClient(
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    private val _isReconnecting = MutableStateFlow(false)
+    /** True when a reconnect attempt is scheduled or in-flight. */
+    val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+
     private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ServerEvent> = _events.asSharedFlow()
     private val _startupReady = MutableStateFlow(false)
@@ -254,9 +258,11 @@ class MaWebSocketClient(
 
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
+            _isReconnecting.value = true
             val attempt = reconnectAttempts + 1
             if (attempt > MAX_RETRY_COUNT) {
                 Log.w(TAG, "Max reconnect attempts ($MAX_RETRY_COUNT) reached, giving up")
+                _isReconnecting.value = false
                 _connectionState.value = ConnectionState.Error("Connection lost. Check server and retry.")
                 return@launch
             }
@@ -274,6 +280,7 @@ class MaWebSocketClient(
     private fun cancelReconnect() {
         reconnectJob?.cancel()
         reconnectJob = null
+        _isReconnecting.value = false
         resetReconnectBackoff()
     }
 
