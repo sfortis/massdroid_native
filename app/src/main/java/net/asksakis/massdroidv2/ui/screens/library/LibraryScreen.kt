@@ -52,6 +52,7 @@ import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.ProviderBadges
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
+import net.asksakis.massdroidv2.ui.components.fadingEdges
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 
@@ -969,7 +970,7 @@ private fun <T> MediaList(
         LibraryDisplayMode.LIST -> {
             val listState = rememberLazyListState()
             InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
-            LazyColumn(state = listState, contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
                 items(
                     items = items,
                     key = { key(it) },
@@ -998,6 +999,7 @@ private fun <T> MediaList(
             InfiniteGridHandler(gridState, items.size, threshold = 6, onLoadMore = onLoadMore)
             LazyVerticalGrid(
                 state = gridState,
+                modifier = Modifier.fillMaxSize().fadingEdges(),
                 columns = GridCells.Adaptive(minSize = 120.dp),
                 contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = LocalMiniPlayerPadding.current),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1111,7 +1113,7 @@ private fun BrowseList(
                 CircularProgressIndicator()
             }
         } else {
-            LazyColumn(contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
+            LazyColumn(modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
                 items(items, key = { it.uri.ifBlank { it.name } }) { item ->
                     ListItem(
                         headlineContent = {

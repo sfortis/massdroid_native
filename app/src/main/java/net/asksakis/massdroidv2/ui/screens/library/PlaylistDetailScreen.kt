@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.ui.screens.library
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
+import net.asksakis.massdroidv2.ui.components.fadingEdges
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -77,7 +78,8 @@ fun PlaylistDetailScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
+                .padding(paddingValues)
+                .fadingEdges(),
             contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
         ) {
             items(items = tracks, key = { track -> "${track.uri}:${track.position ?: -1}" }) { track ->

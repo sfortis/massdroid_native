@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
+import net.asksakis.massdroidv2.ui.components.fadingEdges
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -234,7 +235,7 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().fadingEdges(),
                         verticalArrangement = Arrangement.spacedBy(24.dp),
                         contentPadding = PaddingValues(top = 8.dp, bottom = LocalMiniPlayerPadding.current + 96.dp)
                     ) {

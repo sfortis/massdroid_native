@@ -4,6 +4,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
+import net.asksakis.massdroidv2.ui.components.fadingEdges
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -173,7 +174,7 @@ fun ArtistDetailScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().fadingEdges(),
                 contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
             ) {
                 item {
