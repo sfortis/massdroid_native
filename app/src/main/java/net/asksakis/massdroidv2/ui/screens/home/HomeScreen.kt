@@ -236,7 +236,7 @@ fun HomeScreen(
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(24.dp),
-                        contentPadding = PaddingValues(top = 8.dp, bottom = LocalMiniPlayerPadding.current)
+                        contentPadding = PaddingValues(top = 8.dp, bottom = LocalMiniPlayerPadding.current + 96.dp)
                     ) {
                         itemsIndexed(
                             items = sections,
