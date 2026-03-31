@@ -677,7 +677,11 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
                 val artistUris = media.artists
                     ?.mapNotNull { artist ->
-                        MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+                        val rawKey = MediaIdentity.canonicalArtistKey(itemId = artist.itemId, uri = artist.uri)
+                            ?: return@mapNotNull null
+                        if (!rawKey.startsWith("library://")) {
+                            resolveLibraryArtistUri(artist.name, rawKey)
+                        } else rawKey
                     }
                     .orEmpty()
                 if (artistUris.any { it in filteredArtists }) item.queueItemId else null

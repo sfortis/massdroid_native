@@ -13,6 +13,7 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 

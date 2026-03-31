@@ -267,6 +267,7 @@ fun LibraryScreen(
                             )
                         },
                         onPlayClick = { viewModel.quickPlay(it.uri) },
+                        isBlocked = { it.uri in blockedArtistUris },
                         providerDomains = { it.providerDomains }
                     )
                     1 -> MediaList(
@@ -963,6 +964,7 @@ private fun <T> MediaList(
     onLongClick: (T) -> Unit,
     onMoreClick: ((T) -> Unit)? = null,
     onPlayClick: ((T) -> Unit)? = null,
+    isBlocked: (T) -> Boolean = { false },
     providerDomains: (T) -> List<String> = { emptyList() }
 ) {
     val providerCache = LocalProviderManifestCache.current
@@ -985,6 +987,7 @@ private fun <T> MediaList(
                         onLongClick = { onLongClick(item) },
                         onMoreClick = onMoreClick?.let { { it(item) } },
                         onPlayClick = onPlayClick?.let { { it(item) } },
+                        isBlocked = isBlocked(item),
                         providerDomains = providerDomains(item),
                         providerCache = providerCache
                     )
@@ -1016,6 +1019,7 @@ private fun <T> MediaList(
                         imageUrl = imageUrl(item),
                         onClick = { onClick(item) },
                         onLongClick = { onLongClick(item) },
+                        isBlocked = isBlocked(item),
                         providerDomains = providerDomains(item),
                         providerCache = providerCache
                     )
