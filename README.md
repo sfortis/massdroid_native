@@ -6,19 +6,14 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- **Follow Me**: Walk between rooms and your music follows. Detects which room you are in using nearby Bluetooth devices and automatically transfers playback to the right speaker.
-- **Smarter detection**: Improved room-fit scoring, cleaner BLE anchor matching, and faster response to movement.
-- **Per-room settings**: Assign a player, playlist, volume level, and detection mode to each room.
-- **Calibration wizard**: Guided room calibration with quality feedback so you know when a room is ready.
-- **WiFi location awareness**: Prevents false room detection when you are at a different location (e.g. office vs home).
-- **Time schedule**: Set active days and times so Follow Me only runs when you need it.
-- **Start Song Radio**: Start a radio station based on the currently playing track, directly from the player menu.
-- **Save queue to playlist**: Save your current queue as a new or existing playlist, with duplicate detection.
-- **Redesigned Players screen**: Richer player cards with room badges and streamlined controls.
-- **Theme toggle**: Switch between Dark, Light, and Auto themes.
-- Fix DSTM staying disabled after failed Smart Mix playback
-- Fix audio focus steal on app startup
-- UI polish: splash screen, permission dialogs, redesigned Library controls, Player Settings available from Now Playing
+- **Expanding mini player**: Tap to open full Now Playing, swipe down to close. Swipe left/right to switch speakers. Shows speaker name, persists during disconnects.
+- **Sleep timer**: 15 to 120 min presets or custom, gradual volume fade, notification controls.
+- **Hardware volume control**: Volume buttons control the selected speaker. Sendspin keeps phone and speaker volume in sync.
+- **Queue as bottom sheet**: Swipe down to close, drag to reorder tracks.
+- **Sendspin overhaul**: Seamless codec switching (Opus/FLAC), holdover playback during network drops, adaptive reconnect alignment. Audio format picker and sync offset in player settings.
+- **Follow Me enhancements**: Improved WiFi fingerprint matching, faster room detection with screen off, signal smoothing and scoring refinements.
+- **UI refresh**: Redesigned landscape Now Playing, pill-style Library tabs, fade edges on scrollable content, neutral grey theme, grid default for Artists/Albums, bottom nav on detail screens.
+- Fix edge-to-edge on older Android, memory/receiver leaks, audio focus ducking
 
 ## Screenshots
 

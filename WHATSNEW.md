@@ -1,15 +1,17 @@
-- Follow Me: walk between rooms and your music follows automatically
-- Smarter room detection with signal smoothing and improved scoring
-- Room detection works with screen off and responds faster to movement
-- Per-room settings: assign a player, playlist, volume, shuffle, and detection sensitivity
-- Calibration wizard with quality feedback so you know when a room is ready
-- WiFi awareness prevents false detection at different locations
-- Time schedule so Follow Me only runs when you need it
-- BLE inspection tool to see what devices Follow Me is using
-- Start Song Radio from player options menu
-- Save queue to playlist with duplicate detection
-- Redesigned Players screen with richer cards and room badges
-- Theme toggle: Dark / Light / Auto
-- Fix Don't Stop the Music staying disabled after failed Smart Mix
-- Fix audio focus steal on app startup
-- UI polish: splash screen, permission dialogs, redesigned Library controls, Player Settings available from Now Playing
+- Expanding mini player: tap to expand into full Now Playing, swipe down to close
+- Swipe left/right on mini player to switch between speakers
+- Mini player shows current speaker name and persists during disconnects
+- Sleep timer with gradual volume fade and notification controls
+- Hardware volume buttons control your speaker directly
+- Queue opens as a bottom sheet with swipe to close
+- Sendspin audio improvements: seamless codec switching, holdover playback during network drops, adaptive reconnect alignment
+- Audio format picker (Smart/Opus/FLAC) and sync offset slider in player settings
+- Landscape mode: redesigned Now Playing layout with proper spacing
+- Modern pill-style tabs in Library
+- Subtle fade edges on all scrollable content
+- Bottom navigation stays visible on detail screens
+- Neutral grey theme for consistent look across all devices
+- Volume indicator appears briefly when changing volume
+- Grid mode default for Artists and Albums in Library
+- Fix edge-to-edge layout on older Android versions
+- Fix various memory leaks and potential crashes
