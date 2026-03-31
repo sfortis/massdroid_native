@@ -1040,13 +1040,25 @@ class PlayerRepositoryImpl @Inject constructor(
             val configName = obj["name"]?.jsonPrimitive?.contentOrNull
                 ?: obj["default_name"]?.jsonPrimitive?.contentOrNull ?: ""
 
+            val formatEntry = values?.get("preferred_sendspin_format")
+            val formatOptions = (formatEntry as? JsonObject)?.get("options")
+                ?.jsonArray
+                ?.mapNotNull { opt ->
+                    val o = opt.jsonObject
+                    val title = o["title"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val value = o["value"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    FormatOption(title, value)
+                }
+                ?: emptyList()
+
             PlayerConfig(
                 name = configName,
                 crossfadeMode = CrossfadeMode.fromApi(
                     values?.get("smart_fades_mode")?.configValue() ?: "disabled"
                 ),
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
-                sendspinFormat = values?.get("preferred_sendspin_format")?.configValue()
+                sendspinFormat = formatEntry?.configValue(),
+                sendspinFormatOptions = formatOptions
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")

@@ -378,7 +378,8 @@ fun NowPlayingScreen(
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
-                isLocalPlayer = ssClientId != null,
+                isSendspinPlayer = currentPlayer.provider == "sendspin",
+                isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
                 initialStaticDelayMs = staticDelayMs,
                 onLoadConfig = { viewModel.getPlayerConfig(it) },

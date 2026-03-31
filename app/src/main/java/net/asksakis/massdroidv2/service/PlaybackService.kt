@@ -368,14 +368,28 @@ class PlaybackService : MediaLibraryService() {
                     }
                 }
         }
-        // On network change, just log. Format will be applied at next Sendspin connect.
+        // On network change in Smart mode, request runtime format switch
         scope.launch {
+            var lastWifi: Boolean? = null
             wifiState.collect { isWifi ->
                 val netType = if (isWifi) "WiFi" else "Mobile"
                 val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(
                     settingsRepository.sendspinAudioFormat.first()
                 )
-                Log.d(TAG, "Network: $netType (format $format will apply at next connect)")
+                if (lastWifi != null && lastWifi != isWifi && format == net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.SMART) {
+                    val controller = sendspinController
+                    if (controller != null && controller.isStreaming) {
+                        val codec = format.toCodec(isWifi)
+                        val bitDepth = format.toBitDepth(isWifi)
+                        Log.d(TAG, "Smart mode network switch: $netType, requesting $codec ${bitDepth}bit")
+                        sendspinManager.requestFormat(codec, bitDepth = bitDepth)
+                    } else {
+                        Log.d(TAG, "Network: $netType (Smart mode, not streaming, skip format request)")
+                    }
+                } else {
+                    Log.d(TAG, "Network: $netType (format $format)")
+                }
+                lastWifi = isWifi
             }
         }
     }

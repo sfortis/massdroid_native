@@ -6,14 +6,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import android.util.Log
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -36,6 +45,7 @@ import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 fun PlayerSettingsDialog(
     player: Player,
     initialDstmEnabled: Boolean?,
+    isSendspinPlayer: Boolean = false,
     isLocalPlayer: Boolean = false,
     initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.SMART,
     initialStaticDelayMs: Int = 0,
@@ -51,6 +61,8 @@ fun PlayerSettingsDialog(
     var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember { mutableStateOf(false) }
     var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
+    var selectedFormatValue by remember { mutableStateOf<String?>(null) }
+    var formatOptions by remember { mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList()) }
     var audioFormat by remember(initialAudioFormat) { mutableStateOf(initialAudioFormat) }
     var staticDelayMs by remember(initialStaticDelayMs) { mutableIntStateOf(initialStaticDelayMs) }
 
@@ -60,6 +72,9 @@ fun PlayerSettingsDialog(
             name = loaded.name.ifBlank { player.displayName }
             crossfadeMode = loaded.crossfadeMode
             volumeNormalization = loaded.volumeNormalization
+            formatOptions = loaded.sendspinFormatOptions
+            selectedFormatValue = loaded.sendspinFormat
+            Log.d("PlayerSettings", "Loaded: provider=${player.provider} format=${loaded.sendspinFormat} options=${loaded.sendspinFormatOptions.map { it.value }}")
         }
         isLoading = false
     }
@@ -130,33 +145,71 @@ fun PlayerSettingsDialog(
                         }
                     }
 
-                    if (isLocalPlayer) {
+                    if (isSendspinPlayer && formatOptions.isNotEmpty()) {
+                        val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
+                            title = "Smart", value = "smart"
+                        )
+                        val allOptions = if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
+                        val currentValue = selectedFormatValue ?: "automatic"
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text("Audio format", style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                when (audioFormat) {
-                                    SendspinAudioFormat.SMART -> "FLAC on WiFi, Opus on mobile data"
-                                    SendspinAudioFormat.OPUS -> "Low bandwidth (~128kbps)"
-                                    SendspinAudioFormat.FLAC -> "Lossless (~800kbps)"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            SendspinAudioFormat.entries.forEachIndexed { index, fmt ->
-                                SegmentedButton(
-                                    selected = audioFormat == fmt,
-                                    onClick = { audioFormat = fmt },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = SendspinAudioFormat.entries.size
-                                    ),
-                                    label = { Text(fmt.label, style = MaterialTheme.typography.labelSmall) }
-                                )
+                            var expanded by remember { mutableStateOf(false) }
+                            val selectedTitle = allOptions.find { it.value == currentValue }?.title
+                                ?: allOptions.firstOrNull()?.title ?: ""
+                            Box {
+                                OutlinedCard(
+                                    modifier = Modifier.fillMaxWidth().clickable { expanded = true }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(selectedTitle, style = MaterialTheme.typography.bodyMedium)
+                                            if (currentValue == "smart") {
+                                                Text(
+                                                    "Auto-switches codec based on network",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = expanded,
+                                    onDismissRequest = { expanded = false }
+                                ) {
+                                    allOptions.forEach { opt ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(opt.title, style = MaterialTheme.typography.bodyMedium)
+                                                    if (opt.value == "smart") {
+                                                        Text(
+                                                            "FLAC on WiFi, Opus on mobile",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            onClick = {
+                                                selectedFormatValue = opt.value
+                                                expanded = false
+                                            },
+                                            trailingIcon = if (currentValue == opt.value) {{
+                                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                            }} else null
+                                        )
+                                    }
+                                }
                             }
                         }
+                    }
 
+                    if (isSendspinPlayer) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text(
                                 "Sync offset: ${if (staticDelayMs >= 0) "+$staticDelayMs" else "$staticDelayMs"} ms",
@@ -184,14 +237,26 @@ fun PlayerSettingsDialog(
                     if (name.isNotBlank() && name.trim() != player.displayName) {
                         values["name"] = name.trim()
                     }
+                    val newFormat = selectedFormatValue
+                    if (isSendspinPlayer && newFormat != null) {
+                        val serverValue = if (newFormat == "smart") "automatic" else newFormat
+                        values["preferred_sendspin_format"] = serverValue
+                        if (isLocalPlayer) {
+                            val localFormat = when {
+                                newFormat == "smart" -> SendspinAudioFormat.SMART
+                                newFormat.startsWith("opus") -> SendspinAudioFormat.OPUS
+                                newFormat.startsWith("flac") -> SendspinAudioFormat.FLAC
+                                newFormat.startsWith("pcm") -> SendspinAudioFormat.PCM
+                                else -> null
+                            }
+                            if (localFormat != null) onAudioFormatChanged?.invoke(localFormat)
+                        }
+                    }
                     onSave(player.playerId, values)
                     if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
                         onDstmChanged?.invoke(dontStopTheMusic)
                     }
-                    if (isLocalPlayer && audioFormat != initialAudioFormat) {
-                        onAudioFormatChanged?.invoke(audioFormat)
-                    }
-                    if (isLocalPlayer && staticDelayMs != initialStaticDelayMs) {
+                    if (isSendspinPlayer && staticDelayMs != initialStaticDelayMs) {
                         onStaticDelayChanged?.invoke(staticDelayMs)
                     }
                     onDismiss()

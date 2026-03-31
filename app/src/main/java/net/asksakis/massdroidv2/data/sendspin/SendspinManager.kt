@@ -303,6 +303,11 @@ class SendspinManager(
         audio.setMuted(muted)
     }
 
+    fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
+        Log.d(TAG, "Requesting format change: $codec ${sampleRate}Hz/${bitDepth}bit ${channels}ch")
+        client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
+    }
+
     fun setStaticDelayMs(delayMs: Int) {
         audio.staticDelayMs = delayMs.coerceIn(0, 5000)
         Log.d(TAG, "Static delay set to ${audio.staticDelayMs}ms")

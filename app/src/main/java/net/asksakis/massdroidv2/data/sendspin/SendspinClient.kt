@@ -196,6 +196,16 @@ class SendspinClient(
         webSocket?.send(msg)
     }
 
+    fun sendRequestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
+        val req = SendspinRequestFormat(
+            payload = RequestFormatPayload(
+                player = RequestFormatPlayerPayload(codec = codec, sampleRate = sampleRate, bitDepth = bitDepth, channels = channels)
+            )
+        )
+        val msg = json.encodeToString(req)
+        webSocket?.send(msg)
+    }
+
     fun sendGoodbye(reason: String = "user_request") {
         val goodbye = SendspinGoodbye(payload = GoodbyePayload(reason = reason))
         val msg = json.encodeToString(goodbye)

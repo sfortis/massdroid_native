@@ -19,11 +19,14 @@ enum class PlayerType { PLAYER, GROUP, STEREO_PAIR }
 
 enum class PlaybackState { IDLE, PLAYING, PAUSED }
 
+data class FormatOption(val title: String, val value: String)
+
 data class PlayerConfig(
     val name: String = "",
     val crossfadeMode: CrossfadeMode = CrossfadeMode.DISABLED,
     val volumeNormalization: Boolean = false,
-    val sendspinFormat: String? = null
+    val sendspinFormat: String? = null,
+    val sendspinFormatOptions: List<FormatOption> = emptyList()
 )
 
 enum class CrossfadeMode(val apiValue: String, val label: String) {
@@ -40,12 +43,28 @@ enum class CrossfadeMode(val apiValue: String, val label: String) {
 enum class SendspinAudioFormat(val label: String) {
     SMART("Smart"),
     OPUS("Opus"),
-    FLAC("FLAC");
+    FLAC("FLAC"),
+    PCM("PCM");
 
     fun toApiValue(isWifi: Boolean): String = when (this) {
         SMART -> if (isWifi) "flac:48000:24:2" else "opus:48000:16:2"
         OPUS -> "opus:48000:16:2"
         FLAC -> "flac:48000:24:2"
+        PCM -> "pcm:48000:16:2"
+    }
+
+    /** Codec name for stream/request-format. */
+    fun toCodec(isWifi: Boolean): String = when (this) {
+        SMART -> if (isWifi) "flac" else "opus"
+        OPUS -> "opus"
+        FLAC -> "flac"
+        PCM -> "pcm"
+    }
+
+    fun toBitDepth(isWifi: Boolean): Int = when (this) {
+        SMART -> if (isWifi) 24 else 16
+        FLAC -> 24
+        else -> 16
     }
 
     companion object {

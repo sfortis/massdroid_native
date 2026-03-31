@@ -156,6 +156,27 @@ data class ServerStatePayload(
     val metadata: ServerMetadataPayload? = null
 )
 
+// Runtime format change
+
+@Serializable
+data class RequestFormatPlayerPayload(
+    val codec: String,
+    @SerialName("sample_rate") val sampleRate: Int = 48000,
+    @SerialName("bit_depth") val bitDepth: Int = 16,
+    val channels: Int = 2
+)
+
+@Serializable
+data class RequestFormatPayload(
+    val player: RequestFormatPlayerPayload
+)
+
+@Serializable
+data class SendspinRequestFormat(
+    val type: String = "stream/request-format",
+    val payload: RequestFormatPayload
+)
+
 // Goodbye
 
 @Serializable
