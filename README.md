@@ -10,7 +10,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Sleep timer**: 15 to 120 min presets or custom, gradual volume fade, notification controls.
 - **Hardware volume control**: Volume buttons control the selected speaker. Sendspin keeps phone and speaker volume in sync.
 - **Queue as bottom sheet**: Swipe down to close, drag to reorder tracks.
-- **Sendspin overhaul**: Seamless codec switching (Opus/FLAC), holdover playback during network drops, adaptive reconnect alignment. Audio format picker and sync offset in player settings.
+- **Sendspin overhaul**: Seamless codec switching (Opus/FLAC), holdover playback during network drops, adaptive reconnect alignment, and Smart mode network switching. Audio format picker and sync offset in player settings.
 - **Follow Me enhancements**: Improved WiFi fingerprint matching, faster room detection with screen off, signal smoothing and scoring refinements.
 - **UI refresh**: Redesigned landscape Now Playing, pill-style Library tabs, fade edges on scrollable content, neutral grey theme, grid default for Artists/Albums, bottom nav on detail screens.
 - Fix edge-to-edge on older Android, memory/receiver leaks, audio focus ducking
@@ -112,7 +112,7 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, lyrics, and artist blocking
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
-- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player. Audio streams as Opus frames over WebSocket, decoded and played through your phone speaker or headphones.
+- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player. Audio streams as Opus or FLAC over WebSocket, decoded and played through your phone speaker or headphones. Smart mode can switch format automatically based on network conditions.
 - **Follow Me** : BLE fingerprint-based room detection with auto-transfer, per-room playlists, volume, and scheduling
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
@@ -133,7 +133,7 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 
 MassDroid communicates with your Music Assistant server over a persistent WebSocket connection. All player state, library data, queue changes, and favorites are synced in real time through server-pushed events. The app never polls; updates appear instantly as they happen on the server or from other clients.
 
-When Sendspin is enabled, the phone registers as a Music Assistant player. Audio is streamed as Opus frames over a second WebSocket, decoded on-device, and played through the phone speaker or headphones.
+When Sendspin is enabled, the phone registers as a Music Assistant player. Audio is streamed as Opus or FLAC over a second WebSocket, decoded on-device, and played through the phone speaker or headphones. In Smart mode, the app can switch formats automatically based on network conditions.
 
 ## Requirements
 
