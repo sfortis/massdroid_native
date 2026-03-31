@@ -13,7 +13,6 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
-import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -158,6 +157,20 @@ class MusicRepositoryImpl @Inject constructor(
         radioMode: Boolean,
         awaitResponse: Boolean
     ) {
+        // Pre-filter blocked artists: resolve container URIs (album/artist/playlist)
+        // to track list, remove blocked, then play the filtered list.
+        Log.d(TAG, "playMedia uri=$uri hasBlocked=${playerRepository.get().hasBlockedArtists()}")
+        val filteredUris = preFilterBlocked(uri)
+        if (filteredUris != null) {
+            if (filteredUris.isEmpty()) {
+                Log.d(TAG, "All tracks blocked, skipping play: $uri")
+                return
+            }
+            Log.d(TAG, "Pre-filtered blocked artists: ${filteredUris.size} tracks from $uri")
+            playMedia(queueId, filteredUris, option, radioMode, awaitResponse)
+            return
+        }
+
         if (option == null || option == "play" || option == "replace") {
             playerRepository.get().notifyQueueReplacement(queueId)
         }
@@ -169,6 +182,47 @@ class MusicRepositoryImpl @Inject constructor(
             PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
             awaitResponse = awaitResponse
         )
+    }
+
+    /**
+     * If the URI is a container (artist/album/playlist) and blocked artists exist,
+     * fetch tracks, filter out blocked, return filtered URIs.
+     * Returns null if no filtering needed (single track, no blocked artists, or unknown URI type).
+     */
+    private suspend fun preFilterBlocked(uri: String): List<String>? {
+        val repo = playerRepository.get()
+        // Fast path: no blocked artists at all
+        if (!repo.hasBlockedArtists()) return null
+
+        // Parse URI: {provider}://{type}/{id}
+        val schemeEnd = uri.indexOf("://")
+        if (schemeEnd < 0) return null
+        val provider = uri.substring(0, schemeEnd)
+        val path = uri.substring(schemeEnd + 3)
+        val parts = path.split("/", limit = 2)
+        if (parts.size != 2) return null
+        val type = parts[0]
+        val itemId = parts[1]
+
+        val tracks = when (type) {
+            "artist" -> {
+                // If the artist itself is blocked, return empty list
+                if (repo.isArtistUriBlocked(uri)) return emptyList()
+                return null // Don't pre-fetch all artist tracks, let server handle
+            }
+            "album" -> try { getAlbumTracks(itemId, provider) } catch (_: Exception) { return null }
+            "playlist" -> try { getPlaylistTracks(itemId, provider) } catch (_: Exception) { return null }
+            else -> return null
+        }
+
+        val filtered = tracks.filter { track ->
+            val primaryName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+            val primaryUri = track.artistUri ?: return@filter true
+            !repo.isArtistBlocked(primaryName, primaryUri)
+        }
+
+        // If nothing was filtered, return null to use the original URI (more efficient)
+        return if (filtered.size == tracks.size) null else filtered.map { it.uri }
     }
 
     override suspend fun playMedia(

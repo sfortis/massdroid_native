@@ -928,6 +928,19 @@ class PlayerRepositoryImpl @Inject constructor(
         _playbackIntent.tryEmit(willPlay)
     }
 
+    override fun isArtistUriBlocked(artistUri: String): Boolean =
+        artistUri in blockedArtistUrisSnapshot
+
+    override fun isArtistBlocked(artistName: String, artistUri: String): Boolean {
+        val resolved = if (!artistUri.startsWith("library://")) {
+            resolveLibraryArtistUri(artistName, artistUri)
+        } else artistUri
+        return resolved in blockedArtistUrisSnapshot
+    }
+
+    override fun hasBlockedArtists(): Boolean =
+        blockedArtistUrisSnapshot.isNotEmpty()
+
     override suspend fun next(playerId: String) {
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))

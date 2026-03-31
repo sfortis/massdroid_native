@@ -151,6 +151,16 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Recreate blocked_artists without FK constraint so orphan cleanup doesn't cascade-delete blocks
+            database.execSQL("CREATE TABLE IF NOT EXISTS `blocked_artists_new` (`artist_uri` TEXT NOT NULL, `artist_name` TEXT, `blocked_at` INTEGER NOT NULL, PRIMARY KEY(`artist_uri`))")
+            database.execSQL("INSERT OR IGNORE INTO `blocked_artists_new` SELECT * FROM `blocked_artists`")
+            database.execSQL("DROP TABLE `blocked_artists`")
+            database.execSQL("ALTER TABLE `blocked_artists_new` RENAME TO `blocked_artists`")
+        }
+    }
+
     private val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(
@@ -187,7 +197,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
         .fallbackToDestructiveMigration()
         .build()
 

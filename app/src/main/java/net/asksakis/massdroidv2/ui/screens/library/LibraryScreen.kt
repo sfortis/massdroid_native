@@ -266,7 +266,7 @@ fun LibraryScreen(
                                 primaryArtistName = artist.name
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        onPlayClick = { if (it.uri !in blockedArtistUris) viewModel.quickPlay(it.uri) },
                         isBlocked = { it.uri in blockedArtistUris },
                         providerDomains = { it.providerDomains }
                     )
@@ -296,7 +296,10 @@ fun LibraryScreen(
                                 primaryArtistName = album.artists.firstOrNull()?.name
                             )
                         },
-                        onPlayClick = { viewModel.quickPlay(it.uri) },
+                        onPlayClick = { album ->
+                            val artistUri = album.artists.firstOrNull()?.uri
+                            if (artistUri == null || artistUri !in blockedArtistUris) viewModel.quickPlay(album.uri)
+                        },
                         providerDomains = { it.providerDomains }
                     )
                     2 -> MediaList(

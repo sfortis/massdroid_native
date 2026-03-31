@@ -98,7 +98,6 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean) {
         val artistKey = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         if (blocked) {
-            dao.insertArtist(ArtistEntity(uri = artistKey, name = artistName?.ifBlank { "Artist" } ?: "Artist"))
             dao.upsertBlockedArtist(
                 BlockedArtistEntity(
                     artistUri = artistKey,
@@ -106,7 +105,8 @@ class SmartListeningRepositoryImpl @Inject constructor(
                     blockedAt = System.currentTimeMillis()
                 )
             )
-            Log.d(TAG, "Blocked artist: $artistKey")
+            val verify = dao.getBlockedArtistUris()
+            Log.d(TAG, "Blocked artist: $artistKey (total blocked: ${verify.size}, contains=${ artistKey in verify})")
         } else {
             dao.deleteBlockedArtist(artistKey)
             Log.d(TAG, "Unblocked artist: $artistKey")

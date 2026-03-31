@@ -1186,7 +1186,13 @@ class ArtistDetailViewModel @Inject constructor(
 
     fun playAllTracks(option: String = "replace") {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        val uris = _tracks.value.map { it.uri }
+        val uris = _tracks.value
+            .filter { t ->
+                val uri = t.artistUri ?: return@filter true
+                val name = t.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+                !playerRepository.isArtistBlocked(name, uri)
+            }
+            .map { it.uri }
         if (uris.isEmpty()) return
         viewModelScope.launch {
             try {
@@ -1442,7 +1448,13 @@ class AlbumDetailViewModel @Inject constructor(
     }
 
     fun playAll() {
-        val uris = _tracks.value.map { it.uri }
+        val uris = _tracks.value
+            .filter { t ->
+                val uri = t.artistUri ?: return@filter true
+                val name = t.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+                !playerRepository.isArtistBlocked(name, uri)
+            }
+            .map { it.uri }
         if (uris.isEmpty()) return
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {

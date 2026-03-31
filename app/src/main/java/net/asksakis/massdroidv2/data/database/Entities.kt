@@ -170,16 +170,7 @@ data class LastFmArtistTagsEntity(
 )
 
 @Entity(
-    tableName = "blocked_artists",
-    foreignKeys = [
-        ForeignKey(
-            entity = ArtistEntity::class,
-            parentColumns = ["uri"],
-            childColumns = ["artist_uri"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index("artist_uri")]
+    tableName = "blocked_artists"
 )
 data class BlockedArtistEntity(
     @PrimaryKey

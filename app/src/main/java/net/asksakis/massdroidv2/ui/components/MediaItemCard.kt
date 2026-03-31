@@ -4,10 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
@@ -23,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -118,7 +117,7 @@ fun MediaItemRow(
                     model = imageModel,
                     contentDescription = null,
                     fallbackIcon = resolvedFallbackIcon,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isBlocked) 0.2f else 1f },
                     shape = MaterialTheme.shapes.small,
                     iconSize = 24.dp,
                     variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
@@ -141,9 +140,6 @@ fun MediaItemRow(
                             bpm = 90
                         )
                     }
-                }
-                if (isBlocked) {
-                    BlockedBadge(modifier = Modifier.align(Alignment.TopEnd), size = 16.dp)
                 }
             }
         },
@@ -222,22 +218,18 @@ fun MediaItemGrid(
             onLongClick = onLongClick
         )
     ) {
-        Box {
-            MediaArtwork(
-                model = imageModel,
-                contentDescription = null,
-                fallbackIcon = resolvedFallbackIcon,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f),
-                shape = MaterialTheme.shapes.medium,
-                iconSize = 48.dp,
-                variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
-            )
-            if (isBlocked) {
-                BlockedBadge(modifier = Modifier.align(Alignment.TopEnd).padding(4.dp), size = 20.dp)
-            }
-        }
+        MediaArtwork(
+            model = imageModel,
+            contentDescription = null,
+            fallbackIcon = resolvedFallbackIcon,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .graphicsLayer { alpha = if (isBlocked) 0.2f else 1f },
+            shape = MaterialTheme.shapes.medium,
+            iconSize = 48.dp,
+            variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
+        )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = title,
@@ -259,12 +251,3 @@ fun MediaItemGrid(
     }
 }
 
-@Composable
-private fun BlockedBadge(modifier: Modifier = Modifier, size: androidx.compose.ui.unit.Dp = 16.dp) {
-    Icon(
-        Icons.Default.Block,
-        contentDescription = "Blocked",
-        modifier = modifier.size(size),
-        tint = MaterialTheme.colorScheme.error
-    )
-}

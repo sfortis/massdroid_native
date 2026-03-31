@@ -50,6 +50,9 @@ interface PlayerRepository {
     suspend fun pause(playerId: String)
     suspend fun playPause(playerId: String)
     fun notifyPlaybackIntent(willPlay: Boolean)
+    fun isArtistUriBlocked(artistUri: String): Boolean
+    fun isArtistBlocked(artistName: String, artistUri: String): Boolean
+    fun hasBlockedArtists(): Boolean
     suspend fun next(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
