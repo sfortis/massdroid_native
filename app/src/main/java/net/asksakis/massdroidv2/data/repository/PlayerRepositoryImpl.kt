@@ -35,6 +35,8 @@ class PlayerRepositoryImpl @Inject constructor(
         private const val BLOCKED_QUEUE_ITEMS_LIMIT = 500
         private const val HISTORY_GENRE_LOOKUP_TIMEOUT_MS = 1_200L
         private const val HISTORY_ARTIST_LOOKUP_LIMIT = 3
+        private const val RECONNECT_QUEUE_REFRESH_ATTEMPTS = 3
+        private const val RECONNECT_QUEUE_REFRESH_DELAY_MS = 450L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -156,6 +158,14 @@ class PlayerRepositoryImpl @Inject constructor(
                                 playHistoryRepository.getLibraryArtistUriMap()
                             )
                         }
+                        // Clear stale queue snapshot immediately after reconnect so the UI
+                        // falls back to fresh player media instead of showing pre-restart data.
+                        _queueState.value = null
+                        _elapsedTime.value = 0.0
+                        trackDuration = 0.0
+                        favoriteOverride = null
+                        favoriteOverrideUri = null
+                        stopPositionTicker()
                         val restoredPlayerId = settingsRepository.selectedPlayerId.first()
                         pendingRestoredPlayerId = restoredPlayerId
                         selectedPlayerId = restoredPlayerId
@@ -163,6 +173,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         restoredPlayerId?.let { id ->
                             if (_players.value.any { it.playerId == id }) {
                                 selectPlayer(id)
+                                refreshQueueForPlayerWithRetry(id)
                                 Log.d(TAG, "Restored saved player: $id")
                             } else {
                                 Log.d(TAG, "Waiting for late-arriving restored player: $id")
@@ -230,6 +241,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     // Auto-select if this is the saved player and nothing is selected yet.
                     if (player.playerId == pendingRestoredPlayerId) {
                         selectPlayer(player.playerId)
+                        scope.launch { refreshQueueForPlayerWithRetry(player.playerId) }
                         pendingRestoredPlayerId = null
                         Log.d(TAG, "Auto-selected late-arriving player: ${player.displayName}")
                     }
@@ -881,7 +893,7 @@ class PlayerRepositoryImpl @Inject constructor(
         stopPositionTicker()
         scope.launch {
             settingsRepository.setSelectedPlayerId(playerId)
-            refreshQueueForPlayer(playerId)
+            refreshQueueForPlayerWithRetry(playerId)
             scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
         }
     }
@@ -904,8 +916,26 @@ class PlayerRepositoryImpl @Inject constructor(
             if (serverQueue != null) {
                 trackDuration = serverQueue.currentItem?.duration ?: 0.0
                 updatePosition(serverQueue.elapsedTime)
+            } else {
+                _elapsedTime.value = 0.0
+                trackDuration = 0.0
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshQueueForPlayer($playerId) failed: ${e.message}")
+            throw e
+        }
+    }
+
+    private suspend fun refreshQueueForPlayerWithRetry(playerId: String) {
+        repeat(RECONNECT_QUEUE_REFRESH_ATTEMPTS) { attempt ->
+            try {
+                refreshQueueForPlayer(playerId)
+                return
+            } catch (_: Exception) {
+                if (attempt == RECONNECT_QUEUE_REFRESH_ATTEMPTS - 1) return@repeat
+                delay(RECONNECT_QUEUE_REFRESH_DELAY_MS * (attempt + 1))
+            }
+        }
     }
 
     override suspend fun play(playerId: String) {

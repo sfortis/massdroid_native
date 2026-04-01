@@ -160,7 +160,10 @@ class PlaybackService : MediaLibraryService() {
         registerBtAudioDeviceCallback()
         createProximityNotificationChannel()
         observePhoneVolumeForSendspin()
-        registerReceiver(bleScanReceiver, android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION), RECEIVER_NOT_EXPORTED)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this, bleScanReceiver, android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         observeProximityConfig()
         observeBluetoothState()
         observeRoomActivity()
@@ -597,17 +600,21 @@ class PlaybackService : MediaLibraryService() {
 
     private fun observeBluetoothState() {
         scope.launch {
-            proximityScanner.observeBluetoothState()
-                .distinctUntilChanged()
-                .collect { enabled ->
-                    if (enabled) return@collect
+            try {
+                proximityScanner.observeBluetoothState()
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        if (enabled) return@collect
 
-                    val config = proximityConfigStore.config.value
-                    if (!config.enabled) return@collect
+                        val config = proximityConfigStore.config.value
+                        if (!config.enabled) return@collect
 
-                    Log.d(TAG, "Bluetooth turned off: disabling Follow Me")
-                    proximityConfigStore.update { it.copy(enabled = false) }
-                }
+                        Log.d(TAG, "Bluetooth turned off: disabling Follow Me")
+                        proximityConfigStore.update { it.copy(enabled = false) }
+                    }
+            } catch (e: Exception) {
+                Log.w(TAG, "Bluetooth state observer failed: ${e.message}")
+            }
         }
     }
 

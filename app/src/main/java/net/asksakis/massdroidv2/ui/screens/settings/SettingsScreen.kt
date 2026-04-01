@@ -197,17 +197,15 @@ private fun CategoryList(
             },
             modifier = Modifier.clickable { onSelect(SettingsCategory.RECOMMENDATIONS) }
         )
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            HorizontalDivider()
-            ListItem(
-                headlineContent = { Text("Follow Me") },
-                supportingContent = { Text("Music follows you between rooms") },
-                leadingContent = {
-                    Icon(Icons.Default.LocationOn, contentDescription = null)
-                },
-                modifier = Modifier.clickable { onSelect(SettingsCategory.PROXIMITY) }
-            )
-        }
+        HorizontalDivider()
+        ListItem(
+            headlineContent = { Text("Follow Me") },
+            supportingContent = { Text("Music follows you between rooms") },
+            leadingContent = {
+                Icon(Icons.Default.LocationOn, contentDescription = null)
+            },
+            modifier = Modifier.clickable { onSelect(SettingsCategory.PROXIMITY) }
+        )
         HorizontalDivider()
         ThemeSelector(viewModel)
         HorizontalDivider()

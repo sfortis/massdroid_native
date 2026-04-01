@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui.screens.nowplaying
 
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
+import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -427,6 +428,7 @@ fun NowPlayingScreen(
     }
 
     if (showLyricsSheet) {
+        Log.d("LyricsDbg", "sheet open lyrics=${lyrics != null} loading=$isLoadingLyrics")
         LyricsSheet(
             lyrics = lyrics,
             isLoading = isLoadingLyrics,
@@ -857,15 +859,11 @@ private fun QualityActionRow(
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        when (lyricsAvailability) {
-                            LyricsAvailability.AVAILABLE -> onShowLyrics()
-                            LyricsAvailability.UNKNOWN -> viewModel.preloadLyrics()
-                            LyricsAvailability.LOADING,
-                            LyricsAvailability.UNAVAILABLE -> Unit
-                        }
+                        Log.d("LyricsDbg", "icon tap availability=$lyricsAvailability")
+                        if (lyricsAvailability == LyricsAvailability.AVAILABLE) onShowLyrics()
                     },
                     modifier = Modifier.size(actionButtonSize),
-                    enabled = enabled && lyricsAvailability != LyricsAvailability.UNAVAILABLE && lyricsAvailability != LyricsAvailability.LOADING
+                    enabled = lyricsAvailability == LyricsAvailability.AVAILABLE
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Subject,
@@ -1223,7 +1221,7 @@ private fun LyricsTimingAdjuster(
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 IconButton(
-                    onClick = { onOffsetChanged((offsetMs - stepMs).coerceAtLeast(-2000)) },
+                    onClick = { onOffsetChanged((offsetMs - stepMs).coerceAtLeast(-5000)) },
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(
@@ -1242,7 +1240,7 @@ private fun LyricsTimingAdjuster(
                         .clickable { onOffsetChanged(0) }
                 )
                 IconButton(
-                    onClick = { onOffsetChanged((offsetMs + stepMs).coerceAtMost(2000)) },
+                    onClick = { onOffsetChanged((offsetMs + stepMs).coerceAtMost(5000)) },
                     modifier = Modifier.size(30.dp)
                 ) {
                     Icon(

@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
@@ -44,7 +43,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
         private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
-        private val KEY_LYRICS_TIMING_OFFSET_MS = intPreferencesKey("lyrics_timing_offset_ms")
     }
 
     private val safeData = context.dataStore.data
@@ -207,14 +205,6 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinStaticDelayMs(delayMs: Int) {
         context.dataStore.edit { it[KEY_SENDSPIN_STATIC_DELAY_MS] = delayMs.coerceIn(0, 5000).toString() }
-    }
-
-    override val lyricsTimingOffsetMs: Flow<Int> = safeData.map { prefs ->
-        (prefs[KEY_LYRICS_TIMING_OFFSET_MS] ?: 0).coerceIn(-2000, 2000)
-    }
-
-    override suspend fun setLyricsTimingOffsetMs(offsetMs: Int) {
-        context.dataStore.edit { it[KEY_LYRICS_TIMING_OFFSET_MS] = offsetMs.coerceIn(-2000, 2000) }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

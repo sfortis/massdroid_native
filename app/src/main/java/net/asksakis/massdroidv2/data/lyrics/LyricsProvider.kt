@@ -12,6 +12,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "LyricsProvider"
+private const val DEBUG_TAG = "LyricsDbg"
 private const val LYRICS_REQUEST_TIMEOUT_MS = 2_500L
 
 @Singleton
@@ -42,6 +43,7 @@ class LyricsProvider @Inject constructor(
     suspend fun fetchLyrics(itemId: String, provider: String, trackUri: String): FetchResult {
         cachedResult?.let {
             if (trackUri == cachedTrackUri) {
+                Log.d(DEBUG_TAG, "fetch cache uri=$trackUri plain=${it.plainText != null} synced=${it.syncedLrc != null}")
                 return if (it.plainText != null || it.syncedLrc != null) {
                     FetchResult.Found(it)
                 } else {
@@ -54,11 +56,13 @@ class LyricsProvider @Inject constructor(
             fallbackLyricsRequest(itemId = itemId, provider = provider)
         } catch (e: Exception) {
             Log.w(TAG, "fetchLyrics failed: ${e.message}")
+            Log.w(DEBUG_TAG, "fetch failed uri=$trackUri error=${e.message}")
             return FetchResult.Failed
         }
 
         val parsed = parseLyricsResult(fallbackResult) ?: return FetchResult.Failed
         cache(trackUri, parsed)
+        Log.d(DEBUG_TAG, "fetch result uri=$trackUri plain=${parsed.plainText != null} synced=${parsed.syncedLrc != null}")
         return if (parsed.plainText != null || parsed.syncedLrc != null) {
             FetchResult.Found(parsed)
         } else {
@@ -80,6 +84,7 @@ class LyricsProvider @Inject constructor(
         itemId: String,
         provider: String
     ): JsonElement? {
+        Log.d(DEBUG_TAG, "request track item=$itemId provider=$provider")
         val trackJson = wsClient.sendCommand(
             MaCommands.Music.TRACKS_GET,
             buildJsonObject {
@@ -89,13 +94,15 @@ class LyricsProvider @Inject constructor(
             timeoutMs = LYRICS_REQUEST_TIMEOUT_MS
         ) ?: return null
 
+        Log.d(DEBUG_TAG, "request lyrics item=$itemId provider=$provider")
         return try {
             wsClient.sendCommand(
                 MaCommands.Metadata.GET_TRACK_LYRICS,
                 buildJsonObject { put("track", trackJson) },
                 timeoutMs = LYRICS_REQUEST_TIMEOUT_MS
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(DEBUG_TAG, "request lyrics failed item=$itemId error=${e.message}")
             null
         }
     }
