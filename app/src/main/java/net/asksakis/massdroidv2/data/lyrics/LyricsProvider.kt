@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.lyrics
 
 import android.util.Log
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -11,6 +12,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "LyricsProvider"
+private const val LYRICS_REQUEST_TIMEOUT_MS = 2_500L
 
 @Singleton
 class LyricsProvider @Inject constructor(
@@ -18,6 +20,11 @@ class LyricsProvider @Inject constructor(
 ) {
     data class LyricsResult(val plainText: String?, val syncedLrc: String?)
     data class LrcLine(val timeMs: Long, val text: String)
+    sealed interface FetchResult {
+        data class Found(val lyrics: LyricsResult) : FetchResult
+        data object NotFound : FetchResult
+        data object Failed : FetchResult
+    }
 
     private var cachedTrackUri: String? = null
     private var cachedResult: LyricsResult? = null
@@ -25,33 +32,38 @@ class LyricsProvider @Inject constructor(
     suspend fun getLyrics(itemId: String, provider: String, trackUri: String): LyricsResult {
         cachedResult?.let { if (trackUri == cachedTrackUri) return it }
 
-        val trackJson = wsClient.sendCommand(
-            MaCommands.Music.TRACKS_GET,
-            buildJsonObject {
-                put("item_id", itemId)
-                put("provider_instance_id_or_domain", provider)
-            }
-        ) ?: return LyricsResult(null, null).also { cache(trackUri, it) }
-
-        val result = wsClient.sendCommand(
-            MaCommands.Metadata.GET_TRACK_LYRICS,
-            buildJsonObject { put("track", trackJson) }
+        val fallbackResult = fallbackLyricsRequest(
+            itemId = itemId,
+            provider = provider
         )
+        return (parseLyricsResult(fallbackResult) ?: LyricsResult(null, null)).also { cache(trackUri, it) }
+    }
 
-        val arr = try {
-            result?.jsonArray
-        } catch (e: Exception) {
-            Log.w(TAG, "Unexpected lyrics response format: ${e.message}")
-            null
-        } ?: return LyricsResult(null, null).also { cache(trackUri, it) }
-
-        val plain = arr.getOrNull(0)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
-        var lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
-        // Server may put LRC-formatted text in the plain field (embedded tags)
-        if (lrc == null && plain != null && looksLikeLrc(plain)) {
-            lrc = plain
+    suspend fun fetchLyrics(itemId: String, provider: String, trackUri: String): FetchResult {
+        cachedResult?.let {
+            if (trackUri == cachedTrackUri) {
+                return if (it.plainText != null || it.syncedLrc != null) {
+                    FetchResult.Found(it)
+                } else {
+                    FetchResult.NotFound
+                }
+            }
         }
-        return LyricsResult(plain, lrc).also { cache(trackUri, it) }
+
+        val fallbackResult = try {
+            fallbackLyricsRequest(itemId = itemId, provider = provider)
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchLyrics failed: ${e.message}")
+            return FetchResult.Failed
+        }
+
+        val parsed = parseLyricsResult(fallbackResult) ?: return FetchResult.Failed
+        cache(trackUri, parsed)
+        return if (parsed.plainText != null || parsed.syncedLrc != null) {
+            FetchResult.Found(parsed)
+        } else {
+            FetchResult.NotFound
+        }
     }
 
     fun clearCache() {
@@ -62,6 +74,46 @@ class LyricsProvider @Inject constructor(
     private fun cache(uri: String, result: LyricsResult) {
         cachedTrackUri = uri
         cachedResult = result
+    }
+
+    private suspend fun fallbackLyricsRequest(
+        itemId: String,
+        provider: String
+    ): JsonElement? {
+        val trackJson = wsClient.sendCommand(
+            MaCommands.Music.TRACKS_GET,
+            buildJsonObject {
+                put("item_id", itemId)
+                put("provider_instance_id_or_domain", provider)
+            },
+            timeoutMs = LYRICS_REQUEST_TIMEOUT_MS
+        ) ?: return null
+
+        return try {
+            wsClient.sendCommand(
+                MaCommands.Metadata.GET_TRACK_LYRICS,
+                buildJsonObject { put("track", trackJson) },
+                timeoutMs = LYRICS_REQUEST_TIMEOUT_MS
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseLyricsResult(result: JsonElement?): LyricsResult? {
+        val arr = try {
+            result?.jsonArray
+        } catch (e: Exception) {
+            Log.w(TAG, "Unexpected lyrics response format: ${e.message}")
+            null
+        } ?: return null
+
+        val plain = arr.getOrNull(0)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
+        var lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
+        if (lrc == null && plain != null && looksLikeLrc(plain)) {
+            lrc = plain
+        }
+        return LyricsResult(plain, lrc)
     }
 
     companion object {

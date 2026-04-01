@@ -4,6 +4,7 @@
 - Sleep timer with gradual volume fade and notification controls
 - Hardware volume buttons control your speaker directly
 - Queue opens as a bottom sheet with swipe to close
+- Lyrics improvements: smoother synced highlighting plus a subtle timing adjustment control
 - Sendspin audio improvements: seamless codec switching, holdover playback during network drops, adaptive reconnect alignment
 - Audio format picker (Smart/Opus/FLAC) and sync offset slider in player settings
 - Landscape mode: redesigned Now Playing layout with proper spacing

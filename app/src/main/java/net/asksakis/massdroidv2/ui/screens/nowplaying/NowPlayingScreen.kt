@@ -6,6 +6,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
@@ -56,6 +57,12 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -77,8 +84,11 @@ import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.MediaArtwork
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.VolumeSlider
+import net.asksakis.massdroidv2.ui.screens.nowplaying.LyricsAvailability
 import kotlin.math.max
 import coil.compose.AsyncImage
+
+private enum class SwipeCommitDirection { NEXT, PREVIOUS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -114,8 +124,10 @@ fun NowPlayingScreen(
     var showLyricsSheet by remember { mutableStateOf(false) }
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
+    val lyricsTimingOffsetMs by viewModel.lyricsTimingOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
     val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
     val cachedTrackDisplay by viewModel.cachedTrackDisplay.collectAsStateWithLifecycle()
+    val adjacentArtwork by viewModel.adjacentArtwork.collectAsStateWithLifecycle()
     val title = currentTrack?.name ?: player?.currentMedia?.title
         ?: cachedTrackDisplay?.title ?: "No track"
     val artist = currentTrack?.artistNames ?: player?.currentMedia?.artist
@@ -143,6 +155,24 @@ fun NowPlayingScreen(
     var showSendspinStatusSheet by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+
+    LaunchedEffect(imageUrl, adjacentArtwork.previousImageUrl, adjacentArtwork.nextImageUrl) {
+        val imageLoader = context.imageLoader
+        listOfNotNull(imageUrl, adjacentArtwork.previousImageUrl, adjacentArtwork.nextImageUrl)
+            .distinct()
+            .forEach { url ->
+                imageLoader.enqueue(
+                    ImageRequest.Builder(context)
+                        .data(url)
+                        .size(768)
+                        .crossfade(false)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .build()
+                )
+            }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.error.collectLatest { message ->
@@ -216,6 +246,8 @@ fun NowPlayingScreen(
                 NowPlayingLandscape(
                     paddingValues = paddingValues,
                     imageUrl = imageUrl,
+                    previousImageUrl = adjacentArtwork.previousImageUrl,
+                    nextImageUrl = adjacentArtwork.nextImageUrl,
                     title = title,
                     artist = artist,
                     album = album,
@@ -248,6 +280,8 @@ fun NowPlayingScreen(
                 NowPlayingPortrait(
                     paddingValues = paddingValues,
                     imageUrl = imageUrl,
+                    previousImageUrl = adjacentArtwork.previousImageUrl,
+                    nextImageUrl = adjacentArtwork.nextImageUrl,
                     title = title,
                     artist = artist,
                     album = album,
@@ -397,6 +431,8 @@ fun NowPlayingScreen(
             lyrics = lyrics,
             isLoading = isLoadingLyrics,
             elapsedTime = elapsedTime,
+            lyricsTimingOffsetMs = lyricsTimingOffsetMs,
+            onLyricsTimingOffsetChanged = { viewModel.setLyricsTimingOffsetMs(it) },
             onDismiss = { showLyricsSheet = false }
         )
     }
@@ -430,6 +466,8 @@ fun NowPlayingScreen(
 private fun NowPlayingPortrait(
     paddingValues: PaddingValues,
     imageUrl: String?,
+    previousImageUrl: String?,
+    nextImageUrl: String?,
     title: String,
     artist: String,
     album: String,
@@ -461,8 +499,11 @@ private fun NowPlayingPortrait(
 
         SwipeableAlbumArt(
             imageUrl = imageUrl,
+            previousImageUrl = previousImageUrl,
+            nextImageUrl = nextImageUrl,
             onNext = { if (controlsEnabled) viewModel.next() },
-            onPrevious = { if (controlsEnabled) viewModel.previous() },
+            onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
+            canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
         )
 
@@ -574,6 +615,8 @@ private fun NowPlayingPortrait(
 private fun NowPlayingLandscape(
     paddingValues: PaddingValues,
     imageUrl: String?,
+    previousImageUrl: String?,
+    nextImageUrl: String?,
     title: String,
     artist: String,
     album: String,
@@ -644,8 +687,11 @@ private fun NowPlayingLandscape(
             ) {
                 SwipeableAlbumArt(
                     imageUrl = imageUrl,
+                    previousImageUrl = previousImageUrl,
+                    nextImageUrl = nextImageUrl,
                     onNext = { if (controlsEnabled) viewModel.next() },
-                    onPrevious = { if (controlsEnabled) viewModel.previous() },
+                    onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
+                    canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
                     fillMaxWidth = false
                 )
@@ -801,19 +847,31 @@ private fun QualityActionRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                val lyricsAvailability by viewModel.lyricsAvailability.collectAsStateWithLifecycle()
+                val lyricsTint = when (lyricsAvailability) {
+                    LyricsAvailability.AVAILABLE -> MaterialTheme.colorScheme.primary
+                    LyricsAvailability.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                    LyricsAvailability.LOADING -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    LyricsAvailability.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onShowLyrics()
+                        when (lyricsAvailability) {
+                            LyricsAvailability.AVAILABLE -> onShowLyrics()
+                            LyricsAvailability.UNKNOWN -> viewModel.preloadLyrics()
+                            LyricsAvailability.LOADING,
+                            LyricsAvailability.UNAVAILABLE -> Unit
+                        }
                     },
                     modifier = Modifier.size(actionButtonSize),
-                    enabled = enabled
+                    enabled = enabled && lyricsAvailability != LyricsAvailability.UNAVAILABLE && lyricsAvailability != LyricsAvailability.LOADING
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Subject,
                         contentDescription = "Lyrics",
                         modifier = Modifier.size(actionIconSize),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = lyricsTint
                     )
                 }
             }
@@ -965,6 +1023,8 @@ private fun LyricsSheet(
     lyrics: LyricsProvider.LyricsResult?,
     isLoading: Boolean,
     elapsedTime: Double,
+    lyricsTimingOffsetMs: Int,
+    onLyricsTimingOffsetChanged: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1012,7 +1072,13 @@ private fun LyricsSheet(
                 lyrics.syncedLrc != null -> {
                     SyncedLyricsContent(
                         lrc = lyrics.syncedLrc,
-                        elapsedTimeMs = (elapsedTime * 1000).toLong()
+                        elapsedTimeMs = (elapsedTime * 1000).toLong(),
+                        lyricsTimingOffsetMs = lyricsTimingOffsetMs,
+                        modifier = Modifier.weight(1f)
+                    )
+                    LyricsTimingAdjuster(
+                        offsetMs = lyricsTimingOffsetMs,
+                        onOffsetChanged = onLyricsTimingOffsetChanged
                     )
                 }
                 else -> {
@@ -1045,52 +1111,159 @@ private fun PlainLyricsContent(text: String) {
 }
 
 @Composable
-private fun SyncedLyricsContent(lrc: String, elapsedTimeMs: Long) {
+private fun SyncedLyricsContent(
+    lrc: String,
+    elapsedTimeMs: Long,
+    lyricsTimingOffsetMs: Int,
+    modifier: Modifier = Modifier
+) {
+    val highlightLeadMs = 500L
     val lines = remember(lrc) { LyricsProvider.parseLrc(lrc) }
+    var currentIndex by remember { mutableIntStateOf(-1) }
+    val density = LocalDensity.current
     val listState = rememberLazyListState()
-
-    val currentIndex = remember(elapsedTimeMs, lines) {
-        val idx = lines.indexOfLast { it.timeMs <= elapsedTimeMs }
-        if (idx < 0) 0 else idx
+    var containerHeight by remember { mutableFloatStateOf(0f) }
+    val topPaddingDp = remember(containerHeight, density) {
+        with(density) { (containerHeight * 0.16f).toDp() }
+    }
+    val bottomPaddingDp = remember(containerHeight, density) {
+        with(density) { (containerHeight * 0.38f).toDp() }
     }
 
-    LaunchedEffect(currentIndex) {
-        if (lines.isNotEmpty() && currentIndex >= 0) {
-            listState.animateScrollToItem(
-                index = currentIndex,
-                scrollOffset = -200
-            )
+    LaunchedEffect(elapsedTimeMs, lines, lyricsTimingOffsetMs) {
+        if (lines.isEmpty()) return@LaunchedEffect
+        val effectiveElapsedMs = elapsedTimeMs + highlightLeadMs + lyricsTimingOffsetMs
+        val idx = lines.indexOfLast { it.timeMs <= effectiveElapsedMs }
+        val newIdx = if (idx < 0) -1 else idx
+        if (newIdx != currentIndex) {
+            currentIndex = newIdx
+            if (newIdx >= 0) {
+                val anchorPx = containerHeight * 0.35f
+                val targetVisibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == newIdx }
+                if (targetVisibleItem != null) {
+                    val targetDelta = (targetVisibleItem.offset + targetVisibleItem.size / 2f) - anchorPx
+                    listState.animateScrollBy(
+                        value = targetDelta,
+                        animationSpec = tween(
+                            durationMillis = 520,
+                            easing = FastOutSlowInEasing
+                        )
+                    )
+                } else {
+                    listState.animateScrollToItem(index = newIdx)
+                }
+            }
         }
     }
 
     LazyColumn(
         state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 200.dp)
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .onGloballyPositioned { containerHeight = it.size.height.toFloat() }
+            .clipToBounds(),
+        contentPadding = PaddingValues(
+            top = topPaddingDp,
+            bottom = bottomPaddingDp
+        ),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         itemsIndexed(lines) { index, line ->
-            val isCurrent = index == currentIndex
-            Text(
-                text = line.text.ifBlank { " " },
-                style = if (isCurrent) {
-                    MaterialTheme.typography.titleLarge
-                } else {
-                    MaterialTheme.typography.bodyLarge
-                },
-                color = if (isCurrent) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                },
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-            )
+                val distance = if (currentIndex >= 0) kotlin.math.abs(index - currentIndex) else index
+                val targetAlpha = when {
+                    index == currentIndex -> 1f
+                    distance <= 1 -> 0.62f
+                    distance <= 2 -> 0.40f
+                    distance <= 3 -> 0.24f
+                    else -> 0.14f
+                }
+                val alpha by animateFloatAsState(
+                    targetValue = targetAlpha,
+                    animationSpec = tween(500),
+                    label = "alpha$index"
+                )
+                Text(
+                    text = line.text.ifBlank { " " },
+                    style = if (index == currentIndex) MaterialTheme.typography.headlineSmall
+                        else MaterialTheme.typography.titleMedium,
+                    fontWeight = if (index == currentIndex) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                )
         }
     }
+}
+
+@Composable
+private fun LyricsTimingAdjuster(
+    offsetMs: Int,
+    onOffsetChanged: (Int) -> Unit
+) {
+    val contentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.74f)
+    val iconTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+    val stepMs = 100
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                IconButton(
+                    onClick = { onOffsetChanged((offsetMs - stepMs).coerceAtLeast(-2000)) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Lyrics earlier",
+                        tint = iconTint,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(
+                    text = "Timing ${formatLyricsOffset(offsetMs)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = contentColor,
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp)
+                        .clickable { onOffsetChanged(0) }
+                )
+                IconButton(
+                    onClick = { onOffsetChanged((offsetMs + stepMs).coerceAtMost(2000)) },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Lyrics later",
+                        tint = iconTint,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatLyricsOffset(offsetMs: Int): String {
+    val seconds = offsetMs / 1000f
+    return String.format(
+        java.util.Locale.US,
+        "%+.1fs",
+        seconds
+    )
 }
 
 private fun buildAudioQualityBadges(audioFormat: AudioFormatInfo?, outputCodec: String? = null): List<String> {
@@ -1452,8 +1625,11 @@ private fun TransportControls(
 @Composable
 private fun SwipeableAlbumArt(
     imageUrl: String?,
+    previousImageUrl: String?,
+    nextImageUrl: String?,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    canSwipePrevious: Boolean = true,
     onHaptic: () -> Unit = {},
     fillMaxWidth: Boolean = true
 ) {
@@ -1461,18 +1637,30 @@ private fun SwipeableAlbumArt(
     val context = LocalContext.current
     var offsetX by remember { mutableFloatStateOf(0f) }
     var containerWidth by remember { mutableIntStateOf(1) }
+    var pendingCommittedImageUrl by remember { mutableStateOf<String?>(null) }
+    var pendingCommitDirection by remember { mutableStateOf<SwipeCommitDirection?>(null) }
+    var committedOffsetX by remember { mutableFloatStateOf(0f) }
+    val canSwipeNext = nextImageUrl != null
+    val incomingTravelFactor = 0.94f
 
     val shape = MaterialTheme.shapes.medium
 
-    val sizeModifier = if (fillMaxWidth) {
-        Modifier.fillMaxWidth(0.75f).aspectRatio(1f)
+    val outerModifier = if (fillMaxWidth) {
+        Modifier.fillMaxWidth(0.82f).aspectRatio(1f)
     } else {
-        Modifier.heightIn(max = 240.dp).aspectRatio(1f)
+        Modifier.fillMaxWidth(0.9f).heightIn(max = 240.dp).aspectRatio(1f)
+    }
+    val artworkModifier = if (fillMaxWidth) {
+        Modifier.fillMaxWidth(0.915f).aspectRatio(1f)
+    } else {
+        Modifier.fillMaxSize()
     }
 
     Box(
-        modifier = sizeModifier
-            .pointerInput(Unit) {
+        modifier = outerModifier
+            .clip(shape)
+            .clipToBounds()
+            .pointerInput(canSwipePrevious, canSwipeNext, previousImageUrl, nextImageUrl) {
                 containerWidth = size.width
                 detectHorizontalDragGestures(
                     onDragEnd = {
@@ -1491,19 +1679,21 @@ private fun SwipeableAlbumArt(
                                 }
                             }
                             if (current < -threshold) {
-                                animateOffsetTo(-width, 130)
-                                onHaptic()
-                                onNext()
-                                offsetX = width
-                                animateOffsetTo(0f, 170)
+                                animateOffsetTo(-width, 180)
+                                pendingCommittedImageUrl = nextImageUrl
+                                committedOffsetX = -width + (width * incomingTravelFactor)
+                                pendingCommitDirection = SwipeCommitDirection.NEXT
                             } else if (current > threshold) {
-                                animateOffsetTo(width, 130)
-                                onHaptic()
-                                onPrevious()
-                                offsetX = -width
-                                animateOffsetTo(0f, 170)
+                                if (!canSwipePrevious) {
+                                    animateOffsetTo(0f, 200)
+                                    return@launch
+                                }
+                                animateOffsetTo(width, 180)
+                                pendingCommittedImageUrl = previousImageUrl
+                                committedOffsetX = width - (width * incomingTravelFactor)
+                                pendingCommitDirection = SwipeCommitDirection.PREVIOUS
                             } else {
-                                animateOffsetTo(0f, 170)
+                                animateOffsetTo(0f, 200)
                             }
                         }
                     },
@@ -1513,7 +1703,7 @@ private fun SwipeableAlbumArt(
                             animate(
                                 initialValue = start,
                                 targetValue = 0f,
-                                animationSpec = tween(durationMillis = 170)
+                                animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)
                             ) { value, _ ->
                                 offsetX = value
                             }
@@ -1522,40 +1712,133 @@ private fun SwipeableAlbumArt(
                     onHorizontalDrag = { change, dragAmount ->
                         change.consume()
                         val width = containerWidth.toFloat().coerceAtLeast(1f)
-                        offsetX = (offsetX + dragAmount).coerceIn(-width, width)
+                        val minOffset = if (canSwipeNext) -width else 0f
+                        val maxOffset = if (canSwipePrevious) width else 0f
+                        offsetX = (offsetX + dragAmount).coerceIn(minOffset, maxOffset)
                     }
                 )
             }
+        ,
+        contentAlignment = Alignment.Center
     ) {
-        val imageRequest = remember(imageUrl, containerWidth) {
-            ImageRequest.Builder(context)
-                .data(imageUrl)
-                .size(max(containerWidth, 512))
-                .crossfade(false)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .build()
+        LaunchedEffect(imageUrl, pendingCommittedImageUrl) {
+            if (pendingCommittedImageUrl != null && imageUrl == pendingCommittedImageUrl) {
+                val start = committedOffsetX
+                animate(
+                    initialValue = start,
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 200, easing = LinearEasing)
+                ) { value, _ ->
+                    committedOffsetX = value
+                }
+                offsetX = 0f
+                committedOffsetX = 0f
+                pendingCommittedImageUrl = null
+            }
         }
+
+        LaunchedEffect(pendingCommitDirection) {
+            when (pendingCommitDirection) {
+                SwipeCommitDirection.NEXT -> {
+                    onHaptic()
+                    onNext()
+                    pendingCommitDirection = null
+                }
+                SwipeCommitDirection.PREVIOUS -> {
+                    onHaptic()
+                    onPrevious()
+                    pendingCommitDirection = null
+                }
+                null -> Unit
+            }
+        }
+
+        fun buildImageRequest(url: String?) = ImageRequest.Builder(context)
+            .data(url)
+            .size(max(containerWidth, 512))
+            .crossfade(false)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .build()
+
+        val imageRequest = remember(imageUrl, containerWidth) { buildImageRequest(imageUrl) }
+        val previousImageRequest = remember(previousImageUrl, containerWidth) { buildImageRequest(previousImageUrl) }
+        val nextImageRequest = remember(nextImageUrl, containerWidth) { buildImageRequest(nextImageUrl) }
 
         val progress = if (containerWidth > 0) {
             (offsetX / containerWidth).coerceIn(-1f, 1f)
         } else {
             0f
         }
-        val scale = 1f - 0.05f * kotlin.math.abs(progress)
-        val alpha = 1f - 0.3f * kotlin.math.abs(progress)
+        val targetProgress = kotlin.math.abs(progress)
+        val easedProgress = FastOutSlowInEasing.transform(targetProgress)
+        val currentScale = 1f - 0.20f * easedProgress
+        val currentAlpha = 1f - 0.88f * easedProgress
+        val targetScale = 0.74f + 0.26f * easedProgress
+        val targetAlpha = (0.02f + 0.98f * easedProgress).coerceIn(0f, 1f)
+        val width = containerWidth.toFloat().coerceAtLeast(1f)
+        val incomingTravel = width * incomingTravelFactor
+        val inCommittedPhase = pendingCommittedImageUrl != null
+        val commitProgress = if (inCommittedPhase) {
+            (1f - (kotlin.math.abs(offsetX) / width)).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        val committedScale = 1f
+        val committedAlpha = 0.94f + 0.06f * commitProgress
+
+        val displayedCurrentImageUrl = pendingCommittedImageUrl ?: imageUrl
+        val displayedCurrentRequest = remember(displayedCurrentImageUrl, containerWidth) {
+            buildImageRequest(displayedCurrentImageUrl)
+        }
+
+        if (!inCommittedPhase && offsetX > 0f && previousImageUrl != null && canSwipePrevious) {
+            MediaArtwork(
+                model = previousImageRequest,
+                contentDescription = "Previous album art",
+                fallbackIcon = Icons.Default.MusicNote,
+                modifier = Modifier
+                    .then(artworkModifier)
+                    .graphicsLayer {
+                        translationX = offsetX - incomingTravel
+                        scaleX = targetScale
+                        scaleY = targetScale
+                        this.alpha = targetAlpha
+                    },
+                shape = shape,
+                iconSize = 64.dp,
+                contentScale = ContentScale.Crop
+            )
+        } else if (!inCommittedPhase && offsetX < 0f && nextImageUrl != null && canSwipeNext) {
+            MediaArtwork(
+                model = nextImageRequest,
+                contentDescription = "Next album art",
+                fallbackIcon = Icons.Default.MusicNote,
+                modifier = Modifier
+                    .then(artworkModifier)
+                    .graphicsLayer {
+                        translationX = offsetX + incomingTravel
+                        scaleX = targetScale
+                        scaleY = targetScale
+                        this.alpha = targetAlpha
+                    },
+                shape = shape,
+                iconSize = 64.dp,
+                contentScale = ContentScale.Crop
+            )
+        }
 
         MediaArtwork(
-            model = imageRequest,
+            model = displayedCurrentRequest,
             contentDescription = "Album art",
             fallbackIcon = Icons.Default.MusicNote,
             modifier = Modifier
-                .fillMaxSize()
+                .then(artworkModifier)
                 .graphicsLayer {
-                    translationX = offsetX
-                    scaleX = scale
-                    scaleY = scale
-                    this.alpha = alpha
+                    translationX = if (inCommittedPhase) committedOffsetX else offsetX
+                    scaleX = if (inCommittedPhase) committedScale else currentScale
+                        scaleY = if (inCommittedPhase) committedScale else currentScale
+                        this.alpha = if (inCommittedPhase) committedAlpha else currentAlpha
                 },
             shape = shape,
             iconSize = 64.dp,

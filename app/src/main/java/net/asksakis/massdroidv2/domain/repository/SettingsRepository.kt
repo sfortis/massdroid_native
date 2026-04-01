@@ -23,6 +23,7 @@ interface SettingsRepository {
     val themeMode: Flow<String>
     val sendspinAudioFormat: Flow<String>
     val sendspinStaticDelayMs: Flow<Int>
+    val lyricsTimingOffsetMs: Flow<Int>
 
     suspend fun setServerUrl(url: String)
     suspend fun setAuthToken(token: String)
@@ -42,4 +43,5 @@ interface SettingsRepository {
     suspend fun setThemeMode(mode: String)
     suspend fun setSendspinAudioFormat(format: String)
     suspend fun setSendspinStaticDelayMs(delayMs: Int)
+    suspend fun setLyricsTimingOffsetMs(offsetMs: Int)
 }

@@ -1203,6 +1203,7 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
     shuffleEnabled = shuffleEnabled,
     repeatMode = RepeatMode.fromApi(repeatMode),
     elapsedTime = elapsedTime,
+    currentIndex = currentIndex,
     dontStopTheMusicEnabled = dontStopTheMusicEnabled,
     currentItem = currentItem?.let { item ->
         QueueItem(

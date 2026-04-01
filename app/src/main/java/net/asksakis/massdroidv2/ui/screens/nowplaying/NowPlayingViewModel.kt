@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
@@ -24,6 +26,7 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -52,6 +55,18 @@ data class SendspinStatusUi(
     val staticDelayMs: Int
 )
 
+data class AdjacentArtworkUi(
+    val previousImageUrl: String?,
+    val nextImageUrl: String?
+)
+
+enum class LyricsAvailability {
+    UNKNOWN,
+    LOADING,
+    AVAILABLE,
+    UNAVAILABLE
+}
+
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
@@ -71,6 +86,7 @@ class NowPlayingViewModel @Inject constructor(
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
+    val lyricsTimingOffsetMs = settingsRepository.lyricsTimingOffsetMs
     val sendspinStreamCodec = sendspinManager.streamCodec
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
@@ -85,6 +101,8 @@ class NowPlayingViewModel @Inject constructor(
 
     private val _lyrics = MutableStateFlow<LyricsProvider.LyricsResult?>(null)
     val lyrics: StateFlow<LyricsProvider.LyricsResult?> = _lyrics.asStateFlow()
+    private val _lyricsAvailability = MutableStateFlow(LyricsAvailability.UNKNOWN)
+    val lyricsAvailability: StateFlow<LyricsAvailability> = _lyricsAvailability.asStateFlow()
     private val _isLoadingLyrics = MutableStateFlow(false)
     val isLoadingLyrics: StateFlow<Boolean> = _isLoadingLyrics.asStateFlow()
 
@@ -98,6 +116,8 @@ class NowPlayingViewModel @Inject constructor(
     private var lastSendspinStatusLogAtMs = 0L
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
     val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> = _cachedTrackDisplay.asStateFlow()
+    private val _adjacentArtwork = MutableStateFlow(AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null))
+    val adjacentArtwork: StateFlow<AdjacentArtworkUi> = _adjacentArtwork.asStateFlow()
 
     // Optimistic elapsed time: continues ticking during MA disconnect while sendspin plays
     private var optimisticBaseTime = 0.0
@@ -129,17 +149,20 @@ class NowPlayingViewModel @Inject constructor(
                 }
             }
         }
-        // Optimistic elapsed tick: when elapsedTime stops (MA disconnect) but sendspin plays
+        // Optimistic elapsed tick: only runs while live elapsed is 0 and sendspin is playing
         viewModelScope.launch {
-            while (true) {
-                delay(500)
-                val liveElapsed = elapsedTime.value
-                if (liveElapsed > 0.0 || optimisticBaseTimestamp == 0L) continue
-                if (!sendspinManager.enabled.value) continue
-                val syncState = sendspinManager.syncState.value
-                if (syncState != SyncState.SYNCHRONIZED && syncState != SyncState.HOLDOVER_PLAYING_FROM_BUFFER) continue
-                val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
-                _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
+            combine(elapsedTime, sendspinManager.enabled, sendspinManager.syncState) { live, enabled, sync ->
+                live <= 0.0 && enabled && optimisticBaseTimestamp > 0L &&
+                    (sync == SyncState.SYNCHRONIZED || sync == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
+            }.distinctUntilChanged().collect { shouldTick ->
+                if (shouldTick) {
+                    while (true) {
+                        delay(500)
+                        if (elapsedTime.value > 0.0) break
+                        val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
+                        _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
+                    }
+                }
             }
         }
         viewModelScope.launch {
@@ -152,9 +175,37 @@ class NowPlayingViewModel @Inject constructor(
             queueState
                 .map { it?.currentItem?.track?.uri }
                 .distinctUntilChanged()
-                .collect {
+                .collectLatest { uri ->
                     _lyrics.value = null
-                    lyricsProvider.clearCache()
+                    _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    if (uri != null) {
+                        delay(300) // debounce quick skips
+                        loadLyrics()
+                    }
+                }
+        }
+        viewModelScope.launch {
+            queueState
+                .map { qs -> Triple(qs?.queueId, qs?.currentIndex, qs?.currentItem?.queueItemId) }
+                .distinctUntilChanged()
+                .collectLatest { (queueId, currentIndex, currentItemId) ->
+                    if (queueId == null || currentItemId == null) {
+                        _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
+                        return@collectLatest
+                    }
+                    val offset = (currentIndex ?: 0).coerceAtLeast(0) - 1
+                    val safeOffset = offset.coerceAtLeast(0)
+                    val items = try {
+                        musicRepository.getQueueItems(queueId, limit = 3, offset = safeOffset)
+                    } catch (_: Exception) {
+                        _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
+                        return@collectLatest
+                    }
+                    _adjacentArtwork.value = resolveAdjacentArtwork(
+                        items = items,
+                        safeOffset = safeOffset,
+                        currentIndex = currentIndex ?: 0
+                    )
                 }
         }
         // Cache track display for holdover (MA WS may disconnect while Sendspin still plays)
@@ -184,26 +235,30 @@ class NowPlayingViewModel @Inject constructor(
         }
         // Don't clear cache on disconnect/error: keep showing last track info
         // until a new track replaces it (via queueState or serverMetadata collectors)
+        // Flow-based sendspin status: only samples buffer when active, distinctUntilChanged
         viewModelScope.launch {
-            while (true) {
-                val clientId = cachedSendspinClientId
-                val isLocalSendspin = clientId != null && sendspinManager.enabled.value
-                _sendspinStatus.value = if (isLocalSendspin) {
-                    SendspinStatusUi(
-                        connectionState = sendspinManager.connectionState.value,
-                        syncState = sendspinManager.syncState.value,
-                        codec = sendspinManager.streamCodec.value,
-                        configuredFormat = cachedSendspinAudioFormat,
-                        activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
-                        bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
-                        staticDelayMs = cachedSendspinStaticDelayMs
-                    ).also { maybeLogSendspinUiStatus(it) }
-                } else {
+            combine(
+                sendspinManager.connectionState,
+                sendspinManager.syncState,
+                sendspinManager.streamCodec,
+                sendspinManager.enabled
+            ) { conn, sync, codec, enabled ->
+                if (!enabled || cachedSendspinClientId == null) {
                     lastSendspinStatusLogAtMs = 0L
-                    null
+                    return@combine null
                 }
-                delay(300)
+                SendspinStatusUi(
+                    connectionState = conn,
+                    syncState = sync,
+                    codec = codec,
+                    configuredFormat = cachedSendspinAudioFormat,
+                    activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
+                    bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
+                    staticDelayMs = cachedSendspinStaticDelayMs
+                ).also { maybeLogSendspinUiStatus(it) }
             }
+                .distinctUntilChanged()
+                .collect { _sendspinStatus.value = it }
         }
     }
 
@@ -221,6 +276,21 @@ class NowPlayingViewModel @Inject constructor(
                 _error.tryEmit("Not connected to server")
             }
         }
+    }
+
+    private fun resolveAdjacentArtwork(
+        items: List<QueueItem>,
+        safeOffset: Int,
+        currentIndex: Int
+    ): AdjacentArtworkUi {
+        fun imageAt(absoluteIndex: Int): String? {
+            val localIndex = absoluteIndex - safeOffset
+            return items.getOrNull(localIndex)?.track?.imageUrl ?: items.getOrNull(localIndex)?.imageUrl
+        }
+        return AdjacentArtworkUi(
+            previousImageUrl = if (currentIndex > 0) imageAt(currentIndex - 1) else null,
+            nextImageUrl = imageAt(currentIndex + 1)
+        )
     }
 
     fun next() {
@@ -247,6 +317,20 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /** Always go to previous track via play_index (skip the "restart current" behavior). */
+    fun previousTrack() {
+        val qs = queueState.value ?: return
+        val prevIndex = qs.currentIndex - 1
+        if (prevIndex < 0) return
+        viewModelScope.launch {
+            try {
+                musicRepository.playQueueIndex(qs.queueId, prevIndex)
+            } catch (e: Exception) {
+                Log.w(TAG, "previousTrack failed: ${e.message}")
+            }
+        }
+    }
+
     fun seek(position: Double) {
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {
@@ -262,6 +346,12 @@ class NowPlayingViewModel @Inject constructor(
     fun setSendspinStaticDelayMs(delayMs: Int) {
         viewModelScope.launch {
             settingsRepository.setSendspinStaticDelayMs(delayMs)
+        }
+    }
+
+    fun setLyricsTimingOffsetMs(offsetMs: Int) {
+        viewModelScope.launch {
+            settingsRepository.setLyricsTimingOffsetMs(offsetMs)
         }
     }
 
@@ -394,16 +484,37 @@ class NowPlayingViewModel @Inject constructor(
         _playlistContainsTrack.value = containing
     }
 
+    fun preloadLyrics() {
+        if (_lyricsAvailability.value == LyricsAvailability.AVAILABLE ||
+            _lyricsAvailability.value == LyricsAvailability.UNAVAILABLE ||
+            _isLoadingLyrics.value
+        ) return
+        loadLyrics()
+    }
+
     fun loadLyrics() {
         val track = queueState.value?.currentItem?.track ?: return
         if (_isLoadingLyrics.value) return
         viewModelScope.launch {
             _isLoadingLyrics.value = true
+            _lyricsAvailability.value = LyricsAvailability.LOADING
             try {
-                _lyrics.value = lyricsProvider.getLyrics(track.itemId, track.provider, track.uri)
+                when (val result = lyricsProvider.fetchLyrics(track.itemId, track.provider, track.uri)) {
+                    is LyricsProvider.FetchResult.Found -> {
+                        _lyrics.value = result.lyrics
+                        _lyricsAvailability.value = LyricsAvailability.AVAILABLE
+                    }
+                    LyricsProvider.FetchResult.NotFound -> {
+                        _lyrics.value = LyricsProvider.LyricsResult(null, null)
+                        _lyricsAvailability.value = LyricsAvailability.UNAVAILABLE
+                    }
+                    LyricsProvider.FetchResult.Failed -> {
+                        _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "loadLyrics failed: ${e.message}")
-                _lyrics.value = LyricsProvider.LyricsResult(null, null)
+                _lyricsAvailability.value = LyricsAvailability.UNKNOWN
             } finally {
                 _isLoadingLyrics.value = false
             }

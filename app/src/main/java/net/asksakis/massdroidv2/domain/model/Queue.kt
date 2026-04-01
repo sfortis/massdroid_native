@@ -6,6 +6,7 @@ data class QueueState(
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val elapsedTime: Double = 0.0,
     val currentItem: QueueItem? = null,
+    val currentIndex: Int = 0,
     val dontStopTheMusicEnabled: Boolean = false
 )
 
