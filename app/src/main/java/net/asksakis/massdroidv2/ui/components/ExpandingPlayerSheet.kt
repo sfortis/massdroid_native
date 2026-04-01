@@ -173,6 +173,7 @@ fun ExpandingPlayerSheet(
                 if (expanded || f > 0.01f) {
                     Box(modifier = Modifier.graphicsLayer { alpha = fullA }.fillMaxSize()) {
                         NowPlayingScreen(
+                            isForeground = expanded,
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {

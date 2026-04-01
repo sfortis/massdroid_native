@@ -23,7 +23,9 @@ data class Track(
     val albumUri: String? = null,
     val genres: List<String> = emptyList(),
     val year: Int? = null,
-    val providerDomains: List<String> = emptyList()
+    val providerDomains: List<String> = emptyList(),
+    val lyrics: String? = null,
+    val lrcLyrics: String? = null
 )
 
 @Serializable

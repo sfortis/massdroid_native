@@ -13,7 +13,7 @@ import javax.inject.Singleton
 
 private const val TAG = "LyricsProvider"
 private const val DEBUG_TAG = "LyricsDbg"
-private const val LYRICS_REQUEST_TIMEOUT_MS = 2_500L
+private const val LYRICS_REQUEST_TIMEOUT_MS = 6_000L
 
 @Singleton
 class LyricsProvider @Inject constructor(
@@ -115,16 +115,29 @@ class LyricsProvider @Inject constructor(
             null
         } ?: return null
 
-        val plain = arr.getOrNull(0)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
-        var lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
-        if (lrc == null && plain != null && looksLikeLrc(plain)) {
-            lrc = plain
-        }
-        return LyricsResult(plain, lrc)
+        return normalizeLyricsResult(
+            plain = arr.getOrNull(0)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content,
+            lrc = arr.getOrNull(1)?.takeIf { it.jsonPrimitive.isString }?.jsonPrimitive?.content
+        )
     }
 
     companion object {
         private val LRC_LINE_PATTERN = Regex("""\[\d+:\d+[.:]\d+]""")
+
+        fun normalizeLyricsResult(plain: String?, lrc: String?): LyricsResult {
+            var normalizedPlain = plain?.takeIf { it.isNotBlank() }
+            var normalizedLrc = lrc?.takeIf { it.isNotBlank() }
+
+            if (normalizedLrc != null && !looksLikeLrc(normalizedLrc)) {
+                if (normalizedPlain == null) normalizedPlain = normalizedLrc
+                normalizedLrc = null
+            } else if (normalizedLrc == null && normalizedPlain != null && looksLikeLrc(normalizedPlain)) {
+                normalizedLrc = normalizedPlain
+                normalizedPlain = null
+            }
+
+            return LyricsResult(normalizedPlain, normalizedLrc)
+        }
 
         fun looksLikeLrc(text: String): Boolean {
             val firstLines = text.lineSequence().take(5).toList()

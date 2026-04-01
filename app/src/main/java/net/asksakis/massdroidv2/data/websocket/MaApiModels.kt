@@ -148,7 +148,9 @@ data class MediaItemMetadata(
     val description: String? = null,
     val genres: List<String>? = null,
     val label: String? = null,
-    val links: List<MediaItemLink>? = null
+    val links: List<MediaItemLink>? = null,
+    val lyrics: String? = null,
+    @SerialName("lrc_lyrics") val lrcLyrics: String? = null
 )
 
 @Serializable

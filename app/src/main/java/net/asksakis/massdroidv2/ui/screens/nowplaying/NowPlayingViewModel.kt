@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -107,6 +108,8 @@ class NowPlayingViewModel @Inject constructor(
     val isLoadingLyrics: StateFlow<Boolean> = _isLoadingLyrics.asStateFlow()
     private val _lyricsTimingOffsetMs = MutableStateFlow(0)
     val lyricsTimingOffsetMs: StateFlow<Int> = _lyricsTimingOffsetMs.asStateFlow()
+    private var lyricsLoadJob: Job? = null
+    private var lyricsRequestGeneration = 0L
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -187,12 +190,18 @@ class NowPlayingViewModel @Inject constructor(
             }
                 .distinctUntilChanged()
                 .collectLatest { track: Track? ->
+                    lyricsRequestGeneration++
+                    lyricsLoadJob?.cancel()
                     _lyrics.value = null
                     _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    _isLoadingLyrics.value = false
                     _lyricsTimingOffsetMs.value = 0
                     if (track != null) {
-                        delay(300) // debounce quick skips
-                        loadLyrics()
+                        val generation = lyricsRequestGeneration
+                        lyricsLoadJob = viewModelScope.launch {
+                            delay(300) // debounce quick skips
+                            loadLyrics(expectedTrackUri = track.uri, requestGeneration = generation)
+                        }
                     }
                 }
         }
@@ -362,7 +371,11 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun setLyricsTimingOffsetMs(offsetMs: Int) {
-        _lyricsTimingOffsetMs.value = offsetMs.coerceIn(-5000, 5000)
+        _lyricsTimingOffsetMs.value = offsetMs.coerceIn(-10_000, 10_000)
+    }
+
+    fun adjustLyricsTimingOffsetBy(deltaMs: Int) {
+        _lyricsTimingOffsetMs.value = (_lyricsTimingOffsetMs.value + deltaMs).coerceIn(-10_000, 10_000)
     }
 
     fun setVolume(level: Int) {
@@ -504,36 +517,71 @@ class NowPlayingViewModel @Inject constructor(
 
     fun loadLyrics() {
         val track = currentLyricsTrack() ?: return
+        val generation = lyricsRequestGeneration
+        lyricsLoadJob?.cancel()
+        lyricsLoadJob = viewModelScope.launch {
+            loadLyrics(expectedTrackUri = track.uri, requestGeneration = generation)
+        }
+    }
+
+    private suspend fun loadLyrics(expectedTrackUri: String, requestGeneration: Long) {
+        val track = currentLyricsTrack()?.takeIf { it.uri == expectedTrackUri } ?: return
         if (_isLoadingLyrics.value) return
-        viewModelScope.launch {
+        try {
             Log.d(TAG, "lyrics load start uri=${track.uri}")
+            val embeddedPlain = track.lyrics?.takeIf { it.isNotBlank() }
+            val embeddedLrc = track.lrcLyrics?.takeIf { it.isNotBlank() }
+            if (embeddedPlain != null || embeddedLrc != null) {
+                if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
+                val normalized = LyricsProvider.normalizeLyricsResult(
+                    plain = embeddedPlain,
+                    lrc = embeddedLrc
+                )
+                _lyrics.value = normalized
+                _lyricsAvailability.value = LyricsAvailability.AVAILABLE
+                Log.d(
+                    TAG,
+                    "lyrics availability=AVAILABLE uri=${track.uri} plain=${normalized.plainText != null} synced=${normalized.syncedLrc != null} source=embedded"
+                )
+                return
+            }
             _isLoadingLyrics.value = true
             _lyricsAvailability.value = LyricsAvailability.LOADING
-            try {
-                when (val result = lyricsProvider.fetchLyrics(track.itemId, track.provider, track.uri)) {
-                    is LyricsProvider.FetchResult.Found -> {
+            when (val result = lyricsProvider.fetchLyrics(track.itemId, track.provider, track.uri)) {
+                is LyricsProvider.FetchResult.Found -> {
+                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
                         _lyrics.value = result.lyrics
                         _lyricsAvailability.value = LyricsAvailability.AVAILABLE
                         Log.d(TAG, "lyrics availability=AVAILABLE uri=${track.uri} plain=${result.lyrics.plainText != null} synced=${result.lyrics.syncedLrc != null}")
-                    }
-                    LyricsProvider.FetchResult.NotFound -> {
-                        _lyrics.value = LyricsProvider.LyricsResult(null, null)
-                        _lyricsAvailability.value = LyricsAvailability.UNAVAILABLE
-                        Log.d(TAG, "lyrics availability=UNAVAILABLE uri=${track.uri}")
-                    }
-                    LyricsProvider.FetchResult.Failed -> {
-                        _lyricsAvailability.value = LyricsAvailability.UNKNOWN
-                        Log.d(TAG, "lyrics availability=UNKNOWN uri=${track.uri} reason=failed")
-                    }
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "loadLyrics failed: ${e.message}")
+                LyricsProvider.FetchResult.NotFound -> {
+                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
+                    _lyrics.value = LyricsProvider.LyricsResult(null, null)
+                    _lyricsAvailability.value = LyricsAvailability.UNAVAILABLE
+                    Log.d(TAG, "lyrics availability=UNAVAILABLE uri=${track.uri}")
+                }
+                LyricsProvider.FetchResult.Failed -> {
+                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
+                    _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    Log.d(TAG, "lyrics availability=UNKNOWN uri=${track.uri} reason=failed")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "loadLyrics failed: ${e.message}")
+            if (shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) {
                 _lyricsAvailability.value = LyricsAvailability.UNKNOWN
-                Log.d(TAG, "lyrics availability=UNKNOWN uri=${track.uri} reason=exception")
-            } finally {
+                Log.d(TAG, "lyrics availability=UNKNOWN uri=$expectedTrackUri reason=exception")
+            }
+        } finally {
+            if (shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) {
                 _isLoadingLyrics.value = false
             }
         }
+    }
+
+    private fun shouldApplyLyricsResult(expectedTrackUri: String, requestGeneration: Long): Boolean {
+        val currentTrackUri = currentLyricsTrack()?.uri
+        return requestGeneration == lyricsRequestGeneration && currentTrackUri == expectedTrackUri
     }
 
     private fun currentLyricsTrack(): Track? {

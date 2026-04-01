@@ -12,6 +12,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -64,9 +66,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
@@ -97,6 +101,7 @@ fun NowPlayingScreen(
     onBack: () -> Unit,
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
+    isForeground: Boolean = true,
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
     var showQueueSheet by remember { mutableStateOf(false) }
@@ -155,6 +160,19 @@ fun NowPlayingScreen(
     var showPlayerSettingsDialog by remember { mutableStateOf(false) }
     var showSendspinStatusSheet by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isForeground) {
+        if (!isForeground) {
+            showQueueSheet = false
+            showPlayerMenu = false
+            showTransferSheet = false
+            showLyricsSheet = false
+            showPlaylistDialog = false
+            showPlayerSettingsDialog = false
+            showSendspinStatusSheet = false
+            showSleepTimerDialog = false
+        }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -269,6 +287,10 @@ fun NowPlayingScreen(
                         viewModel.loadPlaylists(force = true)
                     },
                     onShowLyrics = {
+                        Log.d(
+                            "LyricsDbg",
+                            "request open portrait uri=${currentTrack?.uri} title=${currentTrack?.name} isForeground=$isForeground"
+                        )
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
@@ -300,6 +322,10 @@ fun NowPlayingScreen(
                         viewModel.loadPlaylists(force = true)
                     },
                     onShowLyrics = {
+                        Log.d(
+                            "LyricsDbg",
+                            "request open landscape uri=${currentTrack?.uri} title=${currentTrack?.name} isForeground=$isForeground"
+                        )
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
@@ -427,14 +453,19 @@ fun NowPlayingScreen(
         }
     }
 
-    if (showLyricsSheet) {
+    if (showLyricsSheet && isForeground) {
+        KeepScreenOn()
         Log.d("LyricsDbg", "sheet open lyrics=${lyrics != null} loading=$isLoadingLyrics")
         LyricsSheet(
             lyrics = lyrics,
             isLoading = isLoadingLyrics,
             elapsedTime = elapsedTime,
+            title = title,
+            artist = artist,
             lyricsTimingOffsetMs = lyricsTimingOffsetMs,
             onLyricsTimingOffsetChanged = { viewModel.setLyricsTimingOffsetMs(it) },
+            onLyricsTimingOffsetDelta = { viewModel.adjustLyricsTimingOffsetBy(it) },
+            onSeekToLyricsPosition = { viewModel.seek(it) },
             onDismiss = { showLyricsSheet = false }
         )
     }
@@ -859,14 +890,17 @@ private fun QualityActionRow(
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        Log.d("LyricsDbg", "icon tap availability=$lyricsAvailability")
+                        Log.d(
+                            "LyricsDbg",
+                            "icon tap availability=$lyricsAvailability uri=${currentTrack?.uri} title=${currentTrack?.name} enabled=${lyricsAvailability == LyricsAvailability.AVAILABLE}"
+                        )
                         if (lyricsAvailability == LyricsAvailability.AVAILABLE) onShowLyrics()
                     },
                     modifier = Modifier.size(actionButtonSize),
                     enabled = lyricsAvailability == LyricsAvailability.AVAILABLE
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.Subject,
+                        Icons.Default.MusicNote,
                         contentDescription = "Lyrics",
                         modifier = Modifier.size(actionIconSize),
                         tint = lyricsTint
@@ -996,6 +1030,18 @@ private fun SendspinStatusSheet(
 }
 
 @Composable
+private fun KeepScreenOn() {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose {
+            view.keepScreenOn = previous
+        }
+    }
+}
+
+@Composable
 private fun StatusLine(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1021,11 +1067,18 @@ private fun LyricsSheet(
     lyrics: LyricsProvider.LyricsResult?,
     isLoading: Boolean,
     elapsedTime: Double,
+    title: String,
+    artist: String,
     lyricsTimingOffsetMs: Int,
     onLyricsTimingOffsetChanged: (Int) -> Unit,
+    onLyricsTimingOffsetDelta: (Int) -> Unit,
+    onSeekToLyricsPosition: (Double) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val parsedSyncedLines = remember(lyrics?.syncedLrc) {
+        lyrics?.syncedLrc?.let { LyricsProvider.parseLrc(it) }.orEmpty()
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1037,14 +1090,38 @@ private fun LyricsSheet(
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f)
         ) {
-            SheetDefaults.HeaderTitle(
-                text = "Lyrics",
-                modifier = Modifier.padding(
-                    horizontal = SheetDefaults.HeaderHorizontalPadding,
-                    vertical = SheetDefaults.HeaderVerticalPadding
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, start = 24.dp, end = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Lyrics",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
                 )
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = buildString {
+                        append(title)
+                        if (artist.isNotBlank()) {
+                            append(" - ")
+                            append(artist)
+                        }
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.58f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Spacer(modifier = Modifier.height(18.dp))
 
             when {
                 isLoading -> {
@@ -1067,20 +1144,34 @@ private fun LyricsSheet(
                         )
                     }
                 }
-                lyrics.syncedLrc != null -> {
+                lyrics.syncedLrc != null && parsedSyncedLines.isNotEmpty() -> {
                     SyncedLyricsContent(
                         lrc = lyrics.syncedLrc,
                         elapsedTimeMs = (elapsedTime * 1000).toLong(),
                         lyricsTimingOffsetMs = lyricsTimingOffsetMs,
+                        onSeekToPosition = onSeekToLyricsPosition,
                         modifier = Modifier.weight(1f)
                     )
                     LyricsTimingAdjuster(
                         offsetMs = lyricsTimingOffsetMs,
-                        onOffsetChanged = onLyricsTimingOffsetChanged
+                        onOffsetChanged = onLyricsTimingOffsetChanged,
+                        onOffsetDelta = onLyricsTimingOffsetDelta
                     )
                 }
-                else -> {
+                lyrics.plainText != null -> {
                     PlainLyricsContent(text = lyrics.plainText!!)
+                }
+                else -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No lyrics available",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -1113,12 +1204,69 @@ private fun SyncedLyricsContent(
     lrc: String,
     elapsedTimeMs: Long,
     lyricsTimingOffsetMs: Int,
+    onSeekToPosition: (Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    data class DisplayLine(
+        val timeMs: Long,
+        val text: String,
+        val isBreak: Boolean,
+        val breakEndMs: Long? = null
+    )
+
+    val introBreakLeadMs = 5_000L
+    val musicalBreakThresholdMs = 5_000L
+    val noteCount = 7
     val highlightLeadMs = 500L
-    val lines = remember(lrc) { LyricsProvider.parseLrc(lrc) }
+    val lines = remember(lrc) {
+        val parsed = LyricsProvider.parseLrc(lrc)
+        val breakMarkers = parsed
+            .filter { it.timeMs > 0L && it.text.isBlank() }
+            .map { it.timeMs }
+            .toSet()
+        val contentLines = parsed.filter { it.text.isNotBlank() }
+        buildList {
+            if (contentLines.isNotEmpty()) {
+                val firstTime = contentLines.first().timeMs
+                if (firstTime >= introBreakLeadMs) {
+                    add(
+                        DisplayLine(
+                            timeMs = firstTime - introBreakLeadMs,
+                            text = "",
+                            isBreak = true,
+                            breakEndMs = firstTime
+                        )
+                    )
+                }
+            }
+
+            contentLines.forEachIndexed { index, line ->
+                add(
+                    DisplayLine(
+                        timeMs = line.timeMs,
+                        text = line.text,
+                        isBreak = false
+                    )
+                )
+
+                val nextLine = contentLines.getOrNull(index + 1) ?: return@forEachIndexed
+                val markerTime = breakMarkers.firstOrNull { it > line.timeMs && it < nextLine.timeMs }
+                if (markerTime != null && nextLine.timeMs - markerTime >= musicalBreakThresholdMs) {
+                    add(
+                        DisplayLine(
+                            timeMs = markerTime,
+                            text = "",
+                            isBreak = true,
+                            breakEndMs = nextLine.timeMs
+                        )
+                    )
+                }
+            }
+        }
+    }
     var currentIndex by remember { mutableIntStateOf(-1) }
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
     var containerHeight by remember { mutableFloatStateOf(0f) }
     val topPaddingDp = remember(containerHeight, density) {
@@ -1181,17 +1329,49 @@ private fun SyncedLyricsContent(
                     animationSpec = tween(500),
                     label = "alpha$index"
                 )
-                Text(
-                    text = line.text.ifBlank { " " },
-                    style = if (index == currentIndex) MaterialTheme.typography.headlineSmall
-                        else MaterialTheme.typography.titleMedium,
-                    fontWeight = if (index == currentIndex) androidx.compose.ui.text.font.FontWeight.Bold else null,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp)
-                )
+                if (line.isBreak) {
+                    val durationMs = ((line.breakEndMs ?: line.timeMs) - highlightLeadMs - line.timeMs).coerceAtLeast(1L)
+                    val elapsedInBreakMs = (elapsedTimeMs + lyricsTimingOffsetMs - line.timeMs).coerceAtLeast(0L)
+                    val noteProgress = (elapsedInBreakMs.toFloat() / durationMs.toFloat()) * noteCount
+                    val filledNotes = noteProgress.toInt().coerceIn(0, noteCount)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            repeat(noteCount) { noteIndex ->
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = if (index == currentIndex && noteIndex < filledNotes) {
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha.coerceAtLeast(0.22f))
+                                    },
+                                    modifier = Modifier.size(if (index == currentIndex) 18.dp else 16.dp)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = line.text,
+                        style = if (index == currentIndex) MaterialTheme.typography.headlineSmall
+                            else MaterialTheme.typography.titleMedium,
+                        fontWeight = if (index == currentIndex) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSeekToPosition(line.timeMs / 1000.0)
+                            }
+                            .padding(vertical = 6.dp)
+                    )
+                }
         }
     }
 }
@@ -1199,14 +1379,16 @@ private fun SyncedLyricsContent(
 @Composable
 private fun LyricsTimingAdjuster(
     offsetMs: Int,
-    onOffsetChanged: (Int) -> Unit
+    onOffsetChanged: (Int) -> Unit,
+    onOffsetDelta: (Int) -> Unit
 ) {
     val contentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.74f)
     val iconTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
-    val stepMs = 100
+    val stepMs = 500
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
@@ -1220,17 +1402,12 @@ private fun LyricsTimingAdjuster(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                IconButton(
-                    onClick = { onOffsetChanged((offsetMs - stepMs).coerceAtLeast(-5000)) },
-                    modifier = Modifier.size(30.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Remove,
-                        contentDescription = "Lyrics earlier",
-                        tint = iconTint,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
+                HoldRepeatIconButton(
+                    contentDescription = "Lyrics earlier",
+                    tint = iconTint,
+                    icon = Icons.Default.Remove,
+                    onStep = { onOffsetDelta(-stepMs) }
+                )
                 Text(
                     text = "Timing ${formatLyricsOffset(offsetMs)}",
                     style = MaterialTheme.typography.labelMedium,
@@ -1239,19 +1416,50 @@ private fun LyricsTimingAdjuster(
                         .padding(horizontal = 8.dp)
                         .clickable { onOffsetChanged(0) }
                 )
-                IconButton(
-                    onClick = { onOffsetChanged((offsetMs + stepMs).coerceAtMost(5000)) },
-                    modifier = Modifier.size(30.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Lyrics later",
-                        tint = iconTint,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
+                HoldRepeatIconButton(
+                    contentDescription = "Lyrics later",
+                    tint = iconTint,
+                    icon = Icons.Default.Add,
+                    onStep = { onOffsetDelta(stepMs) }
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun HoldRepeatIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    onStep: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(30.dp)
+            .pointerInput(onStep) {
+                detectTapGestures(
+                    onPress = {
+                        onStep()
+                        val releasedEarly = withTimeoutOrNull(420) { tryAwaitRelease() } == true
+                        if (releasedEarly) return@detectTapGestures
+                        while (true) {
+                            onStep()
+                            val released = withTimeoutOrNull(220) { tryAwaitRelease() } == true
+                            if (released) break
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(16.dp)
+        )
     }
 }
 

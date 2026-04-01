@@ -404,7 +404,9 @@ class PlayerRepositoryImpl @Inject constructor(
                     uri = mediaItem.album?.uri
                 ),
                 genres = initialGenres,
-                year = sanitizeYear(mediaItem.album?.year ?: mediaItem.year)
+                year = sanitizeYear(mediaItem.album?.year ?: mediaItem.year),
+                lyrics = mediaItem.metadata?.lyrics,
+                lrcLyrics = mediaItem.metadata?.lrcLyrics
             )
             queueTracking[queueId] = QueueTrackingState(track, artists, now)
             maybeAutoSkipBlockedTrack(
@@ -1270,7 +1272,9 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                         uri = mi.album?.uri
                     ),
                     genres = mi.metadata?.genres ?: emptyList(),
-                    year = (mi.album?.year ?: mi.year)?.takeIf { it > 0 }
+                    year = (mi.album?.year ?: mi.year)?.takeIf { it > 0 },
+                    lyrics = mi.metadata?.lyrics,
+                    lrcLyrics = mi.metadata?.lrcLyrics
                 )
             },
             imageUrl = item.mediaItem?.resolveImageUrl(wsClient)

@@ -615,7 +615,9 @@ class MusicRepositoryImpl @Inject constructor(
             ),
             genres = metadata?.genres ?: emptyList(),
             year = sanitizeYear(album?.year ?: year),
-            providerDomains = extractProviderDomains()
+            providerDomains = extractProviderDomains(),
+            lyrics = metadata?.lyrics,
+            lrcLyrics = metadata?.lrcLyrics
         )
     }
 
