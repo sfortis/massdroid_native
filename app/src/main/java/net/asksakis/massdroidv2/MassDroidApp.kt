@@ -89,6 +89,10 @@ class MassDroidApp : Application(), ImageLoaderFactory {
             }
         }
 
+        // Connect to PlaybackService for media notification (required for MIUI/vendor ROMs
+        // that block late service binding)
+        connectPlaybackService()
+
         // Observe connection state: save token on connect, clear on auth failure
         appScope.launch {
             wsClient.connectionState.collect { state ->
@@ -111,6 +115,22 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                     }
                     else -> {}
                 }
+            }
+        }
+    }
+
+    private fun connectPlaybackService() {
+        appScope.launch(Dispatchers.Main) {
+            try {
+                val sessionToken = androidx.media3.session.SessionToken(
+                    this@MassDroidApp,
+                    android.content.ComponentName(this@MassDroidApp, net.asksakis.massdroidv2.service.PlaybackService::class.java)
+                )
+                androidx.media3.session.MediaController.Builder(this@MassDroidApp, sessionToken)
+                    .buildAsync()
+                Log.d("MassDroidApp", "PlaybackService controller connected")
+            } catch (e: Exception) {
+                Log.e("MassDroidApp", "PlaybackService connect failed: ${e.message}")
             }
         }
     }
