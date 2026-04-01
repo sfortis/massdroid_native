@@ -166,11 +166,13 @@ fun HomeScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
-            SmartMixFab(
-                isBusy = isBuildingSmartMix,
-                onClick = { guard { viewModel.makePlaylistForMe() } },
-                modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
-            )
+            if (connectionState is ConnectionState.Connected) {
+                SmartMixFab(
+                    isBusy = isBuildingSmartMix,
+                    onClick = { guard { viewModel.makePlaylistForMe() } },
+                    modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
+                )
+            }
         },
         topBar = {
             TopAppBar(
