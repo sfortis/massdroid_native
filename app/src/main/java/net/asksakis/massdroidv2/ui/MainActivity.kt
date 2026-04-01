@@ -66,6 +66,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.CompositionLocalProvider
 import net.asksakis.massdroidv2.ui.components.ExpandingPlayerSheet
+import net.asksakis.massdroidv2.ui.components.LocalIsConnected
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
@@ -430,8 +431,13 @@ private fun MassDroidApp(
     val miniPlayerMargin = 8.dp
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
     val miniPlayerPadding = if (showMiniPlayer) miniPlayerCollapsedHeight + miniPlayerMargin else 0.dp
+    val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
+    val isConnected = miniPlayerUiState.connected
 
-    CompositionLocalProvider(LocalMiniPlayerPadding provides miniPlayerPadding) {
+    CompositionLocalProvider(
+        LocalMiniPlayerPadding provides miniPlayerPadding,
+        LocalIsConnected provides isConnected
+    ) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLandscape) {
             LandscapeLayout(

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.BoxWithConstraints
+import net.asksakis.massdroidv2.ui.components.rememberConnectionGuard
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -206,14 +207,15 @@ fun ExpandingPlayerSheet(
                             .fillMaxWidth()
                             .height(72.dp)
                     ) {
+                        val guard = rememberConnectionGuard()
                         MiniPlayer(
                             title = miniPlayerUiState.title,
                             artist = miniPlayerUiState.artist,
                             playerName = miniPlayerUiState.playerName,
                             imageUrl = miniPlayerUiState.imageUrl,
                             isPlaying = miniPlayerUiState.isPlaying,
-                            onPlayPause = { miniPlayerViewModel.playPause() },
-                            onNext = { miniPlayerViewModel.next() },
+                            onPlayPause = { guard { miniPlayerViewModel.playPause() } },
+                            onNext = { guard { miniPlayerViewModel.next() } },
                             onQueue = { showQueueSheet = true },
                             onClick = { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } },
                             onSwipeLeft = { miniPlayerViewModel.switchPlayer(1) },

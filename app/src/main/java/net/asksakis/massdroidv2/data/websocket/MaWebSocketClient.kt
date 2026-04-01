@@ -45,6 +45,8 @@ class MaWebSocketClient(
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _isReconnecting = MutableStateFlow(false)
+    /** True after at least one successful connection (enables auto-reconnect). */
+    @Volatile private var hasConnectedSuccessfully = false
     /** True when a reconnect attempt is scheduled or in-flight. */
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
@@ -64,7 +66,8 @@ class MaWebSocketClient(
     private var pendingLogin: Pair<String, String>? = null
     private var savedCredentials: Pair<String, String>? = null
     private var onTokenReceived: ((String) -> Unit)? = null
-    private var userDisconnected = false
+    @Volatile var userDisconnected = false
+        private set
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
     @Volatile
@@ -243,6 +246,7 @@ class MaWebSocketClient(
 
     fun disconnect() {
         userDisconnected = true
+        hasConnectedSuccessfully = false
         cancelReconnect()
         webSocket?.close(1000, "User disconnect")
         webSocket = null
@@ -252,6 +256,7 @@ class MaWebSocketClient(
 
     private fun scheduleReconnect() {
         if (userDisconnected) return
+        if (!hasConnectedSuccessfully) return // don't auto-retry initial connection failures
         val url = serverUrl ?: return
         if (authToken == null && pendingLogin == null && savedCredentials == null) return
         if (reconnectJob?.isActive == true) return
@@ -382,6 +387,7 @@ class MaWebSocketClient(
                     return@launch
                 }
                 _connectionState.value = ConnectionState.Connected(info)
+                hasConnectedSuccessfully = true
             } catch (e: Exception) {
                 Log.e(TAG, "Auth failed: ${e.message}")
                 authToken = null

@@ -58,7 +58,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             wsClient.startupReady.first { it }
             val state = wsClient.connectionState.value
-            if (state is ConnectionState.Disconnected) {
+            if (state is ConnectionState.Disconnected && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {
@@ -111,7 +111,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             wsClient.startupReady.first { it }
             val state = wsClient.connectionState.value
-            if (state is ConnectionState.Disconnected) {
+            if (state is ConnectionState.Disconnected && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {

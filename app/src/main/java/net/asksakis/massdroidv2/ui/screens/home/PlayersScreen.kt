@@ -99,7 +99,6 @@ fun PlayersScreen(
                     ConnectionPrompt(
                         state = connectionState,
                         onSettings = onNavigateToSettings,
-                        onRetry = { viewModel.connectIfNeeded() }
                     )
                 }
                 is ConnectionState.Connecting -> { /* handled above */ }
@@ -654,8 +653,7 @@ private fun ConnectingIndicator() {
 @Composable
 private fun ConnectionPrompt(
     state: ConnectionState,
-    onSettings: () -> Unit,
-    onRetry: () -> Unit
+    onSettings: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -681,10 +679,6 @@ private fun ConnectionPrompt(
         Spacer(modifier = Modifier.height(24.dp))
         Button(onClick = onSettings) {
             Text("Configure Server")
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(onClick = onRetry) {
-            Text("Retry")
         }
     }
 }

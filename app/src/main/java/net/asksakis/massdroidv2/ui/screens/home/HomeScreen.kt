@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import net.asksakis.massdroidv2.ui.components.rememberConnectionGuard
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.fadingEdges
 import androidx.compose.foundation.layout.Row
@@ -160,13 +161,14 @@ fun HomeScreen(
     val connectionProbe by viewModel.connectionProbe.collectAsStateWithLifecycle()
     val pullToRefreshState = rememberPullToRefreshState()
     var showConnectionDialog by remember { mutableStateOf(false) }
+    val guard = rememberConnectionGuard()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
             SmartMixFab(
                 isBusy = isBuildingSmartMix,
-                onClick = { viewModel.makePlaylistForMe() },
+                onClick = { guard { viewModel.makePlaylistForMe() } },
                 modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
             )
         },
@@ -283,7 +285,7 @@ fun HomeScreen(
                                         GenreRow(
                                             genres = section.genres,
                                             onGenreClick = { genre ->
-                                                viewModel.startGenreRadio(genre.name)
+                                                guard { viewModel.startGenreRadio(genre.name) }
                                             },
                                             modifier = Modifier.height(GenreRowHeight)
                                         )

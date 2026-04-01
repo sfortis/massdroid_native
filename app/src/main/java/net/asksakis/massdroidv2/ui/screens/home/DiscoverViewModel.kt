@@ -215,7 +215,7 @@ class DiscoverViewModel @Inject constructor(
     private fun autoConnect() {
         viewModelScope.launch {
             wsClient.startupReady.first { it }
-            if (wsClient.connectionState.value is ConnectionState.Disconnected) {
+            if (wsClient.connectionState.value is ConnectionState.Disconnected && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {
