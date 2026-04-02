@@ -100,8 +100,8 @@ class NowPlayingViewModel @Inject constructor(
     private val _playlistContainsTrack = MutableStateFlow<Set<String>>(emptySet())
     val playlistContainsTrack: StateFlow<Set<String>> = _playlistContainsTrack.asStateFlow()
 
-    private val _lyrics = MutableStateFlow<LyricsProvider.LyricsResult?>(null)
-    val lyrics: StateFlow<LyricsProvider.LyricsResult?> = _lyrics.asStateFlow()
+    private val _lyrics = MutableStateFlow<LyricsProvider.LyricsContent>(LyricsProvider.LyricsContent.None)
+    val lyrics: StateFlow<LyricsProvider.LyricsContent> = _lyrics.asStateFlow()
     private val _lyricsAvailability = MutableStateFlow(LyricsAvailability.UNKNOWN)
     val lyricsAvailability: StateFlow<LyricsAvailability> = _lyricsAvailability.asStateFlow()
     private val _isLoadingLyrics = MutableStateFlow(false)
@@ -110,6 +110,9 @@ class NowPlayingViewModel @Inject constructor(
     val lyricsTimingOffsetMs: StateFlow<Int> = _lyricsTimingOffsetMs.asStateFlow()
     private var lyricsLoadJob: Job? = null
     private var lyricsRequestGeneration = 0L
+    private var inFlightLyricsUri: String? = null
+    private var requestedLyricsTrackUri: String? = null
+    private var resolvedLyricsTrackUri: String? = null
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -188,20 +191,27 @@ class NowPlayingViewModel @Inject constructor(
                     else -> null
                 }
             }
-                .distinctUntilChanged()
+                .distinctUntilChanged { old, new -> old?.uri == new?.uri }
                 .collectLatest { track: Track? ->
+                    val targetUri = track?.uri
+                    if (targetUri == null) return@collectLatest
+                    val sameTrackInFlight =
+                        targetUri == inFlightLyricsUri && lyricsLoadJob?.isActive == true
+                    if (sameTrackInFlight || targetUri == resolvedLyricsTrackUri) return@collectLatest
+
+                    delay(300) // debounce quick skips and transient queue/currentMedia mismatch
+                    val stableTrack = currentLyricsTrack()?.takeIf { it.uri == targetUri } ?: return@collectLatest
+
                     lyricsRequestGeneration++
                     lyricsLoadJob?.cancel()
-                    _lyrics.value = null
-                    _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    inFlightLyricsUri = null
+                    requestedLyricsTrackUri = targetUri
                     _isLoadingLyrics.value = false
                     _lyricsTimingOffsetMs.value = 0
-                    if (track != null) {
-                        val generation = lyricsRequestGeneration
-                        lyricsLoadJob = viewModelScope.launch {
-                            delay(300) // debounce quick skips
-                            loadLyrics(expectedTrackUri = track.uri, requestGeneration = generation)
-                        }
+
+                    val generation = lyricsRequestGeneration
+                    lyricsLoadJob = viewModelScope.launch {
+                        loadLyrics(expectedTrackUri = stableTrack.uri, requestGeneration = generation)
                     }
                 }
         }
@@ -517,6 +527,9 @@ class NowPlayingViewModel @Inject constructor(
 
     fun loadLyrics() {
         val track = currentLyricsTrack() ?: return
+        val sameTrackInFlight = track.uri == inFlightLyricsUri && lyricsLoadJob?.isActive == true
+        if (sameTrackInFlight) return
+        requestedLyricsTrackUri = track.uri
         val generation = lyricsRequestGeneration
         lyricsLoadJob?.cancel()
         lyricsLoadJob = viewModelScope.launch {
@@ -527,6 +540,7 @@ class NowPlayingViewModel @Inject constructor(
     private suspend fun loadLyrics(expectedTrackUri: String, requestGeneration: Long) {
         val track = currentLyricsTrack()?.takeIf { it.uri == expectedTrackUri } ?: return
         if (_isLoadingLyrics.value) return
+        inFlightLyricsUri = expectedTrackUri
         try {
             Log.d(TAG, "lyrics load start uri=${track.uri}")
             val embeddedPlain = track.lyrics?.takeIf { it.isNotBlank() }
@@ -538,11 +552,14 @@ class NowPlayingViewModel @Inject constructor(
                     lrc = embeddedLrc
                 )
                 _lyrics.value = normalized
-                _lyricsAvailability.value = LyricsAvailability.AVAILABLE
-                Log.d(
-                    TAG,
-                    "lyrics availability=AVAILABLE uri=${track.uri} plain=${normalized.plainText != null} synced=${normalized.syncedLrc != null} source=embedded"
-                )
+                backfillCurrentTrackLyrics(normalized)
+                resolvedLyricsTrackUri = expectedTrackUri
+                _lyricsAvailability.value = if (normalized == LyricsProvider.LyricsContent.None) {
+                    LyricsAvailability.UNAVAILABLE
+                } else {
+                    LyricsAvailability.AVAILABLE
+                }
+                Log.d(TAG, "lyrics availability=${_lyricsAvailability.value} uri=${track.uri} ${describeLyricsContent(normalized)} source=embedded")
                 return
             }
             _isLoadingLyrics.value = true
@@ -550,13 +567,16 @@ class NowPlayingViewModel @Inject constructor(
             when (val result = lyricsProvider.fetchLyrics(track.itemId, track.provider, track.uri)) {
                 is LyricsProvider.FetchResult.Found -> {
                     if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
-                        _lyrics.value = result.lyrics
-                        _lyricsAvailability.value = LyricsAvailability.AVAILABLE
-                        Log.d(TAG, "lyrics availability=AVAILABLE uri=${track.uri} plain=${result.lyrics.plainText != null} synced=${result.lyrics.syncedLrc != null}")
+                    _lyrics.value = result.lyrics
+                    backfillCurrentTrackLyrics(result.lyrics)
+                    resolvedLyricsTrackUri = expectedTrackUri
+                    _lyricsAvailability.value = LyricsAvailability.AVAILABLE
+                    Log.d(TAG, "lyrics availability=AVAILABLE uri=${track.uri} ${describeLyricsContent(result.lyrics)}")
                 }
                 LyricsProvider.FetchResult.NotFound -> {
                     if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
-                    _lyrics.value = LyricsProvider.LyricsResult(null, null)
+                    _lyrics.value = LyricsProvider.LyricsContent.None
+                    resolvedLyricsTrackUri = expectedTrackUri
                     _lyricsAvailability.value = LyricsAvailability.UNAVAILABLE
                     Log.d(TAG, "lyrics availability=UNAVAILABLE uri=${track.uri}")
                 }
@@ -573,6 +593,9 @@ class NowPlayingViewModel @Inject constructor(
                 Log.d(TAG, "lyrics availability=UNKNOWN uri=$expectedTrackUri reason=exception")
             }
         } finally {
+            if (inFlightLyricsUri == expectedTrackUri) {
+                inFlightLyricsUri = null
+            }
             if (shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) {
                 _isLoadingLyrics.value = false
             }
@@ -580,8 +603,36 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     private fun shouldApplyLyricsResult(expectedTrackUri: String, requestGeneration: Long): Boolean {
-        val currentTrackUri = currentLyricsTrack()?.uri
-        return requestGeneration == lyricsRequestGeneration && currentTrackUri == expectedTrackUri
+        return requestGeneration == lyricsRequestGeneration && requestedLyricsTrackUri == expectedTrackUri
+    }
+
+    private fun describeLyricsContent(content: LyricsProvider.LyricsContent): String = when (content) {
+        LyricsProvider.LyricsContent.None -> "plain=false synced=false"
+        is LyricsProvider.LyricsContent.Plain -> "plain=true synced=false"
+        is LyricsProvider.LyricsContent.Synced -> "plain=false synced=true"
+    }
+
+    private fun backfillCurrentTrackLyrics(content: LyricsProvider.LyricsContent) {
+        when (content) {
+            LyricsProvider.LyricsContent.None -> {
+                playerRepository.updateCurrentTrackLyrics(
+                    plainLyrics = null,
+                    lrcLyrics = null
+                )
+            }
+            is LyricsProvider.LyricsContent.Plain -> {
+                playerRepository.updateCurrentTrackLyrics(
+                    plainLyrics = content.text,
+                    lrcLyrics = null
+                )
+            }
+            is LyricsProvider.LyricsContent.Synced -> {
+                playerRepository.updateCurrentTrackLyrics(
+                    plainLyrics = null,
+                    lrcLyrics = content.rawLrc
+                )
+            }
+        }
     }
 
     private fun currentLyricsTrack(): Track? {

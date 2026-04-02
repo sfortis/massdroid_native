@@ -33,9 +33,14 @@ import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
 private const val PAGE_SIZE = 50
+private const val STATE_CURRENT_TAB = "library_current_tab"
+
+private fun defaultDisplayModeForTab(tab: Int): LibraryDisplayMode =
+    LibraryTabKey.fromIndex(tab)?.defaultDisplayMode ?: LibraryDisplayMode.LIST
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle,
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
@@ -107,7 +112,7 @@ class LibraryViewModel @Inject constructor(
             reloadCurrentTab()
         }
     }
-    private val _currentTab = MutableStateFlow(0)
+    private val _currentTab = MutableStateFlow(savedStateHandle[STATE_CURRENT_TAB] ?: 0)
     val currentTab: StateFlow<Int> = _currentTab.asStateFlow()
 
     private val _sortOptions = MutableStateFlow<Map<Int, SortOption>>(emptyMap())
@@ -127,7 +132,7 @@ class LibraryViewModel @Inject constructor(
 
     private val _displayModes = MutableStateFlow<Map<Int, LibraryDisplayMode>>(emptyMap())
     val displayMode: StateFlow<LibraryDisplayMode> = combine(_displayModes, _currentTab) { modes, tab ->
-        modes[tab] ?: if (tab <= 1) LibraryDisplayMode.GRID else LibraryDisplayMode.LIST
+        modes[tab] ?: defaultDisplayModeForTab(tab)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryDisplayMode.GRID)
 
     val players = playerRepository.players
@@ -147,6 +152,7 @@ class LibraryViewModel @Inject constructor(
         // Load all settings eagerly before any data loading
         viewModelScope.launch {
             _displayModes.value = settingsRepository.libraryDisplayModes.first()
+                .mapKeys { it.key.index }
             _sortOptions.value = settingsRepository.librarySortOptions.first()
             _sortDescendings.value = settingsRepository.librarySortDescending.first()
             _favoritesOnlyMap.value = settingsRepository.libraryFavoritesOnly.first()
@@ -154,7 +160,7 @@ class LibraryViewModel @Inject constructor(
         }
         // Keep syncing after initial load
         viewModelScope.launch {
-            settingsRepository.libraryDisplayModes.collect { _displayModes.value = it }
+            settingsRepository.libraryDisplayModes.collect { _displayModes.value = it.mapKeys { entry -> entry.key.index } }
         }
         viewModelScope.launch {
             settingsRepository.librarySortOptions.collect { _sortOptions.value = it }
@@ -228,6 +234,7 @@ class LibraryViewModel @Inject constructor(
             searchJob?.cancel()
         }
         _currentTab.value = tab
+        savedStateHandle[STATE_CURRENT_TAB] = tab
     }
 
     fun updateSearch(query: String) {
@@ -305,14 +312,16 @@ class LibraryViewModel @Inject constructor(
 
     fun toggleLibraryDisplayMode() {
         val tab = _currentTab.value
-        val current = _displayModes.value[tab] ?: if (tab <= 1) LibraryDisplayMode.GRID else LibraryDisplayMode.LIST
+        val current = _displayModes.value[tab] ?: defaultDisplayModeForTab(tab)
         val newMode = when (current) {
             LibraryDisplayMode.LIST -> LibraryDisplayMode.GRID
             LibraryDisplayMode.GRID -> LibraryDisplayMode.LIST
         }
         _displayModes.value = _displayModes.value + (_currentTab.value to newMode)
         viewModelScope.launch {
-            settingsRepository.setLibraryDisplayMode(_currentTab.value, newMode)
+            LibraryTabKey.fromIndex(_currentTab.value)?.let { tabKey ->
+                settingsRepository.setLibraryDisplayMode(tabKey, newMode)
+            }
         }
     }
 

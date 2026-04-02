@@ -19,32 +19,36 @@ private const val LYRICS_REQUEST_TIMEOUT_MS = 6_000L
 class LyricsProvider @Inject constructor(
     private val wsClient: MaWebSocketClient
 ) {
-    data class LyricsResult(val plainText: String?, val syncedLrc: String?)
     data class LrcLine(val timeMs: Long, val text: String)
+    sealed interface LyricsContent {
+        data object None : LyricsContent
+        data class Plain(val text: String) : LyricsContent
+        data class Synced(val rawLrc: String, val parsedLines: List<LrcLine>) : LyricsContent
+    }
     sealed interface FetchResult {
-        data class Found(val lyrics: LyricsResult) : FetchResult
+        data class Found(val lyrics: LyricsContent) : FetchResult
         data object NotFound : FetchResult
         data object Failed : FetchResult
     }
 
     private var cachedTrackUri: String? = null
-    private var cachedResult: LyricsResult? = null
+    private var cachedResult: LyricsContent? = null
 
-    suspend fun getLyrics(itemId: String, provider: String, trackUri: String): LyricsResult {
+    suspend fun getLyrics(itemId: String, provider: String, trackUri: String): LyricsContent {
         cachedResult?.let { if (trackUri == cachedTrackUri) return it }
 
         val fallbackResult = fallbackLyricsRequest(
             itemId = itemId,
             provider = provider
         )
-        return (parseLyricsResult(fallbackResult) ?: LyricsResult(null, null)).also { cache(trackUri, it) }
+        return (parseLyricsResult(fallbackResult) ?: LyricsContent.None).also { cache(trackUri, it) }
     }
 
     suspend fun fetchLyrics(itemId: String, provider: String, trackUri: String): FetchResult {
         cachedResult?.let {
             if (trackUri == cachedTrackUri) {
-                Log.d(DEBUG_TAG, "fetch cache uri=$trackUri plain=${it.plainText != null} synced=${it.syncedLrc != null}")
-                return if (it.plainText != null || it.syncedLrc != null) {
+                Log.d(DEBUG_TAG, "fetch cache uri=$trackUri ${contentDebug(it)}")
+                return if (it != LyricsContent.None) {
                     FetchResult.Found(it)
                 } else {
                     FetchResult.NotFound
@@ -62,8 +66,8 @@ class LyricsProvider @Inject constructor(
 
         val parsed = parseLyricsResult(fallbackResult) ?: return FetchResult.Failed
         cache(trackUri, parsed)
-        Log.d(DEBUG_TAG, "fetch result uri=$trackUri plain=${parsed.plainText != null} synced=${parsed.syncedLrc != null}")
-        return if (parsed.plainText != null || parsed.syncedLrc != null) {
+        Log.d(DEBUG_TAG, "fetch result uri=$trackUri ${contentDebug(parsed)}")
+        return if (parsed != LyricsContent.None) {
             FetchResult.Found(parsed)
         } else {
             FetchResult.NotFound
@@ -75,7 +79,7 @@ class LyricsProvider @Inject constructor(
         cachedResult = null
     }
 
-    private fun cache(uri: String, result: LyricsResult) {
+    private fun cache(uri: String, result: LyricsContent) {
         cachedTrackUri = uri
         cachedResult = result
     }
@@ -107,7 +111,7 @@ class LyricsProvider @Inject constructor(
         }
     }
 
-    private fun parseLyricsResult(result: JsonElement?): LyricsResult? {
+    private fun parseLyricsResult(result: JsonElement?): LyricsContent? {
         val arr = try {
             result?.jsonArray
         } catch (e: Exception) {
@@ -124,7 +128,7 @@ class LyricsProvider @Inject constructor(
     companion object {
         private val LRC_LINE_PATTERN = Regex("""\[\d+:\d+[.:]\d+]""")
 
-        fun normalizeLyricsResult(plain: String?, lrc: String?): LyricsResult {
+        fun normalizeLyricsResult(plain: String?, lrc: String?): LyricsContent {
             var normalizedPlain = plain?.takeIf { it.isNotBlank() }
             var normalizedLrc = lrc?.takeIf { it.isNotBlank() }
 
@@ -136,7 +140,15 @@ class LyricsProvider @Inject constructor(
                 normalizedPlain = null
             }
 
-            return LyricsResult(normalizedPlain, normalizedLrc)
+            return when {
+                normalizedLrc != null -> {
+                    val parsed = parseLrc(normalizedLrc)
+                    if (parsed.isNotEmpty()) LyricsContent.Synced(normalizedLrc, parsed)
+                    else normalizedPlain?.let { LyricsContent.Plain(it) } ?: LyricsContent.None
+                }
+                normalizedPlain != null -> LyricsContent.Plain(normalizedPlain)
+                else -> LyricsContent.None
+            }
         }
 
         fun looksLikeLrc(text: String): Boolean {
@@ -154,6 +166,12 @@ class LyricsProvider @Inject constructor(
                     LrcLine((min * 60 + sec) * 1000 + ms, match.groupValues[4].trim())
                 }
             }.sortedBy { it.timeMs }
+        }
+
+        private fun contentDebug(content: LyricsContent): String = when (content) {
+            LyricsContent.None -> "plain=false synced=false"
+            is LyricsContent.Plain -> "plain=true synced=false"
+            is LyricsContent.Synced -> "plain=false synced=true"
         }
     }
 }

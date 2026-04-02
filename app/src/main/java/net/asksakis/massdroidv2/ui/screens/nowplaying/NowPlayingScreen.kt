@@ -455,7 +455,7 @@ fun NowPlayingScreen(
 
     if (showLyricsSheet && isForeground) {
         KeepScreenOn()
-        Log.d("LyricsDbg", "sheet open lyrics=${lyrics != null} loading=$isLoadingLyrics")
+        Log.d("LyricsDbg", "sheet open content=${lyrics::class.simpleName} loading=$isLoadingLyrics")
         LyricsSheet(
             lyrics = lyrics,
             isLoading = isLoadingLyrics,
@@ -887,17 +887,24 @@ private fun QualityActionRow(
                     LyricsAvailability.LOADING -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     LyricsAvailability.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
+                val lyricsEnabled = lyricsAvailability != LyricsAvailability.LOADING &&
+                    lyricsAvailability != LyricsAvailability.UNAVAILABLE
                 IconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         Log.d(
                             "LyricsDbg",
-                            "icon tap availability=$lyricsAvailability uri=${currentTrack?.uri} title=${currentTrack?.name} enabled=${lyricsAvailability == LyricsAvailability.AVAILABLE}"
+                            "icon tap availability=$lyricsAvailability uri=${currentTrack?.uri} title=${currentTrack?.name} enabled=$lyricsEnabled"
                         )
-                        if (lyricsAvailability == LyricsAvailability.AVAILABLE) onShowLyrics()
+                        when (lyricsAvailability) {
+                            LyricsAvailability.AVAILABLE -> onShowLyrics()
+                            LyricsAvailability.UNKNOWN -> viewModel.loadLyrics()
+                            LyricsAvailability.LOADING,
+                            LyricsAvailability.UNAVAILABLE -> Unit
+                        }
                     },
                     modifier = Modifier.size(actionButtonSize),
-                    enabled = lyricsAvailability == LyricsAvailability.AVAILABLE
+                    enabled = lyricsEnabled
                 ) {
                     Icon(
                         Icons.Default.MusicNote,
@@ -1064,7 +1071,7 @@ private fun StatusLine(label: String, value: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LyricsSheet(
-    lyrics: LyricsProvider.LyricsResult?,
+    lyrics: LyricsProvider.LyricsContent,
     isLoading: Boolean,
     elapsedTime: Double,
     title: String,
@@ -1076,9 +1083,6 @@ private fun LyricsSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val parsedSyncedLines = remember(lyrics?.syncedLrc) {
-        lyrics?.syncedLrc?.let { LyricsProvider.parseLrc(it) }.orEmpty()
-    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1132,7 +1136,7 @@ private fun LyricsSheet(
                         CircularProgressIndicator()
                     }
                 }
-                lyrics == null || (lyrics.plainText == null && lyrics.syncedLrc == null) -> {
+                lyrics == LyricsProvider.LyricsContent.None -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -1144,9 +1148,9 @@ private fun LyricsSheet(
                         )
                     }
                 }
-                lyrics.syncedLrc != null && parsedSyncedLines.isNotEmpty() -> {
+                lyrics is LyricsProvider.LyricsContent.Synced -> {
                     SyncedLyricsContent(
-                        lrc = lyrics.syncedLrc,
+                        parsedLines = lyrics.parsedLines,
                         elapsedTimeMs = (elapsedTime * 1000).toLong(),
                         lyricsTimingOffsetMs = lyricsTimingOffsetMs,
                         onSeekToPosition = onSeekToLyricsPosition,
@@ -1158,8 +1162,8 @@ private fun LyricsSheet(
                         onOffsetDelta = onLyricsTimingOffsetDelta
                     )
                 }
-                lyrics.plainText != null -> {
-                    PlainLyricsContent(text = lyrics.plainText!!)
+                lyrics is LyricsProvider.LyricsContent.Plain -> {
+                    PlainLyricsContent(text = lyrics.text)
                 }
                 else -> {
                     Box(
@@ -1201,7 +1205,7 @@ private fun PlainLyricsContent(text: String) {
 
 @Composable
 private fun SyncedLyricsContent(
-    lrc: String,
+    parsedLines: List<LyricsProvider.LrcLine>,
     elapsedTimeMs: Long,
     lyricsTimingOffsetMs: Int,
     onSeekToPosition: (Double) -> Unit,
@@ -1218,13 +1222,12 @@ private fun SyncedLyricsContent(
     val musicalBreakThresholdMs = 5_000L
     val noteCount = 7
     val highlightLeadMs = 500L
-    val lines = remember(lrc) {
-        val parsed = LyricsProvider.parseLrc(lrc)
-        val breakMarkers = parsed
+    val lines = remember(parsedLines) {
+        val breakMarkers = parsedLines
             .filter { it.timeMs > 0L && it.text.isBlank() }
             .map { it.timeMs }
             .toSet()
-        val contentLines = parsed.filter { it.text.isNotBlank() }
+        val contentLines = parsedLines.filter { it.text.isNotBlank() }
         buildList {
             if (contentLines.isNotEmpty()) {
                 val firstTime = contentLines.first().timeMs

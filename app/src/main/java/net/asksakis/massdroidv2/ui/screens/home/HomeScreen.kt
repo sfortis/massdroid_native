@@ -49,6 +49,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -162,9 +164,11 @@ fun HomeScreen(
     val pullToRefreshState = rememberPullToRefreshState()
     var showConnectionDialog by remember { mutableStateOf(false) }
     val guard = rememberConnectionGuard()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         floatingActionButton = {
             if (connectionState is ConnectionState.Connected) {
                 SmartMixFab(
@@ -343,8 +347,9 @@ fun HomeScreen(
     }
 
     LaunchedEffect(smartMixMessage) {
-        if (smartMixMessage != null) {
-            delay(2500)
+        val message = smartMixMessage ?: return@LaunchedEffect
+        if (message.isNotBlank()) {
+            snackbarHostState.showSnackbar(message = message)
             viewModel.clearSmartMixMessage()
         }
     }

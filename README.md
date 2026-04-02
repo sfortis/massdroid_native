@@ -6,15 +6,12 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- **Expanding mini player**: Tap to open full Now Playing, swipe down to close. Swipe left/right to switch speakers. Shows speaker name, persists during disconnects.
-- **Sleep timer**: 15 to 120 min presets or custom, gradual volume fade, notification controls.
-- **Hardware volume control**: Volume buttons control the selected speaker. Sendspin keeps phone and speaker volume in sync.
-- **Queue as bottom sheet**: Swipe down to close, drag to reorder tracks.
-- **Lyrics improvements**: Better plain/synced lyrics handling, smoother synced highlighting, tap a lyric line to seek, and a subtle timing adjustment control when needed.
-- **Sendspin overhaul**: Seamless codec switching (Opus/FLAC), holdover playback during network drops, adaptive reconnect alignment, and Smart mode network switching. Audio format picker and sync offset in player settings.
-- **Follow Me enhancements**: Improved WiFi fingerprint matching, faster room detection with screen off, signal smoothing and scoring refinements.
-- **UI refresh**: Redesigned landscape Now Playing, pill-style Library tabs, fade edges on scrollable content, neutral grey theme, grid default for Artists/Albums, bottom nav on detail screens.
-- Fix edge-to-edge on older Android, memory/receiver leaks, audio focus ducking
+- **Now Playing:** smoother album-art swipe transitions, cleaner previous/next gesture behavior, and a more polished full-player experience
+- **Lyrics:** improved synced lyric highlighting and scrolling, more reliable plain-lyrics support, tap-to-seek on lyric lines, timing adjustment controls, and the screen stays awake while lyrics are open
+- **Smart Mix:** more predictable queue replacement behavior, better failure feedback, and broader discovery with less repetition from the same artists
+- **Library:** remembers the last section you were viewing and restores state more reliably when navigating back from Home
+- **Players:** improved player badges, including a visual indicator for the speaker currently selected by Follow Me
+- **Stability:** better handling around connection changes, queue updates, playback startup edge cases, and older Android layout quirks
 
 ## Screenshots
 

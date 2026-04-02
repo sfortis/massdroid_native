@@ -15,9 +15,9 @@ private const val TOP_ARTISTS_LIMIT = 16
 private const val TOP_GENRES_LIMIT = 4
 private const val ARTISTS_PER_GENRE = 12
 private const val COMFORT_ANCHOR_LIMIT = 4
-private const val EXPLORATION_ARTIST_TARGET = 22
+private const val EXPLORATION_ARTIST_TARGET = 28
 private const val FAVORITE_ARTISTS_CANDIDATE_LIMIT = 24
-private const val RECENT_ARTIST_WEIGHT = 0.90
+private const val RECENT_ARTIST_WEIGHT = 0.65
 private const val SM_ARTIST_RANK_JITTER = 0.22
 
 sealed class MixMode {
@@ -436,13 +436,13 @@ class MixEngine @Inject constructor() {
     // --- Constants ---
 
     @Suppress("UnusedParameter")
-    private fun maxTracksPerArtist(mode: MixMode): Int = 5
+    private fun maxTracksPerArtist(mode: MixMode): Int = 3
     @Suppress("UnusedParameter")
     private fun firstPassUnique(mode: MixMode): Int = 20
     @Suppress("UnusedParameter")
     private fun artistGap(mode: MixMode): Int = 12
     @Suppress("UnusedParameter")
-    private fun trackJitter(mode: MixMode): Double = 0.6
+    private fun trackJitter(mode: MixMode): Double = 0.7
     @Suppress("UnusedParameter")
     private fun favArtistBonus(mode: MixMode): Double = 0.8
     @Suppress("UnusedParameter")

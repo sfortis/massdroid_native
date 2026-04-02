@@ -63,6 +63,7 @@ interface PlayerRepository {
     suspend fun getPlayerConfig(playerId: String): PlayerConfig?
     suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>)
     fun updateCurrentTrackFavorite(favorite: Boolean)
+    fun updateCurrentTrackLyrics(plainLyrics: String?, lrcLyrics: String?)
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
     fun notifyQueueReplacement(queueId: String)
 }

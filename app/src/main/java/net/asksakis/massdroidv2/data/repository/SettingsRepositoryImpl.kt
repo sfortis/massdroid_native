@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
+import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SortOption
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
@@ -134,18 +135,19 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
     }
 
-    override val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>> = safeData.map { prefs ->
-        parseStringMap(prefs[KEY_LIBRARY_DISPLAY_MODES]).mapNotNull { (tab, mode) ->
+    override val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>> = safeData.map { prefs ->
+        parseNamedStringMap(prefs[KEY_LIBRARY_DISPLAY_MODES]).mapNotNull { (tabKey, mode) ->
+            val tab = LibraryTabKey.fromStoredKey(tabKey) ?: return@mapNotNull null
             val parsed = runCatching { LibraryDisplayMode.valueOf(mode) }.getOrNull() ?: return@mapNotNull null
             tab to parsed
         }.toMap()
     }
 
-    override suspend fun setLibraryDisplayMode(tab: Int, mode: LibraryDisplayMode) {
+    override suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode) {
         context.dataStore.edit { prefs ->
-            val current = parseStringMap(prefs[KEY_LIBRARY_DISPLAY_MODES]).toMutableMap()
-            current[tab] = mode.name
-            prefs[KEY_LIBRARY_DISPLAY_MODES] = encodeStringMap(current)
+            val current = parseNamedStringMap(prefs[KEY_LIBRARY_DISPLAY_MODES]).toMutableMap()
+            current[tab.name] = mode.name
+            prefs[KEY_LIBRARY_DISPLAY_MODES] = encodeNamedStringMap(current)
         }
     }
 
@@ -231,6 +233,20 @@ class SettingsRepositoryImpl @Inject constructor(
             .toMap()
     }
 
+    private fun parseNamedStringMap(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return raw.split(",")
+            .mapNotNull { entry ->
+                val parts = entry.split(":", limit = 2)
+                if (parts.size != 2) return@mapNotNull null
+                parts[0] to parts[1]
+            }
+            .toMap()
+    }
+
     private fun encodeStringMap(map: Map<Int, String>): String =
+        map.entries.joinToString(",") { "${it.key}:${it.value}" }
+
+    private fun encodeNamedStringMap(map: Map<String, String>): String =
         map.entries.joinToString(",") { "${it.key}:${it.value}" }
 }

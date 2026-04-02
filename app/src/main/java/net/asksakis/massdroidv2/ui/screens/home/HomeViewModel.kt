@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -27,7 +28,8 @@ class HomeViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val settingsRepository: SettingsRepository,
     private val wsClient: MaWebSocketClient,
-    private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
+    private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore,
+    private val roomDetector: RoomDetector
 ) : ViewModel() {
 
     val players = playerRepository.players
@@ -42,6 +44,7 @@ class HomeViewModel @Inject constructor(
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
     val proximityConfig = proximityConfigStore.config
+    val currentDetectedRoom = roomDetector.currentRoom
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()

@@ -1127,6 +1127,22 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    override fun updateCurrentTrackLyrics(plainLyrics: String?, lrcLyrics: String?) {
+        val currentUri = _queueState.value?.currentItem?.track?.uri ?: return
+        _queueState.update { qs ->
+            val track = qs?.currentItem?.track ?: return@update qs
+            if (track.uri != currentUri) return@update qs
+            qs.copy(
+                currentItem = qs.currentItem.copy(
+                    track = track.copy(
+                        lyrics = plainLyrics,
+                        lrcLyrics = lrcLyrics
+                    )
+                )
+            )
+        }
+    }
+
     override fun notifyQueueReplacement(queueId: String) {
         val current = queueTracking[queueId] ?: return
         queueReplacementByQueue[queueId] = current.track.uri

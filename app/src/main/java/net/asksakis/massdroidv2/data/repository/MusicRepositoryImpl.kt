@@ -171,17 +171,29 @@ class MusicRepositoryImpl @Inject constructor(
             return
         }
 
-        if (option == null || option == "play" || option == "replace") {
-            playerRepository.get().notifyQueueReplacement(queueId)
-        }
-        if (option == null || option == "play") {
-            playerRepository.get().notifyPlaybackIntent(true)
+        val shouldNotifyReplacement = option == "replace"
+        val shouldNotifyPlayback = option == "play" || option == "replace"
+        if (!awaitResponse) {
+            if (shouldNotifyReplacement) {
+                playerRepository.get().notifyQueueReplacement(queueId)
+            }
+            if (shouldNotifyPlayback) {
+                playerRepository.get().notifyPlaybackIntent(true)
+            }
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
             PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
             awaitResponse = awaitResponse
         )
+        if (awaitResponse) {
+            if (shouldNotifyReplacement) {
+                playerRepository.get().notifyQueueReplacement(queueId)
+            }
+            if (shouldNotifyPlayback) {
+                playerRepository.get().notifyPlaybackIntent(true)
+            }
+        }
     }
 
     /**
@@ -233,11 +245,15 @@ class MusicRepositoryImpl @Inject constructor(
         awaitResponse: Boolean,
         timeoutMs: Long?
     ) {
-        if (option == null || option == "play" || option == "replace") {
-            playerRepository.get().notifyQueueReplacement(queueId)
-        }
-        if (option == null || option == "play") {
-            playerRepository.get().notifyPlaybackIntent(true)
+        val shouldNotifyReplacement = option == "replace"
+        val shouldNotifyPlayback = option == "play" || option == "replace"
+        if (!awaitResponse) {
+            if (shouldNotifyReplacement) {
+                playerRepository.get().notifyQueueReplacement(queueId)
+            }
+            if (shouldNotifyPlayback) {
+                playerRepository.get().notifyPlaybackIntent(true)
+            }
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
@@ -245,6 +261,14 @@ class MusicRepositoryImpl @Inject constructor(
             awaitResponse = awaitResponse,
             timeoutMs = timeoutMs ?: 30_000
         )
+        if (awaitResponse) {
+            if (shouldNotifyReplacement) {
+                playerRepository.get().notifyQueueReplacement(queueId)
+            }
+            if (shouldNotifyPlayback) {
+                playerRepository.get().notifyPlaybackIntent(true)
+            }
+        }
     }
 
     override suspend fun createPlaylist(name: String): Playlist {

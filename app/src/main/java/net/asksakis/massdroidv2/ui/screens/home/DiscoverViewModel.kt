@@ -384,7 +384,12 @@ class DiscoverViewModel @Inject constructor(
                         PlayerRepository.QueueFilterMode.SMART_GENERATED
                     )
                     lastSmartMixSelection = mixResult.tracks
-                    musicRepository.playMedia(queueId, trackUris, option = "play")
+                    musicRepository.playMedia(
+                        queueId = queueId,
+                        uris = trackUris,
+                        option = "replace",
+                        awaitResponse = true
+                    )
                 } finally {
                     if (hadDstm) {
                         musicRepository.setDontStopTheMusic(queueId, true)
@@ -930,7 +935,10 @@ class DiscoverViewModel @Inject constructor(
                 .distinctBy { uri -> MediaIdentity.artistKeyFromUri(uri) ?: uri }
             else -> broadCandidates
         }
-        if (baseCandidateUris.isEmpty()) return
+        if (baseCandidateUris.isEmpty()) {
+            _uiState.value = _uiState.value.copy(smartMixMessage = "Not enough matching artists to start $genre radio")
+            return
+        }
         if (radioStartJob?.isActive == true) {
             Log.d(TAG, "startGenreRadio ignored: request already in flight")
             return
@@ -980,6 +988,10 @@ class DiscoverViewModel @Inject constructor(
                 )
                 if (!requestAccepted) {
                     Log.w(TAG, "startGenreRadio: all seed attempts failed for genre='$genre'")
+                    _uiState.value = _uiState.value.copy(
+                        radioOverlayGenre = null,
+                        smartMixMessage = "Failed to start $genre radio"
+                    )
                     return@launch
                 }
                 val started = waitForGenreRadioStart(
@@ -988,13 +1000,21 @@ class DiscoverViewModel @Inject constructor(
                 )
                 if (!started) {
                     Log.w(TAG, "startGenreRadio: start confirmation timeout for genre='$genre'")
+                    _uiState.value = _uiState.value.copy(
+                        radioOverlayGenre = null,
+                        smartMixMessage = "$genre radio did not start in time"
+                    )
+                    return@launch
                 }
                 sanitizeGenreRadioQueue(queueId, genre)
                 logQueueContents("genreRadio[$genre]", awaitQueueItems = true)
                 _uiState.value = _uiState.value.copy(radioOverlayGenre = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start genre radio", e)
-                _uiState.value = _uiState.value.copy(radioOverlayGenre = null)
+                _uiState.value = _uiState.value.copy(
+                    radioOverlayGenre = null,
+                    smartMixMessage = "Failed to start $genre radio"
+                )
             } finally {
                 radioStartJob = null
             }

@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.domain.repository
 
 import kotlinx.coroutines.flow.Flow
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
+import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SortOption
 
 interface SettingsRepository {
@@ -15,7 +16,7 @@ interface SettingsRepository {
     val smartListeningEnabled: Flow<Boolean>
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
-    val libraryDisplayModes: Flow<Map<Int, LibraryDisplayMode>>
+    val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
     val librarySortDescending: Flow<Map<Int, Boolean>>
     val libraryFavoritesOnly: Flow<Map<Int, Boolean>>
@@ -34,7 +35,7 @@ interface SettingsRepository {
     suspend fun setSmartListeningEnabled(enabled: Boolean)
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
-    suspend fun setLibraryDisplayMode(tab: Int, mode: LibraryDisplayMode)
+    suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)
     suspend fun setLibraryFavoritesOnly(tab: Int, favoritesOnly: Boolean)

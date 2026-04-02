@@ -1,18 +1,6 @@
-- Expanding mini player: tap to expand into full Now Playing, swipe down to close
-- Swipe left/right on mini player to switch between speakers
-- Mini player shows current speaker name and persists during disconnects
-- Sleep timer with gradual volume fade and notification controls
-- Hardware volume buttons control your speaker directly
-- Queue opens as a bottom sheet with swipe to close
-- Lyrics improvements: better plain/synced handling, smoother synced highlighting, tap a lyric line to seek, and a subtle timing adjustment control
-- Sendspin audio improvements: seamless codec switching, holdover playback during network drops, adaptive reconnect alignment
-- Audio format picker (Smart/Opus/FLAC) and sync offset slider in player settings
-- Landscape mode: redesigned Now Playing layout with proper spacing
-- Modern pill-style tabs in Library
-- Subtle fade edges on all scrollable content
-- Bottom navigation stays visible on detail screens
-- Neutral grey theme for consistent look across all devices
-- Volume indicator appears briefly when changing volume
-- Grid mode default for Artists and Albums in Library
-- Fix edge-to-edge layout on older Android versions
-- Fix various memory leaks and potential crashes
+- **Now Playing:** smoother album-art swipe transitions, cleaner previous/next gesture behavior, and a more polished full-player experience
+- **Lyrics:** improved synced lyric highlighting and scrolling, more reliable plain-lyrics support, tap-to-seek on lyric lines, timing adjustment controls, and the screen stays awake while lyrics are open
+- **Smart Mix:** more predictable queue replacement behavior, better failure feedback, and broader discovery with less repetition from the same artists
+- **Library:** remembers the last section you were viewing and restores state more reliably when navigating back from Home
+- **Players:** improved player badges, including a visual indicator for the speaker currently selected by Follow Me
+- **Stability:** better handling around connection changes, queue updates, playback startup edge cases, and older Android layout quirks

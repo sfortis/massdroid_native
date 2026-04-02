@@ -67,6 +67,7 @@ fun PlayersScreen(
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
+    val currentDetectedRoom by viewModel.currentDetectedRoom.collectAsStateWithLifecycle()
     val playerRoomMap = remember(proximityConfig) {
         proximityConfig.rooms.groupBy { it.playerId }.mapValues { (_, rooms) -> rooms.map { it.name } }
     }
@@ -125,6 +126,9 @@ fun PlayersScreen(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
+                                isFollowMeSelected = proximityConfig.enabled &&
+                                    currentDetectedRoom?.playerId == player.playerId &&
+                                    selectedPlayer?.playerId == player.playerId,
                                 roomNames = playerRoomMap[player.playerId] ?: emptyList(),
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
@@ -233,6 +237,7 @@ private fun PlayerListItem(
     player: Player,
     isSelected: Boolean,
     isLocalPlayer: Boolean = false,
+    isFollowMeSelected: Boolean = false,
     roomNames: List<String> = emptyList(),
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
@@ -306,6 +311,7 @@ private fun PlayerListItem(
                     PlayerNameWithBadge(
                         name = player.displayName,
                         isLocalPlayer = isLocalPlayer,
+                        isFollowMePlayer = isFollowMeSelected,
                         fontWeight = FontWeight.Bold
                     )
                 }

@@ -57,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.navigation.NavHostController
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -606,12 +607,11 @@ private fun BottomNavBar(navController: NavHostController, currentRoute: String?
                 selected = currentRoute == item.route,
                 onClick = {
                     navController.navigate(item.route) {
-                        if (item.route == Routes.HOME) {
-                            popUpTo(Routes.HOME) { inclusive = true }
-                        } else {
-                            popUpTo(Routes.HOME)
-                            launchSingleTop = true
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
                         }
+                        launchSingleTop = true
+                        restoreState = true
                     }
                 }
             )
@@ -629,12 +629,11 @@ private fun SideNavRail(navController: NavHostController, currentRoute: String?)
                 selected = currentRoute == item.route,
                 onClick = {
                     navController.navigate(item.route) {
-                        if (item.route == Routes.HOME) {
-                            popUpTo(Routes.HOME) { inclusive = true }
-                        } else {
-                            popUpTo(Routes.HOME)
-                            launchSingleTop = true
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
                         }
+                        launchSingleTop = true
+                        restoreState = true
                     }
                 }
             )
