@@ -3,6 +3,11 @@ on:
   push:
     branches:
       - dev
+    paths-ignore:
+      - '*.md'
+      - 'screenshots/**'
+      - 'internal_docs/**'
+      - 'LICENSE'
   pull_request:
 permissions:
   contents: write

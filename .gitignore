@@ -26,3 +26,4 @@ local.properties
 
 # Claude Code
 .claude/
+.codex
