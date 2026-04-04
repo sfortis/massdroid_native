@@ -774,7 +774,8 @@ class PlaybackService : MediaLibraryService() {
                     // ── Screen OFF + idle (or cooldown active) ──
                     else -> {
                         ensurePersistentScan(lowPower = true)
-                        kotlinx.coroutines.delay(2_000)
+                        burstScan("idle")
+                        kotlinx.coroutines.delay(AWAY_MODE_TIMEOUT_MS)
                     }
                 }
             }
@@ -960,7 +961,17 @@ class PlaybackService : MediaLibraryService() {
             )
         }
         stopPersistentScanTracked(clearBuffers = false)
-        proximityScanner.startPersistentScan(lowPower = lowPower)
+        val config = proximityConfigStore.config.value
+        val macAnchors = config.rooms
+            .filter { it.wifiMatchMode == null }
+            .flatMap { room -> room.beaconProfiles.filter { it.anchorType == net.asksakis.massdroidv2.data.proximity.AnchorType.MAC }.map { it.address } }
+            .filter { !it.startsWith("wifi:") }
+            .toSet()
+        val nameAnchors = config.rooms
+            .filter { it.wifiMatchMode == null }
+            .flatMap { room -> room.beaconProfiles.filter { it.anchorType == net.asksakis.massdroidv2.data.proximity.AnchorType.NAME }.map { it.name } }
+            .toSet()
+        proximityScanner.startPersistentScan(lowPower = lowPower, anchorAddresses = macAnchors, anchorNames = nameAnchors)
         persistentScanLowPower = lowPower
     }
 
@@ -1382,6 +1393,7 @@ class PlaybackService : MediaLibraryService() {
         showRoomDetectedNotification(detected)
 
         if (targetIsPlaying) {
+            applyRoomVolume(detected)
             if (roomConfig?.playbackConfig?.playlistUri != null) {
                 Log.d(
                     TAG,

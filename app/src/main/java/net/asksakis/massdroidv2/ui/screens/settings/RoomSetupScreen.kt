@@ -335,8 +335,9 @@ fun RoomSetupScreen(
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
             if (existingRoom != null) {
+                val lastDetection by viewModel.lastDetection.collectAsStateWithLifecycle()
                 SectionHeader("Calibration")
-                CalibrationInfo(existingRoom)
+                CalibrationInfo(existingRoom, lastDetection)
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
@@ -996,7 +997,10 @@ private fun PlaybackConfigSection(
 }
 
 @Composable
-private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomConfig) {
+private fun CalibrationInfo(
+    room: net.asksakis.massdroidv2.data.proximity.RoomConfig,
+    lastDetection: net.asksakis.massdroidv2.data.proximity.RoomDetector.DetectionStatus? = null
+) {
     val hasFp = room.fingerprints.isNotEmpty()
 
     Card(
@@ -1094,6 +1098,40 @@ private fun CalibrationInfo(room: net.asksakis.massdroidv2.data.proximity.RoomCo
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+
+                // Live detection status
+                if (lastDetection != null && lastDetection.roomId == room.id) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val confPercent = (lastDetection.confidence * 100).toInt()
+                    val confColor = when {
+                        confPercent >= 80 -> MaterialTheme.colorScheme.primary
+                        confPercent >= 50 -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.error
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "Live: $confPercent%",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = confColor
+                        )
+                        Text(
+                            "${lastDetection.matched}/${lastDetection.expected} anchors",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (lastDetection != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Not detected",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))

@@ -288,7 +288,7 @@ class ProximityScanner @Inject constructor(
     @SuppressLint("MissingPermission")
     private var persistentLowPower: Boolean? = null
 
-    fun startPersistentScan(lowPower: Boolean = true) {
+    fun startPersistentScan(lowPower: Boolean = true, anchorAddresses: Set<String> = emptySet(), anchorNames: Set<String> = emptySet()) {
         val scanner = getScanner() ?: return
         val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
         if (persistentRunning && persistentCallback != null) {
@@ -306,10 +306,26 @@ class ProximityScanner @Inject constructor(
                     lastPersistentCallbackMs = now
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.w(TAG, "Persistent scan failed: errorCode=$errorCode")
+                persistentRunning = false
+            }
+        }
+        // Use ScanFilters so Android delivers results even with screen off.
+        // Unfiltered callback scans are silently stopped when screen turns off.
+        val macFilters = anchorAddresses.mapNotNull { addr ->
+            if (MAC_ADDRESS_REGEX.matches(addr)) ScanFilter.Builder().setDeviceAddress(addr).build() else null
+        }
+        val nameFilters = anchorNames.map { name ->
+            ScanFilter.Builder().setDeviceName(name).build()
+        }
+        val filters = (macFilters + nameFilters).ifEmpty {
+            listOf(ScanFilter.Builder().build())
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
         try {
-            scanner.startScan(null, settings, callback)
+            scanner.startScan(filters, settings, callback)
             persistentCallback = callback
             persistentRunning = true
             persistentLowPower = lowPower

@@ -46,7 +46,7 @@ fun DetectionPolicy.rules(): PolicyRules = when (this) {
 data class ProximityConfig(
     val enabled: Boolean = false,
     val autoTransfer: Boolean = false,
-    val sensitivity: Float = 3.0f,
+    val detectionTolerance: Float = 40.0f,
     val schedule: ProximitySchedule = ProximitySchedule(),
     val rooms: List<RoomConfig> = emptyList()
 )

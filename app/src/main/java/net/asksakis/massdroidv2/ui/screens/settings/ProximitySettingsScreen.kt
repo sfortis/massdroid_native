@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
-import androidx.compose.material3.Slider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -180,22 +179,27 @@ fun ProximitySettingsScreen(
                 )
 
                 ListItem(
-                    headlineContent = { Text("Detection Sensitivity") },
+                    headlineContent = { Text("Detection Tolerance") },
                     supportingContent = {
                         Column {
+                            val label = when {
+                                config.detectionTolerance <= 25f -> "Strict"
+                                config.detectionTolerance <= 45f -> "Normal"
+                                else -> "Relaxed"
+                            }
                             Text(
-                                String.format("%.1f", config.sensitivity),
+                                "$label (${config.detectionTolerance.toInt()})",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Slider(
-                                value = config.sensitivity,
-                                onValueChange = { viewModel.setSensitivity(it) },
-                                valueRange = 1.0f..5.0f,
-                                steps = 7
+                            androidx.compose.material3.Slider(
+                                value = config.detectionTolerance,
+                                onValueChange = { viewModel.setDetectionTolerance(it) },
+                                valueRange = 15f..80f,
+                                steps = 12
                             )
                             Text(
-                                "Higher values tolerate signal variations better. Lower values require closer match to calibration.",
+                                "How much signal variation to tolerate. Higher = easier match, lower = stricter.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

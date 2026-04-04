@@ -89,6 +89,7 @@ class ProximityViewModel @Inject constructor(
 
     val players: StateFlow<List<Player>> = playerRepository.players
     val currentRoom: StateFlow<DetectedRoom?> = roomDetector.currentRoom
+    val lastDetection: StateFlow<RoomDetector.DetectionStatus?> = roomDetector.lastDetection
     val isAvailable: Boolean = scanner.isAvailable()
     val bluetoothEnabled: StateFlow<Boolean> = scanner.observeBluetoothState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), scanner.isBluetoothEnabled())
@@ -178,8 +179,8 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
-    fun setSensitivity(value: Float) {
-        viewModelScope.launch { configStore.update { it.copy(sensitivity = value) } }
+    fun setDetectionTolerance(value: Float) {
+        viewModelScope.launch { configStore.update { it.copy(detectionTolerance = value) } }
     }
 
     fun updateRoomWifiMatchMode(roomId: String, mode: WifiMatchMode?) {
