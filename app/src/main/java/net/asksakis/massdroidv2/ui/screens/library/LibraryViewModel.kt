@@ -1667,6 +1667,14 @@ class PlaylistDetailViewModel @Inject constructor(
         if (desc && key != PlaylistSortKey.POSITION) sorted.reversed() else sorted
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val currentTrackUri: StateFlow<String?> = playerRepository.queueState
+        .map { it?.currentItem?.track?.uri }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isPlaying: StateFlow<Boolean> = playerRepository.selectedPlayer
+        .map { it?.state == PlaybackState.PLAYING }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     fun setSortKey(key: PlaylistSortKey) {
         if (_sortKey.value == key) {
             _sortDescending.value = !_sortDescending.value

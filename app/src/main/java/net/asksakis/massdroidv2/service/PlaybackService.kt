@@ -85,6 +85,7 @@ class PlaybackService : MediaLibraryService() {
         private const val HIGH_ACCURACY_WINDOW_MS = 30_000L
         private const val AWAY_MODE_TIMEOUT_MS = 5 * 60 * 1000L
         private const val AWAY_MODE_SCAN_INTERVAL_MS = 60_000L
+        private const val SCREEN_OFF_IDLE_SCAN_INTERVAL_MS = 2 * 60 * 1000L
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
         private const val HIGH_ACCURACY_SNAPSHOT_RETAIN_MS = 30_000L
         private const val HIGH_ACCURACY_FRESH_SNAPSHOT_MS = 8_000L
@@ -771,11 +772,12 @@ class PlaybackService : MediaLibraryService() {
                         kotlinx.coroutines.delay(MOTION_SCAN_INTERVAL_MS)
                     }
 
-                    // ── Screen OFF + idle (or cooldown active) ──
+                    // ── Screen OFF + idle ──
+                    // PendingIntent background scan handles detection via bg-receiver.
+                    // No burst scan needed here; just keep persistent scan warm.
                     else -> {
                         ensurePersistentScan(lowPower = true)
-                        burstScan("idle")
-                        kotlinx.coroutines.delay(AWAY_MODE_TIMEOUT_MS)
+                        kotlinx.coroutines.delay(2_000)
                     }
                 }
             }

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +61,8 @@ fun PlaylistDetailScreen(
     val sortKey by viewModel.sortKey.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
+    val currentTrackUri by viewModel.currentTrackUri.collectAsStateWithLifecycle()
+    val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var moveTrack by remember { mutableStateOf<Track?>(null) }
@@ -182,13 +185,16 @@ fun PlaylistDetailScreen(
             }
             items(items = tracks, key = { track -> "${track.uri}:${track.position ?: -1}" }) { track ->
                 val fallbackPosition = tracks.indexOf(track)
+                val isCurrent = currentTrackUri == track.uri
                 MediaItemRow(
                     title = track.name,
                     subtitle = "${track.artistNames} - ${track.albumName}".trimEnd(' ', '-'),
                     imageUrl = track.imageUrl,
+                    titleColor = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified,
                     onClick = { viewModel.playTrack(track) },
                     onPlayClick = { viewModel.playTrack(track) },
                     favorite = track.favorite,
+                    showEqualizer = isCurrent && isPlaying,
                     onMoreClick = {
                         actionSheetItem = ActionSheetItem(
                             title = track.name,
@@ -216,8 +222,7 @@ fun PlaylistDetailScreen(
                             primaryArtistUri = track.artistUri,
                             primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { "Artist" }
                         )
-                    },
-                    showEqualizer = busyTrackUri == track.uri
+                    }
                 )
             }
         }
