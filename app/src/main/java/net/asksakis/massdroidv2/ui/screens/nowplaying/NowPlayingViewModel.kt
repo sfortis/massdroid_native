@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.service.SleepTimerBridge
@@ -69,6 +71,14 @@ enum class LyricsAvailability {
     UNAVAILABLE
 }
 
+sealed interface LyricsEntry {
+    data object Unresolved : LyricsEntry
+    data object Loading : LyricsEntry
+    data object Unavailable : LyricsEntry
+    data object Failed : LyricsEntry
+    data class Ready(val content: LyricsProvider.LyricsContent) : LyricsEntry
+}
+
 @HiltViewModel
 class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
@@ -100,19 +110,55 @@ class NowPlayingViewModel @Inject constructor(
     private val _playlistContainsTrack = MutableStateFlow<Set<String>>(emptySet())
     val playlistContainsTrack: StateFlow<Set<String>> = _playlistContainsTrack.asStateFlow()
 
-    private val _lyrics = MutableStateFlow<LyricsProvider.LyricsContent>(LyricsProvider.LyricsContent.None)
-    val lyrics: StateFlow<LyricsProvider.LyricsContent> = _lyrics.asStateFlow()
-    private val _lyricsAvailability = MutableStateFlow(LyricsAvailability.UNKNOWN)
-    val lyricsAvailability: StateFlow<LyricsAvailability> = _lyricsAvailability.asStateFlow()
-    private val _isLoadingLyrics = MutableStateFlow(false)
-    val isLoadingLyrics: StateFlow<Boolean> = _isLoadingLyrics.asStateFlow()
+    private val _lyricsEntries = MutableStateFlow<Map<String, LyricsEntry>>(emptyMap())
     private val _lyricsTimingOffsetMs = MutableStateFlow(0)
     val lyricsTimingOffsetMs: StateFlow<Int> = _lyricsTimingOffsetMs.asStateFlow()
     private var lyricsLoadJob: Job? = null
-    private var lyricsRequestGeneration = 0L
     private var inFlightLyricsUri: String? = null
-    private var requestedLyricsTrackUri: String? = null
-    private var resolvedLyricsTrackUri: String? = null
+
+    private val currentLyricsTrackFlow: StateFlow<Track?> =
+        combine(
+            queueState.map { it?.currentItem?.track },
+            selectedPlayer.map { it?.currentMedia?.uri }
+        ) { queueTrack: Track?, playerMediaUri: String? ->
+            when {
+                queueTrack == null -> null
+                playerMediaUri.isNullOrBlank() -> queueTrack
+                queueTrack.uri == playerMediaUri -> queueTrack
+                else -> null
+            }
+        }
+            .distinctUntilChanged { old, new -> old?.uri == new?.uri }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val currentLyricsTrackUri: StateFlow<String?> =
+        currentLyricsTrackFlow
+            .map { it?.uri }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val currentLyricsEntry: StateFlow<LyricsEntry> =
+        combine(currentLyricsTrackUri, _lyricsEntries) { uri, entries ->
+            uri?.let { entries[it] } ?: LyricsEntry.Unresolved
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, LyricsEntry.Unresolved)
+
+    val lyrics: StateFlow<LyricsProvider.LyricsContent> =
+        currentLyricsEntry
+            .map { entryToContent(it) }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.Eagerly,
+                LyricsProvider.LyricsContent.None
+            )
+
+    val lyricsAvailability: StateFlow<LyricsAvailability> =
+        currentLyricsEntry
+            .map { entryToAvailability(it) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, LyricsAvailability.UNKNOWN)
+
+    val isLoadingLyrics: StateFlow<Boolean> =
+        currentLyricsEntry
+            .map { it is LyricsEntry.Unresolved || it is LyricsEntry.Loading }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
@@ -180,40 +226,22 @@ class NowPlayingViewModel @Inject constructor(
             sendspinStaticDelayMs.collect { cachedSendspinStaticDelayMs = it }
         }
         viewModelScope.launch {
-            combine(
-                queueState.map { it?.currentItem?.track },
-                selectedPlayer.map { it?.currentMedia?.uri }
-            ) { queueTrack: Track?, playerMediaUri: String? ->
-                when {
-                    queueTrack == null -> null
-                    playerMediaUri.isNullOrBlank() -> queueTrack
-                    queueTrack.uri == playerMediaUri -> queueTrack
-                    else -> null
+            currentLyricsTrackFlow.collectLatest { track: Track? ->
+                val targetUri = track?.uri ?: return@collectLatest
+                _lyricsTimingOffsetMs.value = 0
+
+                val currentEntry = _lyricsEntries.value[targetUri]
+                if (currentEntry is LyricsEntry.Ready ||
+                    currentEntry is LyricsEntry.Unavailable ||
+                    currentEntry is LyricsEntry.Loading
+                ) {
+                    return@collectLatest
                 }
+
+                delay(300) // debounce quick skips and transient queue/currentMedia mismatch
+                val stableTrack = currentLyricsTrackFlow.value?.takeIf { it.uri == targetUri } ?: return@collectLatest
+                loadLyricsInternal(stableTrack)
             }
-                .distinctUntilChanged { old, new -> old?.uri == new?.uri }
-                .collectLatest { track: Track? ->
-                    val targetUri = track?.uri
-                    if (targetUri == null) return@collectLatest
-                    val sameTrackInFlight =
-                        targetUri == inFlightLyricsUri && lyricsLoadJob?.isActive == true
-                    if (sameTrackInFlight || targetUri == resolvedLyricsTrackUri) return@collectLatest
-
-                    delay(300) // debounce quick skips and transient queue/currentMedia mismatch
-                    val stableTrack = currentLyricsTrack()?.takeIf { it.uri == targetUri } ?: return@collectLatest
-
-                    lyricsRequestGeneration++
-                    lyricsLoadJob?.cancel()
-                    inFlightLyricsUri = null
-                    requestedLyricsTrackUri = targetUri
-                    _isLoadingLyrics.value = false
-                    _lyricsTimingOffsetMs.value = 0
-
-                    val generation = lyricsRequestGeneration
-                    lyricsLoadJob = viewModelScope.launch {
-                        loadLyrics(expectedTrackUri = stableTrack.uri, requestGeneration = generation)
-                    }
-                }
         }
         viewModelScope.launch {
             queueState
@@ -518,92 +546,97 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun preloadLyrics() {
-        if (_lyricsAvailability.value == LyricsAvailability.AVAILABLE ||
-            _lyricsAvailability.value == LyricsAvailability.UNAVAILABLE ||
-            _isLoadingLyrics.value
-        ) return
-        loadLyrics()
+        when (currentLyricsEntry.value) {
+            is LyricsEntry.Ready,
+            LyricsEntry.Unavailable,
+            LyricsEntry.Loading -> Unit
+            LyricsEntry.Unresolved,
+            LyricsEntry.Failed -> loadLyrics()
+        }
     }
 
     fun loadLyrics() {
         val track = currentLyricsTrack() ?: return
+        when (_lyricsEntries.value[track.uri]) {
+            is LyricsEntry.Ready,
+            LyricsEntry.Unavailable,
+            LyricsEntry.Loading -> return
+            LyricsEntry.Unresolved,
+            LyricsEntry.Failed,
+            null -> Unit
+        }
+        loadLyricsInternal(track)
+    }
+
+    private fun loadLyricsInternal(track: Track) {
+        val entry = _lyricsEntries.value[track.uri]
         val sameTrackInFlight = track.uri == inFlightLyricsUri && lyricsLoadJob?.isActive == true
-        if (sameTrackInFlight) return
-        requestedLyricsTrackUri = track.uri
-        val generation = lyricsRequestGeneration
+        if (sameTrackInFlight || entry is LyricsEntry.Loading) return
         lyricsLoadJob?.cancel()
         lyricsLoadJob = viewModelScope.launch {
-            loadLyrics(expectedTrackUri = track.uri, requestGeneration = generation)
+            fetchAndStoreLyrics(track)
         }
     }
 
-    private suspend fun loadLyrics(expectedTrackUri: String, requestGeneration: Long) {
-        val track = currentLyricsTrack()?.takeIf { it.uri == expectedTrackUri } ?: return
-        if (_isLoadingLyrics.value) return
+    private suspend fun fetchAndStoreLyrics(track: Track) {
+        val expectedTrackUri = track.uri
         inFlightLyricsUri = expectedTrackUri
         try {
             Log.d(TAG, "lyrics load start uri=${track.uri}")
             val embeddedPlain = track.lyrics?.takeIf { it.isNotBlank() }
             val embeddedLrc = track.lrcLyrics?.takeIf { it.isNotBlank() }
             if (embeddedPlain != null || embeddedLrc != null) {
-                if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
                 val normalized = LyricsProvider.normalizeLyricsResult(
                     plain = embeddedPlain,
                     lrc = embeddedLrc
                 )
-                _lyrics.value = normalized
                 backfillCurrentTrackLyrics(normalized)
-                resolvedLyricsTrackUri = expectedTrackUri
-                _lyricsAvailability.value = if (normalized == LyricsProvider.LyricsContent.None) {
-                    LyricsAvailability.UNAVAILABLE
+                if (normalized == LyricsProvider.LyricsContent.None) {
+                    putLyricsEntry(expectedTrackUri, LyricsEntry.Unavailable)
                 } else {
-                    LyricsAvailability.AVAILABLE
+                    putLyricsEntry(expectedTrackUri, LyricsEntry.Ready(normalized))
                 }
-                Log.d(TAG, "lyrics availability=${_lyricsAvailability.value} uri=${track.uri} ${describeLyricsContent(normalized)} source=embedded")
+                Log.d(TAG, "lyrics availability=${entryToAvailability(_lyricsEntries.value[expectedTrackUri] ?: LyricsEntry.Unresolved)} uri=${track.uri} ${describeLyricsContent(normalized)} source=embedded")
                 return
             }
-            _isLoadingLyrics.value = true
-            _lyricsAvailability.value = LyricsAvailability.LOADING
+            putLyricsEntry(expectedTrackUri, LyricsEntry.Loading)
             when (val result = lyricsProvider.fetchLyrics(track.itemId, track.provider, track.uri)) {
                 is LyricsProvider.FetchResult.Found -> {
-                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
-                    _lyrics.value = result.lyrics
                     backfillCurrentTrackLyrics(result.lyrics)
-                    resolvedLyricsTrackUri = expectedTrackUri
-                    _lyricsAvailability.value = LyricsAvailability.AVAILABLE
+                    putLyricsEntry(expectedTrackUri, LyricsEntry.Ready(result.lyrics))
                     Log.d(TAG, "lyrics availability=AVAILABLE uri=${track.uri} ${describeLyricsContent(result.lyrics)}")
                 }
                 LyricsProvider.FetchResult.NotFound -> {
-                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
-                    _lyrics.value = LyricsProvider.LyricsContent.None
-                    resolvedLyricsTrackUri = expectedTrackUri
-                    _lyricsAvailability.value = LyricsAvailability.UNAVAILABLE
+                    putLyricsEntry(expectedTrackUri, LyricsEntry.Unavailable)
                     Log.d(TAG, "lyrics availability=UNAVAILABLE uri=${track.uri}")
                 }
                 LyricsProvider.FetchResult.Failed -> {
-                    if (!shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) return
-                    _lyricsAvailability.value = LyricsAvailability.UNKNOWN
+                    putLyricsEntry(expectedTrackUri, LyricsEntry.Failed)
                     Log.d(TAG, "lyrics availability=UNKNOWN uri=${track.uri} reason=failed")
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "loadLyrics failed: ${e.message}")
-            if (shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) {
-                _lyricsAvailability.value = LyricsAvailability.UNKNOWN
-                Log.d(TAG, "lyrics availability=UNKNOWN uri=$expectedTrackUri reason=exception")
-            }
+            putLyricsEntry(expectedTrackUri, LyricsEntry.Failed)
+            Log.d(TAG, "lyrics availability=UNKNOWN uri=$expectedTrackUri reason=exception")
         } finally {
             if (inFlightLyricsUri == expectedTrackUri) {
                 inFlightLyricsUri = null
             }
-            if (shouldApplyLyricsResult(expectedTrackUri, requestGeneration)) {
-                _isLoadingLyrics.value = false
-            }
         }
     }
 
-    private fun shouldApplyLyricsResult(expectedTrackUri: String, requestGeneration: Long): Boolean {
-        return requestGeneration == lyricsRequestGeneration && requestedLyricsTrackUri == expectedTrackUri
+    private fun putLyricsEntry(trackUri: String, entry: LyricsEntry) {
+        val updated = LinkedHashMap(_lyricsEntries.value)
+        updated.remove(trackUri)
+        updated[trackUri] = entry
+        while (updated.size > 24) {
+            val iterator = updated.entries.iterator()
+            if (!iterator.hasNext()) break
+            iterator.next()
+            iterator.remove()
+        }
+        _lyricsEntries.value = updated
     }
 
     private fun describeLyricsContent(content: LyricsProvider.LyricsContent): String = when (content) {
@@ -636,10 +669,23 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     private fun currentLyricsTrack(): Track? {
-        val queueTrack = queueState.value?.currentItem?.track ?: return null
-        val playerMediaUri = selectedPlayer.value?.currentMedia?.uri
-        if (playerMediaUri.isNullOrBlank()) return queueTrack
-        return queueTrack.takeIf { it.uri == playerMediaUri }
+        return currentLyricsTrackFlow.value
+    }
+
+    private fun entryToAvailability(entry: LyricsEntry): LyricsAvailability = when (entry) {
+        LyricsEntry.Unresolved,
+        LyricsEntry.Failed -> LyricsAvailability.UNKNOWN
+        LyricsEntry.Loading -> LyricsAvailability.LOADING
+        LyricsEntry.Unavailable -> LyricsAvailability.UNAVAILABLE
+        is LyricsEntry.Ready -> LyricsAvailability.AVAILABLE
+    }
+
+    private fun entryToContent(entry: LyricsEntry): LyricsProvider.LyricsContent = when (entry) {
+        is LyricsEntry.Ready -> entry.content
+        LyricsEntry.Unresolved,
+        LyricsEntry.Loading,
+        LyricsEntry.Unavailable,
+        LyricsEntry.Failed -> LyricsProvider.LyricsContent.None
     }
 
     fun removeCurrentTrackFromPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {

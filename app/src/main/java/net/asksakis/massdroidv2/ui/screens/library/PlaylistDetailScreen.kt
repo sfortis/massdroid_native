@@ -1,19 +1,36 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.fadingEdges
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.PlaylistRemove
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Radio
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -26,6 +43,7 @@ import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
+import net.asksakis.massdroidv2.ui.components.SheetDefaults
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,10 +57,14 @@ fun PlaylistDetailScreen(
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val busyTrackUri by viewModel.busyTrackUri.collectAsStateWithLifecycle()
+    val sortKey by viewModel.sortKey.collectAsStateWithLifecycle()
+    val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
+    val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var moveTrack by remember { mutableStateOf<Track?>(null) }
     var moveFallbackPosition by remember { mutableStateOf(0) }
+    var showSortSheet by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -62,6 +84,9 @@ fun PlaylistDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSortSheet = true }) {
+                        Icon(Icons.Default.Tune, contentDescription = "Sort options")
+                    }
                     IconButton(onClick = { viewModel.togglePlaylistFavorite() }) {
                         Icon(
                             if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -82,6 +107,79 @@ fun PlaylistDetailScreen(
                 .fadingEdges(),
             contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
         ) {
+            item(key = "play-all") {
+                var showPlaySheet by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = { viewModel.playAll() },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Play All")
+                    }
+                    TextButton(
+                        onClick = { showPlaySheet = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
+                    }
+                }
+
+                if (showPlaySheet) {
+                    ModalBottomSheet(
+                        onDismissRequest = { showPlaySheet = false },
+                        containerColor = SheetDefaults.containerColor()
+                    ) {
+                        Column(modifier = Modifier.padding(bottom = 32.dp)) {
+                            ListItem(
+                                colors = SheetDefaults.listItemColors(),
+                                headlineContent = { Text("Play Next") },
+                                supportingContent = { Text("Insert after current track") },
+                                leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                                modifier = Modifier.clickable {
+                                    showPlaySheet = false
+                                    viewModel.playAllNext()
+                                }
+                            )
+                            ListItem(
+                                colors = SheetDefaults.listItemColors(),
+                                headlineContent = { Text("Add to Queue") },
+                                supportingContent = { Text("Add to end of queue") },
+                                leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
+                                modifier = Modifier.clickable {
+                                    showPlaySheet = false
+                                    viewModel.addAllToQueue()
+                                }
+                            )
+                            ListItem(
+                                colors = SheetDefaults.listItemColors(),
+                                headlineContent = { Text("Replace Queue") },
+                                supportingContent = { Text("Replace queue without playing") },
+                                leadingContent = { Icon(Icons.Default.PlaylistPlay, contentDescription = null) },
+                                modifier = Modifier.clickable {
+                                    showPlaySheet = false
+                                    viewModel.replaceQueue()
+                                }
+                            )
+                            ListItem(
+                                colors = SheetDefaults.listItemColors(),
+                                headlineContent = { Text("Start Radio") },
+                                supportingContent = { Text("Play similar tracks") },
+                                leadingContent = { Icon(Icons.Default.Radio, contentDescription = null) },
+                                modifier = Modifier.clickable {
+                                    showPlaySheet = false
+                                    viewModel.startRadioAll()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
             items(items = tracks, key = { track -> "${track.uri}:${track.position ?: -1}" }) { track ->
                 val fallbackPosition = tracks.indexOf(track)
                 MediaItemRow(
@@ -123,6 +221,18 @@ fun PlaylistDetailScreen(
                 )
             }
         }
+    }
+
+    if (showSortSheet) {
+        PlaylistSortSheet(
+            sortKey = sortKey,
+            sortDescending = sortDescending,
+            favoritesOnly = favoritesOnly,
+            onSortSelect = { viewModel.setSortKey(it) },
+            onToggleDirection = { viewModel.setSortKey(sortKey) },
+            onToggleFavorites = { viewModel.toggleFavoritesOnly() },
+            onDismiss = { showSortSheet = false }
+        )
     }
 
     actionSheetItem?.let { target ->
@@ -180,6 +290,107 @@ fun PlaylistDetailScreen(
                 moveTrack = null
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaylistSortSheet(
+    sortKey: PlaylistSortKey,
+    sortDescending: Boolean,
+    favoritesOnly: Boolean,
+    onSortSelect: (PlaylistSortKey) -> Unit,
+    onToggleDirection: () -> Unit,
+    onToggleFavorites: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = isLandscape),
+        sheetMaxWidth = if (isLandscape) 480.dp else Dp.Unspecified
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Text(
+                text = "Playlist options",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Sort",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SortDropdown(
+                        selected = sortKey,
+                        onSelect = onSortSelect
+                    )
+                    FilterChip(
+                        selected = sortDescending,
+                        onClick = onToggleDirection,
+                        label = { Text("Descending") }
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Display",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FilterChip(
+                    selected = favoritesOnly,
+                    onClick = onToggleFavorites,
+                    label = { Text("Favorites only") }
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun SortDropdown(
+    selected: PlaylistSortKey,
+    onSelect: (PlaylistSortKey) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        FilterChip(
+            selected = true,
+            onClick = { expanded = true },
+            label = { Text(selected.label) },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp)) }
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            PlaylistSortKey.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        onSelect(option)
+                        expanded = false
+                    },
+                    trailingIcon = {
+                        if (option == selected) {
+                            Icon(Icons.Default.Check, contentDescription = null)
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 

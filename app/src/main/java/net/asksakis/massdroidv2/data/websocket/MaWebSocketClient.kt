@@ -528,7 +528,7 @@ class MaWebSocketClient(
 
     private fun failAllPending(reason: String) {
         pendingRequests.keys.toList().forEach { id ->
-            pendingRequests.remove(id)?.completeExceptionally(MaApiException(reason, -1))
+            pendingRequests.remove(id)?.complete(null)
         }
         partialResults.clear()
     }

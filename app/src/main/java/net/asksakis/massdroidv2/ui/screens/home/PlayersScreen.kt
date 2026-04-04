@@ -56,6 +56,7 @@ import coil.compose.SubcomposeAsyncImage
 fun PlayersScreen(
     onNavigateToNowPlaying: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToRoomSetup: (roomId: String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val players by viewModel.players.collectAsStateWithLifecycle()
@@ -70,6 +71,9 @@ fun PlayersScreen(
     val currentDetectedRoom by viewModel.currentDetectedRoom.collectAsStateWithLifecycle()
     val playerRoomMap = remember(proximityConfig) {
         proximityConfig.rooms.groupBy { it.playerId }.mapValues { (_, rooms) -> rooms.map { it.name } }
+    }
+    val playerRoomIdMap = remember(proximityConfig) {
+        proximityConfig.rooms.associate { it.playerId to it.id }
     }
     val availablePlayers = remember(players) {
         players.filter { it.available }.sortedBy { it.displayName.lowercase() }
@@ -127,8 +131,7 @@ fun PlayersScreen(
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
                                 isFollowMeSelected = proximityConfig.enabled &&
-                                    currentDetectedRoom?.playerId == player.playerId &&
-                                    selectedPlayer?.playerId == player.playerId,
+                                    currentDetectedRoom?.playerId == player.playerId,
                                 roomNames = playerRoomMap[player.playerId] ?: emptyList(),
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
@@ -162,6 +165,9 @@ fun PlayersScreen(
                             onPlayerSettings = {
                                 settingsPlayer = player
                                 queueMenuPlayer = null
+                            },
+                            onConfigureRoom = playerRoomIdMap[player.playerId]?.let { roomId ->
+                                { onNavigateToRoomSetup(roomId) }
                             },
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
@@ -438,6 +444,7 @@ private fun PlayerQueueSheet(
     sendspinClientId: String?,
     playerRoomMap: Map<String, List<String>> = emptyMap(),
     onPlayerSettings: () -> Unit,
+    onConfigureRoom: (() -> Unit)? = null,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
     onStartSongRadio: () -> Unit,
@@ -509,6 +516,20 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onClearQueue)
                 )
+                if (onConfigureRoom != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Configure Room") },
+                        leadingContent = {
+                            Icon(Icons.Default.MeetingRoom, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onConfigureRoom()
+                            onDismiss()
+                        }
+                    )
+                }
             } else {
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
