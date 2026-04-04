@@ -30,7 +30,8 @@ internal object RoomFitScorer {
         roomId: String,
         current: Map<String, Int>,
         profiles: List<BeaconProfile>,
-        primaryAnchors: Set<String>
+        primaryAnchors: Set<String>,
+        sensitivity: Float = 3.0f
     ): RoomFit {
         var total = 0.0
         var totalWeight = 0.0
@@ -49,7 +50,8 @@ internal object RoomFitScorer {
                 val fit = gaussianSimilarity(
                     rssi = currentRssi.toDouble(),
                     mean = profile.meanRssi.toDouble(),
-                    sigma = profileSigma(profile.variance)
+                    sigma = profileSigma(profile.variance),
+                    strongerSigmaFactor = sensitivity.toDouble()
                 )
                 total += weight * fit
                 matchedFitTotal += weight * fit
@@ -106,8 +108,15 @@ internal object RoomFitScorer {
     private fun profileSigma(variance: Double): Double =
         sqrt(variance).coerceIn(MIN_SIGMA_DBM, MAX_SIGMA_DBM)
 
-    private fun gaussianSimilarity(rssi: Double, mean: Double, sigma: Double): Double {
-        val z = (rssi - mean) / sigma
+    /**
+     * Asymmetric similarity: gentle penalty when observed is stronger than expected
+     * (closer than calibrated = probably same room), hard penalty when weaker
+     * (further away = probably wrong room).
+     */
+    private fun gaussianSimilarity(rssi: Double, mean: Double, sigma: Double, strongerSigmaFactor: Double = 3.0): Double {
+        val delta = rssi - mean  // positive = stronger/closer, negative = weaker/further
+        val effectiveSigma = if (delta > 0) sigma * strongerSigmaFactor else sigma
+        val z = delta / effectiveSigma
         return exp(-0.5 * z * z).coerceIn(0.0, 1.0)
     }
 }

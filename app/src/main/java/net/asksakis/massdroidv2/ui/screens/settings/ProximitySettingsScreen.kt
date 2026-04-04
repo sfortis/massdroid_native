@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import androidx.compose.material3.Slider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -179,15 +180,26 @@ fun ProximitySettingsScreen(
                 )
 
                 ListItem(
-                    headlineContent = { Text("Stop when no room is detected") },
+                    headlineContent = { Text("Detection Sensitivity") },
                     supportingContent = {
-                        Text("After 10 minutes without a detected room, pause the last active speaker.")
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = config.stopWhenNoRoomActive,
-                            onCheckedChange = { viewModel.setStopWhenNoRoomActive(it) }
-                        )
+                        Column {
+                            Text(
+                                String.format("%.1f", config.sensitivity),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Slider(
+                                value = config.sensitivity,
+                                onValueChange = { viewModel.setSensitivity(it) },
+                                valueRange = 1.0f..5.0f,
+                                steps = 7
+                            )
+                            Text(
+                                "Higher values tolerate signal variations better. Lower values require closer match to calibration.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 )
 

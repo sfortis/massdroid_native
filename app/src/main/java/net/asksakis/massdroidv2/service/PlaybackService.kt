@@ -83,6 +83,8 @@ class PlaybackService : MediaLibraryService() {
         private const val COOLDOWN_AFTER_SWITCH_MS = 15_000L
         private const val NO_ROOM_STOP_TIMEOUT_MS = 10 * 60 * 1000L
         private const val HIGH_ACCURACY_WINDOW_MS = 30_000L
+        private const val AWAY_MODE_TIMEOUT_MS = 5 * 60 * 1000L
+        private const val AWAY_MODE_SCAN_INTERVAL_MS = 60_000L
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
         private const val HIGH_ACCURACY_SNAPSHOT_RETAIN_MS = 30_000L
         private const val HIGH_ACCURACY_FRESH_SNAPSHOT_MS = 8_000L
@@ -333,6 +335,7 @@ class PlaybackService : MediaLibraryService() {
                 val wifi = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
                 if (wifi != wifiState.value) {
                     Log.d(TAG, "Network changed: ${if (wifi) "WiFi" else "Mobile"}")
+                    if (wifi) resetAwayMode("wifi-connected")
                 }
                 wifiState.value = wifi
             }
@@ -580,19 +583,18 @@ class PlaybackService : MediaLibraryService() {
             proximityConfigStore.load()
             var wasEnabled = false
             var roomCount = 0
+            var roomHash = 0
             proximityConfigStore.config.collect { config ->
                 val shouldRun = shouldRunProximity(config)
-                val structureChanged = config.enabled != wasEnabled || config.rooms.size != roomCount
+                val currentHash = config.rooms.sumOf { it.beaconProfiles.size + it.id.hashCode() }
+                val structureChanged = config.enabled != wasEnabled || config.rooms.size != roomCount || currentHash != roomHash
                 wasEnabled = config.enabled
                 roomCount = config.rooms.size
+                roomHash = currentHash
                 if (shouldRun && (structureChanged || proximityJob?.isActive != true)) {
                     startProximityEngine()
                 } else if (!shouldRun) {
                     stopProximityEngine()
-                } else if (!config.stopWhenNoRoomActive) {
-                    cancelNoRoomStopTimer("disabled")
-                } else if (roomDetector.currentRoom.value == null) {
-                    scheduleNoRoomStopIfNeeded("enabled-while-no-room")
                 }
             }
         }
@@ -636,7 +638,7 @@ class PlaybackService : MediaLibraryService() {
                     cancelNoRoomStopTimer("room-active")
                 } else {
                     if (previousRoomId != null) {
-                        scheduleNoRoomStopIfNeeded("room-lost")
+                        scheduleNoRoomStopIfNeeded("room-lost", leftRoomId = previousRoomId)
                     }
                     previousRoomId = null
                 }
@@ -655,6 +657,7 @@ class PlaybackService : MediaLibraryService() {
     private fun startProximityEngine() {
         stopProximityEngine()
         Log.d(TAG, "Starting proximity engine")
+        proximityScanner.startWifiMonitor()
 
         // Skip full radio startup if outside schedule
         if (isWithinSchedule()) {
@@ -670,7 +673,7 @@ class PlaybackService : MediaLibraryService() {
                 runStartupWarmup()
                 val config = proximityConfigStore.config.value
                 val hasWifiOnlyRooms = config.rooms.any { room ->
-                    room.stickToConnectedWifi &&
+                    room.wifiMatchMode != null &&
                         (!room.connectedBssid.isNullOrBlank() || !room.connectedSsid.isNullOrBlank())
                 }
                 if (roomDetector.currentRoom.value == null && hasWifiOnlyRooms) {
@@ -697,103 +700,82 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
 
-            // Main loop: screen-on = persistent snapshot, screen-off = PendingIntent background scan
+            /*
+             * Main detection loop.
+             *
+             * Three operating modes based on device state:
+             *   SCREEN_ON  – persistent BLE scan + periodic burst reads
+             *   SCREEN_OFF + MOTION – wake-lock fast-path burst reads
+             *   SCREEN_OFF + IDLE  – low-power persistent scan, no burst
+             *
+             * Within SCREEN_ON:
+             *   Motion active → LOW_LATENCY scan, burst every 2 s
+             *   No motion     → LOW_POWER scan, burst every 12 s
+             *   Away mode     → no room for 5 min → burst every 60 s
+             *
+             * Room changes require motion, so it is safe to scan less
+             * aggressively when idle. The scanner always runs (even idle)
+             * to keep the device buffer warm for instant detection on the
+             * next motion event.
+             */
+            val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+            Log.d(TAG, "Proximity main loop starting, enabled=${proximityConfigStore.config.value.enabled}")
             while (proximityConfigStore.config.value.enabled) {
-                // Fully suspend proximity subsystem outside schedule
+
+                // ── Gate: schedule ──
                 if (!isWithinSchedule()) {
-                    if (!scheduleSuspended) {
-                        suspendProximityForSchedule()
-                        scheduleSuspended = true
-                    }
-                    kotlinx.coroutines.delay(60_000)
-                    continue
+                    if (!scheduleSuspended) { suspendProximityForSchedule(); scheduleSuspended = true }
+                    kotlinx.coroutines.delay(60_000); continue
                 }
+                if (scheduleSuspended) { resumeProximityAfterSchedule(); scheduleSuspended = false }
 
-                if (scheduleSuspended) {
-                    resumeProximityAfterSchedule()
-                    scheduleSuspended = false
-                }
-
+                // ── Gate: doze ──
                 if (isDeviceInDoze()) {
-                    stopPersistentScanTracked()
-                    proximityScanner.stopBackgroundScan()
-                    motionGate.stop()
-                    highAccuracyUntilMs = 0L
-                    highAccuracyStartedAtMs = 0L
+                    stopPersistentScanTracked(); proximityScanner.stopBackgroundScan(); motionGate.stop()
+                    highAccuracyUntilMs = 0L; highAccuracyStartedAtMs = 0L
                     kotlinx.coroutines.delay(30_000)
                     if (!isDeviceInDoze() && isWithinSchedule()) {
-                        motionGate.start()
-                        startBackgroundScanForConfig(proximityConfigStore.config.value)
+                        motionGate.start(); startBackgroundScanForConfig(proximityConfigStore.config.value)
                         ensurePersistentScan(lowPower = true)
                     }
                     continue
                 }
 
+                // ── Evaluate state ──
                 val isMoving = motionGate.isMoving.value
                 val highAccuracy = updateHighAccuracyWindow(isMoving) || proximityScanner.uiHighAccuracyRequested
-                val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
                 val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
                 val cooledDown = System.currentTimeMillis() - lastRoomSwitchMs >= COOLDOWN_AFTER_SWITCH_MS
 
-                if (screenOn && cooledDown) {
-                    ensurePersistentScan(lowPower = !highAccuracy)
-                    if (proximityScanner.zeroDeviceStreak >= 5) {
-                        Log.w(TAG, "Scanner recovery: ${proximityScanner.zeroDeviceStreak} zero-device reads")
-                        stopPersistentScanTracked()
-                        ensurePersistentScan(lowPower = !highAccuracy)
-                        proximityScanner.zeroDeviceStreak = 0
-                    }
-                    burstScan(if (highAccuracy) "motion" else "screen")
-                    val interval = if (highAccuracy) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3
-                    kotlinx.coroutines.delay(interval)
-                } else if (highAccuracy && !screenOn && cooledDown) {
-                    // Screen off + motion: keep the persistent scanner in high-accuracy mode
-                    // and read quick snapshots instead of starting standalone scans.
-                    val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-                    val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:proximity")
-                    wl.acquire(15_000)
-                    try {
-                        ensurePersistentScan(lowPower = false)
-                        val wifi = currentConnectedWifi()
-                        val cfg = proximityConfigStore.config.value
-                        for (burst in 1..2) {
-                            val devices = readFastPathSnapshotWithWarmRetry(
-                                logPrefix = "BLE fast-path",
-                                detailPrefix = "motion $burst/2"
-                            )
-                            if (devices.isNotEmpty()) {
-                                if (shouldHoldWifiOnlyRoom(cfg, wifi)) {
-                                    Log.d(TAG, "Wi-Fi-only room hold (fast-path:motion-$burst): keeping ${roomDetector.currentRoom.value?.roomName}")
-                                    break
-                                }
-                                Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
-                                logBleDevices("fast-path:motion-$burst", devices, cfg)
-                                val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
-                                val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
-                                when (val result = roomDetector.detectDetailed(
-                                    rssiMap,
-                                    cfg,
-                                    motionActive = true,
-                                    wifi = wifi.toWifiMatchContext()
-                                )) {
-                                    is DetectResult.Confirmed -> {
-                                        handleConfirmedRoom(result.room, cfg, hadCurrentRoomBeforeDetection)
-                                        break
-                                    }
-                                    else -> Unit
-                                }
-                            }
-                            if (burst < 2) kotlinx.coroutines.delay(1_500)
+                when {
+                    // ── Screen ON ──
+                    screenOn && cooledDown -> {
+                        // Away mode: no room matched for 5 min, conserve battery
+                        if (isInAwayMode()) {
+                            ensurePersistentScan(lowPower = true)
+                            recoverScannerIfNeeded(false)
+                            burstScan("away")
+                            kotlinx.coroutines.delay(AWAY_MODE_SCAN_INTERVAL_MS)
+                            continue
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "BLE fast-path failed: ${e.message}")
-                    } finally {
-                        if (wl.isHeld) wl.release()
+                        // Normal: scan aggressiveness follows motion state
+                        ensurePersistentScan(lowPower = !highAccuracy)
+                        recoverScannerIfNeeded(highAccuracy)
+                        burstScan(if (highAccuracy) "motion" else "screen")
+                        kotlinx.coroutines.delay(if (highAccuracy) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3)
                     }
-                    kotlinx.coroutines.delay(MOTION_SCAN_INTERVAL_MS)
-                } else {
-                    ensurePersistentScan(lowPower = true)
-                    kotlinx.coroutines.delay(2_000)
+
+                    // ── Screen OFF + motion ──
+                    !screenOn && highAccuracy && cooledDown -> {
+                        screenOffMotionBurst()
+                        kotlinx.coroutines.delay(MOTION_SCAN_INTERVAL_MS)
+                    }
+
+                    // ── Screen OFF + idle (or cooldown active) ──
+                    else -> {
+                        ensurePersistentScan(lowPower = true)
+                        kotlinx.coroutines.delay(2_000)
+                    }
                 }
             }
         }
@@ -865,7 +847,7 @@ class PlaybackService : MediaLibraryService() {
         config: net.asksakis.massdroidv2.data.proximity.ProximityConfig
     ): net.asksakis.massdroidv2.data.proximity.RoomConfig? {
         val currentRoomId = roomDetector.currentRoom.value?.roomId ?: return null
-        return config.rooms.find { it.id == currentRoomId && it.stickToConnectedWifi }
+        return config.rooms.find { it.id == currentRoomId && it.wifiMatchMode != null }
     }
 
     private fun shouldHoldWifiOnlyRoom(
@@ -873,33 +855,35 @@ class PlaybackService : MediaLibraryService() {
         wifi: ProximityScanner.ConnectedWifiInfo?
     ): Boolean {
         val currentRoom = currentWifiOnlyRoomConfig(config) ?: return false
-        val expectedBssid = currentRoom.connectedBssid
-        val expectedSsid = currentRoom.connectedSsid
+        val mode = currentRoom.wifiMatchMode ?: return false
 
-        if (!expectedBssid.isNullOrBlank() && wifi?.bssid != null && expectedBssid.equals(wifi.bssid, ignoreCase = true)) {
+        val matches = when (mode) {
+            net.asksakis.massdroidv2.data.proximity.WifiMatchMode.BSSID ->
+                !currentRoom.connectedBssid.isNullOrBlank() && wifi?.bssid != null &&
+                    currentRoom.connectedBssid.equals(wifi.bssid, ignoreCase = true)
+            net.asksakis.massdroidv2.data.proximity.WifiMatchMode.SSID ->
+                !currentRoom.connectedSsid.isNullOrBlank() && wifi?.ssid != null &&
+                    currentRoom.connectedSsid.equals(wifi.ssid, ignoreCase = true)
+        }
+
+        if (matches) {
             lastConfirmedWifiRoomId = currentRoom.id
-            lastConfirmedWifiBssid = expectedBssid
-            lastConfirmedWifiSsid = expectedSsid
+            lastConfirmedWifiBssid = wifi?.bssid ?: currentRoom.connectedBssid
+            lastConfirmedWifiSsid = wifi?.ssid ?: currentRoom.connectedSsid
             lastConfirmedWifiAtMs = System.currentTimeMillis()
             return false
         }
 
-        if (!expectedSsid.isNullOrBlank() && wifi?.ssid != null && expectedSsid.equals(wifi.ssid, ignoreCase = true)) {
-            lastConfirmedWifiRoomId = currentRoom.id
-            lastConfirmedWifiBssid = wifi.bssid
-            lastConfirmedWifiSsid = expectedSsid
-            lastConfirmedWifiAtMs = System.currentTimeMillis()
+        if (wifi != null) {
+            if (roomDetector.currentRoom.value?.roomId == currentRoom.id) {
+                Log.d(TAG, "Wi-Fi-only room ${currentRoom.name} no longer matches connected WiFi, clearing")
+                roomDetector.reset()
+            }
             return false
         }
-
-        if (wifi != null) return false
 
         val now = System.currentTimeMillis()
         return lastConfirmedWifiRoomId == currentRoom.id &&
-            (
-                (!expectedBssid.isNullOrBlank() && lastConfirmedWifiBssid == expectedBssid) ||
-                    (!expectedSsid.isNullOrBlank() && lastConfirmedWifiSsid == expectedSsid)
-                ) &&
             now - lastConfirmedWifiAtMs <= WIFI_ROOM_GRACE_MS
     }
 
@@ -910,7 +894,7 @@ class PlaybackService : MediaLibraryService() {
     ) {
         val roomConfig = config.rooms.find { it.id == detected.roomId }
         val currentWifi = currentConnectedWifi()
-        if (roomConfig?.stickToConnectedWifi == true &&
+        if (roomConfig?.wifiMatchMode != null &&
             (!roomConfig.connectedBssid.isNullOrBlank() || !roomConfig.connectedSsid.isNullOrBlank())
         ) {
             lastConfirmedWifiRoomId = roomConfig.id
@@ -938,7 +922,7 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
         }
-        if (!hadCurrentRoomBeforeDetection && roomConfig?.stickToConnectedWifi == true) {
+        if (!hadCurrentRoomBeforeDetection && roomConfig?.wifiMatchMode != null) {
             suppressNextProximityRoomAction = true
             Log.d(TAG, "Proximity startup-sync: suppressing first Wi-Fi room action for ${detected.roomName}")
         }
@@ -978,6 +962,68 @@ class PlaybackService : MediaLibraryService() {
         stopPersistentScanTracked(clearBuffers = false)
         proximityScanner.startPersistentScan(lowPower = lowPower)
         persistentScanLowPower = lowPower
+    }
+
+    /** Reset away mode so the next scan cycle runs at full speed. */
+    private fun resetAwayMode(reason: String) {
+        if (!isInAwayMode()) return
+        Log.d(TAG, "Away mode reset ($reason)")
+        roomDetector.resetNoMatchStreak()
+        highAccuracyStartedAtMs = System.currentTimeMillis()
+    }
+
+    /** No room detected for 5+ minutes: likely not at home. */
+    private fun isInAwayMode(): Boolean {
+        if (roomDetector.currentRoom.value != null) return false
+        if (roomDetector.noMatchStreak == 0) return false
+        val ref = roomDetector.lastConfirmedAtMs.takeIf { it > 0 } ?: highAccuracyStartedAtMs
+        return System.currentTimeMillis() - ref > AWAY_MODE_TIMEOUT_MS
+    }
+
+    /** Restart persistent scanner if it returned empty results too many times. */
+    private fun recoverScannerIfNeeded(highAccuracy: Boolean) {
+        if (proximityScanner.zeroDeviceStreak < 5) return
+        Log.w(TAG, "Scanner recovery: ${proximityScanner.zeroDeviceStreak} zero-device reads")
+        stopPersistentScanTracked()
+        ensurePersistentScan(lowPower = !highAccuracy)
+        proximityScanner.zeroDeviceStreak = 0
+        roomDetector.resetNoMatchStreak()
+    }
+
+    /** Screen-off motion burst: wake lock + 2 fast-path snapshots. */
+    private suspend fun screenOffMotionBurst() {
+        val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:proximity")
+        wl.acquire(15_000)
+        try {
+            ensurePersistentScan(lowPower = false)
+            val wifi = currentConnectedWifi()
+            val cfg = proximityConfigStore.config.value
+            for (burst in 1..2) {
+                val devices = readFastPathSnapshotWithWarmRetry(
+                    logPrefix = "BLE fast-path", detailPrefix = "motion $burst/2"
+                )
+                if (devices.isNotEmpty()) {
+                    if (shouldHoldWifiOnlyRoom(cfg, wifi)) {
+                        Log.d(TAG, "Wi-Fi-only room hold (fast-path:motion-$burst): keeping ${roomDetector.currentRoom.value?.roomName}")
+                        break
+                    }
+                    Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
+                    logBleDevices("fast-path:motion-$burst", devices, cfg)
+                    val rssiMap = buildDetectionAnchorSnapshot(devices, cfg)
+                    val hadRoom = roomDetector.currentRoom.value != null
+                    when (val result = roomDetector.detectDetailed(rssiMap, cfg, motionActive = true, wifi = wifi.toWifiMatchContext())) {
+                        is DetectResult.Confirmed -> { handleConfirmedRoom(result.room, cfg, hadRoom); break }
+                        else -> Unit
+                    }
+                }
+                if (burst < 2) kotlinx.coroutines.delay(1_500)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "BLE fast-path failed: ${e.message}")
+        } finally {
+            if (wl.isHeld) wl.release()
+        }
     }
 
     private fun stopPersistentScanTracked(clearBuffers: Boolean = true) {
@@ -1262,24 +1308,26 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun scheduleNoRoomStopIfNeeded(reason: String) {
+    private fun scheduleNoRoomStopIfNeeded(reason: String, leftRoomId: String? = null) {
         if (noRoomStopJob?.isActive == true) return
         val config = proximityConfigStore.config.value
-        if (!shouldRunProximity(config) || !config.stopWhenNoRoomActive) return
+        if (!shouldRunProximity(config)) return
+        val leftRoom = leftRoomId?.let { id -> config.rooms.find { it.id == id } }
+        if (leftRoom?.stopOnLeave != true) return
         if (!isWithinSchedule()) return
         val player = playerRepository.selectedPlayer.value ?: return
         if (player.state != PlaybackState.PLAYING) return
         noRoomStopArmedPlayerId = player.playerId
 
         noRoomStopJob = scope.launch {
-            Log.d(TAG, "No-room stop timer armed ($reason): ${player.displayName} in 10m")
+            Log.d(TAG, "No-room stop timer armed ($reason): ${player.displayName} in 10m (left ${leftRoom.name})")
             delay(NO_ROOM_STOP_TIMEOUT_MS)
 
             val latestConfig = proximityConfigStore.config.value
             val currentRoom = roomDetector.currentRoom.value
             val armedPlayerId = noRoomStopArmedPlayerId
             val armedPlayer = armedPlayerId?.let { id -> playerRepository.players.value.find { it.playerId == id } }
-            if (!shouldRunProximity(latestConfig) || !latestConfig.stopWhenNoRoomActive) return@launch
+            if (!shouldRunProximity(latestConfig)) return@launch
             if (currentRoom != null) return@launch
             if (armedPlayer == null || armedPlayer.state != PlaybackState.PLAYING) return@launch
 
@@ -1331,7 +1379,6 @@ class PlaybackService : MediaLibraryService() {
             Log.w(TAG, "Proximity transfer source ambiguous for ${detected.roomName}: [$names]")
         }
 
-        applyRoomVolume(detected)
         showRoomDetectedNotification(detected)
 
         if (targetIsPlaying) {
@@ -1346,6 +1393,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         if (config.autoTransfer && sourcePlayerId != null && sourcePlayerId != detected.playerId) {
+            applyRoomVolume(detected)
             performProximityTransfer(sourcePlayerId, detected)
         } else {
             showProximityNotification(
@@ -1362,6 +1410,7 @@ class PlaybackService : MediaLibraryService() {
         motionGate.stop()
         stopPersistentScanTracked()
         proximityScanner.stopBackgroundScan()
+        proximityScanner.stopWifiMonitor()
         roomDetector.reset()
         proximityQuickRetryJob?.cancel()
         proximityQuickRetryJob = null
@@ -1388,10 +1437,6 @@ class PlaybackService : MediaLibraryService() {
             if (proximityJob?.isActive != true) {
                 Log.d(TAG, "Reevaluating proximity engine ($reason): start")
                 startProximityEngine()
-            } else if (!config.stopWhenNoRoomActive) {
-                cancelNoRoomStopTimer("reeval-disabled")
-            } else if (roomDetector.currentRoom.value == null) {
-                scheduleNoRoomStopIfNeeded("reeval-no-room")
             }
         } else {
             Log.d(TAG, "Reevaluating proximity engine ($reason): stop")
@@ -1570,7 +1615,8 @@ class PlaybackService : MediaLibraryService() {
             transferCandidates.size == 1 -> transferCandidates.first()
             transferCandidates.isEmpty() &&
                 selectedAvailablePlayer != null &&
-                selectedAvailablePlayer.playerId != targetPlayerId -> selectedAvailablePlayer
+                selectedAvailablePlayer.playerId != targetPlayerId &&
+                selectedAvailablePlayer.state == PlaybackState.PLAYING -> selectedAvailablePlayer
             else -> null
         }
 

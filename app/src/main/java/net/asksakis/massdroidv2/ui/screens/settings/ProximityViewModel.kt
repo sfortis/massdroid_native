@@ -26,6 +26,7 @@ import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.proximity.RoomFingerprint
 import net.asksakis.massdroidv2.data.proximity.ProximitySchedule
 import net.asksakis.massdroidv2.data.proximity.RoomPlaybackConfig
+import net.asksakis.massdroidv2.data.proximity.WifiMatchMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -143,8 +144,14 @@ class ProximityViewModel @Inject constructor(
         viewModelScope.launch { configStore.update { it.copy(autoTransfer = auto) } }
     }
 
-    fun setStopWhenNoRoomActive(enabled: Boolean) {
-        viewModelScope.launch { configStore.update { it.copy(stopWhenNoRoomActive = enabled) } }
+    fun updateRoomStopOnLeave(roomId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            configStore.update { config ->
+                config.copy(rooms = config.rooms.map { r ->
+                    if (r.id == roomId) r.copy(stopOnLeave = enabled) else r
+                })
+            }
+        }
     }
 
     fun updateSchedule(transform: (ProximitySchedule) -> ProximitySchedule) {
@@ -171,11 +178,15 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
-    fun updateRoomStickToConnectedWifi(roomId: String, enabled: Boolean) {
+    fun setSensitivity(value: Float) {
+        viewModelScope.launch { configStore.update { it.copy(sensitivity = value) } }
+    }
+
+    fun updateRoomWifiMatchMode(roomId: String, mode: WifiMatchMode?) {
         viewModelScope.launch {
             configStore.update { config ->
                 config.copy(rooms = config.rooms.map { r ->
-                    if (r.id == roomId) r.copy(stickToConnectedWifi = enabled) else r
+                    if (r.id == roomId) r.copy(wifiMatchMode = mode) else r
                 })
             }
             roomDetector.reset()

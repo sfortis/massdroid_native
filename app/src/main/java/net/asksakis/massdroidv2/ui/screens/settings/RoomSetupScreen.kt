@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.data.proximity.WifiMatchMode
 import androidx.compose.foundation.background
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
@@ -179,8 +181,8 @@ fun RoomSetupScreen(
                 SectionHeader("Detection")
 
                 val currentPolicy = existingRoom.detectionPolicy
-                val wifiOnlyEnabled = existingRoom.stickToConnectedWifi
-                val canUseWifiOnly = existingRoom.connectedBssid != null
+                val wifiMode = existingRoom.wifiMatchMode
+                val canUseWifi = existingRoom.connectedBssid != null || existingRoom.connectedSsid != null
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -191,35 +193,39 @@ fun RoomSetupScreen(
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            "Wi-Fi AP Override",
+                            "Wi-Fi Override",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                "Stick to connected Wi-Fi AP",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.weight(1f)
+                            FilterChip(
+                                selected = wifiMode == null,
+                                onClick = { viewModel.updateRoomWifiMatchMode(existingRoom.id, null) },
+                                label = { Text("Off") }
                             )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Switch(
-                                checked = wifiOnlyEnabled,
-                                onCheckedChange = { viewModel.updateRoomStickToConnectedWifi(existingRoom.id, it) },
-                                enabled = canUseWifiOnly || wifiOnlyEnabled
+                            FilterChip(
+                                selected = wifiMode == WifiMatchMode.BSSID,
+                                onClick = { viewModel.updateRoomWifiMatchMode(existingRoom.id, WifiMatchMode.BSSID) },
+                                label = { Text("BSSID") },
+                                enabled = canUseWifi
+                            )
+                            FilterChip(
+                                selected = wifiMode == WifiMatchMode.SSID,
+                                onClick = { viewModel.updateRoomWifiMatchMode(existingRoom.id, WifiMatchMode.SSID) },
+                                label = { Text("SSID") },
+                                enabled = canUseWifi
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            if (canUseWifiOnly) {
-                                "Use the current Wi-Fi access point instead of BLE beacons for this room. Best for separate places like Home, Office, or other remote locations, not nearby rooms on the same Wi-Fi."
-                            } else {
-                                "Calibrate once while connected to the room's Wi-Fi AP to enable this option."
+                            when {
+                                !canUseWifi -> "Calibrate once while connected to the room's Wi-Fi to enable."
+                                wifiMode == WifiMatchMode.BSSID -> "Match exact access point (${existingRoom.connectedBssid}). Best for single-AP locations."
+                                wifiMode == WifiMatchMode.SSID -> "Match network name (${existingRoom.connectedSsid}). Best for mesh/enterprise with multiple APs."
+                                else -> "Use Wi-Fi instead of BLE beacons. Best for separate locations (home, office)."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -242,7 +248,7 @@ fun RoomSetupScreen(
                             "Detection Mode",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
-                            color = if (wifiOnlyEnabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+                            color = if (wifiMode != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
@@ -253,8 +259,8 @@ fun RoomSetupScreen(
                                 val selected = currentPolicy == policy
                                 androidx.compose.material3.FilterChip(
                                     selected = selected,
-                                    onClick = { if (!wifiOnlyEnabled) viewModel.updateRoomPolicy(existingRoom.id, policy) },
-                                    enabled = !wifiOnlyEnabled,
+                                    onClick = { if (wifiMode == null) viewModel.updateRoomPolicy(existingRoom.id, policy) },
+                                    enabled = wifiMode == null,
                                     label = { Text(policy.name.lowercase().replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelMedium) },
                                     leadingIcon = if (selected) { { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) } } else null,
                                     modifier = Modifier.weight(1f)
@@ -263,7 +269,7 @@ fun RoomSetupScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            if (wifiOnlyEnabled) {
+                            if (wifiMode != null) {
                                 "Detection mode is disabled while Wi-Fi AP override is enabled."
                             } else {
                                 when (currentPolicy) {
@@ -288,6 +294,42 @@ fun RoomSetupScreen(
                     playbackConfig = existingRoom.playbackConfig,
                     viewModel = viewModel
                 )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Stop on leave",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "Pause playback after 10 minutes when you leave this room.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Switch(
+                            checked = existingRoom.stopOnLeave,
+                            onCheckedChange = { viewModel.updateRoomStopOnLeave(existingRoom.id, it) }
+                        )
+                    }
+                }
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))

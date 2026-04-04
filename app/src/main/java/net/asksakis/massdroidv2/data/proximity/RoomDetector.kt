@@ -12,7 +12,7 @@ private const val TAG = "RoomDetector"
 private const val TOP_SCORE_ROOMS = 5
 private const val COVERAGE_ANCHORS = 8
 private const val STAY_BIAS_FACTOR = 1.08
-private const val NO_MATCH_CLEAR_THRESHOLD = 5
+private const val NO_MATCH_CLEAR_THRESHOLD = 10
 private const val SCORE_MARGIN_SCALE = 10.0
 
 sealed interface DetectResult {
@@ -46,7 +46,13 @@ class RoomDetector @Inject constructor() {
 
     private var consecutiveWinnerId: String? = null
     private var consecutiveWinCount = 0
-    private var noMatchStreak = 0
+    var noMatchStreak = 0
+        private set
+    var lastConfirmedAtMs = 0L
+        private set
+    private var lastScanActivityMs = 0L
+    private val CONFIRM_GRACE_MS = 15_000L
+    private val SCANNER_WARMUP_GRACE_MS = 30_000L
     @Volatile private var suppressed = false
 
     fun suppress() { suppressed = true }
@@ -98,6 +104,7 @@ class RoomDetector @Inject constructor() {
             handleNoMatch("empty scan")
             return DetectResult.NoCoverage
         }
+        lastScanActivityMs = System.currentTimeMillis()
 
         val eligibleRooms = eligibleBleRooms(config.rooms)
         if (eligibleRooms.isEmpty()) return DetectResult.NoDecision
@@ -107,7 +114,8 @@ class RoomDetector @Inject constructor() {
             eligibleRooms = eligibleRooms,
             scanResults = scanResults,
             roomPrimaryBleAnchors = roomPrimaryBleAnchors,
-            wifi = wifi
+            wifi = wifi,
+            sensitivity = config.sensitivity
         )
 
         if (roomFits.isEmpty()) {
@@ -177,6 +185,7 @@ class RoomDetector @Inject constructor() {
         val changed = _currentRoom.value?.roomId != winnerRoom.id
         if (commitRoomChange) {
             _currentRoom.value = winnerDetected
+            lastConfirmedAtMs = System.currentTimeMillis()
         }
         return if (changed) DetectResult.Confirmed(winnerDetected) else DetectResult.NoDecision
     }
@@ -188,7 +197,24 @@ class RoomDetector @Inject constructor() {
         _currentRoom.value = null
     }
 
+    fun resetNoMatchStreak() {
+        noMatchStreak = 0
+    }
+
     private fun handleNoMatch(reason: String) {
+        val now = System.currentTimeMillis()
+        // Grace period: ignore empty scans shortly after confirming a room
+        if (_currentRoom.value != null && now - lastConfirmedAtMs < CONFIRM_GRACE_MS) {
+            Log.d(TAG, "Fit: skip ($reason, confirm grace)")
+            return
+        }
+        // Scanner warmup grace: after doze/long gap, scanner needs time to fill buffer
+        if (_currentRoom.value != null && lastScanActivityMs > 0 && now - lastScanActivityMs > SCANNER_WARMUP_GRACE_MS) {
+            Log.d(TAG, "Fit: skip ($reason, scanner warmup after ${(now - lastScanActivityMs) / 1000}s gap)")
+            lastScanActivityMs = now // reset so next empty scan counts normally
+            noMatchStreak = 0
+            return
+        }
         noMatchStreak++
         if (noMatchStreak >= NO_MATCH_CLEAR_THRESHOLD && _currentRoom.value != null) {
             Log.d(TAG, "Fit: left all rooms ($reason x$noMatchStreak)")
@@ -203,12 +229,7 @@ class RoomDetector @Inject constructor() {
         rooms: List<RoomConfig>,
         wifi: WifiMatchContext
     ): WifiOverrideMatch? {
-        val exactBssidMatches = rooms.filter { room -> room.matchesWifi(wifi, allowSsidFallback = false) }
-        val wifiOnlyMatches = if (exactBssidMatches.isNotEmpty()) {
-            exactBssidMatches
-        } else {
-            rooms.filter { room -> room.matchesWifi(wifi, allowSsidFallback = true) }
-        }
+        val wifiOnlyMatches = rooms.filter { room -> room.matchesWifi(wifi) }
         if (wifiOnlyMatches.isEmpty()) return null
         if (wifiOnlyMatches.size > 1) {
             val currentRoomMatch = wifiOnlyMatches.find { it.id == _currentRoom.value?.roomId }
@@ -230,7 +251,7 @@ class RoomDetector @Inject constructor() {
 
     private fun eligibleBleRooms(rooms: List<RoomConfig>): List<RoomConfig> =
         rooms.filter { room ->
-            if (room.stickToConnectedWifi) return@filter false
+            if (room.wifiMatchMode != null) return@filter false
             if (room.beaconProfiles.isEmpty()) return@filter false
             val rules = room.detectionPolicy.rules()
             if (!rules.allowWeakCalibration && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false
@@ -250,7 +271,8 @@ class RoomDetector @Inject constructor() {
         eligibleRooms: List<RoomConfig>,
         scanResults: Map<String, Int>,
         roomPrimaryBleAnchors: Map<String, Set<String>>,
-        wifi: WifiMatchContext
+        wifi: WifiMatchContext,
+        sensitivity: Float = 3.0f
     ): List<RoomFit> {
         val roomFits = mutableListOf<RoomFit>()
         for (room in eligibleRooms) {
@@ -258,7 +280,7 @@ class RoomDetector @Inject constructor() {
             val bleMatched = scanResults.keys.count { it in primaryAnchors }
             if (bleMatched < room.detectionPolicy.rules().minBleCoverage) continue
 
-            val fit = RoomFitScorer.score(room.id, scanResults, room.beaconProfiles, primaryAnchors)
+            val fit = RoomFitScorer.score(room.id, scanResults, room.beaconProfiles, primaryAnchors, sensitivity)
             roomFits.add(fit.copy(score = adjustedRoomScore(room, fit.score, wifi)))
         }
         return roomFits
@@ -271,25 +293,22 @@ class RoomDetector @Inject constructor() {
     ): Double {
         val stayAdjustedScore = if (_currentRoom.value?.roomId == room.id) rawScore * STAY_BIAS_FACTOR else rawScore
         return when {
-            room.matchesWifi(wifi, allowSsidFallback = false) -> stayAdjustedScore + 0.05
-            room.matchesWifi(wifi, allowSsidFallback = true) -> stayAdjustedScore + 0.03
+            room.matchesWifi(wifi) -> stayAdjustedScore + 0.05
             wifi.bssid == null && wifi.ssid == null -> stayAdjustedScore
             else -> stayAdjustedScore - 0.05
         }
     }
 
-    private fun RoomConfig.matchesWifi(
-        wifi: WifiMatchContext,
-        allowSsidFallback: Boolean
-    ): Boolean {
-        if (!stickToConnectedWifi) return false
-        if (!connectedBssid.isNullOrBlank() && !wifi.bssid.isNullOrBlank() && connectedBssid.equals(wifi.bssid, ignoreCase = true)) {
-            return true
+    private fun RoomConfig.matchesWifi(wifi: WifiMatchContext): Boolean {
+        val mode = wifiMatchMode ?: return false
+        return when (mode) {
+            WifiMatchMode.BSSID ->
+                !connectedBssid.isNullOrBlank() && !wifi.bssid.isNullOrBlank() &&
+                    connectedBssid.equals(wifi.bssid, ignoreCase = true)
+            WifiMatchMode.SSID ->
+                !connectedSsid.isNullOrBlank() && !wifi.ssid.isNullOrBlank() &&
+                    connectedSsid.equals(wifi.ssid, ignoreCase = true)
         }
-        if (!allowSsidFallback) return false
-        return !connectedSsid.isNullOrBlank() &&
-            !wifi.ssid.isNullOrBlank() &&
-            connectedSsid.equals(wifi.ssid, ignoreCase = true)
     }
 
     private fun RoomConfig.toDetectedRoom(): DetectedRoom =
