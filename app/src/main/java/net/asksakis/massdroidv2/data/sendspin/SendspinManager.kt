@@ -276,12 +276,13 @@ class SendspinManager(
     }
 
     fun setStaticDelayMs(delayMs: Int) {
-        val clamped = delayMs.coerceIn(-500, 5000)
+        val clamped = delayMs.coerceIn(0, 5000)
         val oldDelay = audio.staticDelayMs
         if (clamped == oldDelay) return
         audio.staticDelayMs = clamped
-        // No flush: takes effect at next startup (seek/track change).
-        // Flushing causes 24s buffer storm and complete desync.
+        // Value changes immediately (affects targetLocalPlayUs, late-frame detection).
+        // Full alignment effect at next startup (seek/track change).
+        // No flush: flushing causes buffer storm and desync.
         // Notify server of new delay so it adjusts buffer headroom
         sendCurrentState(currentSyncStatePayloadValue())
         Log.d(TAG, "Static delay: ${oldDelay}ms -> ${clamped}ms")

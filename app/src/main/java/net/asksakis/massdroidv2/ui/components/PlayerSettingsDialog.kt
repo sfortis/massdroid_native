@@ -224,7 +224,7 @@ fun PlayerSettingsDialog(
                             ) {
                                 IconButton(
                                     onClick = {
-                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
                                         onStaticDelayChanged?.invoke(staticDelayMs)
                                     },
                                     modifier = Modifier.size(36.dp)
@@ -244,7 +244,7 @@ fun PlayerSettingsDialog(
                                     onValueChangeFinished = {
                                         onStaticDelayChanged?.invoke(staticDelayMs)
                                     },
-                                    valueRange = -500f..500f,
+                                    valueRange = 0f..500f,
                                     steps = 0,
                                     modifier = Modifier.weight(1f)
                                 )

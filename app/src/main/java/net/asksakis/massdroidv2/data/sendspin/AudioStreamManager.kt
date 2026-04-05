@@ -131,7 +131,6 @@ class AudioStreamManager {
     private var anchorServerTimestampUs = 0L          // server ts of first played frame
     private var anchorLocalUs = 0L                    // local time when first frame was written (after blocking)
     private var anchorLocalEquivalentUs = 0L          // cached serverToLocalUs(anchorTs) at anchor time
-    private var initialOffsetMs = 0.0                // absolute offset at startup (from targetLocalPlayUs)
 
     fun bufferDurationMs(): Long {
         val headTs = frameQueue.peek()?.serverTimestampUs ?: return 0L
@@ -147,17 +146,30 @@ class AudioStreamManager {
 
     @Volatile private var hwBufferLatencyUs = 0L
 
+    // Output latency measurement (like JS client's outputLatency EMA + persist)
+    @Volatile var measuredOutputLatencyUs = 0L  // runtime-measured pipeline latency
+        private set
+    private var outputLatencyMeasureCount = 0
+    private val outputLatencyTimestamp = android.media.AudioTimestamp()
+
+    /** Called from outside to seed with persisted value (like JS localStorage). */
+    fun seedOutputLatency(persistedUs: Long) {
+        if (persistedUs > 0) {
+            measuredOutputLatencyUs = persistedUs
+            Log.d(TAG, "Output latency seeded: ${persistedUs / 1000}ms")
+        }
+    }
+
     /**
-     * When this audio chunk should EXIT the speaker (local time, microseconds).
-     * Per spec: client_time = serverToLocal(serverTs) - static_delay_ms
-     * We also subtract hwBufferLatencyUs because track.write() puts data into
-     * the AudioTrack buffer, which takes hwBufferLatencyUs to drain to the DAC.
-     * This matches JS reference: targetTime - outputLatencySec
+     * Target local time for this audio chunk.
+     * Per spec: client_time = serverToLocal(serverTs) - static_delay_ms - outputLatency
+     * outputLatency = measured pipeline latency (AudioTrack buffer → DAC → speaker).
+     * Matches JS reference: targetTime - syncDelaySec - outputLatencySec
      */
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs - (staticDelayMs.toLong() * 1000L) - hwBufferLatencyUs
+        return localUs - (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
     }
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
@@ -389,6 +401,7 @@ class AudioStreamManager {
         playbackStarted = false
         frameCount = 0
         decodedFrameCount = 0
+        outputLatencyMeasureCount = 0
         presentationTimeUs = 0L
         requiredSyncBufferMs = defaultSyncBufferMs()
         startPlaybackThread(createdAudioTrack)
@@ -500,6 +513,7 @@ class AudioStreamManager {
         )
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
+            playbackStarted = false  // BEFORE lock release to prevent decode+write race
             audioTrack?.setVolume(0f)  // mute before flush to hide click/pop
             audioTrack?.pause()
             audioTrack?.flush()
@@ -507,7 +521,6 @@ class AudioStreamManager {
         }
         frameQueue.clear()
         frameQueueBytes.set(0)
-        playbackStarted = false
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
         presentationTimeUs = 0L
@@ -591,7 +604,7 @@ class AudioStreamManager {
         anchorServerTimestampUs = 0L
         anchorLocalUs = 0L
         anchorLocalEquivalentUs = 0L
-        initialOffsetMs = 0.0
+
     }
 
     /**
@@ -611,9 +624,8 @@ class AudioStreamManager {
      * track.write() blocking paces the loop at hardware clock rate.
      */
     /**
-     * Sync error = initial absolute offset + accumulated drift.
-     * initialOffsetMs captures the startup alignment error (±15ms jitter).
-     * The anchor-based delta tracks drift since anchor was set.
+     * Anchor-based drift measurement.
+     * Tracks elapsed time since anchor vs expected server time elapsed.
      */
     private fun computeSyncErrorMs(serverTimestampUs: Long): Double {
         val sync = clockSynchronizer ?: return 0.0
@@ -655,7 +667,7 @@ class AudioStreamManager {
             anchorServerTimestampUs = serverTimestampUs
             anchorLocalUs = nowLocalUs()
             anchorLocalEquivalentUs = sync.serverToLocalUs(serverTimestampUs)
-            initialOffsetMs = 0.0
+    
             Log.d(TAG, "Anchor set, filterError=${sync.errorUs()}us")
             return
         }
@@ -690,6 +702,7 @@ class AudioStreamManager {
             lastDriftLogMs = now
             Log.d(TAG, "Drift: error=${"%.1f".format(smoothedSyncErrorMs)}ms " +
                 "abs=${"%.1f".format(absoluteLeadMs)}ms " +
+                "outLat=${measuredOutputLatencyUs / 1000}ms " +
                 "raw=${"%.1f".format(rawErrorMs)}ms mode=$currentCorrectionMode " +
                 "sign=$sameSignCount resyncs=$resyncCount filterError=${sync.errorUs()}us")
         }
@@ -726,7 +739,10 @@ class AudioStreamManager {
                     Log.d(TAG, "setPlaybackRate not supported, falling back to sample correction")
                 }
             }
-            // Rate not supported: use aggressive sample correction instead
+            // Rate not supported: reset rate to base, use sample correction instead
+            if (track.playbackRate != activeSampleRate) {
+                track.setPlaybackRate(activeSampleRate)
+            }
             pendingSampleCorrection = currentSign
             currentCorrectionMode = "sample"
             return
@@ -792,6 +808,48 @@ class AudioStreamManager {
         return out
     }
 
+    /**
+     * Measure actual output pipeline latency via AudioTrack.getTimestamp().
+     * Called periodically after track.write(). EMA smoothed like JS client.
+     * framesWritten = total PCM frames submitted to AudioTrack.
+     * framesPlayed = AudioTimestamp.framePosition (frames output to DAC).
+     * Difference = frames in pipeline = pipeline latency.
+     */
+    private fun measureOutputLatency(track: AudioTrack, pcmBytes: Int) {
+        // Measure every ~1s (50 decoded frames at 20ms each)
+        outputLatencyMeasureCount++
+        if (outputLatencyMeasureCount < 50) return
+        outputLatencyMeasureCount = 0
+
+        if (!track.getTimestamp(outputLatencyTimestamp)) return
+        val framesAtDac = outputLatencyTimestamp.framePosition
+        if (framesAtDac <= 0) return
+
+        // Total output latency: time from track.write() to speaker output.
+        // getTimestamp gives (framePosition, nanoTime) = when that frame was output.
+        // We know how many frames we've written total (playbackHeadPosition).
+        // Frames still in pipeline = written - played.
+        // But more directly: timestamp.nanoTime tells us WHEN the played frame was output.
+        // Total latency = now - timestampTime + (framesWritten - framesPlayed) / sampleRate
+        val framesConsumed = track.playbackHeadPosition.toLong()
+        val framesInBuffer = framesConsumed - framesAtDac
+        if (framesInBuffer < 0) return
+
+        val tsAgeUs = (System.nanoTime() - outputLatencyTimestamp.nanoTime) / 1000L
+        val bufferUs = framesInBuffer * 1_000_000L / activeSampleRate.toLong()
+        val latencyUs = tsAgeUs + bufferUs  // total: timestamp staleness + buffered frames
+        if (latencyUs <= 0 || latencyUs > 500_000) return  // sanity
+
+        // EMA with alpha=0.05
+        measuredOutputLatencyUs = if (measuredOutputLatencyUs == 0L) {
+            latencyUs
+        } else {
+            ((0.05 * latencyUs + 0.95 * measuredOutputLatencyUs).toLong())
+        }
+        Log.d(TAG, "OutputLatency: raw=${latencyUs / 1000}ms ema=${measuredOutputLatencyUs / 1000}ms " +
+            "tsAge=${tsAgeUs / 1000}ms buf=${bufferUs / 1000}ms")
+    }
+
     // ── Playback thread: decode + write (blocking pacing) ──
 
     private fun startPlaybackThread(track: AudioTrack) {
@@ -836,6 +894,7 @@ class AudioStreamManager {
                             }
                             Log.d(TAG, "Clock sync timeout after ${waitingMs}ms, starting anyway " +
                                 "(error=${clockSynchronizer?.errorUs() ?: -1}us)")
+                            clockWaitStartMs = 0L  // reset so next startup gets fresh timeout
                         }
                         // Clock is ready (or timed out): drain any stale frames from wait period
                         if (dropLateHeadFramesForStartup()) {
@@ -954,10 +1013,11 @@ class AudioStreamManager {
     private fun decodeAndWrite(frame: EncodedFrame, track: AudioTrack, generation: Long): Boolean {
         val encodedData = frame.payload
         if (activeCodec == "pcm") {
-            if (generation != playbackGeneration || track !== audioTrack || !playbackActive) return false
+            if (generation != playbackGeneration || track !== audioTrack || !playbackActive || !playbackStarted) return false
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
             val finalPcm = applySampleCorrection(pcm)
             track.write(finalPcm, 0, finalPcm.size)
+            measureOutputLatency(track, finalPcm.size)
             decodedFrameCount++
             if (decodedFrameCount % DRIFT_CHECK_INTERVAL_FRAMES == 0) {
                 updateDriftCorrection(frame.serverTimestampUs, track)
@@ -1022,9 +1082,10 @@ class AudioStreamManager {
                     pcmToWrite == null -> break
                     pcmToWrite.isEmpty() -> continue
                     else -> {
-                        if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive) break
+                        if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive || !playbackStarted) break
                         val finalPcm = applySampleCorrection(pcmToWrite)
                         track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
+                        measureOutputLatency(track, finalPcm.size)
                         decodedFrameCount++
                         if (decodedFrameCount % DRIFT_CHECK_INTERVAL_FRAMES == 0) {
                             updateDriftCorrection(frame.serverTimestampUs, track)
@@ -1213,10 +1274,7 @@ class AudioStreamManager {
     }
 
     fun expectDiscontinuity(reason: String) {
-        forceDiscontinuityUntilMs = 0L
-        forceDiscontinuityReason = ""
-        requiredSyncBufferMs = defaultSyncBufferMs()
-        Log.d(TAG, "Discontinuity armed: $reason, flushing immediately")
+        Log.d(TAG, "Discontinuity: $reason, flushing")
         flushForRebuffer()
     }
 
