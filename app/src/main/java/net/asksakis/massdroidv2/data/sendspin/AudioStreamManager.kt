@@ -131,6 +131,7 @@ class AudioStreamManager {
     private var anchorServerTimestampUs = 0L          // server ts of first played frame
     private var anchorLocalUs = 0L                    // local time when first frame was written (after blocking)
     private var anchorLocalEquivalentUs = 0L          // cached serverToLocalUs(anchorTs) at anchor time
+    private var initialOffsetMs = 0.0                // absolute offset at startup (from targetLocalPlayUs)
 
     fun bufferDurationMs(): Long {
         val headTs = frameQueue.peek()?.serverTimestampUs ?: return 0L
@@ -590,6 +591,7 @@ class AudioStreamManager {
         anchorServerTimestampUs = 0L
         anchorLocalUs = 0L
         anchorLocalEquivalentUs = 0L
+        initialOffsetMs = 0.0
     }
 
     /**
@@ -607,6 +609,11 @@ class AudioStreamManager {
     /**
      * Wall-clock drift measurement. Immune to getTimestamp coarseness.
      * track.write() blocking paces the loop at hardware clock rate.
+     */
+    /**
+     * Sync error = initial absolute offset + accumulated drift.
+     * initialOffsetMs captures the startup alignment error (±15ms jitter).
+     * The anchor-based delta tracks drift since anchor was set.
      */
     private fun computeSyncErrorMs(serverTimestampUs: Long): Double {
         val sync = clockSynchronizer ?: return 0.0
@@ -648,6 +655,8 @@ class AudioStreamManager {
             anchorServerTimestampUs = serverTimestampUs
             anchorLocalUs = nowLocalUs()
             anchorLocalEquivalentUs = sync.serverToLocalUs(serverTimestampUs)
+            initialOffsetMs = 0.0
+            Log.d(TAG, "Anchor set, filterError=${sync.errorUs()}us")
             return
         }
 
@@ -830,21 +839,28 @@ class AudioStreamManager {
                         }
                         if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
-                            // Wait until the right moment to start.
-                            // Coarse sleep + busy-wait for sub-ms precision.
-                            // Thread.sleep has ±10-15ms jitter on Android which causes
-                            // random sync offsets between devices.
+                            // Silence-padding startup: instead of imprecise Thread.sleep,
+                            // start play() immediately and write calculated silence so the
+                            // first audio frame exits the speaker at the right moment.
+                            // Precision is sub-sample (no OS scheduling jitter).
                             val firstFrame = frameQueue.peek()
                             if (firstFrame != null) {
-                                val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
-                                val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
-                                val waitMs = waitUs / 1000L
-                                if (waitMs > 15) {
-                                    try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
+                                val targetExitUs = clockSynchronizer?.serverToLocalUs(firstFrame.serverTimestampUs)
+                                    ?: firstFrame.serverTimestampUs
+                                val targetExitWithDelayUs = targetExitUs - (staticDelayMs.toLong() * 1000L)
+                                val nowUs = nowLocalUs()
+                                val leadUs = targetExitWithDelayUs - nowUs
+                                // leadUs = how far in the future the audio should exit
+                                // hwBufferLatencyUs = time for data to traverse hw buffer
+                                // silenceUs = leadUs - hwBufferLatencyUs = silence before first frame
+                                val silenceUs = (leadUs - hwBufferLatencyUs).coerceIn(0, 2_000_000)
+                                val silenceBytes = (silenceUs * activeSampleRate * activeChannels * 2 / 1_000_000).toInt()
+                                    .let { it - (it % (activeChannels * 2)) }  // align to sample boundary
+                                if (silenceBytes > 0) {
+                                    track.write(ByteArray(silenceBytes), 0, silenceBytes)
                                 }
-                                // Busy-wait for sub-ms precision (max 50ms to avoid stuck spin)
-                                val spinDeadline = nowLocalUs() + 50_000L
-                                while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
+                                Log.d(TAG, "Silence padding: ${silenceUs / 1000}ms (${silenceBytes}B), " +
+                                    "lead=${leadUs / 1000}ms hwLat=${hwBufferLatencyUs / 1000}ms")
                             }
                             Log.d(
                                 DBG,

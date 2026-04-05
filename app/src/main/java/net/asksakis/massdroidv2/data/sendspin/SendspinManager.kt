@@ -280,7 +280,7 @@ class SendspinManager(
         val oldDelay = audio.staticDelayMs
         if (clamped == oldDelay) return
         audio.staticDelayMs = clamped
-        audio.shiftAnchorForDelayChange(clamped - oldDelay)
+        audio.expectDiscontinuity("static-delay-change")
         // Notify server of new delay so it adjusts buffer headroom
         sendCurrentState(currentSyncStatePayloadValue())
         Log.d(TAG, "Static delay: ${oldDelay}ms -> ${clamped}ms")
