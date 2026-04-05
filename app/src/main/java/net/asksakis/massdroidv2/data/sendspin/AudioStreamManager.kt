@@ -46,14 +46,15 @@ class AudioStreamManager {
         private const val LATE_CHUNK_DROP_GRACE_MS = 200L
         private const val STARTUP_ENQUEUE_GRACE_MS = 2000L
 
-        // Drift correction
-        private const val SAMPLE_CORRECTION_MIN_MS = 8.0  // don't correct below this
-        private const val SAMPLE_CORRECTION_MAX_MS = 30.0 // sample correction up to this
-        private const val HARD_RESYNC_MS = 120.0          // hard resync above this
+        // Drift correction tiers
+        private const val DEADBAND_MS = 5.0               // no correction below this
+        private const val SAMPLE_CORRECTION_MAX_MS = 25.0  // sample correction up to this
+        private const val RATE_CORRECTION_MAX_MS = 100.0   // gentle rate correction up to this
+        private const val HARD_RESYNC_MS = 100.0           // hard resync above this
         private const val DRIFT_CHECK_INTERVAL_FRAMES = 10 // check every ~200ms
-        private const val DRIFT_STARTUP_GRACE_MS = 2000L  // no drift check for 2s after startup
-        private const val DRIFT_RESYNC_COOLDOWN_MS = 3000L // min time between hard resyncs
-        private const val STABILITY_COUNT_REQUIRED = 3     // consecutive same-sign checks before correcting
+        private const val DRIFT_STARTUP_GRACE_MS = 2000L   // no drift check for 2s after startup
+        private const val DRIFT_RESYNC_COOLDOWN_MS = 3000L  // min time between hard resyncs
+        private const val STABILITY_COUNT_REQUIRED = 3      // consecutive same-sign checks before correcting
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
@@ -122,6 +123,8 @@ class AudioStreamManager {
     private var resyncCount = 0
     private var sameSignCount = 0                    // consecutive checks with same error sign
     private var lastErrorSign = 0                    // -1, 0, +1
+    private var rateSupported: Boolean? = null        // null = untested, true/false = probed at runtime
+    private var currentCorrectionMode = "none"       // for logging
     private var playbackStartedAtMs = 0L             // wall clock when playback started
     private var clockWaitStartMs = 0L                // wall clock when we started waiting for clock convergence
     private var lastResyncAtMs = 0L                  // wall clock of last hard resync
@@ -563,7 +566,13 @@ class AudioStreamManager {
     fun shiftAnchorForDelayChange(deltaMs: Int) {
         if (anchorLocalUs == 0L) return  // not yet playing
         anchorLocalUs -= deltaMs.toLong() * 1000L
-        smoothedSyncErrorMs = 0.0  // reset EMA so new error builds cleanly
+        // Full correction state reset so new error builds cleanly
+        smoothedSyncErrorMs = 0.0
+        syncErrorWindow.clear()
+        sameSignCount = 0
+        lastErrorSign = 0
+        pendingSampleCorrection = 0
+        currentCorrectionMode = "none"
         Log.d(TAG, "Anchor shifted by ${deltaMs}ms for delay change")
     }
 
@@ -574,6 +583,8 @@ class AudioStreamManager {
         sameSignCount = 0
         lastErrorSign = 0
         pendingSampleCorrection = 0
+        currentCorrectionMode = "none"
+        rateSupported = null  // re-probe on next AudioTrack
         playbackStartedAtMs = 0L
         clockWaitStartMs = 0L
         anchorServerTimestampUs = 0L
@@ -631,7 +642,7 @@ class AudioStreamManager {
             return
         }
 
-        // Set anchor after grace period
+        // Set anchor after grace period (writes are blocking = steady-state pacing)
         val sync = clockSynchronizer ?: return
         if (anchorServerTimestampUs == 0L) {
             anchorServerTimestampUs = serverTimestampUs
@@ -651,42 +662,79 @@ class AudioStreamManager {
         }
         val absError = kotlin.math.abs(smoothedSyncErrorMs)
 
+        // Stability gate: track sign consistency
+        val currentSign = if (smoothedSyncErrorMs > 0) 1 else if (smoothedSyncErrorMs < 0) -1 else 0
+        if (currentSign == lastErrorSign && currentSign != 0) {
+            sameSignCount++
+        } else {
+            sameSignCount = 1
+            lastErrorSign = currentSign
+        }
+        val stable = sameSignCount >= STABILITY_COUNT_REQUIRED
+
         // Log periodically
         if (now - lastDriftLogMs > 2000) {
             lastDriftLogMs = now
-            val currentRate = track.playbackRate
             Log.d(TAG, "Drift: error=${"%.1f".format(smoothedSyncErrorMs)}ms " +
-                "raw=${"%.1f".format(rawErrorMs)}ms rate=$currentRate " +
+                "raw=${"%.1f".format(rawErrorMs)}ms mode=$currentCorrectionMode " +
+                "sign=$sameSignCount rate=${track.playbackRate} " +
                 "resyncs=$resyncCount filterError=${sync.errorUs()}us")
         }
 
         // Don't correct if time filter hasn't settled
         if (sync.errorUs() > 15_000) return
 
-        // Hard resync for extreme errors (with cooldown)
+        // Tier 4: Hard resync for extreme errors
         if (absError > HARD_RESYNC_MS && now - lastResyncAtMs > DRIFT_RESYNC_COOLDOWN_MS) {
             resyncCount++
             lastResyncAtMs = now
+            currentCorrectionMode = "resync"
             Log.d(TAG, "Drift RESYNC: error=${"%.1f".format(smoothedSyncErrorMs)}ms (resync #$resyncCount)")
             flushForRebuffer()
             return
         }
 
-        // Stability gate: only correct when error sign is consistent
-        val currentSign = if (smoothedSyncErrorMs > 0) 1 else if (smoothedSyncErrorMs < 0) -1 else 0
-        if (currentSign == lastErrorSign && currentSign != 0) {
-            sameSignCount++
-        } else {
-            sameSignCount = 1  // first occurrence counts (was 0 = off-by-one)
-            lastErrorSign = currentSign
+        // Tier 3: Gentle rate correction for medium sustained errors (if supported)
+        if (absError > SAMPLE_CORRECTION_MAX_MS && absError <= RATE_CORRECTION_MAX_MS && stable) {
+            if (rateSupported != false) {
+                val targetRate = if (smoothedSyncErrorMs > 0) {
+                    (activeSampleRate * 1.005).toInt()  // +0.5% speed up
+                } else {
+                    (activeSampleRate * 0.995).toInt()  // -0.5% slow down
+                }
+                val result = track.setPlaybackRate(targetRate)
+                if (result == AudioTrack.SUCCESS) {
+                    rateSupported = true
+                    currentCorrectionMode = "rate"
+                    pendingSampleCorrection = 0
+                    return
+                } else {
+                    rateSupported = false
+                    Log.d(TAG, "setPlaybackRate not supported, falling back to sample correction")
+                }
+            }
+            // Rate not supported: use aggressive sample correction instead
+            pendingSampleCorrection = currentSign
+            currentCorrectionMode = "sample"
+            return
         }
 
-        // Sample correction for sustained small-medium errors
-        if (absError >= SAMPLE_CORRECTION_MIN_MS && absError <= SAMPLE_CORRECTION_MAX_MS
-            && sameSignCount >= STABILITY_COUNT_REQUIRED) {
+        // Tier 2: Sample correction for small sustained errors
+        if (absError >= DEADBAND_MS && absError <= SAMPLE_CORRECTION_MAX_MS && stable) {
+            // Ensure rate is reset before doing sample correction (no stacking)
+            if (rateSupported == true && track.playbackRate != activeSampleRate) {
+                track.setPlaybackRate(activeSampleRate)
+            }
             pendingSampleCorrection = currentSign
+            currentCorrectionMode = "sample"
         } else {
+            // Tier 1: Deadband or unstable sign
             pendingSampleCorrection = 0
+            // Reset rate to normal if we were correcting
+            if (rateSupported == true && track.playbackRate != activeSampleRate) {
+                track.setPlaybackRate(activeSampleRate)
+            }
+            currentCorrectionMode = "none"
         }
     }
 
