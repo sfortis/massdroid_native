@@ -681,13 +681,17 @@ class AudioStreamManager {
         }
         val stable = sameSignCount >= STABILITY_COUNT_REQUIRED
 
+        // Absolute position check: how far is current write from ideal server timeline?
+        // This should be ≈ hwBufferLatencyUs. If different, we're playing early/late.
+        val absoluteLeadMs = (sync.serverToLocalUs(serverTimestampUs) - nowLocalUs()) / 1000.0
+
         // Log periodically
         if (now - lastDriftLogMs > 2000) {
             lastDriftLogMs = now
             Log.d(TAG, "Drift: error=${"%.1f".format(smoothedSyncErrorMs)}ms " +
+                "abs=${"%.1f".format(absoluteLeadMs)}ms " +
                 "raw=${"%.1f".format(rawErrorMs)}ms mode=$currentCorrectionMode " +
-                "sign=$sameSignCount rate=${track.playbackRate} " +
-                "resyncs=$resyncCount filterError=${sync.errorUs()}us")
+                "sign=$sameSignCount resyncs=$resyncCount filterError=${sync.errorUs()}us")
         }
 
         // Don't correct if time filter hasn't settled
@@ -839,28 +843,18 @@ class AudioStreamManager {
                         }
                         if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
-                            // Silence-padding startup: instead of imprecise Thread.sleep,
-                            // start play() immediately and write calculated silence so the
-                            // first audio frame exits the speaker at the right moment.
-                            // Precision is sub-sample (no OS scheduling jitter).
+                            // Align startup to server timeline via busy-wait.
                             val firstFrame = frameQueue.peek()
                             if (firstFrame != null) {
-                                val targetExitUs = clockSynchronizer?.serverToLocalUs(firstFrame.serverTimestampUs)
-                                    ?: firstFrame.serverTimestampUs
-                                val targetExitWithDelayUs = targetExitUs - (staticDelayMs.toLong() * 1000L)
-                                val nowUs = nowLocalUs()
-                                val leadUs = targetExitWithDelayUs - nowUs
-                                // leadUs = how far in the future the audio should exit
-                                // hwBufferLatencyUs = time for data to traverse hw buffer
-                                // silenceUs = leadUs - hwBufferLatencyUs = silence before first frame
-                                val silenceUs = (leadUs - hwBufferLatencyUs).coerceIn(0, 2_000_000)
-                                val silenceBytes = (silenceUs * activeSampleRate * activeChannels * 2 / 1_000_000).toInt()
-                                    .let { it - (it % (activeChannels * 2)) }  // align to sample boundary
-                                if (silenceBytes > 0) {
-                                    track.write(ByteArray(silenceBytes), 0, silenceBytes)
+                                val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
+                                val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
+                                val waitMs = waitUs / 1000L
+                                if (waitMs > 15) {
+                                    try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
                                 }
-                                Log.d(TAG, "Silence padding: ${silenceUs / 1000}ms (${silenceBytes}B), " +
-                                    "lead=${leadUs / 1000}ms hwLat=${hwBufferLatencyUs / 1000}ms")
+                                // Busy-wait for sub-ms precision (max 50ms cap)
+                                val spinDeadline = nowLocalUs() + 50_000L
+                                while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
                             }
                             Log.d(
                                 DBG,
