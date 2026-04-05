@@ -126,6 +126,15 @@ class SendspinManager(
                 val t3 = incoming.payload.serverTransmitted
                 val t4 = System.nanoTime() / 1000
                 val rttUs = (t4 - t1) - (t3 - t2)
+                // Reject absurd RTT samples (network congestion, app startup load)
+                if (rttUs > 150_000L) {
+                    val count = clockSynchronizer.currentSampleCount()
+                    if (count < 10) {
+                        Log.d(TAG, "Clock sync: REJECTED rtt=${rttUs}us (too high, samples=$count)")
+                        return
+                    }
+                    // After 10 samples, let Kalman's adaptive forgetting handle outliers
+                }
                 clockSynchronizer.processTimeResponse(
                     clientTransmittedUs = t1,
                     serverReceivedUs = t2,
@@ -137,7 +146,7 @@ class SendspinManager(
                 if (count <= 5 || count % 20 == 0) {
                     Log.d(TAG, "Clock sync: offset=${clockSynchronizer.currentOffsetUs()}us " +
                         "error=${clockSynchronizer.errorUs()}us rtt=${rttUs}us " +
-                        "synced=$clockSynced samples=$count")
+                        "ready=${clockSynchronizer.isReadyForPlaybackStart()} samples=$count")
                 }
             }
 
@@ -278,11 +287,13 @@ class SendspinManager(
     }
 
     private fun sendCurrentState(syncState: String) {
+        // Server needs total delay: hw pipeline + user adjustment
+        val totalDelayMs = (audio.hwBufferLatencyMs() + audio.staticDelayMs).coerceAtLeast(0)
         client.sendClientState(
             volume = currentVolume,
             muted = muted,
             syncState = syncState,
-            staticDelayMs = audio.staticDelayMs.coerceAtLeast(0)
+            staticDelayMs = totalDelayMs
         )
     }
 

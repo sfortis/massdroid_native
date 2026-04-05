@@ -46,13 +46,14 @@ class AudioStreamManager {
         private const val LATE_CHUNK_DROP_GRACE_MS = 200L
         private const val STARTUP_ENQUEUE_GRACE_MS = 2000L
 
-        // Drift correction thresholds (from JS reference "sync" mode)
-        private const val SYNC_ERROR_EMA_ALPHA = 0.1    // EMA smoothing for sync error
-        private const val DEADBAND_MS = 2.0              // don't correct below this
-        private const val HARD_RESYNC_MS = 200.0         // hard resync above this
-        private const val DRIFT_CHECK_INTERVAL_FRAMES = 5 // check every N decoded frames
-        private const val DRIFT_STARTUP_GRACE_MS = 2000L // no drift correction for 2s after startup
+        // Drift correction
+        private const val SAMPLE_CORRECTION_MIN_MS = 8.0  // don't correct below this
+        private const val SAMPLE_CORRECTION_MAX_MS = 30.0 // sample correction up to this
+        private const val HARD_RESYNC_MS = 120.0          // hard resync above this
+        private const val DRIFT_CHECK_INTERVAL_FRAMES = 10 // check every ~200ms
+        private const val DRIFT_STARTUP_GRACE_MS = 2000L  // no drift check for 2s after startup
         private const val DRIFT_RESYNC_COOLDOWN_MS = 3000L // min time between hard resyncs
+        private const val STABILITY_COUNT_REQUIRED = 3     // consecutive same-sign checks before correcting
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
@@ -118,10 +119,11 @@ class AudioStreamManager {
     private var smoothedSyncErrorMs = 0.0            // filtered sync error
     private val syncErrorWindow = mutableListOf<Double>() // median filter window
     private var lastDriftLogMs = 0L
-    private var driftCorrectionCount = 0L
     private var resyncCount = 0
-    private var useRateCorrection = true             // false if setPlaybackRate not supported
+    private var sameSignCount = 0                    // consecutive checks with same error sign
+    private var lastErrorSign = 0                    // -1, 0, +1
     private var playbackStartedAtMs = 0L             // wall clock when playback started
+    private var clockWaitStartMs = 0L                // wall clock when we started waiting for clock convergence
     private var lastResyncAtMs = 0L                  // wall clock of last hard resync
     private var anchorServerTimestampUs = 0L          // server ts of first played frame
     private var anchorLocalUs = 0L                    // local time when first frame was written (after blocking)
@@ -135,6 +137,8 @@ class AudioStreamManager {
     }
 
     fun bufferedBytes(): Long = frameQueueBytes.get()
+
+    fun hwBufferLatencyMs(): Int = (hwBufferLatencyUs / 1000L).toInt()
 
     private fun nowLocalUs(): Long = System.nanoTime() / 1000L
 
@@ -567,34 +571,36 @@ class AudioStreamManager {
     private fun resetDriftState() {
         smoothedSyncErrorMs = 0.0
         syncErrorWindow.clear()
-        driftCorrectionCount = 0L
         resyncCount = 0
+        sameSignCount = 0
+        lastErrorSign = 0
         playbackStartedAtMs = 0L
+        clockWaitStartMs = 0L
         anchorServerTimestampUs = 0L
         anchorLocalUs = 0L
         anchorLocalEquivalentUs = 0L
     }
 
     /**
-     * Anchor-based drift measurement for stream API.
+     * Drift measurement via AudioTrack.getTimestamp().
      *
-     * At startup we record an anchor: (anchorServerTs, anchorLocalUs).
-     * For any subsequent frame, we compute:
-     *   expectedElapsed = serverToLocal(frameTs) - serverToLocal(anchorTs)
-     *   actualElapsed   = now - anchorLocalUs
-     *   error = actualElapsed - expectedElapsed
+     * Uses hardware-reported playback position (immune to write-blocking jitter)
+     * instead of wall-clock measurement which has ±20ms frame-sized noise.
      *
-     * Positive = local clock ran faster (AudioTrack consumed faster) → behind schedule
-     * Negative = local clock ran slower (AudioTrack consumed slower) → ahead of schedule
+     * Method: compare "where the hardware IS playing" vs "where it SHOULD be"
+     * based on server timestamps and clock sync.
      *
-     * track.write() blocks when buffer is full, so "now" tracks audio consumption rate.
+     * Positive = hardware ahead (playing too fast) → slow down
+     * Negative = hardware behind (playing too slow) → speed up
+     */
+    /**
+     * Wall-clock drift measurement. Immune to getTimestamp coarseness.
+     * track.write() blocking paces the loop at hardware clock rate.
      */
     private fun computeSyncErrorMs(serverTimestampUs: Long): Double {
         val sync = clockSynchronizer ?: return 0.0
         if (anchorLocalEquivalentUs == 0L || anchorLocalUs == 0L) return 0.0
 
-        // Use cached anchor value to avoid Kalman-update-induced spikes.
-        // Only the current frame's conversion uses live Kalman state.
         val expectedElapsedUs = sync.serverToLocalUs(serverTimestampUs) - anchorLocalEquivalentUs
         val actualElapsedUs = nowLocalUs() - anchorLocalUs
         return (actualElapsedUs - expectedElapsedUs).toDouble() / 1000.0
@@ -666,83 +672,62 @@ class AudioStreamManager {
             return
         }
 
-        // Compute target playback rate based on error magnitude
-        val correctionRate = when {
-            absError < DEADBAND_MS -> 0.0        // deadband
-            absError < 8.0 -> 0.005              // ±0.5%
-            absError < 35.0 -> 0.01              // ±1%
-            else -> 0.02                          // ±2%
-        }
-
-        val targetRate = when {
-            correctionRate == 0.0 -> activeSampleRate
-            smoothedSyncErrorMs > 0 -> (activeSampleRate * (1.0 + correctionRate)).toInt()  // behind: speed up
-            else -> (activeSampleRate * (1.0 - correctionRate)).toInt()                     // ahead: slow down
-        }
-
-        if (useRateCorrection) {
-            if (track.playbackRate != targetRate) {
-                val result = track.setPlaybackRate(targetRate)
-                if (result == AudioTrack.SUCCESS) {
-                    driftCorrectionCount++
-                } else {
-                    // Device doesn't support rate change (e.g. LOW_LATENCY on API 29)
-                    Log.w(TAG, "setPlaybackRate failed ($result), switching to sample correction")
-                    useRateCorrection = false
-                }
-            }
-        }
-        // Fallback stored for applySampleCorrection() called from decodeAndWrite
-        pendingSampleCorrectionRate = if (!useRateCorrection && correctionRate > 0.0) {
-            if (smoothedSyncErrorMs > 0) correctionRate else -correctionRate
+        // Stability gate: only correct when error sign is consistent
+        val currentSign = if (smoothedSyncErrorMs > 0) 1 else if (smoothedSyncErrorMs < 0) -1 else 0
+        if (currentSign == lastErrorSign && currentSign != 0) {
+            sameSignCount++
         } else {
-            0.0
+            sameSignCount = 0
+        }
+        lastErrorSign = currentSign
+
+        // Sample correction for sustained small-medium errors
+        if (absError >= SAMPLE_CORRECTION_MIN_MS && absError <= SAMPLE_CORRECTION_MAX_MS
+            && sameSignCount >= STABILITY_COUNT_REQUIRED) {
+            pendingSampleCorrection = currentSign
+        } else {
+            pendingSampleCorrection = 0
         }
     }
 
-    // Sample-level fallback when setPlaybackRate is not available
-    @Volatile private var pendingSampleCorrectionRate = 0.0
+
+    // ── Sample correction for steady-state convergence ──
+
+    @Volatile private var pendingSampleCorrection = 0  // +1 = remove sample, -1 = insert sample, 0 = none
 
     private fun applySampleCorrection(pcm: ByteArray): ByteArray {
-        val rate = pendingSampleCorrectionRate
-        if (rate == 0.0) return pcm
+        val direction = pendingSampleCorrection
+        if (direction == 0) return pcm
         val bytesPerSample = activeChannels * 2
         val totalSamples = pcm.size / bytesPerSample
         if (totalSamples < 20) return pcm
-        // How many samples to add/remove: rate * samples in this buffer
-        val samplesToAdjust = (kotlin.math.abs(rate) * totalSamples).toInt().coerceIn(1, totalSamples / 20)
-        driftCorrectionCount++
-        return if (rate > 0) {
-            // Positive: behind schedule, remove samples (speed up)
-            removeSamples(pcm, bytesPerSample, samplesToAdjust)
+        // Remove or insert 1 sample per correction frame
+        return if (direction > 0) {
+            removeSample(pcm, bytesPerSample)
         } else {
-            // Negative: ahead of schedule, insert samples (slow down)
-            insertSamples(pcm, bytesPerSample, samplesToAdjust)
+            insertSample(pcm, bytesPerSample)
         }
     }
 
-    private fun removeSamples(pcm: ByteArray, bytesPerSample: Int, count: Int): ByteArray {
-        val removeBytes = count * bytesPerSample
-        if (pcm.size <= removeBytes + bytesPerSample) return pcm
+    private fun removeSample(pcm: ByteArray, bytesPerSample: Int): ByteArray {
+        if (pcm.size < bytesPerSample * 3) return pcm
         val midPos = (pcm.size / 2 / bytesPerSample) * bytesPerSample
-        val out = ByteArray(pcm.size - removeBytes)
-        val cutStart = (midPos - removeBytes / 2).coerceAtLeast(0)
-        System.arraycopy(pcm, 0, out, 0, cutStart)
-        System.arraycopy(pcm, cutStart + removeBytes, out, cutStart, pcm.size - cutStart - removeBytes)
+        val out = ByteArray(pcm.size - bytesPerSample)
+        System.arraycopy(pcm, 0, out, 0, midPos)
+        System.arraycopy(pcm, midPos + bytesPerSample, out, midPos,
+            pcm.size - midPos - bytesPerSample)
         return out
     }
 
-    private fun insertSamples(pcm: ByteArray, bytesPerSample: Int, count: Int): ByteArray {
-        val insertBytes = count * bytesPerSample
+    private fun insertSample(pcm: ByteArray, bytesPerSample: Int): ByteArray {
         if (pcm.size < bytesPerSample * 2) return pcm
         val midPos = (pcm.size / 2 / bytesPerSample) * bytesPerSample
-        val out = ByteArray(pcm.size + insertBytes)
+        val out = ByteArray(pcm.size + bytesPerSample)
         System.arraycopy(pcm, 0, out, 0, midPos)
-        // Duplicate samples at midpoint
-        for (i in 0 until count) {
-            System.arraycopy(pcm, midPos, out, midPos + i * bytesPerSample, bytesPerSample)
-        }
-        System.arraycopy(pcm, midPos, out, midPos + insertBytes, pcm.size - midPos)
+        // Duplicate sample at midpoint
+        System.arraycopy(pcm, midPos, out, midPos, bytesPerSample)
+        System.arraycopy(pcm, midPos, out, midPos + bytesPerSample,
+            pcm.size - midPos)
         return out
     }
 
@@ -771,9 +756,31 @@ class AudioStreamManager {
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
+                        // Startup precision gate: wait for clock filter to converge.
+                        // Without this, playback starts with 500ms+ clock error.
+                        // Timeout after 4s so we don't block forever.
+                        val clockReady = clockSynchronizer?.isReadyForPlaybackStart() ?: false
+                        if (!clockReady) {
+                            val waitingMs = if (clockWaitStartMs > 0) {
+                                System.currentTimeMillis() - clockWaitStartMs
+                            } else {
+                                clockWaitStartMs = System.currentTimeMillis()
+                                0L
+                            }
+                            if (waitingMs < 4000) {
+                                // Drain stale frames while waiting (prevents 30s accumulation)
+                                dropLateHeadFramesForStartup()
+                                try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+                                continue
+                            }
+                            Log.d(TAG, "Clock sync timeout after ${waitingMs}ms, starting anyway " +
+                                "(error=${clockSynchronizer?.errorUs() ?: -1}us)")
+                        }
+                        // Clock is ready (or timed out): drain any stale frames from wait period
                         if (dropLateHeadFramesForStartup()) {
                             continue
                         }
+                        if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
                             // Wait until the right moment to start.
                             // Coarse sleep + busy-wait for sub-ms precision.
@@ -797,7 +804,6 @@ class AudioStreamManager {
                                     "required=${requiredSyncBufferMs}ms sync=$syncState"
                             )
                             track.play()
-                            track.playbackRate = activeSampleRate  // reset rate correction
                             track.setVolume(if (isMuted) 0f else currentVolume)
                             playbackStarted = true
                             playbackStartedAtMs = System.currentTimeMillis()
@@ -855,8 +861,10 @@ class AudioStreamManager {
                                 DBG,
                                 "decode failure threshold hit codec=$activeCodec failures=$consecutiveDecodeFailures, rebuilding pipeline"
                             )
+                            // Save config, rebuild pipeline, continue accepting frames
+                            val cfg = arrayOf(activeCodec, activeSampleRate, activeChannels, activeBitDepth)
                             release_internal()
-                            transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                            configure(cfg[0] as String, cfg[1] as Int, cfg[2] as Int, cfg[3] as Int)
                             break
                         }
                         continue
@@ -890,7 +898,7 @@ class AudioStreamManager {
         if (activeCodec == "pcm") {
             if (generation != playbackGeneration || track !== audioTrack || !playbackActive) return false
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
-            val finalPcm = if (!useRateCorrection) applySampleCorrection(pcm) else pcm
+            val finalPcm = applySampleCorrection(pcm)
             track.write(finalPcm, 0, finalPcm.size)
             decodedFrameCount++
             if (decodedFrameCount % DRIFT_CHECK_INTERVAL_FRAMES == 0) {
@@ -957,7 +965,7 @@ class AudioStreamManager {
                     pcmToWrite.isEmpty() -> continue
                     else -> {
                         if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive) break
-                        val finalPcm = if (!useRateCorrection) applySampleCorrection(pcmToWrite) else pcmToWrite
+                        val finalPcm = applySampleCorrection(pcmToWrite)
                         track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
                         decodedFrameCount++
                         if (decodedFrameCount % DRIFT_CHECK_INTERVAL_FRAMES == 0) {

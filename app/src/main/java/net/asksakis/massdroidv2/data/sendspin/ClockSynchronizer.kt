@@ -190,8 +190,17 @@ class ClockSynchronizer {
     /** Estimation error (standard deviation) in microseconds. */
     fun errorUs(): Long = round(sqrt(offsetCovariance.coerceAtLeast(0.0))).toLong()
 
+    /** Math validity: at least 1 measurement processed. */
     @Synchronized
     fun isSynced(): Boolean = count >= 1 && offsetCovariance < Double.MAX_VALUE
+
+    /**
+     * Safe to start speakers in sync: filter has converged enough.
+     * Requires multiple low-RTT samples with reasonable error.
+     */
+    @Synchronized
+    fun isReadyForPlaybackStart(): Boolean =
+        count >= 5 && errorUs() <= 15_000
 
     @Synchronized
     fun currentSampleCount(): Int = count
