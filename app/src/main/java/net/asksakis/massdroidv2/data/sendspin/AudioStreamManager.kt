@@ -138,7 +138,6 @@ class AudioStreamManager {
 
     fun bufferedBytes(): Long = frameQueueBytes.get()
 
-    fun hwBufferLatencyMs(): Int = (hwBufferLatencyUs / 1000L).toInt()
 
     private fun nowLocalUs(): Long = System.nanoTime() / 1000L
 
@@ -574,6 +573,7 @@ class AudioStreamManager {
         resyncCount = 0
         sameSignCount = 0
         lastErrorSign = 0
+        pendingSampleCorrection = 0
         playbackStartedAtMs = 0L
         clockWaitStartMs = 0L
         anchorServerTimestampUs = 0L
@@ -677,9 +677,9 @@ class AudioStreamManager {
         if (currentSign == lastErrorSign && currentSign != 0) {
             sameSignCount++
         } else {
-            sameSignCount = 0
+            sameSignCount = 1  // first occurrence counts (was 0 = off-by-one)
+            lastErrorSign = currentSign
         }
-        lastErrorSign = currentSign
 
         // Sample correction for sustained small-medium errors
         if (absError >= SAMPLE_CORRECTION_MIN_MS && absError <= SAMPLE_CORRECTION_MAX_MS
@@ -1204,6 +1204,7 @@ class AudioStreamManager {
         frameQueue.clear(); frameQueueBytes.set(0)
         enqueueLateDropGraceUntilUs = 0L
         lateDropCount = 0L
+        resetDriftState()
 
         synchronized(codecLock) {
             try { oldTrack?.release() } catch (_: Exception) {}

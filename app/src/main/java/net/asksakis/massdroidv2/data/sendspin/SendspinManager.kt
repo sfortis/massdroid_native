@@ -287,13 +287,14 @@ class SendspinManager(
     }
 
     private fun sendCurrentState(syncState: String) {
-        // Server needs total delay: hw pipeline + user adjustment
-        val totalDelayMs = (audio.hwBufferLatencyMs() + audio.staticDelayMs).coerceAtLeast(0)
+        // Send only user-specified delay to server. The hw pipeline latency
+        // is compensated locally in targetLocalPlayUs() and should NOT be
+        // reported to the server (it's internal AudioTrack compensation).
         client.sendClientState(
             volume = currentVolume,
             muted = muted,
             syncState = syncState,
-            staticDelayMs = totalDelayMs
+            staticDelayMs = audio.staticDelayMs.coerceAtLeast(0)
         )
     }
 
