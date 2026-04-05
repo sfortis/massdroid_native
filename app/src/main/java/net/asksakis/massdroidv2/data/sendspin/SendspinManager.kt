@@ -115,11 +115,7 @@ class SendspinManager(
                 Log.d(TAG, "Server hello received")
                 client.updateState(SendspinState.SYNCING)
                 setupSyncStateCallback()
-                client.sendClientState(
-                    volume = currentVolume,
-                    muted = muted,
-                    syncState = currentSyncStatePayloadValue()
-                )
+                sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
                 startTimeSync()
             }
@@ -210,11 +206,7 @@ class SendspinManager(
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (System.currentTimeMillis() - lastCallbackSentAtMs < 500L) continue
-                client.sendClientState(
-                    volume = currentVolume,
-                    muted = muted,
-                    syncState = currentSyncStatePayloadValue()
-                )
+                sendCurrentState(currentSyncStatePayloadValue())
             }
         }
     }
@@ -275,8 +267,23 @@ class SendspinManager(
     }
 
     fun setStaticDelayMs(delayMs: Int) {
-        audio.staticDelayMs = delayMs.coerceIn(0, 5000)
-        Log.d(TAG, "Static delay set to ${audio.staticDelayMs}ms")
+        val clamped = delayMs.coerceIn(-500, 5000)
+        val oldDelay = audio.staticDelayMs
+        if (clamped == oldDelay) return
+        audio.staticDelayMs = clamped
+        audio.shiftAnchorForDelayChange(clamped - oldDelay)
+        // Notify server of new delay so it adjusts buffer headroom
+        sendCurrentState(currentSyncStatePayloadValue())
+        Log.d(TAG, "Static delay: ${oldDelay}ms -> ${clamped}ms")
+    }
+
+    private fun sendCurrentState(syncState: String) {
+        client.sendClientState(
+            volume = currentVolume,
+            muted = muted,
+            syncState = syncState,
+            staticDelayMs = audio.staticDelayMs.coerceAtLeast(0)
+        )
     }
 
     fun expectDiscontinuity(reason: String) {
@@ -305,7 +312,7 @@ class SendspinManager(
                 lastSentSyncState = stateStr
                 lastCallbackSentAtMs = System.currentTimeMillis()
                 Log.d(TAG, "Sending client/state: $stateStr (from $state)")
-                client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
+                sendCurrentState(stateStr)
             }
         }
     }

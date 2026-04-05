@@ -120,7 +120,7 @@ class ClockSynchronizer {
 
         if (count < 100) {
             count++
-        } else if (residual > maxResidualCutoff) {
+        } else if (kotlin.math.abs(residual) > maxResidualCutoff) {
             // Large prediction error: apply forgetting to ALL covariances
             newDriftCovariance *= forgetVarianceFactor
             newOffsetDriftCovariance *= forgetVarianceFactor
@@ -144,7 +144,7 @@ class ClockSynchronizer {
         val driftSquared = drift * drift
         useDrift = driftSquared > driftSignificanceThresholdSquared * driftCovariance
 
-        count++
+        if (count >= 100) count++  // only increment past 100 (2..99 handled above)
         publishState()
 
         // Adaptive sync interval

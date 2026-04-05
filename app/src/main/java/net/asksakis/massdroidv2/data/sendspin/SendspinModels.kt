@@ -66,7 +66,9 @@ data class SendspinClientHello(
 @Serializable
 data class PlayerStateInfo(
     val volume: Int = 100,
-    val muted: Boolean = false
+    val muted: Boolean = false,
+    @SerialName("static_delay_ms")
+    val staticDelayMs: Int = 0
 )
 
 @Serializable

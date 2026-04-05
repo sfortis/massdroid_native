@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -209,19 +212,56 @@ fun PlayerSettingsDialog(
                         }
                     }
 
-                    if (isSendspinPlayer) {
+                    if (isLocalPlayer) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text(
                                 "Sync offset: ${if (staticDelayMs >= 0) "+$staticDelayMs" else "$staticDelayMs"} ms",
                                 style = MaterialTheme.typography.labelMedium
                             )
-                            Slider(
-                                value = staticDelayMs.toFloat(),
-                                onValueChange = { staticDelayMs = it.toInt() },
-                                valueRange = -500f..500f,
-                                steps = 0,
+                            Row(
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                                 modifier = Modifier.fillMaxWidth()
-                            )
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                                        onStaticDelayChanged?.invoke(staticDelayMs)
+                                    },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Remove,
+                                        contentDescription = "Decrease",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                Slider(
+                                    value = staticDelayMs.toFloat(),
+                                    onValueChange = {
+                                        // Snap to 0 when within ±5ms
+                                        staticDelayMs = if (it in -5f..5f) 0 else it.toInt()
+                                    },
+                                    onValueChangeFinished = {
+                                        onStaticDelayChanged?.invoke(staticDelayMs)
+                                    },
+                                    valueRange = -500f..500f,
+                                    steps = 0,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
+                                        onStaticDelayChanged?.invoke(staticDelayMs)
+                                    },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "Increase",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -255,9 +295,6 @@ fun PlayerSettingsDialog(
                     onSave(player.playerId, values)
                     if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
                         onDstmChanged?.invoke(dontStopTheMusic)
-                    }
-                    if (isSendspinPlayer && staticDelayMs != initialStaticDelayMs) {
-                        onStaticDelayChanged?.invoke(staticDelayMs)
                     }
                     onDismiss()
                 },

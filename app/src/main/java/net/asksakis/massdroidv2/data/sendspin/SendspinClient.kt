@@ -177,11 +177,11 @@ class SendspinClient(
         webSocket?.send(msg)
     }
 
-    fun sendClientState(volume: Int = 100, muted: Boolean = false, syncState: String = "synchronized") {
+    fun sendClientState(volume: Int = 100, muted: Boolean = false, syncState: String = "synchronized", staticDelayMs: Int = 0) {
         val state = SendspinClientState(
             payload = ClientStatePayload(
                 state = syncState,
-                player = PlayerStateInfo(volume = volume, muted = muted)
+                player = PlayerStateInfo(volume = volume, muted = muted, staticDelayMs = staticDelayMs)
             )
         )
         val msg = json.encodeToString(state)
