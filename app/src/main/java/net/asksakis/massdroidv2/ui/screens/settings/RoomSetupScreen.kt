@@ -1093,7 +1093,7 @@ private fun CalibrationInfo(
                             modifier = Modifier.size(14.dp),
                             tint = MaterialTheme.colorScheme.primary)
                         Text(
-                            "WiFi: ${room.connectedBssid}",
+                            "WiFi: ${if (room.wifiMatchMode == WifiMatchMode.SSID) room.connectedSsid ?: room.connectedBssid else room.connectedBssid}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

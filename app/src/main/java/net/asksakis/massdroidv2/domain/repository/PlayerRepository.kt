@@ -66,4 +66,8 @@ interface PlayerRepository {
     fun updateCurrentTrackLyrics(plainLyrics: String?, lrcLyrics: String?)
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
     fun notifyQueueReplacement(queueId: String)
+
+    suspend fun createGroupPlayer(name: String, memberIds: List<String>)
+    suspend fun setGroupMembers(targetPlayerId: String, addIds: List<String>? = null, removeIds: List<String>? = null)
+    suspend fun removeGroupPlayer(playerId: String)
 }

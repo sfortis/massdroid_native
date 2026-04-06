@@ -139,8 +139,22 @@ class SendspinAudioController(
         setupAudioFocus()
         registerNoisyReceiver()
 
-        // Immediately start sendspin connection
-        scope.launch { ensureSendspinConnected() }
+        // Seed output latency and clock offset BEFORE connection (avoids race where
+        // first stream starts with measuredOutputLatencyUs=0 before async seed arrives)
+        sendspinManager.setOutputLatencyPersistCallback { latencyUs ->
+            scope.launch { settingsRepository.setSendspinOutputLatencyUs(latencyUs) }
+        }
+        sendspinManager.onClockOffsetPersist = { offsetUs ->
+            scope.launch { settingsRepository.setSendspinClockOffsetUs(offsetUs) }
+        }
+        scope.launch {
+            val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
+            val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
+            sendspinManager.seedOutputLatency(persistedLatency)
+            sendspinManager.seedClockOffset(persistedOffset)
+            // Start connection only after seeds are applied
+            ensureSendspinConnected()
+        }
 
         collectorJobs += scope.launch {
             settingsRepository.sendspinStaticDelayMs.collect { delayMs ->
@@ -257,12 +271,11 @@ class SendspinAudioController(
         collectorJobs += scope.launch {
             playerRepository.discontinuityCommands.collect { command ->
                 if (command.playerId != sendspinPlayerId) return@collect
-                val reason = when (command.kind) {
-                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.NEXT -> "next"
-                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.PREVIOUS -> "previous"
-                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK -> "seek"
+                // Only seek needs flush (same track, new position).
+                // next/previous are handled by gapless stream_end -> stream_start.
+                if (command.kind == net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK) {
+                    sendspinManager.expectDiscontinuity("seek")
                 }
-                sendspinManager.expectDiscontinuity(reason)
             }
         }
 

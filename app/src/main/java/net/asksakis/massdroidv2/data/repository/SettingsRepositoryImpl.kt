@@ -44,6 +44,8 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
         private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
+        private val KEY_SENDSPIN_OUTPUT_LATENCY_US = stringPreferencesKey("sendspin_output_latency_us")
+        private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us")
     }
 
     private val safeData = context.dataStore.data
@@ -207,6 +209,22 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinStaticDelayMs(delayMs: Int) {
         context.dataStore.edit { it[KEY_SENDSPIN_STATIC_DELAY_MS] = delayMs.coerceIn(0, 5000).toString() }
+    }
+
+    override val sendspinOutputLatencyUs: Flow<Long> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_OUTPUT_LATENCY_US]?.toLongOrNull()?.coerceIn(0, 500_000) ?: 0L
+    }
+
+    override suspend fun setSendspinOutputLatencyUs(latencyUs: Long) {
+        context.dataStore.edit { it[KEY_SENDSPIN_OUTPUT_LATENCY_US] = latencyUs.coerceIn(0, 500_000).toString() }
+    }
+
+    override val sendspinClockOffsetUs: Flow<Long> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
+    }
+
+    override suspend fun setSendspinClockOffsetUs(offsetUs: Long) {
+        context.dataStore.edit { it[KEY_SENDSPIN_CLOCK_OFFSET_US] = offsetUs.toString() }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

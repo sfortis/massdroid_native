@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.isSystemInDarkTheme
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.blue
@@ -684,7 +686,7 @@ private fun NowPlayingLandscape(
         // Left: close/name overlay + centered album art
         Box(
             modifier = Modifier
-                .weight(1f)
+                .weight(0.92f)
                 .fillMaxHeight()
                 .padding(8.dp)
         ) {
@@ -715,7 +717,9 @@ private fun NowPlayingLandscape(
 
             // Album art (true center)
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 20.dp),
                 contentAlignment = Alignment.Center
             ) {
                 SwipeableAlbumArt(
@@ -734,7 +738,7 @@ private fun NowPlayingLandscape(
         // Right: track info + controls (grouped, constrained width)
         Box(
             modifier = Modifier
-                .weight(1.2f)
+                .weight(1.32f)
                 .fillMaxHeight()
                 .padding(start = 16.dp, end = 8.dp)
         ) {
@@ -766,7 +770,7 @@ private fun NowPlayingLandscape(
 
             // Constrained controls block
             Column(
-                modifier = Modifier.fillMaxWidth(0.75f),
+                modifier = Modifier.fillMaxWidth(0.94f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 SeekBar(
@@ -774,7 +778,7 @@ private fun NowPlayingLandscape(
                     duration = duration,
                     onSeek = { if (controlsEnabled) viewModel.seek(it) },
                     enabled = controlsEnabled,
-                    compact = true
+                    compact = false
                 )
 
                 // Action row (playlist, lyrics, badges, queue) below seekbar
@@ -787,17 +791,17 @@ private fun NowPlayingLandscape(
                     onNavigateToQueue = onNavigateToQueue,
                     onShowSendspinStatus = onShowSendspinStatus,
                     enabled = controlsEnabled,
-                    compact = true
+                    compact = false
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
                 TransportControls(
                     isPlaying = isPlaying,
                     queueState = queueState,
                     viewModel = viewModel,
                     enabled = controlsEnabled,
-                    compact = true,
+                    compact = false,
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
                 )
 
@@ -1857,7 +1861,7 @@ private fun SwipeableAlbumArt(
     val outerModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.82f).aspectRatio(1f)
     } else {
-        Modifier.fillMaxWidth(0.9f).heightIn(max = 240.dp).aspectRatio(1f)
+        Modifier.fillMaxWidth(0.82f).heightIn(max = 196.dp).aspectRatio(1f)
     }
     val artworkModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.915f).aspectRatio(1f)
@@ -2117,6 +2121,7 @@ private fun extractColor(bitmap: Bitmap, isDark: Boolean): Color {
     return Color(clamped)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SeekBar(
     elapsed: Double,
@@ -2126,6 +2131,7 @@ private fun SeekBar(
     compact: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
     var seeking by remember { mutableStateOf(false) }
     var seekValue by remember { mutableFloatStateOf(0f) }
     var seekTarget by remember { mutableFloatStateOf(-1f) }
@@ -2142,6 +2148,9 @@ private fun SeekBar(
         seekTarget >= 0f -> seekTarget
         else -> elapsed.toFloat()
     }
+    val thumbWidth = if (compact) 5.dp else 5.dp
+    val thumbHeight = if (compact) 14.dp else 16.dp
+    val trackHeight = if (compact) 6.dp else 8.dp
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
@@ -2158,7 +2167,21 @@ private fun SeekBar(
             },
             valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
             enabled = enabled,
-            modifier = if (compact) Modifier.height(28.dp) else Modifier
+            modifier = if (compact) Modifier.height(30.dp) else Modifier.height(34.dp),
+            interactionSource = interactionSource,
+            thumb = {
+                SliderDefaults.Thumb(
+                    interactionSource = interactionSource,
+                    thumbSize = DpSize(thumbWidth, thumbHeight)
+                )
+            },
+            track = { sliderState ->
+                SliderDefaults.Track(
+                    sliderState = sliderState,
+                    modifier = Modifier.height(trackHeight),
+                    thumbTrackGapSize = 0.dp
+                )
+            }
         )
 
         Row(

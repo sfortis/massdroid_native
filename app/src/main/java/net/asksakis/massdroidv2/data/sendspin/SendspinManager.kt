@@ -30,6 +30,9 @@ class SendspinManager(
 
     // Clock sync: Kalman filter is the primary offset source
     @Volatile var clockSynced: Boolean = false; private set
+    var onClockOffsetPersist: ((Long) -> Unit)? = null
+    private var clockOffsetPersistCount = 0
+
 
     private val _connectionState = MutableStateFlow(SendspinState.DISCONNECTED)
     val connectionState: StateFlow<SendspinState> = _connectionState.asStateFlow()
@@ -41,6 +44,10 @@ class SendspinManager(
     val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
     private val _syncState = MutableStateFlow(audio.syncState)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+
+    data class SyncSample(val errorMs: Float, val outputLatencyMs: Float, val filterErrorMs: Float)
+    private val _syncHistory = MutableStateFlow<List<SyncSample>>(emptyList())
+    val syncHistory: StateFlow<List<SyncSample>> = _syncHistory.asStateFlow()
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
     val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
 
@@ -148,6 +155,12 @@ class SendspinManager(
                         "error=${clockSynchronizer.errorUs()}us rtt=${rttUs}us " +
                         "ready=${clockSynchronizer.isReadyForPlaybackStart()} samples=$count")
                 }
+                // Persist offset every ~30 samples for next startup seed
+                clockOffsetPersistCount++
+                if (clockOffsetPersistCount >= 30 && clockSynchronizer.errorUs() < 5_000) {
+                    clockOffsetPersistCount = 0
+                    onClockOffsetPersist?.invoke(clockSynchronizer.currentOffsetUs())
+                }
             }
 
             is SendspinIncoming.GroupUpdate -> {
@@ -209,6 +222,7 @@ class SendspinManager(
         }
     }
 
+
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
@@ -220,11 +234,22 @@ class SendspinManager(
         }
     }
 
+    fun seedClockOffset(persistedOffsetUs: Long) {
+        if (persistedOffsetUs != 0L) {
+            clockSynchronizer.softReset(persistedOffsetUs, preserveDrift = false)
+            clockSynced = true
+            Log.d(TAG, "Clock offset seeded from DataStore: ${persistedOffsetUs}us")
+        }
+    }
+
     private fun startTimeSync() {
         timeSyncJob?.cancel()
         val previousOffsetUs = clockSynchronizer.currentOffsetUs()
-        clockSynchronizer.softReset(previousOffsetUs)
-        clockSynced = previousOffsetUs != 0L
+        if (previousOffsetUs != 0L) {
+            clockSynchronizer.softReset(previousOffsetUs)
+            clockSynced = true
+        }
+        clockOffsetPersistCount = 0
         audio.clockSynchronizer = clockSynchronizer
         timeSyncJob = scope.launch {
             while (true) {
@@ -275,11 +300,20 @@ class SendspinManager(
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
+    fun seedOutputLatency(persistedUs: Long) {
+        audio.seedOutputLatency(persistedUs)
+    }
+
+    fun setOutputLatencyPersistCallback(callback: (Long) -> Unit) {
+        audio.onOutputLatencyMeasured = callback
+    }
+
     fun setStaticDelayMs(delayMs: Int) {
         val clamped = delayMs.coerceIn(0, 5000)
         val oldDelay = audio.staticDelayMs
         if (clamped == oldDelay) return
         audio.staticDelayMs = clamped
+        audio.shiftAnchorForDelayChange(clamped - oldDelay)
         // Value changes immediately (affects targetLocalPlayUs, late-frame detection).
         // Full alignment effect at next startup (seek/track change).
         // No flush: flushing causes buffer storm and desync.
@@ -314,6 +348,13 @@ class SendspinManager(
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 
     fun setupSyncStateCallback() {
+        audio.onSyncSample = { errorMs, outLatMs, filterErrMs ->
+            val sample = SyncSample(errorMs, outLatMs, filterErrMs)
+            val history = _syncHistory.value.toMutableList()
+            history.add(sample)
+            if (history.size > 60) history.removeAt(0)
+            _syncHistory.value = history
+        }
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
             val stateStr = when (state) {
@@ -354,6 +395,8 @@ class SendspinManager(
         stateJob = null
         client.disconnect()
         audio.onSyncStateChanged = null
+        audio.onSyncSample = null
+        _syncHistory.value = emptyList()
         audio.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null

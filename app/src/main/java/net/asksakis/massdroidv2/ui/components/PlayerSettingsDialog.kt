@@ -39,6 +39,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import android.util.Log
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -57,6 +64,7 @@ fun PlayerSettingsDialog(
     onDstmChanged: ((enabled: Boolean) -> Unit)?,
     onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
     onStaticDelayChanged: ((Int) -> Unit)? = null,
+    syncHistory: List<SendspinManager.SyncSample> = emptyList(),
     onDismiss: () -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
@@ -213,55 +221,39 @@ fun PlayerSettingsDialog(
                     }
 
                     if (isLocalPlayer) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                "Sync offset: ${if (staticDelayMs >= 0) "+$staticDelayMs" else "$staticDelayMs"} ms",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                            Row(
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Static delay", style = MaterialTheme.typography.labelMedium)
+                            IconButton(
+                                onClick = {
+                                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                                    onStaticDelayChanged?.invoke(staticDelayMs)
+                                },
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                IconButton(
-                                    onClick = {
-                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
-                                        onStaticDelayChanged?.invoke(staticDelayMs)
-                                    },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Remove,
-                                        contentDescription = "Decrease",
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                Slider(
-                                    value = staticDelayMs.toFloat(),
-                                    onValueChange = {
-                                        // Snap to 0 when within ±5ms
-                                        staticDelayMs = if (it in -5f..5f) 0 else it.toInt()
-                                    },
-                                    onValueChangeFinished = {
-                                        onStaticDelayChanged?.invoke(staticDelayMs)
-                                    },
-                                    valueRange = 0f..500f,
-                                    steps = 0,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = {
-                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
-                                        onStaticDelayChanged?.invoke(staticDelayMs)
-                                    },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Add,
-                                        contentDescription = "Increase",
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
+                                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(14.dp))
                             }
+                            Text(
+                                "${staticDelayMs}ms",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                            IconButton(
+                                onClick = {
+                                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                                    onStaticDelayChanged?.invoke(staticDelayMs)
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                            }
+                        }
+
+                        if (syncHistory.size >= 2) {
+                            SyncErrorGraph(syncHistory)
                         }
                     }
                 }
@@ -305,4 +297,115 @@ fun PlayerSettingsDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@Composable
+private fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
+    val rangeMs = 20f  // ±20ms range
+    val latest = samples.lastOrNull()
+    val goodColor = MaterialTheme.colorScheme.primary
+    val warnColor = MaterialTheme.colorScheme.tertiary
+    val badColor = MaterialTheme.colorScheme.error
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val labelStyle = MaterialTheme.typography.labelSmall
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text("Sync", style = MaterialTheme.typography.labelMedium)
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp)
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 30.dp, end = 36.dp)
+            ) {
+                val topInset = 4.dp.toPx()
+                val bottomInset = 4.dp.toPx()
+                val graphHeight = size.height - topInset - bottomInset
+                val centerY = topInset + graphHeight / 2f
+                val stepX = size.width / (samples.size.coerceAtLeast(2) - 1).toFloat()
+
+                // Grid: center line (0ms) + ±10ms
+                drawLine(gridColor, Offset(0f, centerY), Offset(size.width, centerY), 1.dp.toPx())
+                val tenMsY = graphHeight / 2f * (10f / rangeMs)
+                drawLine(gridColor, Offset(0f, centerY - tenMsY), Offset(size.width, centerY - tenMsY), 0.5.dp.toPx())
+                drawLine(gridColor, Offset(0f, centerY + tenMsY), Offset(size.width, centerY + tenMsY), 0.5.dp.toPx())
+
+                // Sync error curve
+                val points = samples.mapIndexed { i, s ->
+                    val x = stepX * i
+                    val normalized = (s.errorMs / rangeMs).coerceIn(-1f, 1f)
+                    val y = centerY - normalized * (graphHeight / 2f)
+                    Offset(x, y)
+                }
+
+                if (points.size >= 2) {
+                    val path = Path()
+                    path.moveTo(points.first().x, points.first().y)
+                    for (i in 1 until points.size) {
+                        val prev = points[i - 1]
+                        val curr = points[i]
+                        val midX = (prev.x + curr.x) / 2f
+                        val midY = (prev.y + curr.y) / 2f
+                        path.quadraticTo(prev.x, prev.y, midX, midY)
+                    }
+                    path.lineTo(points.last().x, points.last().y)
+
+                    // Color based on latest error magnitude
+                    val absErr = kotlin.math.abs(latest?.errorMs ?: 0f)
+                    val lineColor = when {
+                        absErr < 3f -> goodColor
+                        absErr < 10f -> warnColor
+                        else -> badColor
+                    }
+
+                    drawPath(path, lineColor, style = Stroke(width = 2.dp.toPx()))
+
+                    // Endpoint dot
+                    drawCircle(lineColor, radius = 3.dp.toPx(), center = points.last())
+                }
+            }
+
+            // Labels
+            Text(
+                text = "+${rangeMs.toInt()}",
+                style = labelStyle,
+                color = labelColor,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+            Text(
+                text = "-${rangeMs.toInt()}",
+                style = labelStyle,
+                color = labelColor,
+                modifier = Modifier.align(Alignment.BottomStart)
+            )
+            latest?.let {
+                val absErr = kotlin.math.abs(it.errorMs)
+                val errColor = when {
+                    absErr < 3f -> goodColor
+                    absErr < 10f -> warnColor
+                    else -> badColor
+                }
+                Text(
+                    text = "${"%.1f".format(it.errorMs)}ms",
+                    style = labelStyle,
+                    color = errColor,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
+            }
+        }
+
+        // Output latency + filter error info line
+        latest?.let {
+            Text(
+                text = "Output: ${"%.0f".format(it.outputLatencyMs)}ms  Clock: ${"%.1f".format(it.filterErrorMs)}ms",
+                style = MaterialTheme.typography.bodySmall,
+                color = labelColor
+            )
+        }
+    }
 }

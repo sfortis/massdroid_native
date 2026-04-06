@@ -11,6 +11,8 @@ data class Player(
     val volumeMuted: Boolean = false,
     val activeGroup: String? = null,
     val groupChilds: List<String> = emptyList(),
+    val supportedFeatures: Set<String> = emptySet(),
+    val canGroupWith: List<String> = emptyList(),
     val currentMedia: NowPlaying? = null,
     val icon: String? = null
 )

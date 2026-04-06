@@ -1149,6 +1149,27 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
     }
 
+    override suspend fun createGroupPlayer(name: String, memberIds: List<String>) {
+        wsClient.sendCommand(
+            MaCommands.Players.CREATE_GROUP,
+            CreateGroupPlayerArgs(name = name, members = memberIds)
+        )
+    }
+
+    override suspend fun setGroupMembers(targetPlayerId: String, addIds: List<String>?, removeIds: List<String>?) {
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_SET_MEMBERS,
+            SetMembersArgs(targetPlayer = targetPlayerId, playerIdsToAdd = addIds, playerIdsToRemove = removeIds)
+        )
+    }
+
+    override suspend fun removeGroupPlayer(playerId: String) {
+        wsClient.sendCommand(
+            MaCommands.Players.REMOVE_GROUP,
+            RemoveGroupPlayerArgs(playerId = playerId)
+        )
+    }
+
     private fun maybeRecordManualSkip(playerId: String) {
         val current = queueTracking[playerId] ?: return
         if (!smartListeningEnabledSnapshot) return
@@ -1223,6 +1244,8 @@ fun ServerPlayer.toDomain(
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
     groupChilds = groupChilds,
+    supportedFeatures = supportedFeatures.toSet(),
+    canGroupWith = canGroupWith,
     currentMedia = currentMedia?.let {
         NowPlaying(
             queueId = it.queueId,

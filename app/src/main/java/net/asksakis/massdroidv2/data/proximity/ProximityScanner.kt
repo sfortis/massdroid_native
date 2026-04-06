@@ -230,26 +230,41 @@ class ProximityScanner @Inject constructor(
     @Volatile private var wifiCallbackRegistered = false
     private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
+    private fun wifiCallbackOnCapabilities(network: android.net.Network, caps: NetworkCapabilities) {
+        val wi = caps.transportInfo as? WifiInfo ?: return
+        val bssid = wi.bssid
+        if (bssid == null || bssid == INVALID_WIFI_BSSID) return
+        val ssid = wi.ssid
+            ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
+            ?.trim('"')
+        cachedWifi = CachedWifi(ConnectedWifiInfo(bssid = bssid, ssid = ssid, rssi = wi.rssi), network)
+    }
+
+    private fun wifiCallbackOnLost(network: android.net.Network) {
+        if (cachedWifi?.network == network) cachedWifi = null
+    }
+
     @SuppressLint("MissingPermission")
     fun startWifiMonitor() {
         if (wifiCallbackRegistered) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Log.d(TAG, "WiFi monitor skipped (API ${Build.VERSION.SDK_INT} < 31, using WifiManager fallback)")
+            return
+        }
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val request = android.net.NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
-        val callback = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
-            override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) {
-                val wi = caps.transportInfo as? WifiInfo ?: return
-                val bssid = wi.bssid
-                if (bssid == null || bssid == INVALID_WIFI_BSSID) return
-                val ssid = wi.ssid
-                    ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
-                    ?.trim('"')
-                cachedWifi = CachedWifi(ConnectedWifiInfo(bssid = bssid, ssid = ssid, rssi = wi.rssi), network)
+        val callback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            @SuppressLint("NewApi")
+            object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) { wifiCallbackOnCapabilities(network, caps) }
+                override fun onLost(network: android.net.Network) { wifiCallbackOnLost(network) }
             }
-
-            override fun onLost(network: android.net.Network) {
-                if (cachedWifi?.network == network) cachedWifi = null
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) { wifiCallbackOnCapabilities(network, caps) }
+                override fun onLost(network: android.net.Network) { wifiCallbackOnLost(network) }
             }
         }
         try {

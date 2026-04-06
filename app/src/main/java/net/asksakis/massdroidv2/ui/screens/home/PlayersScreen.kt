@@ -111,6 +111,7 @@ fun PlayersScreen(
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
+                    var groupPlayer by remember { mutableStateOf<Player?>(null) }
 
                     PlayersHeader(
                         totalPlayers = availablePlayers.size,
@@ -169,6 +170,10 @@ fun PlayersScreen(
                             onConfigureRoom = playerRoomIdMap[player.playerId]?.let { roomId ->
                                 { onNavigateToRoomSetup(roomId) }
                             },
+                            onGroupWith = {
+                                groupPlayer = player
+                                queueMenuPlayer = null
+                            },
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
                                 queueMenuPlayer = null
@@ -189,6 +194,7 @@ fun PlayersScreen(
                     settingsPlayer?.let { player ->
                         val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
                         val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+                        val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
                         if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
@@ -202,7 +208,20 @@ fun PlayersScreen(
                             onDstmChanged = { viewModel.setDontStopTheMusic(player.playerId, it) },
                             onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                             onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
+                            syncHistory = syncHistory,
                             onDismiss = { settingsPlayer = null }
+                        )
+                    }
+
+                    groupPlayer?.let { player ->
+                        net.asksakis.massdroidv2.ui.components.GroupPlayersSheet(
+                            targetPlayer = player,
+                            allPlayers = players.filter { it.available },
+                            onApply = { selectedIds ->
+                                android.util.Log.d("PlayersScreen", "GroupSheet onApply: target=${player.playerId} selected=$selectedIds childs=${player.groupChilds}")
+                                viewModel.applyGroupMembers(player.playerId, player.groupChilds, selectedIds)
+                            },
+                            onDismiss = { groupPlayer = null }
                         )
                     }
 
@@ -445,13 +464,14 @@ private fun PlayerQueueSheet(
     playerRoomMap: Map<String, List<String>> = emptyMap(),
     onPlayerSettings: () -> Unit,
     onConfigureRoom: (() -> Unit)? = null,
+    onGroupWith: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
     onStartSongRadio: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var showTransferList by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val otherPlayers = remember(allPlayers, player.playerId) {
         allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }
     }
@@ -494,6 +514,20 @@ private fun PlayerQueueSheet(
                         },
                         modifier = Modifier.clickable { showTransferList = true }
                     )
+                }
+                if ("set_members" in player.supportedFeatures) {
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text(if (player.groupChilds.isNotEmpty()) "Edit Sync Group..." else "Synchronize with...") },
+                        leadingContent = {
+                            Icon(Icons.Default.SpeakerGroup, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onGroupWith()
+                            onDismiss()
+                        }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 }
                 if (player.currentMedia?.uri != null) {
                     ListItem(

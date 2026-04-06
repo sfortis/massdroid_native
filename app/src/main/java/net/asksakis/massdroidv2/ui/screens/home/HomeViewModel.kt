@@ -29,7 +29,8 @@ class HomeViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val wsClient: MaWebSocketClient,
     private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore,
-    private val roomDetector: RoomDetector
+    private val roomDetector: RoomDetector,
+    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager
 ) : ViewModel() {
 
     val players = playerRepository.players
@@ -43,6 +44,7 @@ class HomeViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    val sendspinSyncHistory = sendspinManager.syncHistory
     val proximityConfig = proximityConfigStore.config
     val currentDetectedRoom = roomDetector.currentRoom
 
@@ -262,6 +264,28 @@ class HomeViewModel @Inject constructor(
                 } catch (e: Exception) {
                     Log.w(TAG, "transferQueue failed: ${e.message}")
                 }
+            }
+        }
+    }
+
+    fun applyGroupMembers(targetPlayerId: String, currentChilds: List<String>, selectedIds: List<String>) {
+        Log.d(TAG, "applyGroupMembers: target=$targetPlayerId, current=$currentChilds, selected=$selectedIds")
+        viewModelScope.launch {
+            try {
+                val toAdd = selectedIds.filter { it !in currentChilds }
+                val toRemove = currentChilds.filter { it !in selectedIds }
+                if (selectedIds.isEmpty() && currentChilds.isNotEmpty()) {
+                    // Unsync all
+                    playerRepository.setGroupMembers(targetPlayerId, removeIds = currentChilds)
+                } else if (toAdd.isNotEmpty() || toRemove.isNotEmpty()) {
+                    playerRepository.setGroupMembers(
+                        targetPlayerId,
+                        addIds = toAdd.ifEmpty { null },
+                        removeIds = toRemove.ifEmpty { null }
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "applyGroupMembers failed: ${e.message}")
             }
         }
     }
