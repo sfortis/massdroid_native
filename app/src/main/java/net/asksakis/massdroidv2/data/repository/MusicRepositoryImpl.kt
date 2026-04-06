@@ -360,7 +360,7 @@ class MusicRepositoryImpl @Inject constructor(
         imageUrl = resolveImageUrl(wsClient),
         isFolder = mediaType == "folder",
         mediaType = mediaType,
-        isPlayable = isPlayable ?: (uri.isNotBlank() && mediaType != "folder")
+        isPlayable = ! (mediaType == "folder") && isPlayable == true
     )
 
     override suspend fun clearQueue(queueId: String) {
@@ -608,6 +608,10 @@ class MusicRepositoryImpl @Inject constructor(
 
     private fun ServerMediaItem.toTrack(): Track? {
         if (mediaType.isNotEmpty() && mediaType != "track") return null
+        if (isPlayable == false) {
+            Log.w(TAG, "Dropping unplayable track '$name' uri=$uri path=$path")
+            return null
+        }
         return Track(
             itemId = itemId,
             provider = provider,

@@ -30,7 +30,7 @@ class SendspinManager(
 
     // Clock sync: Kalman filter is the primary offset source
     @Volatile var clockSynced: Boolean = false; private set
-    var onClockOffsetPersist: ((Long) -> Unit)? = null
+    var onClockOffsetPersist: ((serverMinusWallUs: Long) -> Unit)? = null
     private var clockOffsetPersistCount = 0
 
 
@@ -133,14 +133,10 @@ class SendspinManager(
                 val t3 = incoming.payload.serverTransmitted
                 val t4 = System.nanoTime() / 1000
                 val rttUs = (t4 - t1) - (t3 - t2)
-                // Reject absurd RTT samples (network congestion, app startup load)
-                if (rttUs > 150_000L) {
-                    val count = clockSynchronizer.currentSampleCount()
-                    if (count < 10) {
-                        Log.d(TAG, "Clock sync: REJECTED rtt=${rttUs}us (too high, samples=$count)")
-                        return
-                    }
-                    // After 10 samples, let Kalman's adaptive forgetting handle outliers
+                // Reject absurd RTT only during initial convergence (first 5 samples)
+                if (rttUs > 150_000L && clockSynchronizer.currentSampleCount() < 5) {
+                    Log.d(TAG, "Clock sync: REJECTED rtt=${rttUs}us (startup, samples=${clockSynchronizer.currentSampleCount()})")
+                    return
                 }
                 clockSynchronizer.processTimeResponse(
                     clientTransmittedUs = t1,
@@ -157,14 +153,17 @@ class SendspinManager(
                 }
                 // Persist offset every ~30 samples for next startup seed
                 clockOffsetPersistCount++
-                if (clockOffsetPersistCount >= 30 && clockSynchronizer.errorUs() < 5_000) {
+                if (clockOffsetPersistCount >= 100 && clockSynchronizer.errorUs() < 2_000) {
                     clockOffsetPersistCount = 0
-                    onClockOffsetPersist?.invoke(clockSynchronizer.currentOffsetUs())
+                    val nanoUs = System.nanoTime() / 1000
+                    val wallUs = System.currentTimeMillis() * 1000L
+                    val serverMinusWall = clockSynchronizer.currentOffsetUs() + nanoUs - wallUs
+                    onClockOffsetPersist?.invoke(serverMinusWall)
                 }
             }
 
             is SendspinIncoming.GroupUpdate -> {
-                // Group state updates are informative only for now.
+                // Informational only. Group detection via setInSyncGroup() from player state.
             }
 
             is SendspinIncoming.StreamStart -> {
@@ -234,12 +233,18 @@ class SendspinManager(
         }
     }
 
-    fun seedClockOffset(persistedOffsetUs: Long) {
-        if (persistedOffsetUs != 0L) {
-            clockSynchronizer.softReset(persistedOffsetUs, preserveDrift = false)
-            clockSynced = true
-            Log.d(TAG, "Clock offset seeded from DataStore: ${persistedOffsetUs}us")
-        }
+    /**
+     * Seed Kalman from persisted value. We store server_time - wallClock (reboot-safe),
+     * then reconstruct the nanoTime-based offset on restore.
+     */
+    fun seedClockOffset(serverMinusWallUs: Long) {
+        if (serverMinusWallUs == 0L) return
+        val nowNanoUs = System.nanoTime() / 1000
+        val nowWallUs = System.currentTimeMillis() * 1000L
+        val estimatedOffset = serverMinusWallUs - nowNanoUs + nowWallUs
+        clockSynchronizer.softReset(estimatedOffset, preserveDrift = false)
+        clockSynced = true
+        Log.d(TAG, "Clock offset seeded: ${estimatedOffset}us (from serverMinusWall=${serverMinusWallUs}us)")
     }
 
     private fun startTimeSync() {
@@ -298,6 +303,11 @@ class SendspinManager(
     fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
         Log.d(TAG, "Requesting format change: $codec ${sampleRate}Hz/${bitDepth}bit ${channels}ch")
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
+    }
+
+    fun setInSyncGroup(grouped: Boolean) {
+        audio.inSyncGroup = grouped
+        if (grouped) Log.d(TAG, "Sync group: active")
     }
 
     fun seedOutputLatency(persistedUs: Long) {
@@ -396,6 +406,7 @@ class SendspinManager(
         client.disconnect()
         audio.onSyncStateChanged = null
         audio.onSyncSample = null
+        audio.inSyncGroup = false
         _syncHistory.value = emptyList()
         audio.release()
         _connectionState.value = SendspinState.DISCONNECTED

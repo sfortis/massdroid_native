@@ -45,7 +45,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
         private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
         private val KEY_SENDSPIN_OUTPUT_LATENCY_US = stringPreferencesKey("sendspin_output_latency_us")
-        private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_clock_offset_us")
+        private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
     }
 
     private val safeData = context.dataStore.data

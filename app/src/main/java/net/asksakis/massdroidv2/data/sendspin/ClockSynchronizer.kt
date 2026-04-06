@@ -19,7 +19,7 @@ class ClockSynchronizer {
         private const val TAG = "ClockSync"
         private const val INITIAL_SYNC_INTERVAL_MS = 300L
         private const val MAX_SYNC_INTERVAL_MS = 3000L
-        private const val FAST_SYNC_SAMPLES = 20
+        private const val FAST_SYNC_SAMPLES = 50
 
         // Match JS reference: sendspin-js/src/time-filter.ts
         private const val ADAPTIVE_FORGETTING_CUTOFF = 2.0

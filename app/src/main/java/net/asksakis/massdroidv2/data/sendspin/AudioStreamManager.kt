@@ -114,6 +114,7 @@ class AudioStreamManager {
     // Clock sync
     @Volatile var clockSynchronizer: ClockSynchronizer? = null
     @Volatile var staticDelayMs: Int = 0
+    @Volatile var inSyncGroup: Boolean = false
 
     // Callback to persist output latency (wired by SendspinManager)
     var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -169,7 +170,12 @@ class AudioStreamManager {
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs - (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
+        return if (inSyncGroup) {
+            localUs - (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
+        } else {
+            // Solo: no output latency compensation (matches master behavior)
+            localUs - (staticDelayMs.toLong() * 1000L)
+        }
     }
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
@@ -296,11 +302,11 @@ class AudioStreamManager {
                 holdoverEndTimestampUs = lastPlayedServerTimestampUs
                 pendingAudioTrackFlush = true
             } else {
-                // IDLE/REBUFFERING reconnect: require more buffer to avoid instant starvation.
+                // IDLE/REBUFFERING reconnect.
                 holdoverEndTimestampUs = 0L
                 pendingAudioTrackFlush = false
                 playbackStarted = false
-                requiredSyncBufferMs = rebufferSyncBufferMs()
+                requiredSyncBufferMs = if (inSyncGroup) rebufferSyncBufferMs() else defaultSyncBufferMs()
                 enqueueLateDropGraceUntilUs = nowLocalUs() + (STARTUP_ENQUEUE_GRACE_MS * 1000L)
             }
             // Keep playbackStarted for holdover so playback thread continues decode loop
@@ -388,7 +394,7 @@ class AudioStreamManager {
             else AudioFormat.CHANNEL_OUT_MONO
         val encoding = AudioFormat.ENCODING_PCM_16BIT
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
-        val bufferSize = minBuf * 2 * 2
+        val bufferSize = if (inSyncGroup) minBuf * 4 else minBuf * 16
         // Output latency estimate: use minBuf (system minimum, ~one mixer period)
         // not inflated bufferSize. Actual pipeline = AudioTrack + AudioFlinger + HAL.
         // minBuf is Android's estimate of the minimum write-to-output latency.
@@ -412,7 +418,10 @@ class AudioStreamManager {
             )
             .setBufferSizeInBytes(bufferSize)
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            .setPerformanceMode(
+                if (inSyncGroup) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                else AudioTrack.PERFORMANCE_MODE_NONE
+            )
             .build()
 
         codec = createCodec(codecName, sampleRate, channels, bitDepth, codecHeader)
@@ -459,7 +468,7 @@ class AudioStreamManager {
 
         lastFrameReceivedMs = System.currentTimeMillis()
 
-        if (shouldDropLateFrameOnEnqueue(serverTimestampUs)) {
+        if (inSyncGroup && shouldDropLateFrameOnEnqueue(serverTimestampUs)) {
             logLateDrop(serverTimestampUs, "enqueue")
             return
         }
@@ -523,7 +532,7 @@ class AudioStreamManager {
 
                 lateDropCount = 0L
                 playbackStarted = false
-                requiredSyncBufferMs = rebufferSyncBufferMs()
+                requiredSyncBufferMs = if (inSyncGroup) rebufferSyncBufferMs() else defaultSyncBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             }
         }
@@ -571,10 +580,24 @@ class AudioStreamManager {
         if (!frameQueue.isEmpty()) return
         // Extended grace during gapless track transitions (server may take >1s)
         if (System.currentTimeMillis() < gaplessGraceUntilMs) return
-        // Grace after fresh sync: server may still be filling buffer
-        if (playbackStartedAtMs > 0 && System.currentTimeMillis() - playbackStartedAtMs < 5000) return
+        // Grace after fresh sync in group mode: server may still be filling buffer
+        if (inSyncGroup && playbackStartedAtMs > 0 && System.currentTimeMillis() - playbackStartedAtMs < 5000) return
         val silenceMs = System.currentTimeMillis() - lastFrameReceivedMs
         if (silenceMs <= 1000) return
+
+        if (!inSyncGroup) {
+            // Solo: don't enter HOLDOVER (causes pendingAudioTrackFlush on next track).
+            // Just stop and wait for next stream_start.
+            Log.d(DBG, "starvation solo codec=$activeCodec silence=${silenceMs}ms, going IDLE")
+            synchronized(codecLock) {
+                try { track.setVolume(0f) } catch (_: Exception) {}
+                try { track.pause(); track.flush() } catch (_: Exception) {}
+                try { codec?.flush() } catch (_: Exception) {}
+            }
+            playbackStarted = false
+            transitionSyncState(SyncState.IDLE)
+            return
+        }
 
         if (syncState == SyncState.SYNCHRONIZED) {
             // Stage 1: transition to holdover, let hardware buffer drain naturally
@@ -642,7 +665,6 @@ class AudioStreamManager {
      */
     private fun checkSync(serverTimestampUs: Long, track: AudioTrack) {
         // Always emit current state for UI graph (even when not correcting)
-        // absoluteSync = startup offset + accumulated drift = true position vs server
         val sync = clockSynchronizer
         if (sync != null && sync.isSynced()) {
             val absoluteSyncMs = startupOffsetMs + smoothedSyncErrorMs
@@ -652,6 +674,8 @@ class AudioStreamManager {
                 (sync.errorUs() / 1000f)
             )
         }
+        // Solo mode: emit samples for graph but don't correct
+        if (!inSyncGroup) return
         if (syncState != SyncState.SYNCHRONIZED) return
         if (sync == null || !sync.isSynced()) return
 
@@ -867,15 +891,18 @@ class AudioStreamManager {
             while ((playbackActive || frameQueue.isNotEmpty()) && generation == playbackGeneration) {
                 // Wait for enough encoded buffer before starting
                 if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING || syncState == SyncState.IDLE) {
-                    if (dropLateHeadFramesForStartup()) {
+                    if (inSyncGroup && dropLateHeadFramesForStartup()) {
                         continue
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
                         // Startup precision gate: wait for clock filter to converge.
-                        // Without this, playback starts with 500ms+ clock error.
-                        // Timeout after 4s so we don't block forever.
-                        val clockReady = clockSynchronizer?.isReadyForPlaybackStart() ?: false
+                        // Only wait when in sync group (multi-device sync matters).
+                        // Solo playback starts immediately.
+                        val needClockWait = inSyncGroup
+                        val clockReady = if (needClockWait) {
+                            clockSynchronizer?.isReadyForPlaybackStart() ?: false
+                        } else true
                         if (!clockReady) {
                             val waitingMs = if (clockWaitStartMs > 0) {
                                 System.currentTimeMillis() - clockWaitStartMs
@@ -894,48 +921,64 @@ class AudioStreamManager {
                             clockWaitStartMs = 0L  // reset so next startup gets fresh timeout
                         }
                         // Clock is ready (or timed out): drain any stale frames from wait period
-                        if (dropLateHeadFramesForStartup()) {
+                        if (inSyncGroup && dropLateHeadFramesForStartup()) {
                             continue
                         }
                         if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
-                            // Skip stale frames: drop head frames until lead > -20ms.
-                            // Without this, lead=-189ms means we start 189ms behind.
-                            var skipped = 0
-                            while (frameQueue.size > 1) {
-                                val head = frameQueue.peek() ?: break
-                                val headLead = leadToLocalNowMs(head.serverTimestampUs)
-                                if (headLead >= 0L) break
-                                frameQueue.poll()
-                                frameQueueBytes.addAndGet(-head.payload.size.toLong())
-                                skipped++
-                            }
-                            if (skipped > 0) {
-                                Log.d(TAG, "Startup: skipped $skipped stale frames, buf=${bufferDurationMs()}ms")
-                                if (!isStartupBufferReady()) continue
-                            }
-
-                            // Align startup to server timeline via busy-wait.
-                            val firstFrame = frameQueue.peek()
-                            if (firstFrame != null) {
-                                val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
-                                val leadBeforeWaitMs = (targetUs - nowLocalUs()) / 1000L
-                                val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
-                                val waitMs = waitUs / 1000L
-                                if (waitMs > 15) {
-                                    try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
+                            if (inSyncGroup) {
+                                // Sync group: precise alignment needed
+                                // Skip stale frames until lead >= 0
+                                var skipped = 0
+                                while (frameQueue.size > 1) {
+                                    val head = frameQueue.peek() ?: break
+                                    val headLead = leadToLocalNowMs(head.serverTimestampUs)
+                                    if (headLead >= 0L) break
+                                    frameQueue.poll()
+                                    frameQueueBytes.addAndGet(-head.payload.size.toLong())
+                                    skipped++
                                 }
-                                // Busy-wait for sub-ms precision (max 50ms cap)
-                                val spinDeadline = nowLocalUs() + 50_000L
-                                while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
-                                val overshootUs = nowLocalUs() - targetUs
-                                // Capture absolute offset: negative lead = we're late by that amount
-                                startupOffsetMs = if (leadBeforeWaitMs < 0) -leadBeforeWaitMs.toDouble() else -(overshootUs / 1000.0)
-                                Log.d(TAG, "Startup align: lead=${leadBeforeWaitMs}ms " +
-                                    "waited=${waitMs}ms overshoot=${overshootUs / 1000}ms " +
-                                    "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
-                                    "outLat=${measuredOutputLatencyUs / 1000}ms " +
-                                    "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
+                                if (skipped > 0) {
+                                    Log.d(TAG, "Startup: skipped $skipped stale frames, buf=${bufferDurationMs()}ms")
+                                    if (!isStartupBufferReady()) continue
+                                }
+
+                                // Sanity: if lead is absurd, clock hasn't converged
+                                val sanityFrame = frameQueue.peek()
+                                if (sanityFrame != null) {
+                                    val sanityLead = leadToLocalNowMs(sanityFrame.serverTimestampUs)
+                                    if (kotlin.math.abs(sanityLead) > 5000) {
+                                        Log.d(TAG, "Startup sanity fail: lead=${sanityLead}ms, flushing")
+                                        frameQueue.clear()
+                                        frameQueueBytes.set(0)
+                                        continue
+                                    }
+                                }
+
+                                // Busy-wait alignment to server timeline
+                                val firstFrame = frameQueue.peek()
+                                if (firstFrame != null) {
+                                    val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
+                                    val leadBeforeWaitMs = (targetUs - nowLocalUs()) / 1000L
+                                    val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
+                                    val waitMs = waitUs / 1000L
+                                    if (waitMs > 15) {
+                                        try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
+                                    }
+                                    val spinDeadline = nowLocalUs() + 50_000L
+                                    while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
+                                    val overshootUs = nowLocalUs() - targetUs
+                                    startupOffsetMs = if (leadBeforeWaitMs < 0) -leadBeforeWaitMs.toDouble() else -(overshootUs / 1000.0)
+                                    Log.d(TAG, "Startup align: lead=${leadBeforeWaitMs}ms " +
+                                        "waited=${waitMs}ms overshoot=${overshootUs / 1000}ms " +
+                                        "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
+                                        "outLat=${measuredOutputLatencyUs / 1000}ms " +
+                                        "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
+                                }
+                            } else {
+                                // Solo: play immediately, no alignment needed
+                                startupOffsetMs = 0.0
+                                Log.d(TAG, "Startup: solo mode, playing immediately")
                             }
                             Log.d(
                                 DBG,
@@ -972,7 +1015,7 @@ class AudioStreamManager {
                         transitionSyncState(SyncState.SYNCHRONIZED)
                         val lead = leadToLocalNowMs(frame.serverTimestampUs)
                         Log.d(TAG, "Reconnect aligned: lead=${lead}ms, ts=${frame.serverTimestampUs}us, buf=${bufferDurationMs()}ms")
-                    } else if (shouldDropLateFrame(frame.serverTimestampUs)) {
+                    } else if (inSyncGroup && shouldDropLateFrame(frame.serverTimestampUs)) {
                         logLateDrop(frame.serverTimestampUs, "playout")
                         continue
                     }
@@ -1270,29 +1313,8 @@ class AudioStreamManager {
             "onStreamEnd codec=$activeCodec sync=$syncState started=$playbackStarted " +
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
-        if (syncState == SyncState.SYNCHRONIZED && playbackStarted) {
-            // Gapless: keep AudioTrack playing from hw buffer (~300ms decoded PCM).
-            // stream_start typically follows within ~800ms. If it doesn't,
-            // checkStarvation() will transition to holdover -> rebuffer.
-            // Clear encoded queue (old track frames) but keep anchor + drift state.
-            configureGeneration++
-            frameQueue.clear()
-            frameQueueBytes.set(0)
-            lastEnqueuedTimestampUs = 0L
-            estimatedFrameDurationUs = 20_000L
-            presentationTimeUs = 0L
-
-            lateDropCount = 0L
-            synchronized(codecLock) {
-                try { codec?.flush() } catch (_: Exception) {}
-            }
-            lastFrameReceivedMs = System.currentTimeMillis()  // reset starvation timer
-            gaplessGraceUntilMs = System.currentTimeMillis() + 3000L  // 3s grace, then rebuffer triggers error to server
-            Log.d(TAG, "Stream ended (gapless): hw buffer bridging, anchor reset for new track")
-            return
-        }
-
-        // Not synchronized or not playing: full flush
+        // Full stop + IDLE (matches main branch behavior).
+        // IDLE maps to "synchronized" in state callback, server transitions seamlessly.
         configureGeneration++
         if (syncState != SyncState.SYNC_ERROR_REBUFFERING && syncState != SyncState.IDLE) {
             synchronized(codecLock) {

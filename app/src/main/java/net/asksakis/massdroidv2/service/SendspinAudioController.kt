@@ -144,8 +144,8 @@ class SendspinAudioController(
         sendspinManager.setOutputLatencyPersistCallback { latencyUs ->
             scope.launch { settingsRepository.setSendspinOutputLatencyUs(latencyUs) }
         }
-        sendspinManager.onClockOffsetPersist = { offsetUs ->
-            scope.launch { settingsRepository.setSendspinClockOffsetUs(offsetUs) }
+        sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
+            scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
         scope.launch {
             val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
@@ -285,6 +285,8 @@ class SendspinAudioController(
                 .map { list -> list.find { it.playerId == sendspinPlayerId } }
                 .distinctUntilChanged()
                 .collect { player ->
+                    val inGroup = player?.activeGroup != null || player?.groupChilds?.isNotEmpty() == true
+                    sendspinManager.setInSyncGroup(inGroup)
                     lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
                     val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
                     if (outsideOptimistic) {

@@ -42,6 +42,8 @@ import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -223,36 +225,40 @@ fun PlayerSettingsDialog(
                     if (isLocalPlayer) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Static delay", style = MaterialTheme.typography.labelMedium)
-                            IconButton(
-                                onClick = {
-                                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
-                                    onStaticDelayChanged?.invoke(staticDelayMs)
-                                },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(14.dp))
-                            }
-                            Text(
-                                "${staticDelayMs}ms",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
-                            IconButton(
-                                onClick = {
-                                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
-                                    onStaticDelayChanged?.invoke(staticDelayMs)
-                                },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Text("Static delay", style = MaterialTheme.typography.bodyMedium)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = {
+                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                                        onStaticDelayChanged?.invoke(staticDelayMs)
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                                Text(
+                                    "${staticDelayMs}ms",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                                        onStaticDelayChanged?.invoke(staticDelayMs)
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
                             }
                         }
 
                         if (syncHistory.size >= 2) {
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                             SyncErrorGraph(syncHistory)
                         }
                     }
@@ -311,8 +317,6 @@ private fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
     val labelStyle = MaterialTheme.typography.labelSmall
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text("Sync", style = MaterialTheme.typography.labelMedium)
-
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -404,7 +408,9 @@ private fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
             Text(
                 text = "Output: ${"%.0f".format(it.outputLatencyMs)}ms  Clock: ${"%.1f".format(it.filterErrorMs)}ms",
                 style = MaterialTheme.typography.bodySmall,
-                color = labelColor
+                color = labelColor,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }
