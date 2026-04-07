@@ -14,9 +14,9 @@ import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Sendspin audio engine for multi-device synchronized playback.
- * Handles clock sync (Kalman), drift correction, frame dropping, startup alignment.
- * Used when the player is part of a sync group.
+ * Unified Sendspin audio engine. Configurable CorrectionMode:
+ * SYNC = multi-device beat-exact sync (Kalman, drift correction, late-frame dropping).
+ * DIRECT = solo playback (buffer/decode/play, no sync overhead).
  */
 class SendspinSyncEngine : SendspinAudioEngine {
 
@@ -27,19 +27,26 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val MAX_ENCODED_BUFFER_BYTES = 8_000_000L
         private const val OPUS_MAX_INPUT_SIZE = 64 * 1024
         private const val FLAC_MAX_INPUT_SIZE = 256 * 1024
-        private const val MIN_SYNC_BUFFER_MS = 200L  // absolute minimum before play
         private const val HOLDOVER_MIN_BUFFER_MS = 750L
         private const val LATE_CHUNK_DROP_GRACE_MS = 200L
         private const val STARTUP_ENQUEUE_GRACE_MS = 2000L
 
-        // Sync correction (spec: sample insertion/deletion + late chunk drop)
-        private const val SYNC_DEADBAND_MS = 3.0           // no correction below this
-        private const val SYNC_RESYNC_MS = 100.0           // hard resync above this
-        private const val SYNC_CHECK_INTERVAL_FRAMES = 10  // check every ~200ms
-        private const val SYNC_STARTUP_GRACE_MS = 3000L    // no sync check for 3s after startup (buffer fill transient)
-        private const val SYNC_RESYNC_COOLDOWN_MS = 3000L  // min time between hard resyncs
-        private const val SYNC_ERROR_EMA_ALPHA = 0.10      // EMA smoothing for sync error
-        private const val CONTINUATION_GRACE_MS = 1000L   // suppress correction during re-lock after soft stream/start
+        // Sync mode thresholds
+        private const val MIN_SYNC_BUFFER_MS = 200L
+        private const val SYNC_DEADBAND_MS = 3.0
+        private const val SYNC_RESYNC_MS = 100.0
+        private const val SYNC_CHECK_INTERVAL_FRAMES = 10
+        private const val SYNC_STARTUP_GRACE_MS = 3000L
+        private const val SYNC_RESYNC_COOLDOWN_MS = 3000L
+        private const val SYNC_ERROR_EMA_ALPHA = 0.10
+        private const val CONTINUATION_GRACE_MS = 1000L
+
+        // Direct mode thresholds
+        private const val DIRECT_STARTUP_MS_OPUS = 300L
+        private const val DIRECT_STARTUP_MS_LOSSLESS = 500L
+        private const val DIRECT_RECOVERY_MS_OPUS = 1500L
+        private const val DIRECT_RECOVERY_MS_LOSSLESS = 2000L
+        private const val DIRECT_CELLULAR_EXTRA_MS = 500L
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
@@ -90,6 +97,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var lastFlacLowBufferLogMs = 0L
     private var presentationTimeUs = 0L
 
+    // Correction mode
+    @Volatile override var correctionMode = CorrectionMode.SYNC; private set
+    private val isSyncMode get() = correctionMode == CorrectionMode.SYNC
+
+    // Stream ownership (epoch invalidation, both modes)
+    @Volatile private var streamGeneration = 0L
+    @Volatile private var acceptGeneration = 0L
+    @Volatile private var generationDropCount = 0L
+    @Volatile private var hardBoundaryPending = true
+
+    // Network-adaptive (DIRECT mode)
+    @Volatile private var isCellular = false
+
     // Sync state per spec
     @Volatile override var syncState = SyncState.IDLE; private set
     override var onSyncStateChanged: ((SyncState) -> Unit)? = null
@@ -133,6 +153,34 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     override fun bufferedBytes(): Long = frameQueueBytes.get()
 
+
+    override fun setCorrectionMode(mode: CorrectionMode) {
+        if (correctionMode == mode) return
+        val old = correctionMode
+        correctionMode = mode
+        Log.d(TAG, "CorrectionMode: $old -> $mode")
+        // Reset sync-specific state, keep buffer intact
+        anchorServerTimestampUs = 0L
+        anchorLocalUs = 0L
+        anchorLocalEquivalentUs = 0L
+        smoothedSyncErrorMs = 0.0
+        startupOffsetMs = 0.0
+        pendingSampleCorrection = 0
+        pendingSampleCount = 1
+        lateDropCount = 0L
+        enqueueLateDropGraceUntilUs = 0L
+        resyncCount = 0
+        lastResyncAtMs = 0L
+        requiredSyncBufferMs = defaultBufferMs()
+        if (mode == CorrectionMode.SYNC && playbackStarted) {
+            playbackStartedAtMs = System.currentTimeMillis()
+            continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
+        }
+    }
+
+    override fun setCellularTransport(cellular: Boolean) {
+        isCellular = cellular
+    }
 
     private fun nowLocalUs(): Long = System.nanoTime() / 1000L
 
@@ -225,19 +273,28 @@ class SendspinSyncEngine : SendspinAudioEngine {
         syncState = newState
         Log.d(TAG, "Sync: $old -> $newState (buf=${bufferDurationMs()}ms, ${frameQueueBytes.get() / 1000}KB)")
         if (newState == SyncState.SYNCHRONIZED) {
-            requiredSyncBufferMs = defaultSyncBufferMs()
+            requiredSyncBufferMs = defaultBufferMs()
         }
         onSyncStateChanged?.invoke(newState)
     }
 
-    /** Sync buffer after gapless/normal start. */
-    private fun defaultSyncBufferMs(): Long {
-        val hwMs = hwBufferLatencyUs / 1000L
-        return (hwMs + MIN_SYNC_BUFFER_MS).coerceIn(MIN_SYNC_BUFFER_MS, 2000L)
+    private fun defaultBufferMs(): Long = when (correctionMode) {
+        CorrectionMode.SYNC -> {
+            val hwMs = hwBufferLatencyUs / 1000L
+            (hwMs + MIN_SYNC_BUFFER_MS).coerceIn(MIN_SYNC_BUFFER_MS, 2000L)
+        }
+        CorrectionMode.DIRECT -> {
+            if (activeCodec == "opus") DIRECT_STARTUP_MS_OPUS else DIRECT_STARTUP_MS_LOSSLESS
+        }
     }
 
-    /** Sync buffer after rebuffer/error: require more to avoid instant starvation. */
-    private fun rebufferSyncBufferMs(): Long = 2000L
+    private fun recoveryBufferMs(): Long = when (correctionMode) {
+        CorrectionMode.SYNC -> 2000L
+        CorrectionMode.DIRECT -> {
+            val base = if (activeCodec == "opus") DIRECT_RECOVERY_MS_OPUS else DIRECT_RECOVERY_MS_LOSSLESS
+            base + if (isCellular) DIRECT_CELLULAR_EXTRA_MS else 0L
+        }
+    }
 
     override fun configure(
         codecName: String,
@@ -249,6 +306,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     ) {
         val isNewStream = startType == ProtocolStartType.NEW_STREAM
         lastProtocolStartType = startType
+        hardBoundaryPending = false
+        acceptGeneration = streamGeneration
+        generationDropCount = 0
 
         // Same codec + same params
         if (configured && codecName == activeCodec && sampleRate == activeSampleRate
@@ -277,7 +337,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 pendingAudioTrackFlush = false
                 gaplessGraceUntilMs = 0L
                 playbackStarted = false
-                requiredSyncBufferMs = rebufferSyncBufferMs()
+                requiredSyncBufferMs = recoveryBufferMs()
                 enqueueLateDropGraceUntilUs = nowLocalUs() + (STARTUP_ENQUEUE_GRACE_MS * 1000L)
             } else {
                 // CONTINUATION same-codec: preserve queue, fresh timing lock
@@ -344,13 +404,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
             if (isNewStream) {
                 playbackStarted = false
-                requiredSyncBufferMs = defaultSyncBufferMs()
+                requiredSyncBufferMs = defaultBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
                 Log.d(TAG, "configure semantic=NEW_STREAM path=hot-swap codec=$codecName sync=$syncState")
             } else {
                 // CONTINUATION: hw buffer bridges, shorter resume
                 playbackStarted = false
-                requiredSyncBufferMs = defaultSyncBufferMs()
+                requiredSyncBufferMs = defaultBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
                 Log.d(TAG, "configure semantic=CONTINUATION path=hot-swap codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
             }
@@ -410,7 +470,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         presentationTimeUs = 0L
 
         if (isNewStream) {
-            requiredSyncBufferMs = defaultSyncBufferMs()
+            requiredSyncBufferMs = defaultBufferMs()
             continuationGraceUntilMs = 0L
         } else {
             // CONTINUATION rebuild: fast re-lock, not cold start
@@ -429,6 +489,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
     override fun onBinaryMessage(data: ByteArray, generation: Long) {
         if (!configured || !playbackActive) return
         if (generation != configureGeneration) return
+        if (streamGeneration != acceptGeneration) {
+            generationDropCount++
+            if (generationDropCount <= 3 || generationDropCount % 200 == 0L) {
+                Log.d(TAG, "Stale frame dropped (gen=$acceptGeneration/$streamGeneration) #$generationDropCount")
+            }
+            return
+        }
         if (data.size < HEADER_SIZE) return
 
         frameCount++
@@ -450,7 +517,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
         lastFrameReceivedMs = System.currentTimeMillis()
 
-        if (shouldDropLateFrameOnEnqueue(serverTimestampUs)) {
+        if (isSyncMode && shouldDropLateFrameOnEnqueue(serverTimestampUs)) {
             logLateDrop(serverTimestampUs, "enqueue")
             return
         }
@@ -514,7 +581,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
                 lateDropCount = 0L
                 playbackStarted = false
-                requiredSyncBufferMs = rebufferSyncBufferMs()
+                requiredSyncBufferMs = recoveryBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             }
         }
@@ -526,6 +593,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
             "flushForRebuffer codec=$activeCodec sync=$syncState started=$playbackStarted " +
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
+        hardBoundaryPending = true
+        streamGeneration++
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
             playbackStarted = false  // BEFORE lock release to prevent decode+write race
@@ -859,15 +928,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
             while ((playbackActive || frameQueue.isNotEmpty()) && generation == playbackGeneration) {
                 // Wait for enough encoded buffer before starting
                 if (!playbackStarted || syncState == SyncState.SYNC_ERROR_REBUFFERING || syncState == SyncState.IDLE) {
-                    if (dropLateHeadFramesForStartup()) {
+                    if (isSyncMode && dropLateHeadFramesForStartup()) {
                         continue
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
-                        // Startup precision gate: wait for clock filter to converge.
-                        // Only wait when in sync group (multi-device sync matters).
-                        // Solo playback starts immediately.
-                        val clockReady = clockSynchronizer?.isReadyForPlaybackStart() ?: false
+                        // Startup precision gate: only in SYNC mode
+                        val clockReady = if (isSyncMode) clockSynchronizer?.isReadyForPlaybackStart() ?: false else true
                         if (!clockReady) {
                             val waitingMs = if (clockWaitStartMs > 0) {
                                 System.currentTimeMillis() - clockWaitStartMs
@@ -891,9 +958,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
                         }
                         if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
-                                // Skip stale frames until lead >= 0
+                                // Skip stale frames until lead >= 0 (SYNC mode only)
                                 var skipped = 0
-                                while (frameQueue.size > 1) {
+                                if (isSyncMode) while (frameQueue.size > 1) {
                                     val head = frameQueue.peek() ?: break
                                     val headLead = leadToLocalNowMs(head.serverTimestampUs)
                                     if (headLead >= 0L) break
@@ -961,7 +1028,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                         transitionSyncState(SyncState.SYNCHRONIZED)
                         val lead = leadToLocalNowMs(frame.serverTimestampUs)
                         Log.d(TAG, "Reconnect aligned: lead=${lead}ms, ts=${frame.serverTimestampUs}us, buf=${bufferDurationMs()}ms")
-                    } else if (shouldDropLateFrame(frame.serverTimestampUs)) {
+                    } else if (isSyncMode && shouldDropLateFrame(frame.serverTimestampUs)) {
                         logLateDrop(frame.serverTimestampUs, "playout")
                         continue
                     }
@@ -1024,11 +1091,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (activeCodec == "pcm") {
             if (generation != playbackGeneration || track !== audioTrack || !playbackActive || !playbackStarted) return false
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
-            val finalPcm = applySampleCorrection(pcm)
+            val finalPcm = if (isSyncMode) applySampleCorrection(pcm) else pcm
             track.write(finalPcm, 0, finalPcm.size)
-            measureOutputLatency(track, finalPcm.size)
+            if (isSyncMode) measureOutputLatency(track, finalPcm.size)
             decodedFrameCount++
-            if (decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
+            if (isSyncMode && decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
                 checkSync(frame.serverTimestampUs, track)
             }
             return true
@@ -1092,11 +1159,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     pcmToWrite.isEmpty() -> continue
                     else -> {
                         if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive || !playbackStarted) break
-                        val finalPcm = applySampleCorrection(pcmToWrite)
+                        val finalPcm = if (isSyncMode) applySampleCorrection(pcmToWrite) else pcmToWrite
                         track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
-                        measureOutputLatency(track, finalPcm.size)
+                        if (isSyncMode) measureOutputLatency(track, finalPcm.size)
                         decodedFrameCount++
-                        if (decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
+                        if (isSyncMode && decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
                             checkSync(frame.serverTimestampUs, track)
                         }
                     }
@@ -1217,6 +1284,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     override fun clearBuffer() {
+        hardBoundaryPending = true
+        streamGeneration++
         configureGeneration++
         if (playbackActive) {
             synchronized(codecLock) {
@@ -1239,7 +1308,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         pendingContinuityCheck = false
         forceDiscontinuityUntilMs = 0L
         forceDiscontinuityReason = ""
-        requiredSyncBufferMs = defaultSyncBufferMs()
+        requiredSyncBufferMs = defaultBufferMs()
         estimatedFrameDurationUs = 20_000L
         presentationTimeUs = 0L
 
@@ -1257,7 +1326,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         // Full stop + IDLE (matches main branch behavior).
-        // IDLE maps to "synchronized" in state callback, server transitions seamlessly.
+        hardBoundaryPending = true
+        streamGeneration++
         configureGeneration++
         if (syncState != SyncState.SYNC_ERROR_REBUFFERING && syncState != SyncState.IDLE) {
             synchronized(codecLock) {
@@ -1275,7 +1345,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         pendingContinuityCheck = false
         forceDiscontinuityUntilMs = 0L
         forceDiscontinuityReason = ""
-        requiredSyncBufferMs = defaultSyncBufferMs()
+        requiredSyncBufferMs = defaultBufferMs()
         estimatedFrameDurationUs = 20_000L
         presentationTimeUs = 0L
 
@@ -1298,7 +1368,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 "buf=${bufMs}ms queueBytes=${frameQueueBytes.get()}"
         )
         if (bufMs <= HOLDOVER_MIN_BUFFER_MS) {
-            requiredSyncBufferMs = defaultSyncBufferMs()
+            requiredSyncBufferMs = defaultBufferMs()
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             Log.d(TAG, "Transport failure, insufficient holdover (${bufMs}ms), recovery threshold=${requiredSyncBufferMs}ms")
         } else {

@@ -6,24 +6,35 @@ enum class ProtocolStartType {
     CONTINUATION
 }
 
+/** Runtime correction mode. SYNC = multi-device beat sync. DIRECT = solo playback. */
+enum class CorrectionMode {
+    SYNC,
+    DIRECT
+}
+
 /**
- * Interface for sendspin audio playback engines.
- * Two implementations: SyncEngine (group multi-device sync) and DirectEngine (solo playback).
+ * Sendspin audio playback engine interface.
+ * Single implementation with configurable CorrectionMode.
  */
 interface SendspinAudioEngine {
 
     // State
     val syncState: SyncState
     val measuredOutputLatencyUs: Long
+    val correctionMode: CorrectionMode
 
     // Callbacks
     var onSyncStateChanged: ((SyncState) -> Unit)?
     var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float) -> Unit)?
     var onOutputLatencyMeasured: ((Long) -> Unit)?
 
-    // Clock sync (used by SyncEngine, ignored by DirectEngine)
+    // Clock sync
     var clockSynchronizer: ClockSynchronizer?
     var staticDelayMs: Int
+
+    // Correction mode
+    fun setCorrectionMode(mode: CorrectionMode)
+    fun setCellularTransport(cellular: Boolean)
 
     // Configuration
     fun configure(
@@ -57,7 +68,7 @@ interface SendspinAudioEngine {
     // Output latency
     fun seedOutputLatency(persistedUs: Long)
 
-    // Sync-specific (no-op in DirectEngine)
+    // Sync-specific (no-op in DIRECT mode)
     fun shiftAnchorForDelayChange(deltaMs: Int)
 
     // Cleanup

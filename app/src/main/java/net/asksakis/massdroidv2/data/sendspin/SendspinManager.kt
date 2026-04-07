@@ -13,15 +13,12 @@ import kotlinx.coroutines.launch
 
 class SendspinManager(
     private val client: SendspinClient,
-    private val syncEngine: SendspinSyncEngine,
-    private val directEngine: SendspinDirectEngine,
+    private val engine: SendspinAudioEngine,
 ) {
-    @Volatile private var activeEngine: SendspinAudioEngine = syncEngine
-    private val audio: SendspinAudioEngine get() = activeEngine
+    private val audio: SendspinAudioEngine get() = engine
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
-        private const val ENGINE_SWITCH_DEBOUNCE_MS = 2000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -61,7 +58,6 @@ class SendspinManager(
         private set
     private var muted = false
     @Volatile private var hasActiveProtocolStream = false
-    @Volatile private var pendingEngineSwitch: Boolean? = null  // null=none, true=sync, false=direct
     @Volatile private var lastSentSyncState = ""
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
@@ -132,10 +128,7 @@ class SendspinManager(
                 setupSyncStateCallback()
                 sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
-                // Time sync only needed for SyncEngine (group mode)
-                if (activeEngine === syncEngine) {
-                    startTimeSync()
-                }
+                startTimeSync()
             }
 
             is SendspinIncoming.ServerTime -> {
@@ -194,12 +187,6 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                 hasActiveProtocolStream = false
                 audio.onStreamEnd()
-                // Execute deferred engine switch now that stream is idle
-                val pending = pendingEngineSwitch
-                if (pending != null) {
-                    Log.d(TAG, "Executing deferred engine switch to ${if (pending) "Sync" else "Direct"}")
-                    executeEngineSwitch(pending)
-                }
             }
 
             is SendspinIncoming.StreamClear -> {
@@ -330,49 +317,9 @@ class SendspinManager(
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
-    private var lastEngineSwitchMs = 0L
-
     fun setInSyncGroup(grouped: Boolean) {
-        val target = if (grouped) syncEngine else directEngine
-        if (target === activeEngine) {
-            pendingEngineSwitch = null  // cancel stale pending if target already matches
-            return
-        }
-        // Debounce: ignore rapid group state flicker
-        val now = System.currentTimeMillis()
-        if (now - lastEngineSwitchMs < ENGINE_SWITCH_DEBOUNCE_MS) {
-            Log.d(TAG, "Engine switch debounced (${now - lastEngineSwitchMs}ms)")
-            return
-        }
-        lastEngineSwitchMs = now
-        // If actively streaming, defer switch until stream/end → IDLE
-        if (hasActiveProtocolStream) {
-            pendingEngineSwitch = grouped
-            Log.d(TAG, "Engine switch deferred until IDLE (active stream, target=${if (grouped) "Sync" else "Direct"})")
-            return
-        }
-        executeEngineSwitch(grouped)
-    }
-
-    private fun executeEngineSwitch(grouped: Boolean) {
-        val target = if (grouped) syncEngine else directEngine
-        if (target === activeEngine) return
-        Log.d(TAG, "Switching engine: ${if (grouped) "SyncEngine" else "DirectEngine"}")
-        activeEngine.onSyncStateChanged = null
-        activeEngine.onSyncSample = null
-        activeEngine.release()
-        activeEngine = target
-        activeEngine.clockSynchronizer = clockSynchronizer
-        (target as? SendspinDirectEngine)?.setCellularTransport(isCellularTransport)
-        setupSyncStateCallback()
-        _syncState.value = activeEngine.syncState
-        pendingEngineSwitch = null
-        if (grouped) {
-            startTimeSync()
-        } else {
-            timeSyncJob?.cancel()
-            timeSyncJob = null
-        }
+        val mode = if (grouped) CorrectionMode.SYNC else CorrectionMode.DIRECT
+        engine.setCorrectionMode(mode)
     }
 
     fun seedOutputLatency(persistedUs: Long) {
@@ -402,7 +349,7 @@ class SendspinManager(
     fun setCellularHint(cellular: Boolean) {
         isCellularTransport = cellular
         _networkMode.value = if (cellular) "Mobile" else "WiFi"
-        (activeEngine as? SendspinDirectEngine)?.setCellularTransport(cellular)
+        engine.setCellularTransport(cellular)
     }
 
     private fun sendCurrentState(syncState: String) {
@@ -468,7 +415,6 @@ class SendspinManager(
 
     fun stop() {
         hasActiveProtocolStream = false
-        pendingEngineSwitch = null
         _enabled.value = false
         heartbeatJob?.cancel()
         timeSyncJob?.cancel()
@@ -484,8 +430,7 @@ class SendspinManager(
         audio.onSyncStateChanged = null
         audio.onSyncSample = null
         _syncHistory.value = emptyList()
-        syncEngine.release()
-        directEngine.release()
+        engine.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null
         _syncState.value = audio.syncState
