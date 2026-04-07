@@ -292,7 +292,9 @@ class SendspinAudioController(
                 }
                 .distinctUntilChanged()
                 .collect { (player, inGroup) ->
-                    Log.d(TAG, "Group check: inGroup=$inGroup player=${player?.displayName}")
+                    // Don't decide group state until player data is available
+                    if (player == null) return@collect
+                    Log.d(TAG, "Group check: inGroup=$inGroup player=${player.displayName}")
                     sendspinManager.setInSyncGroup(inGroup)
                     lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
                     val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil

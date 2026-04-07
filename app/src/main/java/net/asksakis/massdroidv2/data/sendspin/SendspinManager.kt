@@ -16,7 +16,7 @@ class SendspinManager(
     private val syncEngine: SendspinSyncEngine,
     private val directEngine: SendspinDirectEngine,
 ) {
-    @Volatile private var activeEngine: SendspinAudioEngine = directEngine
+    @Volatile private var activeEngine: SendspinAudioEngine = syncEngine
     private val audio: SendspinAudioEngine get() = activeEngine
     companion object {
         private const val TAG = "SendspinMgr"
@@ -61,6 +61,7 @@ class SendspinManager(
         private set
     private var muted = false
     @Volatile private var hasActiveProtocolStream = false
+    @Volatile private var pendingEngineSwitch: Boolean? = null  // null=none, true=sync, false=direct
     @Volatile private var lastSentSyncState = ""
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
@@ -173,7 +174,9 @@ class SendspinManager(
             }
 
             is SendspinIncoming.GroupUpdate -> {
-                // Informational only. Group detection via setInSyncGroup() from player state.
+                // Group state managed by player list collector in SendspinAudioController.
+                // group/update arrives for both solo and multi groups, can't distinguish here.
+                Log.d("sendspindbg", ">>> group/update")
             }
 
             is SendspinIncoming.StreamStart -> {
@@ -191,6 +194,12 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                 hasActiveProtocolStream = false
                 audio.onStreamEnd()
+                // Execute deferred engine switch now that stream is idle
+                val pending = pendingEngineSwitch
+                if (pending != null) {
+                    Log.d(TAG, "Executing deferred engine switch to ${if (pending) "Sync" else "Direct"}")
+                    executeEngineSwitch(pending)
+                }
             }
 
             is SendspinIncoming.StreamClear -> {
@@ -325,7 +334,10 @@ class SendspinManager(
 
     fun setInSyncGroup(grouped: Boolean) {
         val target = if (grouped) syncEngine else directEngine
-        if (target === activeEngine) return
+        if (target === activeEngine) {
+            pendingEngineSwitch = null  // cancel stale pending if target already matches
+            return
+        }
         // Debounce: ignore rapid group state flicker
         val now = System.currentTimeMillis()
         if (now - lastEngineSwitchMs < ENGINE_SWITCH_DEBOUNCE_MS) {
@@ -333,6 +345,18 @@ class SendspinManager(
             return
         }
         lastEngineSwitchMs = now
+        // If actively streaming, defer switch until stream/end → IDLE
+        if (hasActiveProtocolStream) {
+            pendingEngineSwitch = grouped
+            Log.d(TAG, "Engine switch deferred until IDLE (active stream, target=${if (grouped) "Sync" else "Direct"})")
+            return
+        }
+        executeEngineSwitch(grouped)
+    }
+
+    private fun executeEngineSwitch(grouped: Boolean) {
+        val target = if (grouped) syncEngine else directEngine
+        if (target === activeEngine) return
         Log.d(TAG, "Switching engine: ${if (grouped) "SyncEngine" else "DirectEngine"}")
         activeEngine.onSyncStateChanged = null
         activeEngine.onSyncSample = null
@@ -342,7 +366,7 @@ class SendspinManager(
         (target as? SendspinDirectEngine)?.setCellularTransport(isCellularTransport)
         setupSyncStateCallback()
         _syncState.value = activeEngine.syncState
-        // Start/stop time sync based on engine
+        pendingEngineSwitch = null
         if (grouped) {
             startTimeSync()
         } else {
@@ -444,6 +468,7 @@ class SendspinManager(
 
     fun stop() {
         hasActiveProtocolStream = false
+        pendingEngineSwitch = null
         _enabled.value = false
         heartbeatJob?.cancel()
         timeSyncJob?.cancel()
