@@ -195,6 +195,9 @@ class PlayerRepositoryImpl @Inject constructor(
                     } ?: return@collect
                     val trackImg = queueTracking[serverPlayer.playerId]?.track?.imageUrl
                     var player = serverPlayer.toDomain(wsClient, trackImg)
+                    if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
+                        Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
+                    }
                     // During volume cooldown, preserve local optimistic volume
                     if (System.currentTimeMillis() < volumeOverrideUntilMs) {
                         val localVol = _players.value.firstOrNull { it.playerId == player.playerId }?.volumeLevel

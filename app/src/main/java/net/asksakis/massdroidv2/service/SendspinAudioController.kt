@@ -283,11 +283,16 @@ class SendspinAudioController(
         // Collector 2: Observe sendspin player metadata from the players list
         collectorJobs += scope.launch {
             playerRepository.players
-                .map { list -> list.find { it.playerId == sendspinPlayerId } }
+                .map { list ->
+                    val ssId = sendspinPlayerId ?: return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
+                    val self = list.find { it.playerId == ssId }
+                    val selfInGroup = self?.activeGroup != null || self?.groupChilds?.isNotEmpty() == true
+                    val childOfOther = list.any { it.playerId != ssId && ssId in it.groupChilds }
+                    Pair(self, selfInGroup || childOfOther)
+                }
                 .distinctUntilChanged()
-                .collect { player ->
-                    val inGroup = player?.activeGroup != null || player?.groupChilds?.isNotEmpty() == true
-                    Log.d(TAG, "Group check: activeGroup=${player?.activeGroup} groupChilds=${player?.groupChilds} inGroup=$inGroup")
+                .collect { (player, inGroup) ->
+                    Log.d(TAG, "Group check: inGroup=$inGroup player=${player?.displayName}")
                     sendspinManager.setInSyncGroup(inGroup)
                     lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
                     val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
