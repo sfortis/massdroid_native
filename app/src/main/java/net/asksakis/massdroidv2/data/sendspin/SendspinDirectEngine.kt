@@ -26,8 +26,14 @@ class SendspinDirectEngine : SendspinAudioEngine {
         private const val MAX_ENCODED_BUFFER_BYTES = 8_000_000L
         private const val OPUS_MAX_INPUT_SIZE = 64 * 1024
         private const val FLAC_MAX_INPUT_SIZE = 256 * 1024
+        // Fast startup thresholds (first play / new stream)
         private const val STARTUP_BUFFER_MS_LOSSLESS = 500L
         private const val STARTUP_BUFFER_MS_OPUS = 300L
+        // Recovery after trouble: more buffer for stability
+        private const val RECOVERY_BUFFER_MS_LOSSLESS = 2000L
+        private const val RECOVERY_BUFFER_MS_OPUS = 1500L
+        // Cellular recovery: even more headroom
+        private const val CELLULAR_RECOVERY_EXTRA_MS = 500L
         private const val HOLDOVER_MIN_BUFFER_MS = 750L
     }
 
@@ -83,6 +89,9 @@ class SendspinDirectEngine : SendspinAudioEngine {
     @Volatile private var holdoverEndTimestampUs = 0L
     @Volatile private var discardUntilTimestampUs = 0L
 
+    // Network-adaptive recovery buffering
+    @Volatile private var isCellular = false
+
     // Interface
     @Volatile override var syncState = SyncState.IDLE; private set
     override var onSyncStateChanged: ((SyncState) -> Unit)? = null
@@ -122,8 +131,20 @@ class SendspinDirectEngine : SendspinAudioEngine {
         onSyncStateChanged?.invoke(newState)
     }
 
+    /** Set by SendspinManager based on ConnectivityManager TRANSPORT_CELLULAR. */
+    fun setCellularTransport(cellular: Boolean) {
+        isCellular = cellular
+    }
+
+    /** Fast startup: low threshold for responsive first play. */
     private fun defaultBufferMs(): Long {
         return if (activeCodec == "opus") STARTUP_BUFFER_MS_OPUS else STARTUP_BUFFER_MS_LOSSLESS
+    }
+
+    /** Recovery after trouble: higher threshold for stability. */
+    private fun recoveryBufferMs(): Long {
+        val base = if (activeCodec == "opus") RECOVERY_BUFFER_MS_OPUS else RECOVERY_BUFFER_MS_LOSSLESS
+        return base + if (isCellular) CELLULAR_RECOVERY_EXTRA_MS else 0L
     }
 
     // ── Stream boundary: full flush ──
@@ -436,6 +457,7 @@ class SendspinDirectEngine : SendspinAudioEngine {
         if (silenceMs > 2000) {
             Log.d(TAG, "Starvation stage2: silence=${silenceMs}ms, rebuffering")
             pendingAudioTrackFlush = false
+            requiredBufferMs = recoveryBufferMs()
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             playbackStarted = false
             synchronized(codecLock) {
@@ -665,7 +687,7 @@ class SendspinDirectEngine : SendspinAudioEngine {
     override fun onTransportFailure() {
         val bufMs = bufferDurationMs()
         if (bufMs <= HOLDOVER_MIN_BUFFER_MS) {
-            requiredBufferMs = defaultBufferMs()
+            requiredBufferMs = recoveryBufferMs()
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             Log.d(TAG, "Transport failure, rebuffering (buf=${bufMs}ms)")
         } else {

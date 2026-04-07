@@ -339,6 +339,7 @@ class PlaybackService : MediaLibraryService() {
                     if (wifi) resetAwayMode("wifi-connected")
                 }
                 wifiState.value = wifi
+                sendspinManager.setCellularHint(!wifi)
             }
 
             override fun onLost(network: android.net.Network) {

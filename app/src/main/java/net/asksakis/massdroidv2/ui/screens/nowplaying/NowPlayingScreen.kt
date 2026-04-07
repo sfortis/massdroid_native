@@ -134,6 +134,7 @@ fun NowPlayingScreen(
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
     val lyricsTimingOffsetMs by viewModel.lyricsTimingOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
     val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
+    val isSendspinPlayer by viewModel.isSendspinPlayer.collectAsStateWithLifecycle()
     val cachedTrackDisplay by viewModel.cachedTrackDisplay.collectAsStateWithLifecycle()
     val adjacentArtwork by viewModel.adjacentArtwork.collectAsStateWithLifecycle()
     val title = currentTrack?.name ?: player?.currentMedia?.title
@@ -280,6 +281,7 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     controlsEnabled = player != null,
+                    isSendspinPlayer = isSendspinPlayer,
                     sleepTimerActive = sleepTimerActive,
                     viewModel = viewModel,
                     onBack = onBack,
@@ -296,7 +298,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onShowPlayerMenu = { showPlayerMenu = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -318,6 +320,7 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     controlsEnabled = player != null,
+                    isSendspinPlayer = isSendspinPlayer,
                     viewModel = viewModel,
                     onShowPlaylistDialog = {
                         showPlaylistDialog = true
@@ -331,7 +334,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onNavigateToQueue = { showQueueSheet = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -514,6 +517,7 @@ private fun NowPlayingPortrait(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
+    isSendspinPlayer: Boolean,
     viewModel: NowPlayingViewModel,
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
@@ -552,6 +556,7 @@ private fun NowPlayingPortrait(
             onShowLyrics = onShowLyrics,
             onNavigateToQueue = onNavigateToQueue,
             onShowSendspinStatus = onShowSendspinStatus,
+            isSendspinPlayer = isSendspinPlayer,
             enabled = controlsEnabled
         )
 
@@ -663,6 +668,7 @@ private fun NowPlayingLandscape(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
+    isSendspinPlayer: Boolean,
     sleepTimerActive: Boolean,
     viewModel: NowPlayingViewModel,
     onBack: () -> Unit,
@@ -790,6 +796,7 @@ private fun NowPlayingLandscape(
                     onShowLyrics = onShowLyrics,
                     onNavigateToQueue = onNavigateToQueue,
                     onShowSendspinStatus = onShowSendspinStatus,
+                    isSendspinPlayer = isSendspinPlayer,
                     enabled = controlsEnabled,
                     compact = false
                 )
@@ -815,18 +822,20 @@ private fun NowPlayingLandscape(
 private fun AudioQualityBadges(
     audioFormat: AudioFormatInfo?,
     outputCodec: String? = null,
+    isSendspinPlayer: Boolean = false,
     compact: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
     val badges = remember(audioFormat, outputCodec) { buildAudioQualityBadges(audioFormat, outputCodec) }
-    if (badges.isEmpty()) return
+    val displayBadges = if (badges.isEmpty() && isSendspinPlayer) listOf("Sendspin") else badges
+    if (displayBadges.isEmpty()) return
 
     Row(
         modifier = if (onClick != null) Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() } else Modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        badges.forEach { badge ->
+        displayBadges.forEach { badge ->
             Surface(
                 shape = RoundedCornerShape(999.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
@@ -852,6 +861,7 @@ private fun QualityActionRow(
     onShowLyrics: () -> Unit,
     onNavigateToQueue: () -> Unit,
     onShowSendspinStatus: () -> Unit,
+    isSendspinPlayer: Boolean = false,
     enabled: Boolean = true,
     compact: Boolean = false
 ) {
@@ -923,8 +933,9 @@ private fun QualityActionRow(
             AudioQualityBadges(
                 audioFormat = audioFormat,
                 outputCodec = outputCodec,
+                isSendspinPlayer = isSendspinPlayer,
                 compact = compact,
-                onClick = if (outputCodec != null) onShowSendspinStatus else null
+                onClick = if (isSendspinPlayer) onShowSendspinStatus else null
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
@@ -1007,6 +1018,7 @@ private fun SendspinStatusSheet(
             StatusLine(label = "Playback", value = stateLabel)
             StatusLine(label = "Codec", value = status.codec ?: "Unknown")
             StatusLine(label = "Mode", value = status.configuredFormat)
+            StatusLine(label = "Network", value = status.networkMode)
             StatusLine(label = "Static delay", value = "${status.staticDelayMs} ms")
             StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
 

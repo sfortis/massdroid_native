@@ -46,6 +46,8 @@ class SendspinManager(
 
     private val _streamCodec = MutableStateFlow<String?>(null)
     val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
+    private val _networkMode = MutableStateFlow("WiFi")
+    val networkMode: StateFlow<String> = _networkMode.asStateFlow()
     private val _syncState = MutableStateFlow(audio.syncState)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
@@ -337,6 +339,7 @@ class SendspinManager(
         activeEngine.release()
         activeEngine = target
         activeEngine.clockSynchronizer = clockSynchronizer
+        (target as? SendspinDirectEngine)?.setCellularTransport(isCellularTransport)
         setupSyncStateCallback()
         _syncState.value = activeEngine.syncState
         // Start/stop time sync based on engine
@@ -368,6 +371,14 @@ class SendspinManager(
         // Notify server of new delay so it adjusts buffer headroom
         sendCurrentState(currentSyncStatePayloadValue())
         Log.d(TAG, "Static delay: ${oldDelay}ms -> ${clamped}ms")
+    }
+
+    @Volatile private var isCellularTransport = false
+
+    fun setCellularHint(cellular: Boolean) {
+        isCellularTransport = cellular
+        _networkMode.value = if (cellular) "Mobile" else "WiFi"
+        (activeEngine as? SendspinDirectEngine)?.setCellularTransport(cellular)
     }
 
     private fun sendCurrentState(syncState: String) {

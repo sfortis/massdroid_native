@@ -287,6 +287,7 @@ class SendspinAudioController(
                 .distinctUntilChanged()
                 .collect { player ->
                     val inGroup = player?.activeGroup != null || player?.groupChilds?.isNotEmpty() == true
+                    Log.d(TAG, "Group check: activeGroup=${player?.activeGroup} groupChilds=${player?.groupChilds} inGroup=$inGroup")
                     sendspinManager.setInSyncGroup(inGroup)
                     lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
                     val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
@@ -553,11 +554,19 @@ class SendspinAudioController(
             .setOnAudioFocusChangeListener { focusChange ->
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
-                        Log.d(TAG, "Audio focus gained")
+                        Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady")
                         hasAudioFocus = true
                         if (isStreaming) {
                             sendspinManager.resumeAudio()
                             sendspinManager.restoreVolume()
+                        } else if (isReady) {
+                            // After phone call: server may have stopped streaming.
+                            // Resume by sending play command.
+                            sendspinManager.resumeAudio()
+                            val id = sendspinPlayerId
+                            if (id != null) {
+                                scope.launch { playerRepository.play(id) }
+                            }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {

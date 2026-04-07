@@ -54,6 +54,7 @@ data class SendspinStatusUi(
     val syncState: SyncState,
     val codec: String?,
     val configuredFormat: String,
+    val networkMode: String,
     val activeBufferMs: Long,
     val bufferBytes: Long,
     val staticDelayMs: Int
@@ -164,6 +165,8 @@ class NowPlayingViewModel @Inject constructor(
     val error: SharedFlow<String> = _error.asSharedFlow()
     private val _sendspinStatus = MutableStateFlow<SendspinStatusUi?>(null)
     val sendspinStatus: StateFlow<SendspinStatusUi?> = _sendspinStatus.asStateFlow()
+    val isSendspinPlayer: StateFlow<Boolean> = _sendspinStatus.map { it != null }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(), false)
     var cachedSendspinClientId: String? = null; private set
     var cachedSendspinAudioFormat = "SMART"; private set
     private var cachedSendspinStaticDelayMs = 0
@@ -300,9 +303,15 @@ class NowPlayingViewModel @Inject constructor(
                 sendspinManager.connectionState,
                 sendspinManager.syncState,
                 sendspinManager.streamCodec,
-                sendspinManager.enabled
-            ) { conn, sync, codec, enabled ->
-                if (!enabled || cachedSendspinClientId == null) {
+                sendspinManager.networkMode,
+                sendspinClientId
+            ) { values ->
+                val conn = values[0] as SendspinState
+                val sync = values[1] as SyncState
+                val codec = values[2] as String?
+                val netMode = values[3] as String
+                val clientId = values[4] as String?
+                if (clientId == null) {
                     lastSendspinStatusLogAtMs = 0L
                     return@combine null
                 }
@@ -311,6 +320,7 @@ class NowPlayingViewModel @Inject constructor(
                     syncState = sync,
                     codec = codec,
                     configuredFormat = cachedSendspinAudioFormat,
+                    networkMode = netMode,
                     activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
                     bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
                     staticDelayMs = cachedSendspinStaticDelayMs
