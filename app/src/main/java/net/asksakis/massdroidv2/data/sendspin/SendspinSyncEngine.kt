@@ -39,6 +39,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val SYNC_STARTUP_GRACE_MS = 3000L    // no sync check for 3s after startup (buffer fill transient)
         private const val SYNC_RESYNC_COOLDOWN_MS = 3000L  // min time between hard resyncs
         private const val SYNC_ERROR_EMA_ALPHA = 0.10      // EMA smoothing for sync error
+        private const val CONTINUATION_GRACE_MS = 1000L   // suppress correction during re-lock after soft stream/start
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
@@ -97,6 +98,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var currentVolume = 1f
     @Volatile private var isMuted = false
 
+    // Protocol semantic for internal recovery
+    @Volatile private var lastProtocolStartType = ProtocolStartType.NEW_STREAM
+
     // Clock sync
     @Volatile override var clockSynchronizer: ClockSynchronizer? = null
     @Volatile override var staticDelayMs: Int = 0
@@ -104,6 +108,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
     override var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float) -> Unit)? = null
+
+    // Continuation grace: after soft stream/start, suppress correction briefly
+    @Volatile private var continuationGraceUntilMs = 0L
 
     // Sync correction state
     private var smoothedSyncErrorMs = 0.0            // EMA-filtered drift error (relative to anchor)
@@ -240,31 +247,26 @@ class SendspinSyncEngine : SendspinAudioEngine {
         codecHeader: String?,
         startType: ProtocolStartType
     ) {
-        // Same codec + same params: keep buffer, just check continuity on next frame
+        val isNewStream = startType == ProtocolStartType.NEW_STREAM
+        lastProtocolStartType = startType
+
+        // Same codec + same params
         if (configured && codecName == activeCodec && sampleRate == activeSampleRate
             && channels == activeChannels && bitDepth == activeBitDepth
         ) {
-            Log.d(
-                DBG,
-                "configure same-codec codec=$codecName playbackActive=$playbackActive started=$playbackStarted " +
-                    "threadAlive=${playbackThread?.isAlive == true} sync=$syncState buf=${bufferDurationMs()}ms"
-            )
-            configureGeneration++
-            lastEnqueuedTimestampUs = 0L
-            frameQueue.clear()
-            frameQueueBytes.set(0)
-            synchronized(codecLock) {
-                try { codec?.flush() } catch (_: Exception) {}
-            }
-            presentationTimeUs = 0L
-
-            lateDropCount = 0L
-            lastFrameReceivedMs = System.currentTimeMillis()
-
-            if (syncState == SyncState.SYNCHRONIZED && playbackStarted) {
-                // Gapless track change: AudioTrack still playing from hw buffer.
-                // New frames flow directly in, no re-alignment needed.
-                // Reset anchor: new track has different server timestamps, old anchor invalid.
+            if (isNewStream) {
+                // NEW_STREAM same-codec: full reset, rebuffer
+                Log.d(TAG, "configure semantic=NEW_STREAM path=same-codec codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
+                configureGeneration++
+                lastEnqueuedTimestampUs = 0L
+                frameQueue.clear()
+                frameQueueBytes.set(0)
+                synchronized(codecLock) {
+                    try { codec?.flush() } catch (_: Exception) {}
+                }
+                presentationTimeUs = 0L
+                lateDropCount = 0L
+                lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
                 anchorLocalUs = 0L
                 anchorLocalEquivalentUs = 0L
@@ -273,50 +275,49 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 pendingSampleCount = 1
                 holdoverEndTimestampUs = 0L
                 pendingAudioTrackFlush = false
-                gaplessGraceUntilMs = 0L  // stream_start arrived, cancel grace
-                enqueueLateDropGraceUntilUs = nowLocalUs() + (2_000L * 1000L)
-                playbackStartedAtMs = System.currentTimeMillis()  // reset grace for drift measurement
-                Log.d(TAG, "Gapless continuation: anchor reset for new track, no re-buffer")
-            } else if (syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER) {
-                // Holdover reconnect: adaptive alignment using timestamp comparison.
-                // AudioTrack keeps playing, late frames dropped, on-time frames resume.
-                holdoverEndTimestampUs = lastPlayedServerTimestampUs
-                pendingAudioTrackFlush = true
-            } else {
-                // IDLE/REBUFFERING reconnect.
-                holdoverEndTimestampUs = 0L
-                pendingAudioTrackFlush = false
+                gaplessGraceUntilMs = 0L
                 playbackStarted = false
                 requiredSyncBufferMs = rebufferSyncBufferMs()
                 enqueueLateDropGraceUntilUs = nowLocalUs() + (STARTUP_ENQUEUE_GRACE_MS * 1000L)
+            } else {
+                // CONTINUATION same-codec: preserve queue, fresh timing lock
+                Log.d(TAG, "configure semantic=CONTINUATION path=same-codec action=timing-reset codec=$codecName buf=${bufferDurationMs()}ms")
+                configureGeneration++
+                lastFrameReceivedMs = System.currentTimeMillis()
+                lateDropCount = 0L
+                // Full timing state reset (fresh lock, not fresh stream)
+                anchorServerTimestampUs = 0L
+                anchorLocalUs = 0L
+                anchorLocalEquivalentUs = 0L
+                smoothedSyncErrorMs = 0.0
+                startupOffsetMs = 0.0
+                clockWaitStartMs = 0L
+                pendingSampleCorrection = 0
+                pendingSampleCount = 1
+                resyncCount = 0
+                lastResyncAtMs = 0L
+                // Continuation grace: suppress correction during noisy re-lock period
+                continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
+                enqueueLateDropGraceUntilUs = nowLocalUs() + (2_000L * 1000L)
+                if (playbackStarted) {
+                    playbackStartedAtMs = System.currentTimeMillis()
+                }
             }
-            // Keep playbackStarted for holdover so playback thread continues decode loop
-            // late-drop naturally.
             if (!playbackActive || playbackThread?.isAlive != true) {
                 playbackActive = true
                 audioTrack?.let { startPlaybackThread(it) }
             }
             pendingContinuityCheck = true
-            Log.d(TAG, "Same codec stream/start, buf=${bufferDurationMs()}ms ($codecName)")
             return
         }
 
         // Hot-swap: different codec but same audio format (sample rate + channels).
-        // Keep AudioTrack alive (hardware buffer bridges the codec switch), keep playback
-        // thread running. Only swap the MediaCodec and clear the encoded frame queue.
+        // Keep AudioTrack alive (hardware buffer bridges the codec switch).
         if (configured && playbackStarted
             && sampleRate == activeSampleRate && channels == activeChannels
             && audioTrack != null && playbackThread?.isAlive == true
         ) {
-            Log.d(
-                DBG,
-                "configure hot-swap oldCodec=$activeCodec newCodec=$codecName " +
-                    "sync=$syncState buf=${bufferDurationMs()}ms"
-            )
-
             val newCodec = createCodec(codecName, sampleRate, channels, bitDepth, codecHeader)
-
-            // Swap codec under lock (playback thread checks mc !== codec)
             val oldCodec: MediaCodec?
             synchronized(codecLock) {
                 oldCodec = codec
@@ -325,45 +326,40 @@ class SendspinSyncEngine : SendspinAudioEngine {
             try { oldCodec?.stop() } catch (_: Exception) {}
             try { oldCodec?.release() } catch (_: Exception) {}
 
-            // Clear queue (old codec frames can't be decoded with new codec)
+            // Queue must clear (old codec frames can't decode on new codec)
             frameQueue.clear()
             frameQueueBytes.set(0)
             lastEnqueuedTimestampUs = 0L
             estimatedFrameDurationUs = 20_000L
             presentationTimeUs = 0L
-
             lateDropCount = 0L
             oversizedDropCount = 0L
             consecutiveDecodeFailures = 0
             configureGeneration++
-
-            // Brief late-drop grace: after hot-swap, initial frames may appear "late"
-            // relative to the old holdover buffer position.
             enqueueLateDropGraceUntilUs = nowLocalUs() + (5_000L * 1000L)
             lastFrameReceivedMs = System.currentTimeMillis()
-
             activeCodec = codecName
             activeBitDepth = bitDepth
-
             pendingContinuityCheck = false
 
-            // Report state:"error" to trigger server buffer tracker reset and burst
-            // refill. AudioTrack stays in play state: hardware buffer (~300-640ms PCM)
-            // bridges the codec switch while the server burst-fills new frames.
-            playbackStarted = false
-            requiredSyncBufferMs = defaultSyncBufferMs()
-            transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
-
-            Log.d(TAG, "Hot-swap: $activeCodec ${sampleRate}Hz/${bitDepth}bit, track alive")
+            if (isNewStream) {
+                playbackStarted = false
+                requiredSyncBufferMs = defaultSyncBufferMs()
+                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                Log.d(TAG, "configure semantic=NEW_STREAM path=hot-swap codec=$codecName sync=$syncState")
+            } else {
+                // CONTINUATION: hw buffer bridges, shorter resume
+                playbackStarted = false
+                requiredSyncBufferMs = defaultSyncBufferMs()
+                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                Log.d(TAG, "configure semantic=CONTINUATION path=hot-swap codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
+            }
             return
         }
 
         // Full rebuild: first configure or sample rate/channels changed
-        Log.d(
-            DBG,
-            "configure rebuild oldCodec=${if (configured) activeCodec else "none"} newCodec=$codecName " +
-                "playbackActive=$playbackActive started=$playbackStarted sync=$syncState buf=${bufferDurationMs()}ms"
-        )
+        Log.d(TAG, "configure semantic=${if (isNewStream) "NEW_STREAM" else "CONTINUATION"} path=rebuild " +
+            "codec=$codecName ${sampleRate}Hz sync=$syncState buf=${bufferDurationMs()}ms")
         release_internal()
         activeCodec = codecName
         activeBitDepth = bitDepth
@@ -413,9 +409,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
         outputLatencyMeasureCount = 0
         presentationTimeUs = 0L
 
-        requiredSyncBufferMs = defaultSyncBufferMs()
+        if (isNewStream) {
+            requiredSyncBufferMs = defaultSyncBufferMs()
+            continuationGraceUntilMs = 0L
+        } else {
+            // CONTINUATION rebuild: fast re-lock, not cold start
+            requiredSyncBufferMs = MIN_SYNC_BUFFER_MS
+            continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
+        }
         startPlaybackThread(createdAudioTrack)
-        Log.d(TAG, "Pipeline: $codecName ${sampleRate}Hz/${bitDepth}bit ${channels}ch, trackBuf=$bufferSize")
+        Log.d(TAG, "configure semantic=${if (isNewStream) "NEW_STREAM" else "CONTINUATION"} path=rebuild " +
+            "codec=$codecName ${sampleRate}Hz threshold=${requiredSyncBufferMs}ms")
     }
 
     // ── WS callback: just enqueue encoded frame (fast, no decode) ──
@@ -645,6 +649,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
         // Grace period after startup/track change (buffer fill transient)
         if (playbackStartedAtMs > 0 && now - playbackStartedAtMs < SYNC_STARTUP_GRACE_MS) return
+        // Continuation grace: suppress correction during re-lock after soft stream/start
+        if (continuationGraceUntilMs > 0 && now < continuationGraceUntilMs) return
 
         // Set anchor after grace period
         if (anchorServerTimestampUs == 0L) {
@@ -984,10 +990,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                 DBG,
                                 "decode failure threshold hit codec=$activeCodec failures=$consecutiveDecodeFailures, rebuilding pipeline"
                             )
-                            // Save config, rebuild pipeline, continue accepting frames
-                            val cfg = arrayOf(activeCodec, activeSampleRate, activeChannels, activeBitDepth)
-                            release_internal()
-                            configure(cfg[0] as String, cfg[1] as Int, cfg[2] as Int, cfg[3] as Int)
+                            rebuildPipelineAfterFailure()
                             break
                         }
                         continue
@@ -1305,6 +1308,18 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     override fun release() { release_internal() }
+
+    /** Internal recovery after decode failures. Rebuilds codec/audio without changing protocol semantic. */
+    private fun rebuildPipelineAfterFailure() {
+        Log.d(TAG, "rebuildPipelineAfterFailure codec=$activeCodec, preserving semantic=${lastProtocolStartType}")
+        val savedCodec = activeCodec
+        val savedRate = activeSampleRate
+        val savedChannels = activeChannels
+        val savedBitDepth = activeBitDepth
+        release_internal()
+        // Rebuild with continuation semantic: fast re-lock, not fresh stream startup
+        configure(savedCodec, savedRate, savedChannels, savedBitDepth, startType = ProtocolStartType.CONTINUATION)
+    }
 
     private fun release_internal() {
         Log.d(
