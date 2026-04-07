@@ -13,11 +13,15 @@ import kotlinx.coroutines.launch
 
 class SendspinManager(
     private val client: SendspinClient,
-    private val audio: AudioStreamManager,
+    private val syncEngine: SendspinSyncEngine,
+    private val directEngine: SendspinDirectEngine,
 ) {
+    @Volatile private var activeEngine: SendspinAudioEngine = directEngine
+    private val audio: SendspinAudioEngine get() = activeEngine
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
+        private const val ENGINE_SWITCH_DEBOUNCE_MS = 2000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -54,6 +58,7 @@ class SendspinManager(
     var currentVolume = 100
         private set
     private var muted = false
+    @Volatile private var hasActiveProtocolStream = false
     @Volatile private var lastSentSyncState = ""
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
@@ -124,7 +129,10 @@ class SendspinManager(
                 setupSyncStateCallback()
                 sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
-                startTimeSync()
+                // Time sync only needed for SyncEngine (group mode)
+                if (activeEngine === syncEngine) {
+                    startTimeSync()
+                }
             }
 
             is SendspinIncoming.ServerTime -> {
@@ -168,34 +176,40 @@ class SendspinManager(
 
             is SendspinIncoming.StreamStart -> {
                 val info = incoming.payload.player
-                Log.d(TAG, "Stream start: ${info.codec} ${info.sampleRate}Hz/${info.bitDepth}bit ${info.channels}ch, " +
-                        "codecHeader=${info.codecHeader != null}")
-                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader)
+                val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
+                Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                hasActiveProtocolStream = true
+                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
                 audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
                 _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
             }
 
             is SendspinIncoming.StreamEnd -> {
+                Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                hasActiveProtocolStream = false
                 audio.onStreamEnd()
             }
 
             is SendspinIncoming.StreamClear -> {
-                Log.d(TAG, "Stream clear")
+                Log.d("sendspindbg", ">>> stream/clear buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                // stream/clear: clear buffers but keep stream context active
                 _serverMetadata.value = null
                 audio.clearBuffer()
             }
 
             is SendspinIncoming.ServerState -> {
+                Log.d("sendspindbg", ">>> server/state metadata=${incoming.payload.metadata != null}")
                 _serverMetadata.value = incoming.payload.metadata
             }
 
             is SendspinIncoming.ServerCommand -> {
+                Log.d("sendspindbg", ">>> server/command ${incoming.payload.player?.command}")
                 handleCommand(incoming.payload)
             }
 
             is SendspinIncoming.Unknown -> {
-                Log.d(TAG, "Unknown message type: ${incoming.type}")
+                Log.d("sendspindbg", ">>> unknown type: ${incoming.type}")
             }
         }
     }
@@ -305,9 +319,33 @@ class SendspinManager(
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
+    private var lastEngineSwitchMs = 0L
+
     fun setInSyncGroup(grouped: Boolean) {
-        audio.inSyncGroup = grouped
-        if (grouped) Log.d(TAG, "Sync group: active")
+        val target = if (grouped) syncEngine else directEngine
+        if (target === activeEngine) return
+        // Debounce: ignore rapid group state flicker
+        val now = System.currentTimeMillis()
+        if (now - lastEngineSwitchMs < ENGINE_SWITCH_DEBOUNCE_MS) {
+            Log.d(TAG, "Engine switch debounced (${now - lastEngineSwitchMs}ms)")
+            return
+        }
+        lastEngineSwitchMs = now
+        Log.d(TAG, "Switching engine: ${if (grouped) "SyncEngine" else "DirectEngine"}")
+        activeEngine.onSyncStateChanged = null
+        activeEngine.onSyncSample = null
+        activeEngine.release()
+        activeEngine = target
+        activeEngine.clockSynchronizer = clockSynchronizer
+        setupSyncStateCallback()
+        _syncState.value = activeEngine.syncState
+        // Start/stop time sync based on engine
+        if (grouped) {
+            startTimeSync()
+        } else {
+            timeSyncJob?.cancel()
+            timeSyncJob = null
+        }
     }
 
     fun seedOutputLatency(persistedUs: Long) {
@@ -345,7 +383,9 @@ class SendspinManager(
     }
 
     fun expectDiscontinuity(reason: String) {
+        Log.d("sendspindbg", "expectDiscontinuity($reason) buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
         audio.expectDiscontinuity(reason)
+        Log.d("sendspindbg", "expectDiscontinuity($reason) DONE buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
     }
 
     fun onTransportFailure() {
@@ -376,7 +416,7 @@ class SendspinManager(
             if (stateStr != lastSentSyncState) {
                 lastSentSyncState = stateStr
                 lastCallbackSentAtMs = System.currentTimeMillis()
-                Log.d(TAG, "Sending client/state: $stateStr (from $state)")
+                Log.d("sendspindbg", ">>> client/state: $stateStr (from $state) buf=${audio.bufferDurationMs()}ms")
                 sendCurrentState(stateStr)
             }
         }
@@ -392,6 +432,7 @@ class SendspinManager(
     }
 
     fun stop() {
+        hasActiveProtocolStream = false
         _enabled.value = false
         heartbeatJob?.cancel()
         timeSyncJob?.cancel()
@@ -406,9 +447,9 @@ class SendspinManager(
         client.disconnect()
         audio.onSyncStateChanged = null
         audio.onSyncSample = null
-        audio.inSyncGroup = false
         _syncHistory.value = emptyList()
-        audio.release()
+        syncEngine.release()
+        directEngine.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null
         _syncState.value = audio.syncState

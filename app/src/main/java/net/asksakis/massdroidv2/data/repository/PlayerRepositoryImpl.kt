@@ -974,18 +974,21 @@ class PlayerRepositoryImpl @Inject constructor(
         blockedArtistUrisSnapshot.isNotEmpty()
 
     override suspend fun next(playerId: String) {
+        Log.d("sendspindbg", "WS>>> next($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))
         playerCmd("next", playerId)
     }
 
     override suspend fun previous(playerId: String) {
+        Log.d("sendspindbg", "WS>>> previous($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.PREVIOUS))
         playerCmd("previous", playerId)
     }
 
     override suspend fun seek(playerId: String, position: Double) {
+        Log.d("sendspindbg", "WS>>> seek($playerId, ${position}s)")
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.SEEK))
         sendPlayerCommandWithRetry(
             MaCommands.Players.CMD_SEEK,

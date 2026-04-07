@@ -139,21 +139,20 @@ class SendspinAudioController(
         setupAudioFocus()
         registerNoisyReceiver()
 
-        // Seed output latency and clock offset BEFORE connection (avoids race where
-        // first stream starts with measuredOutputLatencyUs=0 before async seed arrives)
+        // Persist callbacks for clock/latency measurements
         sendspinManager.setOutputLatencyPersistCallback { latencyUs ->
             scope.launch { settingsRepository.setSendspinOutputLatencyUs(latencyUs) }
         }
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
+        // Connect immediately, seed async (seeds only matter for SyncEngine group mode)
+        scope.launch { ensureSendspinConnected() }
         scope.launch {
             val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
             sendspinManager.seedOutputLatency(persistedLatency)
             sendspinManager.seedClockOffset(persistedOffset)
-            // Start connection only after seeds are applied
-            ensureSendspinConnected()
         }
 
         collectorJobs += scope.launch {
@@ -271,11 +270,13 @@ class SendspinAudioController(
         collectorJobs += scope.launch {
             playerRepository.discontinuityCommands.collect { command ->
                 if (command.playerId != sendspinPlayerId) return@collect
-                // Only seek needs flush (same track, new position).
-                // next/previous are handled by gapless stream_end -> stream_start.
-                if (command.kind == net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK) {
-                    sendspinManager.expectDiscontinuity("seek")
+                val reason = when (command.kind) {
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.NEXT -> "next"
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.PREVIOUS -> "previous"
+                    net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK -> "seek"
                 }
+                Log.d("sendspindbg", "discontinuity command: $reason buf=${sendspinManager.bufferedAudioMs()}ms")
+                sendspinManager.expectDiscontinuity(reason)
             }
         }
 
@@ -424,14 +425,14 @@ class SendspinAudioController(
                         settingsRepository.setSendspinClientId(clientId)
                     }
 
+                    // Always force-restart Sendspin after MA reconnect.
+                    // After server reboot, the existing Sendspin WS may be connected
+                    // (SYNCING/STREAMING) but the server no longer recognizes the player.
                     val currentSsState = sendspinManager.connectionState.value
-                    if (currentSsState == SendspinState.DISCONNECTED || currentSsState == SendspinState.ERROR) {
-                        Log.d(TAG, "MA reconnected, sendspin is $currentSsState, restarting")
-                        if (url.isNotBlank() && token.isNotBlank()) {
-                            ensureSendspinConnected()
-                        }
-                    } else {
-                        Log.d(TAG, "MA reconnected, sendspin already $currentSsState")
+                    Log.d(TAG, "MA reconnected, sendspin is $currentSsState, force-restarting")
+                    if (url.isNotBlank() && token.isNotBlank()) {
+                        sendspinManager.stop()
+                        sendspinManager.start(url, token, clientId, "MassDroid")
                     }
                 }
                 if (isConnected) connectedBefore = true

@@ -1,0 +1,65 @@
+package net.asksakis.massdroidv2.data.sendspin
+
+/** Protocol-derived stream/start classification. Decided by SendspinManager, not the engine. */
+enum class ProtocolStartType {
+    NEW_STREAM,
+    CONTINUATION
+}
+
+/**
+ * Interface for sendspin audio playback engines.
+ * Two implementations: SyncEngine (group multi-device sync) and DirectEngine (solo playback).
+ */
+interface SendspinAudioEngine {
+
+    // State
+    val syncState: SyncState
+    val measuredOutputLatencyUs: Long
+
+    // Callbacks
+    var onSyncStateChanged: ((SyncState) -> Unit)?
+    var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float) -> Unit)?
+    var onOutputLatencyMeasured: ((Long) -> Unit)?
+
+    // Clock sync (used by SyncEngine, ignored by DirectEngine)
+    var clockSynchronizer: ClockSynchronizer?
+    var staticDelayMs: Int
+
+    // Configuration
+    fun configure(
+        codecName: String = "opus",
+        sampleRate: Int = 48000,
+        channels: Int = 2,
+        bitDepth: Int = 16,
+        codecHeader: String? = null,
+        startType: ProtocolStartType = ProtocolStartType.NEW_STREAM
+    )
+    fun currentConfigureGeneration(): Long
+
+    // Frame input
+    fun onBinaryMessage(data: ByteArray, generation: Long)
+
+    // Playback control
+    fun setPaused(paused: Boolean)
+    fun setVolume(volume: Float)
+    fun setMuted(muted: Boolean)
+
+    // Stream lifecycle
+    fun onStreamEnd()
+    fun clearBuffer()
+    fun expectDiscontinuity(reason: String)
+    fun onTransportFailure()
+
+    // Buffer info
+    fun bufferDurationMs(): Long
+    fun bufferedBytes(): Long
+
+    // Output latency
+    fun seedOutputLatency(persistedUs: Long)
+
+    // Sync-specific (no-op in DirectEngine)
+    fun shiftAnchorForDelayChange(deltaMs: Int)
+
+    // Cleanup
+    fun release()
+}
