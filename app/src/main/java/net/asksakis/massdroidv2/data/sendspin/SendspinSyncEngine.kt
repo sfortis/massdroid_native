@@ -13,6 +13,13 @@ import java.nio.BufferOverflowException
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 
+enum class SyncState {
+    IDLE,
+    SYNCHRONIZED,
+    HOLDOVER_PLAYING_FROM_BUFFER,
+    SYNC_ERROR_REBUFFERING
+}
+
 /**
  * Unified Sendspin audio engine. Configurable CorrectionMode:
  * SYNC = multi-device beat-exact sync (Kalman, drift correction, late-frame dropping).

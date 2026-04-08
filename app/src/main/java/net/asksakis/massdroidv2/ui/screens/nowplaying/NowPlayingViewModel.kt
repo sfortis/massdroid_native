@@ -305,7 +305,7 @@ class NowPlayingViewModel @Inject constructor(
                 sendspinManager.streamCodec,
                 sendspinManager.networkMode,
                 sendspinClientId
-            ) { values ->
+            ) { values: Array<*> ->
                 val conn = values[0] as SendspinState
                 val sync = values[1] as SyncState
                 val codec = values[2] as String?
