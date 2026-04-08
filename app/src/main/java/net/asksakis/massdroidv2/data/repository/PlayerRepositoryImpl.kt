@@ -1016,6 +1016,47 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
+    // Group volume: ratio-based so proportions are preserved and min/max hit 0/100 for all
+    private val groupMemberRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private var groupRatioParentId: String? = null
+
+    private fun ensureGroupRatios(parentId: String) {
+        val allPlayers = _players.value
+        val parent = allPlayers.find { it.playerId == parentId } ?: return
+        if (groupRatioParentId != parentId) {
+            groupMemberRatios.clear()
+            groupRatioParentId = parentId
+        }
+        val parentVol = parent.volumeLevel.coerceAtLeast(1)
+        for (childId in parent.groupChilds) {
+            if (childId != parentId && !groupMemberRatios.containsKey(childId)) {
+                val child = allPlayers.find { it.playerId == childId }
+                groupMemberRatios[childId] = (child?.volumeLevel ?: 0).toFloat() / parentVol
+            }
+        }
+    }
+
+    override suspend fun setGroupVolume(parentId: String, volume: Int) {
+        val parent = _players.value.find { it.playerId == parentId } ?: return
+        ensureGroupRatios(parentId)
+        setVolume(parentId, volume)
+        for (childId in parent.groupChilds) {
+            if (childId != parentId) {
+                val ratio = groupMemberRatios[childId] ?: 1f
+                val memberVol = (volume * ratio).toInt().coerceIn(0, 100)
+                setVolume(childId, memberVol)
+            }
+        }
+    }
+
+    override fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int) {
+        val parent = _players.value.find { it.playerId == parentId }
+        if (parent != null) {
+            val parentVol = parent.volumeLevel.coerceAtLeast(1)
+            groupMemberRatios[memberId] = volume.toFloat() / parentVol
+        }
+    }
+
     override suspend fun toggleMute(playerId: String, muted: Boolean) {
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_MUTE,

@@ -93,7 +93,16 @@ echo "=== Detekt ==="
 bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" detekt
 
 echo "=== Build ==="
-bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" assembleDebug
+set -o pipefail
+if ! bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" assembleDebug 2>&1 | tee /dev/stderr > /dev/null; then
+  echo ""
+  echo "=== Compilation errors ==="
+  DAEMON_LOG=$(ls -t ~/.gradle/daemon/*/daemon-*.out.log 2>/dev/null | head -1)
+  if [[ -n "$DAEMON_LOG" ]]; then
+    grep "file:///" "$DAEMON_LOG" | tail -20
+  fi
+  exit 1
+fi
 
 if [[ ! -f "$APK" ]]; then
   echo "APK not found: $APK"

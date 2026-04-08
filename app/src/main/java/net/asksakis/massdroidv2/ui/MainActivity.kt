@@ -242,7 +242,13 @@ class MainActivity : ComponentActivity() {
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
                     val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
-                    lifecycleScope.launch { playerRepository.setVolume(player.playerId, newVol) }
+                    lifecycleScope.launch {
+                        if (player.groupChilds.any { it != player.playerId }) {
+                            playerRepository.setGroupVolume(player.playerId, newVol)
+                        } else {
+                            playerRepository.setVolume(player.playerId, newVol)
+                        }
+                    }
                 }
                 return true
             }

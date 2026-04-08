@@ -57,6 +57,8 @@ interface PlayerRepository {
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
     suspend fun setVolume(playerId: String, volumeLevel: Int)
+    suspend fun setGroupVolume(parentId: String, volume: Int)
+    fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int)
     suspend fun toggleMute(playerId: String, muted: Boolean)
     suspend fun updatePlayerIcon(playerId: String, icon: String)
     suspend fun renamePlayer(playerId: String, name: String)

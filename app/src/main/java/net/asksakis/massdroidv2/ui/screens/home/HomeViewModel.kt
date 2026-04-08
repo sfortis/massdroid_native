@@ -138,6 +138,23 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun setGroupVolume(parentId: String, volume: Int) {
+        viewModelScope.launch {
+            try {
+                playerRepository.setGroupVolume(parentId, volume)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun onMemberVolumeChanged(parentId: String, memberId: String, volume: Int) {
+        playerRepository.updateGroupMemberOffset(parentId, memberId, volume)
+        viewModelScope.launch {
+            try {
+                playerRepository.setVolume(memberId, volume)
+            } catch (_: Exception) {}
+        }
+    }
+
     fun playPause() {
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {

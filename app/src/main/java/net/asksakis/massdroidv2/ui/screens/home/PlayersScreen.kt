@@ -22,7 +22,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,6 +50,11 @@ import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import coil.compose.SubcomposeAsyncImage
 
+private data class PlayerGroupInfo(
+    val isParent: Boolean = false,
+    val childPlayers: List<Player> = emptyList()
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayersScreen(
@@ -75,8 +79,36 @@ fun PlayersScreen(
     val playerRoomIdMap = remember(proximityConfig) {
         proximityConfig.rooms.associate { it.playerId to it.id }
     }
-    val availablePlayers = remember(players) {
-        players.filter { it.available }.sortedBy { it.displayName.lowercase() }
+    // MA includes the parent itself in group_childs. Actual children = childs minus self.
+    val groupData = remember(players) {
+        val available = players.filter { it.available }
+        val parentMap = mutableMapOf<String, List<String>>()
+        for (p in available) {
+            val actualChilds = p.groupChilds.filter { it != p.playerId }
+            if (actualChilds.isNotEmpty()) parentMap[p.playerId] = actualChilds
+        }
+        val childIds = parentMap.values.flatten().toSet()
+        Triple(available, parentMap, childIds)
+    }
+    val availablePlayers = remember(groupData) {
+        val (available, _, childIds) = groupData
+        available.filter { it.playerId !in childIds }
+            .sortedBy { it.displayName.lowercase() }
+    }
+    val groupInfoMap = remember(groupData) {
+        val (available, parentMap, _) = groupData
+        val playerMap = available.associateBy { it.playerId }
+        buildMap {
+            for ((parentId, childIds) in parentMap) {
+                val allMembers = (listOfNotNull(playerMap[parentId]) +
+                    childIds.mapNotNull { playerMap[it] })
+                    .sortedBy { it.displayName.lowercase() }
+                put(parentId, PlayerGroupInfo(
+                    isParent = true,
+                    childPlayers = allMembers
+                ))
+            }
+        }
     }
     val activePlayerCount = remember(availablePlayers) {
         availablePlayers.count { it.state != PlaybackState.IDLE }
@@ -127,6 +159,7 @@ fun PlayersScreen(
                             availablePlayers,
                             key = { it.playerId }
                         ) { player ->
+                            val groupInfo = groupInfoMap[player.playerId] ?: PlayerGroupInfo()
                             PlayerListItem(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
@@ -134,11 +167,22 @@ fun PlayersScreen(
                                 isFollowMeSelected = proximityConfig.enabled &&
                                     currentDetectedRoom?.playerId == player.playerId,
                                 roomNames = playerRoomMap[player.playerId] ?: emptyList(),
+                                groupInfo = groupInfo,
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
                                 onQueueMenuClick = { queueMenuPlayer = player },
                                 onVolumeChange = { volume ->
-                                    viewModel.setVolume(player.playerId, volume)
+                                    if (groupInfo.isParent) {
+                                        viewModel.setGroupVolume(player.playerId, volume)
+                                    } else {
+                                        viewModel.setVolume(player.playerId, volume)
+                                    }
+                                },
+                                onMemberVolumeChange = { memberId, volume ->
+                                    viewModel.onMemberVolumeChanged(player.playerId, memberId, volume)
+                                },
+                                onMemberClick = { member ->
+                                    viewModel.selectPlayer(member)
                                 }
                             )
                             Spacer(modifier = Modifier.height(10.dp))
@@ -264,10 +308,13 @@ private fun PlayerListItem(
     isLocalPlayer: Boolean = false,
     isFollowMeSelected: Boolean = false,
     roomNames: List<String> = emptyList(),
+    groupInfo: PlayerGroupInfo = PlayerGroupInfo(),
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
     onQueueMenuClick: () -> Unit,
-    onVolumeChange: (Int) -> Unit
+    onVolumeChange: (Int) -> Unit,
+    onMemberVolumeChange: (String, Int) -> Unit = { _, _ -> },
+    onMemberClick: (Player) -> Unit = {}
 ) {
     var volumeSliderValue by remember { mutableFloatStateOf(player.volumeLevel.toFloat()) }
 
@@ -288,6 +335,7 @@ private fun PlayerListItem(
     }
     val title = player.currentMedia?.title
     val artist = player.currentMedia?.artist
+    val groupAccentColor = MaterialTheme.colorScheme.tertiary
 
     Surface(
         modifier = Modifier
@@ -333,12 +381,25 @@ private fun PlayerListItem(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(1.dp)
                 ) {
-                    PlayerNameWithBadge(
-                        name = player.displayName,
-                        isLocalPlayer = isLocalPlayer,
-                        isFollowMePlayer = isFollowMeSelected,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        PlayerNameWithBadge(
+                            name = player.displayName,
+                            isLocalPlayer = isLocalPlayer,
+                            isFollowMePlayer = isFollowMeSelected,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (groupInfo.isParent) {
+                            Icon(
+                                Icons.Default.Link,
+                                contentDescription = null,
+                                tint = groupAccentColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
 
                 IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(32.dp)) {
@@ -433,7 +494,96 @@ private fun PlayerListItem(
                     textAlign = TextAlign.End
                 )
             }
+
+                if (groupInfo.isParent && groupInfo.childPlayers.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .height(0.5.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    )
+                    groupInfo.childPlayers.forEach { member ->
+                        GroupMemberRow(
+                            member = member,
+                            onVolumeChange = { onMemberVolumeChange(member.playerId, it) },
+                            onClick = { onMemberClick(member) }
+                        )
+                    }
+                }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GroupMemberRow(
+    member: Player,
+    onVolumeChange: (Int) -> Unit,
+    onClick: () -> Unit
+) {
+    var volume by remember { mutableFloatStateOf(member.volumeLevel.toFloat()) }
+    LaunchedEffect(member.volumeLevel) { volume = member.volumeLevel.toFloat() }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PlayerIcon(
+            player = member,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = member.displayName,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(80.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Slider(
+            value = volume,
+            onValueChange = { volume = it },
+            onValueChangeFinished = { onVolumeChange(volume.toInt()) },
+            valueRange = 0f..100f,
+            modifier = Modifier
+                .weight(1f)
+                .height(20.dp),
+            thumb = {},
+            track = { sliderState ->
+                val fraction = ((sliderState.value - sliderState.valueRange.start) /
+                    (sliderState.valueRange.endInclusive - sliderState.valueRange.start))
+                    .coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant)
+                    )
+                }
+            }
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "${volume.toInt()}%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End
+        )
     }
 }
 
