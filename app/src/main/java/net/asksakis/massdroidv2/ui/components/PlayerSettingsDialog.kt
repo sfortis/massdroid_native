@@ -312,6 +312,12 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
     val labelStyle = MaterialTheme.typography.labelSmall
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Sync Error",
+            style = labelStyle,
+            color = labelColor,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
         Box(
             modifier = Modifier
                 .fillMaxWidth()

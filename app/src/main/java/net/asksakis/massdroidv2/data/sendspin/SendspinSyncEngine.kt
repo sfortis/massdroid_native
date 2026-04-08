@@ -41,12 +41,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Sync mode thresholds
         private const val MIN_SYNC_BUFFER_MS = 200L
         private const val SYNC_DEADBAND_MS = 3.0
+        private const val SYNC_SAMPLE_CORRECTION_MS = 8.0
+        private const val SYNC_RATE_GENTLE_MS = 20.0
         private const val SYNC_RESYNC_MS = 100.0
         private const val SYNC_CHECK_INTERVAL_FRAMES = 10
         private const val SYNC_STARTUP_GRACE_MS = 3000L
         private const val SYNC_RESYNC_COOLDOWN_MS = 3000L
         private const val SYNC_ERROR_EMA_ALPHA = 0.10
         private const val CONTINUATION_GRACE_MS = 1000L
+        private const val RATE_GENTLE = 0.005f   // 0.5% speed change
+        private const val RATE_STRONG = 0.01f    // 1.0% speed change
 
         // Direct mode thresholds
         private const val DIRECT_STARTUP_MS_OPUS = 300L
@@ -138,6 +142,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile override var staticDelayMs: Int = 0
     // "Play first, correct later": defer corrections until clock converges
     @Volatile private var clockPreciseForCorrections = false
+    // Rate correction state
+    @Volatile private var currentPlaybackRate = 1.0f
 
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -172,6 +178,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (correctionMode == mode) return
         val old = correctionMode
         correctionMode = mode
+        applyPlaybackRate(1.0f)
         Log.d(TAG, "CorrectionMode: $old -> $mode")
         // Reset sync-specific state, keep buffer intact
         anchorServerTimestampUs = 0L
@@ -333,6 +340,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 // NEW_STREAM same-codec: full reset, rebuffer
                 Log.d(TAG, "configure semantic=NEW_STREAM path=same-codec codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
                 clockPreciseForCorrections = false
+                applyPlaybackRate(1.0f)
                 configureGeneration++
                 lastEnqueuedTimestampUs = 0L
                 frameQueue.clear()
@@ -483,6 +491,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
         decodedFrameCount = 0
         outputLatencyMeasureCount = 0
         presentationTimeUs = 0L
+        rateCorrectionSupported = true
+        currentPlaybackRate = 1.0f
 
         if (isNewStream) {
             clockPreciseForCorrections = false
@@ -611,9 +621,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
         )
         hardBoundaryPending = true
         streamGeneration++
+        currentPlaybackRate = 1.0f
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
             playbackStarted = false  // BEFORE lock release to prevent decode+write race
+            try { audioTrack?.playbackParams = android.media.PlaybackParams().setSpeed(1.0f).setPitch(1.0f) } catch (_: Exception) {}
             audioTrack?.setVolume(0f)  // mute before flush to hide click/pop
             audioTrack?.pause()
             audioTrack?.flush()
@@ -801,22 +813,53 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val absoluteSyncMs = startupOffsetMs + smoothedSyncErrorMs
         val absTotal = kotlin.math.abs(absoluteSyncMs)
 
-        // Hard resync for large errors
+        // Tier 4: Hard resync for large errors
         if (absTotal > SYNC_RESYNC_MS && now - lastResyncAtMs > SYNC_RESYNC_COOLDOWN_MS) {
             resyncCount++
             lastResyncAtMs = now
+            applyPlaybackRate(1.0f)
+            pendingSampleCorrection = 0
             Log.d(TAG, "Sync RESYNC: abs=${"%.1f".format(absoluteSyncMs)}ms (#$resyncCount)")
             flushForRebuffer()
             return
         }
 
-        // Sample correction for errors above deadband
-        if (absTotal > SYNC_DEADBAND_MS) {
-            pendingSampleCorrection = if (absoluteSyncMs > 0) 1 else -1
-            pendingSampleCount = sampleCountForError(absTotal)
-        } else {
+        // Tier 3: Rate correction for medium errors (8-100ms)
+        if (absTotal > SYNC_SAMPLE_CORRECTION_MS) {
+            val rateAdjust = if (absTotal > SYNC_RATE_GENTLE_MS) RATE_STRONG else RATE_GENTLE
+            val targetRate = if (absoluteSyncMs > 0) 1.0f + rateAdjust else 1.0f - rateAdjust
+            applyPlaybackRate(targetRate)
             pendingSampleCorrection = 0
             pendingSampleCount = 1
+        }
+        // Tier 2: Sample correction for small errors (3-8ms), conservative: 1 sample
+        else if (absTotal > SYNC_DEADBAND_MS) {
+            applyPlaybackRate(1.0f)
+            pendingSampleCorrection = if (absoluteSyncMs > 0) 1 else -1
+            pendingSampleCount = 1
+        }
+        // Tier 1: Deadband
+        else {
+            applyPlaybackRate(1.0f)
+            pendingSampleCorrection = 0
+            pendingSampleCount = 1
+        }
+    }
+
+    @Volatile private var rateCorrectionSupported = true
+
+    private fun applyPlaybackRate(rate: Float) {
+        if (rate == currentPlaybackRate) return
+        if (!rateCorrectionSupported && rate != 1.0f) return
+        currentPlaybackRate = rate
+        try {
+            audioTrack?.playbackParams = android.media.PlaybackParams()
+                .setSpeed(rate)
+                .setPitch(1.0f)
+        } catch (e: Exception) {
+            Log.w(TAG, "Rate correction not supported on this device: ${e.message}")
+            rateCorrectionSupported = false
+            currentPlaybackRate = 1.0f
         }
     }
 
@@ -1318,6 +1361,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         hardBoundaryPending = true
         streamGeneration++
         configureGeneration++
+        applyPlaybackRate(1.0f)
         if (playbackActive) {
             synchronized(codecLock) {
                 audioTrack?.setVolume(0f)
@@ -1356,6 +1400,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             "onStreamEnd codec=$activeCodec sync=$syncState started=$playbackStarted " +
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
+        applyPlaybackRate(1.0f)
         // Full stop + IDLE (matches main branch behavior).
         hardBoundaryPending = true
         streamGeneration++
