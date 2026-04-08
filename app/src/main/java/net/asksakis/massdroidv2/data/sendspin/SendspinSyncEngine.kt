@@ -40,7 +40,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
         // Sync mode thresholds
         private const val MIN_SYNC_BUFFER_MS = 200L
-        private const val SYNC_DEADBAND_MS = 3.0
+        private const val SYNC_DEADBAND_MS = 2.0
         private const val SYNC_SAMPLE_CORRECTION_MS = 8.0
         private const val SYNC_RATE_GENTLE_MS = 20.0
         private const val SYNC_RESYNC_MS = 100.0
@@ -824,19 +824,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
             return
         }
 
-        // Tier 3: Rate correction for medium errors (8-100ms)
-        if (absTotal > SYNC_SAMPLE_CORRECTION_MS) {
+        // Tier 3: Rate correction for medium errors (8-100ms), if device supports
+        if (absTotal > SYNC_SAMPLE_CORRECTION_MS && rateCorrectionSupported) {
             val rateAdjust = if (absTotal > SYNC_RATE_GENTLE_MS) RATE_STRONG else RATE_GENTLE
             val targetRate = if (absoluteSyncMs > 0) 1.0f + rateAdjust else 1.0f - rateAdjust
             applyPlaybackRate(targetRate)
             pendingSampleCorrection = 0
             pendingSampleCount = 1
         }
-        // Tier 2: Sample correction for small errors (3-8ms), conservative: 1 sample
+        // Tier 2: Sample correction (all errors above deadband; also fallback for unsupported rate)
         else if (absTotal > SYNC_DEADBAND_MS) {
             applyPlaybackRate(1.0f)
             pendingSampleCorrection = if (absoluteSyncMs > 0) 1 else -1
-            pendingSampleCount = 1
+            pendingSampleCount = sampleCountForError(absTotal)
         }
         // Tier 1: Deadband
         else {
@@ -851,13 +851,21 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private fun applyPlaybackRate(rate: Float) {
         if (rate == currentPlaybackRate) return
         if (!rateCorrectionSupported && rate != 1.0f) return
+        val prev = currentPlaybackRate
         currentPlaybackRate = rate
+        val track = audioTrack
+        if (track == null) {
+            Log.d(TAG, "applyPlaybackRate: track=null, skipping $rate")
+            return
+        }
         try {
-            audioTrack?.playbackParams = android.media.PlaybackParams()
+            track.playbackParams = android.media.PlaybackParams()
+                .setAudioFallbackMode(android.media.PlaybackParams.AUDIO_FALLBACK_MODE_DEFAULT)
                 .setSpeed(rate)
                 .setPitch(1.0f)
+            Log.d(TAG, "applyPlaybackRate: $prev -> $rate OK")
         } catch (e: Exception) {
-            Log.w(TAG, "Rate correction not supported on this device: ${e.message}")
+            Log.w(TAG, "Rate correction failed ($prev -> $rate): ${e.message}")
             rateCorrectionSupported = false
             currentPlaybackRate = 1.0f
         }
