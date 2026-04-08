@@ -200,7 +200,7 @@ class ClockSynchronizer {
      */
     @Synchronized
     fun isReadyForPlaybackStart(): Boolean =
-        count >= 5 && errorUs() <= 15_000
+        count >= 8 && errorUs() <= 5_000
 
     @Synchronized
     fun currentSampleCount(): Int = count

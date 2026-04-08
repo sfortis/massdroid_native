@@ -56,7 +56,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val DIRECT_CELLULAR_EXTRA_MS = 500L
     }
 
-    private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray) :
+    private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray, val generation: Long) :
         Comparable<EncodedFrame> {
         override fun compareTo(other: EncodedFrame): Int =
             serverTimestampUs.compareTo(other.serverTimestampUs)
@@ -127,6 +127,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     // Protocol semantic for internal recovery
     @Volatile private var lastProtocolStartType = ProtocolStartType.NEW_STREAM
+    @Volatile private var lastCodecHeader: String? = null
 
     // Clock sync
     @Volatile override var clockSynchronizer: ClockSynchronizer? = null
@@ -313,6 +314,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     ) {
         val isNewStream = startType == ProtocolStartType.NEW_STREAM
         lastProtocolStartType = startType
+        lastCodecHeader = codecHeader
         hardBoundaryPending = false
         acceptGeneration = streamGeneration
         generationDropCount = 0
@@ -534,7 +536,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             if (lastEnqueuedTimestampUs > 0L && spacingUs in 5_000L..500_000L) {
                 estimatedFrameDurationUs = spacingUs
             }
-            frameQueue.offer(EncodedFrame(serverTimestampUs, payload))
+            frameQueue.offer(EncodedFrame(serverTimestampUs, payload, acceptGeneration))
             frameQueueBytes.addAndGet(payload.size.toLong())
             lastEnqueuedTimestampUs = serverTimestampUs
         }
@@ -1023,6 +1025,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 if (frame != null) {
                     frameQueue.poll()
                     frameQueueBytes.addAndGet(-frame.payload.size.toLong())
+                    if (frame.generation != streamGeneration) continue
                     if (pendingAudioTrackFlush) {
                         // Reconnect alignment: drop frames already played by holdover.
                         // Compare against holdoverEndTimestampUs (exact, no clock heuristics).
@@ -1386,16 +1389,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     override fun release() { release_internal() }
 
-    /** Internal recovery after decode failures. Rebuilds codec/audio without changing protocol semantic. */
+    /** Internal recovery after decode failures. Rebuilds codec/audio preserving original protocol semantic + codec header. */
     private fun rebuildPipelineAfterFailure() {
-        Log.d(TAG, "rebuildPipelineAfterFailure codec=$activeCodec, preserving semantic=${lastProtocolStartType}")
         val savedCodec = activeCodec
         val savedRate = activeSampleRate
         val savedChannels = activeChannels
         val savedBitDepth = activeBitDepth
+        val savedHeader = lastCodecHeader
+        val savedStartType = lastProtocolStartType
+        Log.d(TAG, "rebuildPipelineAfterFailure codec=$savedCodec, semantic=$savedStartType, hasHeader=${savedHeader != null}")
         release_internal()
-        // Rebuild with continuation semantic: fast re-lock, not fresh stream startup
-        configure(savedCodec, savedRate, savedChannels, savedBitDepth, startType = ProtocolStartType.CONTINUATION)
+        configure(savedCodec, savedRate, savedChannels, savedBitDepth, savedHeader, savedStartType)
     }
 
     private fun release_internal() {
