@@ -256,11 +256,6 @@ fun PlayerSettingsDialog(
                                 }
                             }
                         }
-
-                        if (syncHistory.size >= 2) {
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                            SyncErrorGraph(syncHistory)
-                        }
                     }
                 }
             }
@@ -306,7 +301,7 @@ fun PlayerSettingsDialog(
 }
 
 @Composable
-private fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
+internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
     val rangeMs = 20f  // ±20ms range
     val latest = samples.lastOrNull()
     val goodColor = MaterialTheme.colorScheme.primary

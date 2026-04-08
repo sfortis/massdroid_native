@@ -183,6 +183,9 @@ fun PlayersScreen(
                                 },
                                 onMemberClick = { member ->
                                     viewModel.selectPlayer(member)
+                                },
+                                onMemberMenuClick = { member ->
+                                    queueMenuPlayer = member
                                 }
                             )
                             Spacer(modifier = Modifier.height(10.dp))
@@ -314,7 +317,8 @@ private fun PlayerListItem(
     onQueueMenuClick: () -> Unit,
     onVolumeChange: (Int) -> Unit,
     onMemberVolumeChange: (String, Int) -> Unit = { _, _ -> },
-    onMemberClick: (Player) -> Unit = {}
+    onMemberClick: (Player) -> Unit = {},
+    onMemberMenuClick: (Player) -> Unit = {}
 ) {
     var volumeSliderValue by remember { mutableFloatStateOf(player.volumeLevel.toFloat()) }
 
@@ -507,7 +511,8 @@ private fun PlayerListItem(
                         GroupMemberRow(
                             member = member,
                             onVolumeChange = { onMemberVolumeChange(member.playerId, it) },
-                            onClick = { onMemberClick(member) }
+                            onClick = { onMemberClick(member) },
+                            onMenuClick = { onMemberMenuClick(member) }
                         )
                     }
                 }
@@ -520,7 +525,8 @@ private fun PlayerListItem(
 private fun GroupMemberRow(
     member: Player,
     onVolumeChange: (Int) -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onMenuClick: () -> Unit
 ) {
     var volume by remember { mutableFloatStateOf(member.volumeLevel.toFloat()) }
     LaunchedEffect(member.volumeLevel) { volume = member.volumeLevel.toFloat() }
@@ -584,6 +590,14 @@ private fun GroupMemberRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.End
         )
+        IconButton(onClick = onMenuClick, modifier = Modifier.size(24.dp)) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Member options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp)
+            )
+        }
     }
 }
 

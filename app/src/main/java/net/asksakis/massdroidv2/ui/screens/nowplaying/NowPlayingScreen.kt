@@ -476,9 +476,12 @@ fun NowPlayingScreen(
     }
 
     val statusSnapshot = sendspinStatus
+    val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
     if (showSendspinStatusSheet && statusSnapshot != null) {
         SendspinStatusSheet(
             status = statusSnapshot,
+            syncHistory = syncHistory,
+            onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
             onDismiss = { showSendspinStatusSheet = false }
         )
     }
@@ -979,6 +982,8 @@ private fun QualityActionRow(
 @Composable
 private fun SendspinStatusSheet(
     status: SendspinStatusUi,
+    syncHistory: List<net.asksakis.massdroidv2.data.sendspin.SendspinManager.SyncSample> = emptyList(),
+    onStaticDelayChanged: (Int) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1019,7 +1024,6 @@ private fun SendspinStatusSheet(
             StatusLine(label = "Codec", value = status.codec ?: "Unknown")
             StatusLine(label = "Mode", value = status.configuredFormat)
             StatusLine(label = "Network", value = status.networkMode)
-            StatusLine(label = "Static delay", value = "${status.staticDelayMs} ms")
             StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
 
             Box(
@@ -1047,6 +1051,45 @@ private fun SendspinStatusSheet(
             }
 
             StatusLine(label = "Buffered bytes", value = "${status.bufferBytes / 1000} KB")
+
+            if (syncHistory.size >= 2) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                var staticDelayMs by remember { mutableIntStateOf(status.staticDelayMs) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Static delay", style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                                onStaticDelayChanged(staticDelayMs)
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        Text(
+                            "${staticDelayMs}ms",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 2.dp)
+                        )
+                        IconButton(
+                            onClick = {
+                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                                onStaticDelayChanged(staticDelayMs)
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+                net.asksakis.massdroidv2.ui.components.SyncErrorGraph(syncHistory)
+            }
             Spacer(modifier = Modifier.height(12.dp))
         }
     }

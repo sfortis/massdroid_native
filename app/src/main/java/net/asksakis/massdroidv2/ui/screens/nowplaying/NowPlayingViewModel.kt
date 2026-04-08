@@ -100,6 +100,7 @@ class NowPlayingViewModel @Inject constructor(
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
     val sendspinStreamCodec = sendspinManager.streamCodec
+    val sendspinSyncHistory = sendspinManager.syncHistory
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
