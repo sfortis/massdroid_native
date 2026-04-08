@@ -54,6 +54,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val DIRECT_RECOVERY_MS_OPUS = 1500L
         private const val DIRECT_RECOVERY_MS_LOSSLESS = 2000L
         private const val DIRECT_CELLULAR_EXTRA_MS = 500L
+
+        // "Play first, correct later" thresholds
+        private const val CLOCK_PRECISION_TIMEOUT_MS = 10_000L
+        private const val CLOCK_PRECISION_THRESHOLD_US = 15_000  // Int to match errorUs()
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray, val generation: Long) :
@@ -105,7 +109,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private var presentationTimeUs = 0L
 
     // Correction mode
-    @Volatile override var correctionMode = CorrectionMode.SYNC; private set
+    @Volatile override var correctionMode = CorrectionMode.DIRECT; private set
     private val isSyncMode get() = correctionMode == CorrectionMode.SYNC
 
     // Stream ownership (epoch invalidation, both modes)
@@ -132,6 +136,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // Clock sync
     @Volatile override var clockSynchronizer: ClockSynchronizer? = null
     @Volatile override var staticDelayMs: Int = 0
+    // "Play first, correct later": defer corrections until clock converges
+    @Volatile private var clockPreciseForCorrections = false
 
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -326,6 +332,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             if (isNewStream) {
                 // NEW_STREAM same-codec: full reset, rebuffer
                 Log.d(TAG, "configure semantic=NEW_STREAM path=same-codec codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
+                clockPreciseForCorrections = false
                 configureGeneration++
                 lastEnqueuedTimestampUs = 0L
                 frameQueue.clear()
@@ -360,7 +367,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 anchorLocalEquivalentUs = 0L
                 smoothedSyncErrorMs = 0.0
                 startupOffsetMs = 0.0
-                clockWaitStartMs = 0L
                 pendingSampleCorrection = 0
                 pendingSampleCount = 1
                 resyncCount = 0
@@ -479,6 +485,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         presentationTimeUs = 0L
 
         if (isNewStream) {
+            clockPreciseForCorrections = false
             requiredSyncBufferMs = defaultBufferMs()
             continuationGraceUntilMs = 0L
         } else {
@@ -730,6 +737,33 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Continuation grace: suppress correction during re-lock after soft stream/start
         if (continuationGraceUntilMs > 0 && now < continuationGraceUntilMs) return
 
+        // "Play first, correct later": defer corrections until clock is precise
+        if (!clockPreciseForCorrections) {
+            val filterError = sync.errorUs()
+            val playbackDurationMs = if (playbackStartedAtMs > 0) now - playbackStartedAtMs else 0L
+            val timeoutElapsed = playbackDurationMs > CLOCK_PRECISION_TIMEOUT_MS
+            if (filterError <= CLOCK_PRECISION_THRESHOLD_US) {
+                clockPreciseForCorrections = true
+                // Fresh anchor from precise clock, discard imprecise startup offset
+                startupOffsetMs = 0.0
+                anchorServerTimestampUs = 0L
+                anchorLocalUs = 0L
+                anchorLocalEquivalentUs = 0L
+                smoothedSyncErrorMs = 0.0
+                Log.d(TAG, "Clock precise, fresh anchor + corrections enabled (filterErr=${filterError}us, after ${playbackDurationMs}ms)")
+            } else if (timeoutElapsed) {
+                clockPreciseForCorrections = true
+                startupOffsetMs = 0.0
+                anchorServerTimestampUs = 0L
+                anchorLocalUs = 0L
+                anchorLocalEquivalentUs = 0L
+                smoothedSyncErrorMs = 0.0
+                Log.d(TAG, "Clock precision timeout, fresh anchor + corrections enabled (filterErr=${filterError}us)")
+            } else {
+                return
+            }
+        }
+
         // Set anchor after grace period
         if (anchorServerTimestampUs == 0L) {
             anchorServerTimestampUs = serverTimestampUs
@@ -942,64 +976,51 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
-                        // Startup precision gate: only in SYNC mode
-                        val clockReady = if (isSyncMode) clockSynchronizer?.isReadyForPlaybackStart() ?: false else true
-                        if (!clockReady) {
-                            val waitingMs = if (clockWaitStartMs > 0) {
-                                System.currentTimeMillis() - clockWaitStartMs
-                            } else {
-                                clockWaitStartMs = System.currentTimeMillis()
-                                0L
-                            }
-                            if (waitingMs < 4000) {
-                                // Drain stale frames while waiting (prevents 30s accumulation)
-                                dropLateHeadFramesForStartup()
-                                try { Thread.sleep(50) } catch (_: InterruptedException) { break }
-                                continue
-                            }
-                            Log.d(TAG, "Clock sync timeout after ${waitingMs}ms, starting anyway " +
-                                "(error=${clockSynchronizer?.errorUs() ?: -1}us)")
-                            clockWaitStartMs = 0L  // reset so next startup gets fresh timeout
-                        }
-                        // Clock is ready (or timed out): drain any stale frames from wait period
+                        // "Play first, correct later": no clock gate, start immediately
+                        // clockPreciseForCorrections is reset only at NEW_STREAM boundaries, not here
                         if (dropLateHeadFramesForStartup()) {
                             continue
                         }
                         if (!isStartupBufferReady()) continue  // re-check after drain
                         if (!playbackStarted) {
-                                // Skip stale frames until lead >= 0 (SYNC mode only)
-                                var skipped = 0
-                                if (isSyncMode) while (frameQueue.size > 1) {
-                                    val head = frameQueue.peek() ?: break
-                                    val headLead = leadToLocalNowMs(head.serverTimestampUs)
-                                    if (headLead >= 0L) break
-                                    frameQueue.poll()
-                                    frameQueueBytes.addAndGet(-head.payload.size.toLong())
-                                    skipped++
-                                }
-                                if (skipped > 0) {
-                                    Log.d(TAG, "Startup: skipped $skipped stale frames, buf=${bufferDurationMs()}ms")
-                                    if (!isStartupBufferReady()) continue
-                                }
-
-                                // Busy-wait alignment to server timeline
-                                val firstFrame = frameQueue.peek()
-                                if (firstFrame != null) {
-                                    val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
-                                    val leadBeforeWaitMs = (targetUs - nowLocalUs()) / 1000L
-                                    val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
-                                    val waitMs = waitUs / 1000L
-                                    if (waitMs > 15) {
-                                        try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
+                                val filterErr = clockSynchronizer?.errorUs() ?: Long.MAX_VALUE
+                                val clockPrecise = isSyncMode && filterErr <= CLOCK_PRECISION_THRESHOLD_US
+                                if (clockPrecise) {
+                                    // Clock is precise: align to server timeline
+                                    var skipped = 0
+                                    while (frameQueue.size > 1) {
+                                        val head = frameQueue.peek() ?: break
+                                        if (leadToLocalNowMs(head.serverTimestampUs) >= 0L) break
+                                        frameQueue.poll()
+                                        frameQueueBytes.addAndGet(-head.payload.size.toLong())
+                                        skipped++
                                     }
-                                    val spinDeadline = nowLocalUs() + 50_000L
-                                    while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
-                                    val overshootUs = nowLocalUs() - targetUs
-                                    startupOffsetMs = if (leadBeforeWaitMs < 0) -leadBeforeWaitMs.toDouble() else -(overshootUs / 1000.0)
-                                    Log.d(TAG, "Startup align: lead=${leadBeforeWaitMs}ms " +
-                                        "waited=${waitMs}ms overshoot=${overshootUs / 1000}ms " +
-                                        "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
-                                        "outLat=${measuredOutputLatencyUs / 1000}ms " +
+                                    if (skipped > 0) {
+                                        Log.d(TAG, "Startup: skipped $skipped stale frames, buf=${bufferDurationMs()}ms")
+                                        if (!isStartupBufferReady()) continue
+                                    }
+                                    val firstFrame = frameQueue.peek()
+                                    if (firstFrame != null) {
+                                        val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
+                                        val leadMs = (targetUs - nowLocalUs()) / 1000L
+                                        val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
+                                        val waitMs = waitUs / 1000L
+                                        if (waitMs > 15) {
+                                            try { Thread.sleep(waitMs - 10) } catch (_: InterruptedException) { break }
+                                        }
+                                        val spinDeadline = nowLocalUs() + 50_000L
+                                        while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
+                                        val overshootUs = nowLocalUs() - targetUs
+                                        startupOffsetMs = if (leadMs < 0) -leadMs.toDouble() else -(overshootUs / 1000.0)
+                                        Log.d(TAG, "Startup align (precise): lead=${leadMs}ms " +
+                                            "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
+                                            "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
+                                    }
+                                    clockPreciseForCorrections = true
+                                } else if (isSyncMode) {
+                                    // Clock imprecise: just play, no alignment, no startup offset
+                                    startupOffsetMs = 0.0
+                                    Log.d(TAG, "Startup (imprecise clock): playing without alignment, " +
                                         "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
                                 }
                             Log.d(
@@ -1025,7 +1046,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 if (frame != null) {
                     frameQueue.poll()
                     frameQueueBytes.addAndGet(-frame.payload.size.toLong())
-                    if (frame.generation != streamGeneration) continue
+                    if (frame.generation != acceptGeneration) continue
                     if (pendingAudioTrackFlush) {
                         // Reconnect alignment: drop frames already played by holdover.
                         // Compare against holdoverEndTimestampUs (exact, no clock heuristics).

@@ -128,7 +128,12 @@ class SendspinManager(
                 setupSyncStateCallback()
                 sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
-                startTimeSync()
+                if (engine.correctionMode == CorrectionMode.SYNC) {
+                    startTimeSync()
+                } else {
+                    audio.clockSynchronizer = null
+                    Log.d(TAG, "Skipping time sync (DIRECT mode)")
+                }
             }
 
             is SendspinIncoming.ServerTime -> {
@@ -319,7 +324,16 @@ class SendspinManager(
 
     fun setInSyncGroup(grouped: Boolean) {
         val mode = if (grouped) CorrectionMode.SYNC else CorrectionMode.DIRECT
+        val wasSync = engine.correctionMode == CorrectionMode.SYNC
         engine.setCorrectionMode(mode)
+        if (grouped && !wasSync && client.state.value != SendspinState.DISCONNECTED) {
+            startTimeSync()
+        } else if (!grouped && wasSync) {
+            timeSyncJob?.cancel()
+            timeSyncJob = null
+            audio.clockSynchronizer = null
+            Log.d(TAG, "Stopped time sync (switched to DIRECT)")
+        }
     }
 
     fun seedOutputLatency(persistedUs: Long) {

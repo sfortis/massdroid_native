@@ -124,10 +124,9 @@ class SendspinAudioController(
     private var reconnectJob: Deferred<Boolean>? = null
     private var lastPlayingAtMs = 0L
 
-    private fun audiblePositionMs(rawPositionMs: Long): Long {
-        if (rawPositionMs <= 0L) return 0L
-        val bufferedMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L)
-        return (rawPositionMs - bufferedMs.coerceAtMost(rawPositionMs)).coerceAtLeast(0L)
+    /** Use MA player timeline as source of truth (matches seek command target). */
+    private fun serverPositionMs(rawPositionMs: Long): Long {
+        return rawPositionMs.coerceAtLeast(0L)
     }
 
     fun start() {
@@ -146,8 +145,21 @@ class SendspinAudioController(
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
-        // Connect immediately, seed async (seeds only matter for SyncEngine group mode)
-        scope.launch { ensureSendspinConnected() }
+        // Eager group check before connect so engine starts in correct mode
+        scope.launch {
+            val ssId = settingsRepository.sendspinClientId.first()
+            if (ssId != null) {
+                val allPlayers = playerRepository.players.value
+                val self = allPlayers.find { it.playerId == ssId }
+                val selfInGroup = self?.groupChilds?.any { it != ssId } == true
+                val childOfOther = allPlayers.any { it.playerId != ssId && ssId in it.groupChilds }
+                if (selfInGroup || childOfOther) {
+                    sendspinManager.setInSyncGroup(true)
+                    Log.d(TAG, "Eager group check: inGroup=true before connect")
+                }
+            }
+            ensureSendspinConnected()
+        }
         scope.launch {
             val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
@@ -239,7 +251,7 @@ class SendspinAudioController(
                 val album = metadata.album ?: currentAlbum
                 val durationMs = metadata.progress?.trackDuration ?: currentDurationMs
                 val rawPositionMs = metadata.progress?.trackProgress
-                val positionMs = rawPositionMs?.let(::audiblePositionMs) ?: currentPositionMs
+                val positionMs = rawPositionMs?.let(::serverPositionMs) ?: currentPositionMs
                 val artUrl = metadata.artworkUrl ?: currentArtUrl
                 val artChanged = artUrl != currentArtUrl
 
@@ -343,7 +355,7 @@ class SendspinAudioController(
                         currentArt = loadArt(artUrl)
                     }
 
-                    currentPositionMs = audiblePositionMs(((media?.elapsedTime ?: 0.0) * 1000).toLong())
+                    currentPositionMs = serverPositionMs(((media?.elapsedTime ?: 0.0) * 1000).toLong())
 
                     notifyMetadataChanged()
                     notifyStateChanged()
