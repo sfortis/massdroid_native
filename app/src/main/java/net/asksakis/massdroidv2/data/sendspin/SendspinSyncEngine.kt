@@ -51,7 +51,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val SYNC_DEADBAND_MS = 1.0
         private const val SYNC_SAMPLE_CORRECTION_MS = 8.0
         private const val SYNC_RATE_GENTLE_MS = 20.0
-        private const val SYNC_RESYNC_MS = 100.0
+        private const val SYNC_RESYNC_MS = 500.0  // matches SendspinDroid; DAC correction handles <500ms
         private const val SYNC_CHECK_INTERVAL_FRAMES = 10
         private const val SYNC_STARTUP_GRACE_MS = 3000L
         private const val SYNC_RESYNC_COOLDOWN_MS = 3000L
@@ -157,6 +157,22 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var currentPlaybackRate = 1.0f
     // Output route change tracking
     @Volatile private var outputRouteChangedAtMs = 0L
+    // Sync-mute: mute audio until DAC sync error converges after hard boundary
+    @Volatile private var syncMuted = false
+
+    // DAC calibration: maps hardware DAC clock to system monotonic clock
+    private data class DacCalibration(val dacTimeUs: Long, val loopTimeUs: Long)
+    private val dacCalibrations = ArrayDeque<DacCalibration>()
+    private var lastDacCalibrationTimeUs = 0L
+    private var dacTimestampsStable = false
+    private var consecutiveValidTimestamps = 0
+    // Server timeline tracking for DAC-position-based sync
+    @Volatile private var lastWrittenServerTimestampUs = 0L
+    private val totalFramesWritten = AtomicLong(0)
+    // Baseline offset: AudioTrack.playbackHeadPosition at last reset (flush doesn't reset it)
+    private var dacFrameBaseline = 0L
+    // DAC drift tracking: previous raw error for delta-based drift detection
+    private var dacPrevRawErrorUs = Long.MIN_VALUE
 
     // Device bias calibration: learned steady-state offset
     @Volatile var deviceBiasCorrectionUs = 0L; private set
@@ -187,7 +203,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var continuationGraceUntilMs = 0L
 
     // Sync correction state
-    private var smoothedSyncErrorMs = 0.0            // EMA-filtered drift error (relative to anchor)
+    @Volatile var smoothedSyncErrorMs = 0.0; private set  // EMA-filtered sync error (DAC-based)
     private var startupOffsetMs = 0.0                // absolute offset captured at startup (positive = late)
     private var lastSyncLogMs = 0L
     private var resyncCount = 0
@@ -262,14 +278,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     /**
      * Target local time for this audio chunk.
-     * Per spec: client_time = serverToLocal(serverTs) - static_delay_ms - outputLatency
-     * outputLatency = measured pipeline latency (AudioTrack buffer → DAC → speaker).
-     * Matches JS reference: targetTime - syncDelaySec - outputLatencySec
+     * Used for startup alignment only. DAC-based sync handles steady-state corrections.
+     * outputLatency is rough estimate for initial alignment; DAC measurement refines.
      */
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs - deviceBiasCorrectionUs
+        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
     }
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
@@ -402,6 +417,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 }
                 presentationTimeUs = 0L
                 lateDropCount = 0L
+                dacFrameBaseline = audioTrack?.playbackHeadPosition?.toLong() ?: 0L
+                totalFramesWritten.set(0)
+                lastWrittenServerTimestampUs = 0L
+                dacPrevRawErrorUs = Long.MIN_VALUE
+                // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
                 lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
                 anchorLocalUs = 0L
@@ -564,6 +584,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
         outputLatencyMeasureCount = 0
         latencyPhaseStartup = true
         startupLatencySamples.clear()
+        clearDacCalibrations()
+        totalFramesWritten.set(0)
+        lastWrittenServerTimestampUs = 0L
+        dacFrameBaseline = 0L  // new AudioTrack, frame position starts from 0
+        dacPrevRawErrorUs = Long.MIN_VALUE
         presentationTimeUs = 0L
         rateCorrectionSupported = true
         currentPlaybackRate = 1.0f
@@ -708,6 +733,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     private fun flushForRebuffer() {
+        syncMuted = isSyncMode  // mute until DAC sync converges
         Log.d(
             DBG,
             "flushForRebuffer codec=$activeCodec sync=$syncState started=$playbackStarted " +
@@ -738,6 +764,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         oversizedDropCount = 0L
         consecutiveDecodeFailures = 0
         discardUntilTimestampUs = 0L
+        // Capture current AudioTrack position as baseline for DAC sync (flush doesn't reset it)
+        dacFrameBaseline = audioTrack?.playbackHeadPosition?.toLong() ?: 0L
+        totalFramesWritten.set(0)
+        lastWrittenServerTimestampUs = 0L
+        dacPrevRawErrorUs = Long.MIN_VALUE
+        // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
         pendingContinuityCheck = false
         forceDiscontinuityUntilMs = 0L
         forceDiscontinuityReason = ""
@@ -828,9 +860,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Always emit current state for UI graph (even when not correcting)
         val sync = clockSynchronizer
         if (sync != null && sync.isSynced()) {
-            val absoluteSyncMs = startupOffsetMs + smoothedSyncErrorMs
+            val displayError = startupOffsetMs + smoothedSyncErrorMs
             onSyncSample?.invoke(
-                absoluteSyncMs.toFloat(),
+                displayError.toFloat(),
                 (measuredOutputLatencyUs / 1000f),
                 (sync.errorUs() / 1000f)
             )
@@ -881,33 +913,47 @@ class SendspinSyncEngine : SendspinAudioEngine {
             return
         }
 
-        val rawErrorMs = computeSyncErrorMs(serverTimestampUs)
+        // Anchor-based error (primary: absolute position)
+        val anchorErrorMs = computeSyncErrorMs(serverTimestampUs)
+        // DAC drift detection (secondary: corrects for pipeline changes the anchor can't see)
+        val dacDriftUs = measureDacSyncErrorUs(track)
+        val rawErrorMs = if (dacDriftUs != null && kotlin.math.abs(dacDriftUs) > 500) {
+            // Significant DAC drift detected: incorporate into error
+            anchorErrorMs + (dacDriftUs / 1000.0)
+        } else {
+            anchorErrorMs
+        }
 
-        // EMA smoothing (replaces median filter)
+        // EMA smoothing
         smoothedSyncErrorMs = if (smoothedSyncErrorMs == 0.0) {
             rawErrorMs
         } else {
             SYNC_ERROR_EMA_ALPHA * rawErrorMs + (1 - SYNC_ERROR_EMA_ALPHA) * smoothedSyncErrorMs
         }
-        val absError = kotlin.math.abs(smoothedSyncErrorMs)
 
         // Log less frequently
         if (now - lastSyncLogMs > 2000) {
             lastSyncLogMs = now
-            val absLeadMs = (sync.serverToLocalUs(serverTimestampUs) - nowLocalUs()) / 1000.0
             Log.d(TAG, "Sync: error=${"%.1f".format(smoothedSyncErrorMs)}ms " +
-                "abs=${"%.1f".format(absLeadMs)}ms " +
                 "outLat=${measuredOutputLatencyUs / 1000}ms " +
-                "raw=${"%.1f".format(rawErrorMs)}ms " +
+                "raw=${"%.1f".format(rawErrorMs)}ms anchor=${"%.1f".format(anchorErrorMs)}ms " +
+                "dacDrift=${dacDriftUs?.let { it / 1000 } ?: "n/a"} " +
                 "resyncs=$resyncCount filterErr=${sync.errorUs()}us")
         }
 
         // Don't correct if Kalman hasn't settled
         if (sync.errorUs() > 15_000) return
 
-        // Correction target: absolute sync (startup offset + drift)
+        // Correction target: anchor-based + DAC drift
         val absoluteSyncMs = startupOffsetMs + smoothedSyncErrorMs
         val absTotal = kotlin.math.abs(absoluteSyncMs)
+
+        // Unmute once DAC sync converges after hard boundary
+        if (syncMuted && absTotal < 10.0) {
+            syncMuted = false
+            audioTrack?.setVolume(if (isMuted) 0f else currentVolume)
+            Log.d(TAG, "Sync converged, unmuting (error=${"%.1f".format(absTotal)}ms)")
+        }
 
         // Tier 4: Hard resync for large errors
         if (absTotal > SYNC_RESYNC_MS && now - lastResyncAtMs > SYNC_RESYNC_COOLDOWN_MS) {
@@ -1034,11 +1080,21 @@ class SendspinSyncEngine : SendspinAudioEngine {
      * Cap at 8 to keep artifacts inaudible (8 samples = 0.17ms gap in 960-sample frame).
      */
     private fun sampleCountForError(absErrorMs: Double): Int {
-        return when {
-            absErrorMs < 8.0  -> 1
-            absErrorMs < 15.0 -> 2
-            absErrorMs < 30.0 -> 4
-            else              -> 8
+        // More aggressive while muted (artifacts inaudible); conservative when audible
+        return if (syncMuted) {
+            when {
+                absErrorMs < 15.0  -> 4
+                absErrorMs < 50.0  -> 16
+                absErrorMs < 200.0 -> 32
+                else               -> 48  // ~1ms/frame at 48kHz, converge 300ms in ~6s
+            }
+        } else {
+            when {
+                absErrorMs < 8.0  -> 1
+                absErrorMs < 15.0 -> 2
+                absErrorMs < 30.0 -> 4
+                else              -> 8
+            }
         }
     }
 
@@ -1129,6 +1185,111 @@ class SendspinSyncEngine : SendspinAudioEngine {
             }
         }
         return out
+    }
+
+    // ── DAC calibration: collect pairs + interpolation ──
+
+    private fun collectDacCalibration(track: AudioTrack) {
+        if (!track.getTimestamp(outputLatencyTimestamp)) {
+            consecutiveValidTimestamps = 0
+            return
+        }
+        val dacTimeUs = outputLatencyTimestamp.nanoTime / 1000
+        val loopTimeUs = System.nanoTime() / 1000
+        if (dacTimeUs <= 0) {
+            consecutiveValidTimestamps = 0
+            return
+        }
+        consecutiveValidTimestamps++
+        if (consecutiveValidTimestamps >= 3) dacTimestampsStable = true
+
+        // Store calibration pair (min 10ms interval)
+        if (dacTimeUs - lastDacCalibrationTimeUs > 10_000) {
+            lastDacCalibrationTimeUs = dacTimeUs
+            synchronized(dacCalibrations) {
+                dacCalibrations.addLast(DacCalibration(dacTimeUs, loopTimeUs))
+                while (dacCalibrations.size > 50) dacCalibrations.removeFirst()
+            }
+        }
+    }
+
+    /** Convert DAC hardware timestamp to system monotonic time via calibration interpolation. */
+    private fun dacTimeToLoopTimeUs(dacTimeUs: Long): Long {
+        synchronized(dacCalibrations) {
+            if (dacCalibrations.isEmpty()) return dacTimeUs // no calibration yet
+            if (dacCalibrations.size == 1) {
+                val c = dacCalibrations.first()
+                return dacTimeUs - c.dacTimeUs + c.loopTimeUs
+            }
+            // Find surrounding pair for interpolation
+            val last = dacCalibrations.last()
+            if (dacTimeUs >= last.dacTimeUs) {
+                // Extrapolate from last pair
+                return dacTimeUs - last.dacTimeUs + last.loopTimeUs
+            }
+            for (i in dacCalibrations.size - 2 downTo 0) {
+                val prev = dacCalibrations[i]
+                val next = dacCalibrations[i + 1]
+                if (dacTimeUs >= prev.dacTimeUs) {
+                    val dacDelta = next.dacTimeUs - prev.dacTimeUs
+                    if (dacDelta <= 0) continue
+                    val t = (dacTimeUs - prev.dacTimeUs).toDouble() / dacDelta
+                    return (prev.loopTimeUs + t * (next.loopTimeUs - prev.loopTimeUs)).toLong()
+                }
+            }
+            // Before first calibration
+            val first = dacCalibrations.first()
+            return dacTimeUs - first.dacTimeUs + first.loopTimeUs
+        }
+    }
+
+    /** Measure sync error using DAC position: where IS the DAC vs where SHOULD it be (in server time). */
+    private fun measureDacSyncErrorUs(track: AudioTrack): Long? {
+        val sync = clockSynchronizer ?: return null
+        if (!dacTimestampsStable) return null
+
+        if (!track.getTimestamp(outputLatencyTimestamp)) return null
+        val dacTimeUs = outputLatencyTimestamp.nanoTime / 1000
+        val dacFramePosition = outputLatencyTimestamp.framePosition
+        if (dacTimeUs <= 0 || dacFramePosition <= 0) return null
+
+        // Where IS the DAC in server time
+        val dacLoopTimeUs = dacTimeToLoopTimeUs(dacTimeUs)
+        val dacServerTimeUs = sync.localToServerUs(dacLoopTimeUs)
+
+        // Where SHOULD the DAC be: last written server timestamp minus pending frames
+        val written = totalFramesWritten.get()
+        val adjustedDacPos = dacFramePosition - dacFrameBaseline
+        val pending = (written - adjustedDacPos).coerceAtLeast(0)
+        val pendingDurationUs = pending * 1_000_000L / activeSampleRate.toLong()
+        val expectedDacServerTimeUs = lastWrittenServerTimestampUs - pendingDurationUs
+
+        if (expectedDacServerTimeUs <= 0L) return null
+
+        val rawErrorUs = dacServerTimeUs - expectedDacServerTimeUs
+
+        // First measurement: seed previous, no drift yet
+        if (dacPrevRawErrorUs == Long.MIN_VALUE) {
+            dacPrevRawErrorUs = rawErrorUs
+            Log.d(TAG, "DacSync: initial raw=${rawErrorUs / 1000}ms pending=$pending")
+            return null
+        }
+
+        // Drift = change in raw error since last measurement
+        val driftUs = rawErrorUs - dacPrevRawErrorUs
+        dacPrevRawErrorUs = rawErrorUs
+
+        if (decodedFrameCount < 500 || decodedFrameCount % 500 == 0) {
+            Log.d(TAG, "DacSync: raw=${rawErrorUs / 1000}ms drift=${driftUs / 1000}ms pending=$pending")
+        }
+        return driftUs
+    }
+
+    private fun clearDacCalibrations() {
+        synchronized(dacCalibrations) { dacCalibrations.clear() }
+        lastDacCalibrationTimeUs = 0L
+        dacTimestampsStable = false
+        consecutiveValidTimestamps = 0
     }
 
     /**
@@ -1303,7 +1464,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                     "required=${requiredSyncBufferMs}ms sync=$syncState"
                             )
                             track.play()
-                            track.setVolume(if (isMuted) 0f else currentVolume)
+                            track.setVolume(if (isMuted || syncMuted) 0f else currentVolume)
                             playbackStarted = true
                             playbackStartedAtMs = System.currentTimeMillis()
                         }
@@ -1398,7 +1559,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
             val finalPcm = if (isSyncMode) applySampleCorrection(pcm) else pcm
             track.write(finalPcm, 0, finalPcm.size)
-            if (isSyncMode) measureOutputLatency(track, finalPcm.size)
+            val framesWritten = finalPcm.size / (activeChannels * 2)
+            totalFramesWritten.addAndGet(framesWritten.toLong())
+            lastWrittenServerTimestampUs = frame.serverTimestampUs
+            if (isSyncMode) {
+                collectDacCalibration(track)
+                measureOutputLatency(track, finalPcm.size)
+            }
             decodedFrameCount++
             if (isSyncMode && decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
                 checkSync(frame.serverTimestampUs, track)
@@ -1466,7 +1633,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
                         if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive || !playbackStarted) break
                         val finalPcm = if (isSyncMode) applySampleCorrection(pcmToWrite) else pcmToWrite
                         track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
-                        if (isSyncMode) measureOutputLatency(track, finalPcm.size)
+                        val fwCodec = finalPcm.size / (activeChannels * 2)
+                        totalFramesWritten.addAndGet(fwCodec.toLong())
+                        lastWrittenServerTimestampUs = frame.serverTimestampUs
+                        if (isSyncMode) {
+                            collectDacCalibration(track)
+                            measureOutputLatency(track, finalPcm.size)
+                        }
                         decodedFrameCount++
                         if (isSyncMode && decodedFrameCount % SYNC_CHECK_INTERVAL_FRAMES == 0) {
                             checkSync(frame.serverTimestampUs, track)

@@ -180,6 +180,15 @@ class ClockSynchronizer {
         ).toLong()
     }
 
+    /** Convert local client time to server timestamp. Inverse of serverToLocalUs. */
+    fun localToServerUs(localTimestampUs: Long): Long {
+        val effectiveDrift = if (currentUseDrift) currentDrift else 0.0
+        return round(
+            localTimestampUs * (1.0 + effectiveDrift) + currentOffset -
+                effectiveDrift * currentLastUpdate
+        ).toLong()
+    }
+
     /** Current offset including drift extrapolation. */
     fun currentOffsetUs(): Long {
         val effectiveDrift = if (currentUseDrift) currentDrift else 0.0
