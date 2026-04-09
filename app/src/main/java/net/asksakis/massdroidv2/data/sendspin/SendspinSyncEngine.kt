@@ -159,6 +159,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var outputRouteChangedAtMs = 0L
     // Sync-mute: mute audio until DAC sync error converges after hard boundary
     @Volatile private var syncMuted = false
+    // Routing change callback (set by controller for route detection)
+    var onRoutingChanged: (() -> Unit)? = null
 
     // DAC calibration: maps hardware DAC clock to system monotonic clock
     private data class DacCalibration(val dacTimeUs: Long, val loopTimeUs: Long)
@@ -173,27 +175,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private var dacFrameBaseline = 0L
     // DAC drift tracking: previous raw error for delta-based drift detection
     private var dacPrevRawErrorUs = Long.MIN_VALUE
-
-    // Device bias calibration: learned steady-state offset
-    @Volatile var deviceBiasCorrectionUs = 0L; private set
-    private var biasAccumMs = 0.0
-    private var biasSampleCount = 0
-    private var biasWindowStartMs = 0L
-    private var lastBiasUpdateMs = 0L
-    var onDeviceBiasMeasured: ((Long) -> Unit)? = null
-
-    fun seedDeviceBias(persistedUs: Long) {
-        // No longer seeded globally: bias is route-specific, learned per session
-        Log.d(TAG, "Device bias seed ignored: ${persistedUs}us (route-specific)")
-    }
-
-    private fun resetBiasLearningWindow() {
-        biasWindowStartMs = 0L
-        biasSampleCount = 0
-        biasAccumMs = 0.0
-        biasSumSquaresMs = 0.0
-        biasSameSignCount = 0
-    }
 
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -229,7 +210,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val old = correctionMode
         correctionMode = mode
         clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         Log.d(TAG, "CorrectionMode: $old -> $mode")
@@ -406,7 +387,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     syncStartupReason = SyncStartupReason.NEW_STREAM
                 }
                 clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
                 applyPlaybackRate(1.0f)
                 configureGeneration++
                 lastEnqueuedTimestampUs = 0L
@@ -503,7 +484,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
             // Full sync lifecycle reset for hot-swap (codec change is a hard timing boundary)
             clockPreciseForCorrections = false
-            resetBiasLearningWindow()
+    
             anchorServerTimestampUs = 0L
             anchorLocalUs = 0L
             anchorLocalEquivalentUs = 0L
@@ -574,6 +555,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
             .build()
 
         codec = createCodec(codecName, sampleRate, channels, bitDepth, codecHeader)
+        createdAudioTrack.addOnRoutingChangedListener({ router ->
+            val device = router.routedDevice
+            Log.d(TAG, "AudioTrack routing changed: ${device?.type} (${device?.productName})")
+            onRoutingChanged?.invoke()
+        }, null)
         audioTrack = createdAudioTrack
         configureGeneration++
         configured = true
@@ -598,7 +584,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 syncStartupReason = SyncStartupReason.NEW_STREAM
             }
             clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
             requiredSyncBufferMs = defaultBufferMs()
             continuationGraceUntilMs = 0L
         } else {
@@ -743,7 +729,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         streamGeneration++
         syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
         clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
         applyPlaybackRate(1.0f)
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
@@ -987,59 +973,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
             pendingSampleCount = 1
         }
 
-        // Bias learning: only in truly stable steady-state
-        learnDeviceBias(absoluteSyncMs, now)
-    }
-
-    private var biasSumSquaresMs = 0.0
-    private var biasSameSignCount = 0
-
-    private fun learnDeviceBias(absoluteSyncMs: Double, now: Long) {
-        // Only learn when all corrections are inactive and state is stable
-        if (pendingSampleCorrection != 0) return
-        if (currentPlaybackRate != 1.0f) return
-        if (now - lastResyncAtMs < 10_000) return
-        if (continuationGraceUntilMs > 0 && now < continuationGraceUntilMs) return
-        if (now - lastBiasUpdateMs < 30_000) return
-
-        if (biasWindowStartMs == 0L) {
-            biasWindowStartMs = now
-            biasAccumMs = 0.0
-            biasSumSquaresMs = 0.0
-            biasSampleCount = 0
-            biasSameSignCount = 0
-        }
-
-        biasAccumMs += absoluteSyncMs
-        biasSumSquaresMs += absoluteSyncMs * absoluteSyncMs
-        biasSampleCount++
-        // Track sign consistency: same sign as running mean
-        if (biasSampleCount > 1) {
-            val runningMean = biasAccumMs / biasSampleCount
-            if ((absoluteSyncMs > 0 && runningMean > 0) || (absoluteSyncMs < 0 && runningMean < 0)) {
-                biasSameSignCount++
-            }
-        }
-
-        val windowDurationMs = now - biasWindowStartMs
-        if (windowDurationMs >= 20_000 && biasSampleCount >= 20) {
-            val meanMs = biasAccumMs / biasSampleCount
-            val absMean = kotlin.math.abs(meanMs)
-            val variance = (biasSumSquaresMs / biasSampleCount) - (meanMs * meanMs)
-            val stdDevMs = kotlin.math.sqrt(variance.coerceAtLeast(0.0))
-            val signRatio = biasSameSignCount.toFloat() / (biasSampleCount - 1)
-            // Persist only if: meaningful bias, low variance, consistent sign direction
-            if (absMean in 2.0..10.0 && stdDevMs < 3.0 && signRatio > 0.75f) {
-                val learnedUs = (meanMs * 1000).toLong().coerceIn(-10_000L, 10_000L)
-                val smoothedUs = (0.2 * learnedUs + 0.8 * deviceBiasCorrectionUs).toLong()
-                deviceBiasCorrectionUs = smoothedUs
-                lastBiasUpdateMs = now
-                Log.d(TAG, "Device bias learned: mean=${"%.1f".format(meanMs)}ms stdDev=${"%.1f".format(stdDevMs)}ms " +
-                    "signRatio=${"%.0f".format(signRatio * 100)}% -> correction=${smoothedUs}us (n=$biasSampleCount)")
-                onDeviceBiasMeasured?.invoke(smoothedUs)
-            }
-            resetBiasLearningWindow()
-        }
     }
 
     @Volatile private var rateCorrectionSupported = true
@@ -1449,7 +1382,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                             "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
                                             "filterErr=${clockSynchronizer?.errorUs() ?: -1}us " +
                                             "[s2l=${s2l / 1000}ms static=${staticDelayMs}ms outLat=${measuredOutputLatencyUs / 1000}ms " +
-                                            "bias=${deviceBiasCorrectionUs}us target=${targetUs / 1000}ms now=${nowLocalUs() / 1000}ms]")
+                                            "target=${targetUs / 1000}ms now=${nowLocalUs() / 1000}ms]")
                                     }
                                     clockPreciseForCorrections = true
                                 } else if (isSyncMode) {
@@ -1767,7 +1700,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         configureGeneration++
         syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
         clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         if (playbackActive) {
@@ -1809,7 +1742,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         // Full stop + IDLE (matches main branch behavior).
@@ -1864,8 +1797,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
         }
     }
 
+    override fun getRoutedDeviceType(): Int? = audioTrack?.routedDevice?.type
+
     override fun onOutputRouteChanged(reason: String) {
-        Log.d(TAG, "Output route change: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms bias=${deviceBiasCorrectionUs}us sync=$syncState started=$playbackStarted")
+        Log.d(TAG, "Output route change: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms sync=$syncState started=$playbackStarted")
         // Reset route-sensitive calibration
         measuredOutputLatencyUs = 0L
         outputLatencyMeasureCount = 0
@@ -1873,11 +1808,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         latencyPhaseStartup = true
         startupLatencySamples.clear()
         outputRouteChangedAtMs = System.currentTimeMillis()
-        // Reset bias (different route = different bias)
-        deviceBiasCorrectionUs = 0L
         // Re-enter precision gate
         clockPreciseForCorrections = false
-        resetBiasLearningWindow()
+
         applyPlaybackRate(1.0f)
         // Hard relock in sync mode: flush queue + AudioTrack but keep stream generation
         // (server is still sending the same stream, no configure needed)

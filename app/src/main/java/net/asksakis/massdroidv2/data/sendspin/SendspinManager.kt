@@ -344,17 +344,16 @@ class SendspinManager(
         audio.onOutputLatencyMeasured = callback
     }
 
+    /** Get the actual routed device type from the AudioTrack, or null if unavailable. */
+    fun getRoutedDeviceType(): Int? = audio.getRoutedDeviceType()
+
+    fun setOnRoutingChangedCallback(callback: () -> Unit) {
+        (engine as? SendspinSyncEngine)?.onRoutingChanged = callback
+    }
+
     fun onOutputRouteChanged(reason: String) {
         Log.d(TAG, "Output route changed: $reason")
         audio.onOutputRouteChanged(reason)
-    }
-
-    fun seedDeviceBias(persistedUs: Long) {
-        (engine as? SendspinSyncEngine)?.seedDeviceBias(persistedUs)
-    }
-
-    fun setDeviceBiasPersistCallback(callback: (Long) -> Unit) {
-        (engine as? SendspinSyncEngine)?.onDeviceBiasMeasured = callback
     }
 
     fun setStaticDelayMs(delayMs: Int) {
@@ -403,7 +402,6 @@ class SendspinManager(
     }
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
-    fun deviceBiasUs(): Long = (engine as? SendspinSyncEngine)?.deviceBiasCorrectionUs ?: 0L
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
     fun dacSyncErrorMs(): Float = (engine as? SendspinSyncEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f
 

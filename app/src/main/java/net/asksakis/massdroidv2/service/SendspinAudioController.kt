@@ -92,18 +92,30 @@ class SendspinAudioController(
         }
     }
 
-    // Audio route detection
+    // Audio route detection: uses AudioTrack.getRoutedDevice() as canonical source
     @Volatile private var currentOutputRoute = "unknown"
     private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
         override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
     }
 
-    @Suppress("DEPRECATION")
+    private fun classifyDeviceType(type: Int): String = when (type) {
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> "bt"
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> "usb"
+        else -> "speaker"
+    }
+
     private fun resolveOutputRoute(): String {
-        // isBluetoothA2dpOn reflects actual active A2DP routing, not just connected
+        // Primary: ask the actual AudioTrack where it's routing (canonical truth)
+        sendspinManager.getRoutedDeviceType()?.let { return classifyDeviceType(it) }
+        // Fallback: heuristic from connected devices
+        @Suppress("DEPRECATION")
         if (audioManager.isBluetoothA2dpOn) return "bt"
-        // Check wired/USB via connected outputs (reliable for non-BT)
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         return when {
             devices.any { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
@@ -168,6 +180,9 @@ class SendspinAudioController(
             return
         }
 
+        // AudioTrack routing change listener (canonical route detection from actual track)
+        sendspinManager.setOnRoutingChangedCallback { checkRouteChange() }
+
         setupAudioFocus()
         registerNoisyReceiver()
 
@@ -177,9 +192,6 @@ class SendspinAudioController(
         }
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
-        }
-        sendspinManager.setDeviceBiasPersistCallback { biasUs ->
-            scope.launch { settingsRepository.setSendspinDeviceBiasUs(biasUs) }
         }
         // Eager group check before connect so engine starts in correct mode
         scope.launch {
@@ -204,10 +216,8 @@ class SendspinAudioController(
         scope.launch {
             val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
-            val persistedBias = settingsRepository.sendspinDeviceBiasUs.first()
             sendspinManager.seedOutputLatency(persistedLatency)
             sendspinManager.seedClockOffset(persistedOffset)
-            sendspinManager.seedDeviceBias(persistedBias)
         }
 
         collectorJobs += scope.launch {

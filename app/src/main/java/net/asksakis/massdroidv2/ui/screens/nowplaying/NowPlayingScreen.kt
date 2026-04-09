@@ -1052,9 +1052,6 @@ private fun SendspinStatusSheet(
             }
 
             StatusLine(label = "Buffered bytes", value = "${status.bufferBytes / 1000} KB")
-            if (status.deviceBiasUs != 0L) {
-                StatusLine(label = "Device bias", value = "${"%.1f".format(status.deviceBiasUs / 1000f)} ms")
-            }
 
             if (syncHistory.size >= 2) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
