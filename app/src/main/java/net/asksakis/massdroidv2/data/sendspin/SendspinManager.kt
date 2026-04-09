@@ -403,7 +403,8 @@ class SendspinManager(
     }
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
-    fun deviceBiasUs(): Long = (engine as? SendspinSyncEngine)?.let { it.deviceBiasCorrectionUs } ?: 0L
+    fun deviceBiasUs(): Long = (engine as? SendspinSyncEngine)?.deviceBiasCorrectionUs ?: 0L
+    fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
 
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 
