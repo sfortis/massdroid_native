@@ -57,7 +57,8 @@ data class SendspinStatusUi(
     val networkMode: String,
     val activeBufferMs: Long,
     val bufferBytes: Long,
-    val staticDelayMs: Int
+    val staticDelayMs: Int,
+    val deviceBiasUs: Long = 0L
 )
 
 data class AdjacentArtworkUi(
@@ -324,7 +325,8 @@ class NowPlayingViewModel @Inject constructor(
                     networkMode = netMode,
                     activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
                     bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
-                    staticDelayMs = cachedSendspinStaticDelayMs
+                    staticDelayMs = cachedSendspinStaticDelayMs,
+                    deviceBiasUs = sendspinManager.deviceBiasUs()
                 ).also { maybeLogSendspinUiStatus(it) }
             }
                 .distinctUntilChanged()

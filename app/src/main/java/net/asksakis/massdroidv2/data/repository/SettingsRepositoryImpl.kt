@@ -46,6 +46,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
         private val KEY_SENDSPIN_OUTPUT_LATENCY_US = stringPreferencesKey("sendspin_output_latency_us")
         private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
+        private val KEY_SENDSPIN_DEVICE_BIAS_US = stringPreferencesKey("sendspin_device_bias_us")
     }
 
     private val safeData = context.dataStore.data
@@ -225,6 +226,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinClockOffsetUs(offsetUs: Long) {
         context.dataStore.edit { it[KEY_SENDSPIN_CLOCK_OFFSET_US] = offsetUs.toString() }
+    }
+
+    override val sendspinDeviceBiasUs: Flow<Long> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_DEVICE_BIAS_US]?.toLongOrNull() ?: 0L
+    }
+
+    override suspend fun setSendspinDeviceBiasUs(biasUs: Long) {
+        context.dataStore.edit { it[KEY_SENDSPIN_DEVICE_BIAS_US] = biasUs.toString() }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

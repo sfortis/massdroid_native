@@ -344,6 +344,14 @@ class SendspinManager(
         audio.onOutputLatencyMeasured = callback
     }
 
+    fun seedDeviceBias(persistedUs: Long) {
+        (engine as? SendspinSyncEngine)?.seedDeviceBias(persistedUs)
+    }
+
+    fun setDeviceBiasPersistCallback(callback: (Long) -> Unit) {
+        (engine as? SendspinSyncEngine)?.onDeviceBiasMeasured = callback
+    }
+
     fun setStaticDelayMs(delayMs: Int) {
         val clamped = delayMs.coerceIn(0, 5000)
         val oldDelay = audio.staticDelayMs
@@ -390,6 +398,7 @@ class SendspinManager(
     }
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
+    fun deviceBiasUs(): Long = (engine as? SendspinSyncEngine)?.let { it.deviceBiasCorrectionUs } ?: 0L
 
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 

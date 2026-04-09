@@ -145,6 +145,9 @@ class SendspinAudioController(
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
+        sendspinManager.setDeviceBiasPersistCallback { biasUs ->
+            scope.launch { settingsRepository.setSendspinDeviceBiasUs(biasUs) }
+        }
         // Eager group check before connect so engine starts in correct mode
         scope.launch {
             val ssId = settingsRepository.sendspinClientId.first()
@@ -163,8 +166,10 @@ class SendspinAudioController(
         scope.launch {
             val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
+            val persistedBias = settingsRepository.sendspinDeviceBiasUs.first()
             sendspinManager.seedOutputLatency(persistedLatency)
             sendspinManager.seedClockOffset(persistedOffset)
+            sendspinManager.seedDeviceBias(persistedBias)
         }
 
         collectorJobs += scope.launch {

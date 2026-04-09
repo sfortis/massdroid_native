@@ -38,9 +38,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val LATE_CHUNK_DROP_GRACE_MS = 200L
         private const val STARTUP_ENQUEUE_GRACE_MS = 2000L
 
+        // Sync startup buffer per reason
+        private const val SYNC_NEW_STREAM_BUFFER_MS = 800L
+        private const val SYNC_RELOCK_BUFFER_MS = 1000L
+        private const val SYNC_CONTINUATION_BUFFER_MS = 400L
+        // Precision wait caps (bounded, not infinite)
+        private const val SYNC_NEW_STREAM_PRECISION_WAIT_MS = 1200L
+        private const val SYNC_RELOCK_PRECISION_WAIT_MS = 1500L
+
         // Sync mode thresholds
         private const val MIN_SYNC_BUFFER_MS = 200L
-        private const val SYNC_DEADBAND_MS = 2.0
+        private const val SYNC_DEADBAND_MS = 1.0
         private const val SYNC_SAMPLE_CORRECTION_MS = 8.0
         private const val SYNC_RATE_GENTLE_MS = 20.0
         private const val SYNC_RESYNC_MS = 100.0
@@ -142,8 +150,32 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile override var staticDelayMs: Int = 0
     // "Play first, correct later": defer corrections until clock converges
     @Volatile private var clockPreciseForCorrections = false
+    // Sync startup reason: controls buffer threshold and precision wait
+    private enum class SyncStartupReason { NEW_STREAM, RELOCK_AFTER_SEEK, SOFT_CONTINUATION }
+    @Volatile private var syncStartupReason = SyncStartupReason.NEW_STREAM
     // Rate correction state
     @Volatile private var currentPlaybackRate = 1.0f
+
+    // Device bias calibration: learned steady-state offset
+    @Volatile var deviceBiasCorrectionUs = 0L; private set
+    private var biasAccumMs = 0.0
+    private var biasSampleCount = 0
+    private var biasWindowStartMs = 0L
+    private var lastBiasUpdateMs = 0L
+    var onDeviceBiasMeasured: ((Long) -> Unit)? = null
+
+    fun seedDeviceBias(persistedUs: Long) {
+        deviceBiasCorrectionUs = persistedUs.coerceIn(-15_000L, 15_000L)
+        Log.d(TAG, "Device bias seeded: ${persistedUs}us")
+    }
+
+    private fun resetBiasLearningWindow() {
+        biasWindowStartMs = 0L
+        biasSampleCount = 0
+        biasAccumMs = 0.0
+        biasSumSquaresMs = 0.0
+        biasSameSignCount = 0
+    }
 
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -178,6 +210,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (correctionMode == mode) return
         val old = correctionMode
         correctionMode = mode
+        clockPreciseForCorrections = false
+        resetBiasLearningWindow()
+        rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         Log.d(TAG, "CorrectionMode: $old -> $mode")
         // Reset sync-specific state, keep buffer intact
@@ -231,7 +266,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
+        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs - deviceBiasCorrectionUs
     }
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
@@ -300,17 +335,26 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     private fun defaultBufferMs(): Long = when (correctionMode) {
-        CorrectionMode.SYNC -> {
-            val hwMs = hwBufferLatencyUs / 1000L
-            (hwMs + MIN_SYNC_BUFFER_MS).coerceIn(MIN_SYNC_BUFFER_MS, 2000L)
-        }
+        CorrectionMode.SYNC -> syncBufferForReason(syncStartupReason)
         CorrectionMode.DIRECT -> {
             if (activeCodec == "opus") DIRECT_STARTUP_MS_OPUS else DIRECT_STARTUP_MS_LOSSLESS
         }
     }
 
+    private fun syncBufferForReason(reason: SyncStartupReason): Long = when (reason) {
+        SyncStartupReason.NEW_STREAM -> SYNC_NEW_STREAM_BUFFER_MS
+        SyncStartupReason.RELOCK_AFTER_SEEK -> SYNC_RELOCK_BUFFER_MS
+        SyncStartupReason.SOFT_CONTINUATION -> SYNC_CONTINUATION_BUFFER_MS
+    }
+
+    private fun syncPrecisionWaitMs(): Long = when (syncStartupReason) {
+        SyncStartupReason.NEW_STREAM -> SYNC_NEW_STREAM_PRECISION_WAIT_MS
+        SyncStartupReason.RELOCK_AFTER_SEEK -> SYNC_RELOCK_PRECISION_WAIT_MS
+        SyncStartupReason.SOFT_CONTINUATION -> 0L  // no precision wait for soft continuation
+    }
+
     private fun recoveryBufferMs(): Long = when (correctionMode) {
-        CorrectionMode.SYNC -> 2000L
+        CorrectionMode.SYNC -> SYNC_RELOCK_BUFFER_MS
         CorrectionMode.DIRECT -> {
             val base = if (activeCodec == "opus") DIRECT_RECOVERY_MS_OPUS else DIRECT_RECOVERY_MS_LOSSLESS
             base + if (isCellular) DIRECT_CELLULAR_EXTRA_MS else 0L
@@ -339,7 +383,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
             if (isNewStream) {
                 // NEW_STREAM same-codec: full reset, rebuffer
                 Log.d(TAG, "configure semantic=NEW_STREAM path=same-codec codec=$codecName sync=$syncState buf=${bufferDurationMs()}ms")
+                // Keep RELOCK_AFTER_SEEK if already set (seek -> streamEnd -> configure NEW_STREAM)
+                if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
+                    syncStartupReason = SyncStartupReason.NEW_STREAM
+                }
                 clockPreciseForCorrections = false
+        resetBiasLearningWindow()
                 applyPlaybackRate(1.0f)
                 configureGeneration++
                 lastEnqueuedTimestampUs = 0L
@@ -366,6 +415,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             } else {
                 // CONTINUATION same-codec: preserve queue, fresh timing lock
                 Log.d(TAG, "configure semantic=CONTINUATION path=same-codec action=timing-reset codec=$codecName buf=${bufferDurationMs()}ms")
+                syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
                 configureGeneration++
                 lastFrameReceivedMs = System.currentTimeMillis()
                 lateDropCount = 0L
@@ -495,10 +545,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
         currentPlaybackRate = 1.0f
 
         if (isNewStream) {
+            if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
+                syncStartupReason = SyncStartupReason.NEW_STREAM
+            }
             clockPreciseForCorrections = false
+        resetBiasLearningWindow()
             requiredSyncBufferMs = defaultBufferMs()
             continuationGraceUntilMs = 0L
         } else {
+            syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
             // CONTINUATION rebuild: fast re-lock, not cold start
             requiredSyncBufferMs = MIN_SYNC_BUFFER_MS
             continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
@@ -596,19 +651,23 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 Log.d(TAG, "Reconnect: CONTINUOUS (${gap / 1000}ms), buf=${bufMs}ms kept")
             }
             else -> {
-                // Large gap: clear encoded queue (wrong timestamps) but keep AudioTrack
-                // playing (hardware buffer bridges ~300-640ms). Small rebuffer only.
-                Log.d(TAG, "Reconnect: DISCONTINUITY(${gap / 1000}ms), buf=${bufMs}ms, soft flush")
-                frameQueue.clear()
-                frameQueueBytes.set(0)
-                lastEnqueuedTimestampUs = 0L
-                estimatedFrameDurationUs = 20_000L
-                presentationTimeUs = 0L
-
-                lateDropCount = 0L
-                playbackStarted = false
-                requiredSyncBufferMs = recoveryBufferMs()
-                transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                if (isSyncMode) {
+                    // Sync mode: full flush for deterministic relock
+                    Log.d(TAG, "Reconnect: DISCONTINUITY(${gap / 1000}ms), buf=${bufMs}ms, full flush (sync)")
+                    flushForRebuffer()
+                } else {
+                    // Direct mode: soft flush, keep AudioTrack (hardware buffer bridges gap)
+                    Log.d(TAG, "Reconnect: DISCONTINUITY(${gap / 1000}ms), buf=${bufMs}ms, soft flush")
+                    frameQueue.clear()
+                    frameQueueBytes.set(0)
+                    lastEnqueuedTimestampUs = 0L
+                    estimatedFrameDurationUs = 20_000L
+                    presentationTimeUs = 0L
+                    lateDropCount = 0L
+                    playbackStarted = false
+                    requiredSyncBufferMs = recoveryBufferMs()
+                    transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+                }
             }
         }
     }
@@ -621,11 +680,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
         )
         hardBoundaryPending = true
         streamGeneration++
-        currentPlaybackRate = 1.0f
+        syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
+        clockPreciseForCorrections = false
+        resetBiasLearningWindow()
+        applyPlaybackRate(1.0f)
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
             playbackStarted = false  // BEFORE lock release to prevent decode+write race
-            try { audioTrack?.playbackParams = android.media.PlaybackParams().setSpeed(1.0f).setPitch(1.0f) } catch (_: Exception) {}
             audioTrack?.setVolume(0f)  // mute before flush to hide click/pop
             audioTrack?.pause()
             audioTrack?.flush()
@@ -844,6 +905,60 @@ class SendspinSyncEngine : SendspinAudioEngine {
             pendingSampleCorrection = 0
             pendingSampleCount = 1
         }
+
+        // Bias learning: only in truly stable steady-state
+        learnDeviceBias(absoluteSyncMs, now)
+    }
+
+    private var biasSumSquaresMs = 0.0
+    private var biasSameSignCount = 0
+
+    private fun learnDeviceBias(absoluteSyncMs: Double, now: Long) {
+        // Only learn when all corrections are inactive and state is stable
+        if (pendingSampleCorrection != 0) return
+        if (currentPlaybackRate != 1.0f) return
+        if (now - lastResyncAtMs < 10_000) return
+        if (continuationGraceUntilMs > 0 && now < continuationGraceUntilMs) return
+        if (now - lastBiasUpdateMs < 30_000) return
+
+        if (biasWindowStartMs == 0L) {
+            biasWindowStartMs = now
+            biasAccumMs = 0.0
+            biasSumSquaresMs = 0.0
+            biasSampleCount = 0
+            biasSameSignCount = 0
+        }
+
+        biasAccumMs += absoluteSyncMs
+        biasSumSquaresMs += absoluteSyncMs * absoluteSyncMs
+        biasSampleCount++
+        // Track sign consistency: same sign as running mean
+        if (biasSampleCount > 1) {
+            val runningMean = biasAccumMs / biasSampleCount
+            if ((absoluteSyncMs > 0 && runningMean > 0) || (absoluteSyncMs < 0 && runningMean < 0)) {
+                biasSameSignCount++
+            }
+        }
+
+        val windowDurationMs = now - biasWindowStartMs
+        if (windowDurationMs >= 20_000 && biasSampleCount >= 20) {
+            val meanMs = biasAccumMs / biasSampleCount
+            val absMean = kotlin.math.abs(meanMs)
+            val variance = (biasSumSquaresMs / biasSampleCount) - (meanMs * meanMs)
+            val stdDevMs = kotlin.math.sqrt(variance.coerceAtLeast(0.0))
+            val signRatio = biasSameSignCount.toFloat() / (biasSampleCount - 1)
+            // Persist only if: meaningful bias, low variance, consistent sign direction
+            if (absMean in 2.0..10.0 && stdDevMs < 3.0 && signRatio > 0.75f) {
+                val learnedUs = (meanMs * 1000).toLong().coerceIn(-10_000L, 10_000L)
+                val smoothedUs = (0.2 * learnedUs + 0.8 * deviceBiasCorrectionUs).toLong()
+                deviceBiasCorrectionUs = smoothedUs
+                lastBiasUpdateMs = now
+                Log.d(TAG, "Device bias learned: mean=${"%.1f".format(meanMs)}ms stdDev=${"%.1f".format(stdDevMs)}ms " +
+                    "signRatio=${"%.0f".format(signRatio * 100)}% -> correction=${smoothedUs}us (n=$biasSampleCount)")
+                onDeviceBiasMeasured?.invoke(smoothedUs)
+            }
+            resetBiasLearningWindow()
+        }
     }
 
     @Volatile private var rateCorrectionSupported = true
@@ -853,19 +968,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (!rateCorrectionSupported && rate != 1.0f) return
         val prev = currentPlaybackRate
         currentPlaybackRate = rate
-        val track = audioTrack
-        if (track == null) {
-            Log.d(TAG, "applyPlaybackRate: track=null, skipping $rate")
-            return
-        }
+        val track = audioTrack ?: return
         try {
             track.playbackParams = android.media.PlaybackParams()
                 .setAudioFallbackMode(android.media.PlaybackParams.AUDIO_FALLBACK_MODE_DEFAULT)
                 .setSpeed(rate)
                 .setPitch(1.0f)
-            Log.d(TAG, "applyPlaybackRate: $prev -> $rate OK")
         } catch (e: Exception) {
-            Log.w(TAG, "Rate correction failed ($prev -> $rate): ${e.message}")
+            if (rateCorrectionSupported) {
+                Log.w(TAG, "Rate correction not supported: ${e.message}, falling back to samples-only")
+            }
             rateCorrectionSupported = false
             currentPlaybackRate = 1.0f
         }
@@ -910,10 +1022,26 @@ class SendspinSyncEngine : SendspinAudioEngine {
         }
     }
 
+    /** Read one 16-bit sample for a given channel at sample index. */
+    private fun readSample16(pcm: ByteArray, sampleIdx: Int, channel: Int, channels: Int): Short {
+        val byteIdx = (sampleIdx * channels + channel) * 2
+        if (byteIdx + 1 >= pcm.size) return 0
+        return ((pcm[byteIdx + 1].toInt() shl 8) or (pcm[byteIdx].toInt() and 0xFF)).toShort()
+    }
+
+    /** Write one 16-bit sample for a given channel at byte position. */
+    private fun writeSample16(out: ByteArray, pos: Int, value: Short) {
+        out[pos] = (value.toInt() and 0xFF).toByte()
+        out[pos + 1] = (value.toInt() shr 8).toByte()
+    }
+
+    /** Interpolate between two samples (0.0 = a, 1.0 = b). */
+    private fun lerp16(a: Short, b: Short, t: Float): Short =
+        (a + ((b - a) * t)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+
     private fun removeSamples(pcm: ByteArray, bytesPerSample: Int, count: Int): ByteArray {
-        if (pcm.size < bytesPerSample * (count + 2)) return pcm
+        if (pcm.size < bytesPerSample * (count + 4)) return pcm
         val out = ByteArray(pcm.size - bytesPerSample * count)
-        // Remove evenly spaced samples to minimize audible artifacts
         val totalSamples = pcm.size / bytesPerSample
         val step = totalSamples / (count + 1)
         var srcPos = 0
@@ -921,7 +1049,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
         var removed = 0
         for (i in 0 until totalSamples) {
             if (removed < count && i == step * (removed + 1)) {
-                // Skip this sample
+                // Instead of hard skip, crossfade: blend previous output with next source sample
+                if (dstPos >= bytesPerSample && srcPos + bytesPerSample < pcm.size) {
+                    for (ch in 0 until activeChannels) {
+                        val prev = readSample16(out, (dstPos / bytesPerSample) - 1, ch, activeChannels)
+                        val next = readSample16(pcm, i + 1, ch, activeChannels)
+                        val blended = lerp16(prev, next, 0.5f)
+                        writeSample16(out, dstPos - bytesPerSample + ch * 2, blended)
+                    }
+                }
                 srcPos += bytesPerSample
                 removed++
             } else {
@@ -946,8 +1082,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
             srcPos += bytesPerSample
             dstPos += bytesPerSample
             if (inserted < count && i == step * (inserted + 1)) {
-                // Duplicate this sample
-                System.arraycopy(pcm, srcPos - bytesPerSample, out, dstPos, bytesPerSample)
+                // Interpolate between current and next sample instead of raw duplicate
+                for (ch in 0 until activeChannels) {
+                    val curr = readSample16(pcm, i, ch, activeChannels)
+                    val next = if (i + 1 < totalSamples) readSample16(pcm, i + 1, ch, activeChannels) else curr
+                    val interp = lerp16(curr, next, 0.5f)
+                    writeSample16(out, dstPos + ch * 2, interp)
+                }
                 dstPos += bytesPerSample
                 inserted++
             }
@@ -1027,12 +1168,33 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
-                        // "Play first, correct later": no clock gate, start immediately
-                        // clockPreciseForCorrections is reset only at NEW_STREAM boundaries, not here
+                        // Bounded precision wait for sync mode (not for SOFT_CONTINUATION)
+                        val precisionWaitMs = syncPrecisionWaitMs()
+                        if (isSyncMode && precisionWaitMs > 0 && !clockPreciseForCorrections) {
+                            val filterErr = clockSynchronizer?.errorUs() ?: Long.MAX_VALUE
+                            val precise = filterErr <= CLOCK_PRECISION_THRESHOLD_US
+                            val waitingMs = if (clockWaitStartMs > 0) {
+                                System.currentTimeMillis() - clockWaitStartMs
+                            } else {
+                                clockWaitStartMs = System.currentTimeMillis()
+                                0L
+                            }
+                            if (!precise && waitingMs < precisionWaitMs) {
+                                dropLateHeadFramesForStartup()
+                                try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+                                continue
+                            }
+                            clockWaitStartMs = 0L
+                            if (precise) {
+                                Log.d(TAG, "Precision wait done: precise after ${waitingMs}ms (reason=$syncStartupReason)")
+                            } else {
+                                Log.d(TAG, "Precision wait timeout: ${waitingMs}ms (reason=$syncStartupReason, filterErr=${filterErr}us)")
+                            }
+                        }
                         if (dropLateHeadFramesForStartup()) {
                             continue
                         }
-                        if (!isStartupBufferReady()) continue  // re-check after drain
+                        if (!isStartupBufferReady()) continue
                         if (!playbackStarted) {
                                 val filterErr = clockSynchronizer?.errorUs() ?: Long.MAX_VALUE
                                 val clockPrecise = isSyncMode && filterErr <= CLOCK_PRECISION_THRESHOLD_US
@@ -1369,6 +1531,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         hardBoundaryPending = true
         streamGeneration++
         configureGeneration++
+        clockPreciseForCorrections = false
+        resetBiasLearningWindow()
+        rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         if (playbackActive) {
             synchronized(codecLock) {
@@ -1408,6 +1573,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
             "onStreamEnd codec=$activeCodec sync=$syncState started=$playbackStarted " +
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
+        clockPreciseForCorrections = false
+        resetBiasLearningWindow()
+        rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         // Full stop + IDLE (matches main branch behavior).
         hardBoundaryPending = true

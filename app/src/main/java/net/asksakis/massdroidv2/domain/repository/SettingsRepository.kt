@@ -26,6 +26,7 @@ interface SettingsRepository {
     val sendspinStaticDelayMs: Flow<Int>
     val sendspinOutputLatencyUs: Flow<Long>
     val sendspinClockOffsetUs: Flow<Long>
+    val sendspinDeviceBiasUs: Flow<Long>
 
     suspend fun setServerUrl(url: String)
     suspend fun setAuthToken(token: String)
@@ -47,4 +48,5 @@ interface SettingsRepository {
     suspend fun setSendspinStaticDelayMs(delayMs: Int)
     suspend fun setSendspinOutputLatencyUs(latencyUs: Long)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
+    suspend fun setSendspinDeviceBiasUs(biasUs: Long)
 }
