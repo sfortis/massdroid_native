@@ -167,10 +167,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     var onDeviceBiasMeasured: ((Long) -> Unit)? = null
 
     fun seedDeviceBias(persistedUs: Long) {
-        if (deviceBiasCorrectionUs == 0L && persistedUs != 0L) {
-            deviceBiasCorrectionUs = persistedUs.coerceIn(-15_000L, 15_000L)
-            Log.d(TAG, "Device bias seeded: ${persistedUs}us (weak hint)")
-        }
+        // No longer seeded globally: bias is route-specific, learned per session
+        Log.d(TAG, "Device bias seed ignored: ${persistedUs}us (route-specific)")
     }
 
     private fun resetBiasLearningWindow() {
@@ -483,13 +481,29 @@ class SendspinSyncEngine : SendspinAudioEngine {
             activeBitDepth = bitDepth
             pendingContinuityCheck = false
 
+            // Full sync lifecycle reset for hot-swap (codec change is a hard timing boundary)
+            clockPreciseForCorrections = false
+            resetBiasLearningWindow()
+            anchorServerTimestampUs = 0L
+            anchorLocalUs = 0L
+            anchorLocalEquivalentUs = 0L
+            smoothedSyncErrorMs = 0.0
+            startupOffsetMs = 0.0
+            pendingSampleCorrection = 0
+            applyPlaybackRate(1.0f)
+
             if (isNewStream) {
+                if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
+                    syncStartupReason = SyncStartupReason.NEW_STREAM
+                }
                 playbackStarted = false
                 requiredSyncBufferMs = defaultBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
-                Log.d(TAG, "configure semantic=NEW_STREAM path=hot-swap codec=$codecName sync=$syncState")
+                Log.d(TAG, "configure semantic=NEW_STREAM path=hot-swap codec=$codecName sync=$syncState reason=$syncStartupReason")
             } else {
-                // CONTINUATION: hw buffer bridges, shorter resume
+                if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
+                    syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
+                }
                 playbackStarted = false
                 requiredSyncBufferMs = defaultBufferMs()
                 transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
@@ -1688,7 +1702,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         outputRouteChangedAtMs = System.currentTimeMillis()
         // Reset bias (different route = different bias)
         deviceBiasCorrectionUs = 0L
-        resetBiasLearningWindow()
         // Re-enter precision gate
         clockPreciseForCorrections = false
         resetBiasLearningWindow()
@@ -1697,6 +1710,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // (server is still sending the same stream, no configure needed)
         if (isSyncMode && playbackActive) {
             syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
+            playbackGeneration++  // invalidate in-flight decoded frames
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             synchronized(codecLock) {
                 playbackStarted = false
