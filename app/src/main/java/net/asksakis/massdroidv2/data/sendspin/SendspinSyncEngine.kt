@@ -231,7 +231,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs - (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
+        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
     }
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
