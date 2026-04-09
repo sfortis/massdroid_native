@@ -155,6 +155,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var syncStartupReason = SyncStartupReason.NEW_STREAM
     // Rate correction state
     @Volatile private var currentPlaybackRate = 1.0f
+    // Output route change tracking
+    @Volatile private var outputRouteChangedAtMs = 0L
 
     // Device bias calibration: learned steady-state offset
     @Volatile var deviceBiasCorrectionUs = 0L; private set
@@ -555,7 +557,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         } else {
             syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
             // CONTINUATION rebuild: fast re-lock, not cold start
-            requiredSyncBufferMs = MIN_SYNC_BUFFER_MS
+            requiredSyncBufferMs = defaultBufferMs()
             continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
         }
         startPlaybackThread(createdAudioTrack)
@@ -640,7 +642,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
         )
         when {
             lastTs == 0L || syncState == SyncState.SYNC_ERROR_REBUFFERING -> {
-                Log.d(TAG, "Reconnect: first-frame (lastTs=${lastTs / 1000}ms, sync=$syncState), accepting")
+                val prevPlayed = lastPlayedServerTimestampUs
+                val deltaMs = if (prevPlayed > 0) (serverTimestampUs - prevPlayed) / 1000L else -1L
+                Log.d(TAG, "Reconnect: first-frame (lastTs=${lastTs / 1000}ms, sync=$syncState), accepting " +
+                    "[prevPlayed=${prevPlayed / 1000}ms newTs=${serverTimestampUs / 1000}ms delta=${deltaMs}ms reason=$syncStartupReason]")
             }
             gap < 0 && syncState == SyncState.HOLDOVER_PLAYING_FROM_BUFFER && bufMs > HOLDOVER_MIN_BUFFER_MS
                     && gap > -5_000_000 -> {
@@ -1127,11 +1132,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val latencyUs = tsAgeUs + pipelineUs
         if (latencyUs <= 0 || latencyUs > 500_000) return  // sanity
 
-        // EMA with alpha=0.05
-        measuredOutputLatencyUs = if (measuredOutputLatencyUs == 0L) {
-            latencyUs
-        } else {
-            ((0.05 * latencyUs + 0.95 * measuredOutputLatencyUs).toLong())
+        // EMA: snap on first sample (or after route change reset), fast alpha for 5s after route change
+        val recentRouteChange = outputRouteChangedAtMs > 0 &&
+            System.currentTimeMillis() - outputRouteChangedAtMs < 5000
+        measuredOutputLatencyUs = when {
+            measuredOutputLatencyUs == 0L -> latencyUs  // snap to first measurement
+            recentRouteChange -> (0.3 * latencyUs + 0.7 * measuredOutputLatencyUs).toLong()
+            else -> (0.05 * latencyUs + 0.95 * measuredOutputLatencyUs).toLong()
         }
         // Persist every ~10 measurements (~10s) so next startup has good seed
         outputLatencyPersistCount++
@@ -1627,6 +1634,27 @@ class SendspinSyncEngine : SendspinAudioEngine {
             transitionSyncState(SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
             Log.d(TAG, "Transport failure, holdover active (${bufMs}ms)")
         }
+    }
+
+    override fun onOutputRouteChanged(reason: String) {
+        Log.d(TAG, "Output route reset: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms bias=${deviceBiasCorrectionUs}us")
+        // Reset route-sensitive calibration
+        measuredOutputLatencyUs = 0L
+        outputLatencyMeasureCount = 0
+        outputLatencyPersistCount = 0
+        outputRouteChangedAtMs = System.currentTimeMillis()
+        // Reset bias (different route = different bias)
+        deviceBiasCorrectionUs = 0L
+        resetBiasLearningWindow()
+        // Re-enter precision gate + fresh anchor
+        clockPreciseForCorrections = false
+        anchorServerTimestampUs = 0L
+        anchorLocalUs = 0L
+        anchorLocalEquivalentUs = 0L
+        smoothedSyncErrorMs = 0.0
+        startupOffsetMs = 0.0
+        pendingSampleCorrection = 0
+        applyPlaybackRate(1.0f)
     }
 
     override fun release() { release_internal() }

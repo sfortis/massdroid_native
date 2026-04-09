@@ -344,6 +344,11 @@ class SendspinManager(
         audio.onOutputLatencyMeasured = callback
     }
 
+    fun onOutputRouteChanged(reason: String) {
+        Log.d(TAG, "Output route changed: $reason")
+        audio.onOutputRouteChanged(reason)
+    }
+
     fun seedDeviceBias(persistedUs: Long) {
         (engine as? SendspinSyncEngine)?.seedDeviceBias(persistedUs)
     }

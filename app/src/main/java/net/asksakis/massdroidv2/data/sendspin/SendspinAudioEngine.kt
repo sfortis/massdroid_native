@@ -60,6 +60,7 @@ interface SendspinAudioEngine {
     fun clearBuffer()
     fun expectDiscontinuity(reason: String)
     fun onTransportFailure()
+    fun onOutputRouteChanged(reason: String)
 
     // Buffer info
     fun bufferDurationMs(): Long

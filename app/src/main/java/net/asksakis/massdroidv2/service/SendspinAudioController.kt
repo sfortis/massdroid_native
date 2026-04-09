@@ -92,6 +92,34 @@ class SendspinAudioController(
         }
     }
 
+    // Audio route detection
+    @Volatile private var currentOutputRoute = "unknown"
+    private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
+    }
+
+    private fun resolveOutputRoute(): String {
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return when {
+            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP } -> "bt"
+            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET } -> "wired"
+            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE } -> "usb"
+            else -> "speaker"
+        }
+    }
+
+    private fun checkRouteChange() {
+        val newRoute = resolveOutputRoute()
+        if (newRoute == currentOutputRoute) return
+        val oldRoute = currentOutputRoute
+        currentOutputRoute = newRoute
+        Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute")
+        sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
+    }
+
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -130,6 +158,8 @@ class SendspinAudioController(
     }
 
     fun start() {
+        currentOutputRoute = resolveOutputRoute()
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")
             return
@@ -152,7 +182,12 @@ class SendspinAudioController(
         scope.launch {
             val ssId = settingsRepository.sendspinClientId.first()
             if (ssId != null) {
-                val allPlayers = playerRepository.players.value
+                // Wait for player data (up to 5s) if empty on cold start
+                val allPlayers = playerRepository.players.value.ifEmpty {
+                    kotlinx.coroutines.withTimeoutOrNull(5000) {
+                        playerRepository.players.first { it.isNotEmpty() }
+                    } ?: emptyList()
+                }
                 val self = allPlayers.find { it.playerId == ssId }
                 val selfInGroup = self?.groupChilds?.any { it != ssId } == true
                 val childOfOther = allPlayers.any { it.playerId != ssId && ssId in it.groupChilds }
@@ -485,6 +520,7 @@ class SendspinAudioController(
     }
 
     fun destroy() {
+        try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) } catch (_: Exception) {}
         stop()
         scope.cancel()
     }
