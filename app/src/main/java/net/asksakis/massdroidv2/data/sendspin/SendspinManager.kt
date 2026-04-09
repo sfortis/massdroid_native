@@ -404,6 +404,9 @@ class SendspinManager(
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
     fun dacSyncErrorMs(): Float = (engine as? SendspinSyncEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f
+    fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
+    fun resyncCount(): Int = (engine as? SendspinSyncEngine)?.resyncCount ?: 0
+    fun correctionModeName(): String = engine.correctionMode.name
 
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 

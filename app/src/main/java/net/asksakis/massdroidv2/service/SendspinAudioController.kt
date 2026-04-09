@@ -209,6 +209,9 @@ class SendspinAudioController(
                 if (selfInGroup || childOfOther) {
                     sendspinManager.setInSyncGroup(true)
                     Log.d(TAG, "Eager group check: inGroup=true before connect")
+                } else {
+                    sendspinManager.setInSyncGroup(false)
+                    Log.d(TAG, "Eager group check: inGroup=false, switching to DIRECT")
                 }
             }
             ensureSendspinConnected()

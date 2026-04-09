@@ -1025,6 +1025,8 @@ private fun SendspinStatusSheet(
             StatusLine(label = "Mode", value = status.configuredFormat)
             StatusLine(label = "Network", value = status.networkMode)
             StatusLine(label = "DAC sync", value = "${"%.1f".format(status.dacSyncErrorMs)} ms")
+            StatusLine(label = "Output latency", value = "${status.outputLatencyMs} ms")
+            StatusLine(label = "Sync", value = "${status.correctionMode} | Clock: ${status.clockSamples} | Resyncs: ${status.resyncs}")
             StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
 
             Box(

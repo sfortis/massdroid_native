@@ -121,7 +121,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private var presentationTimeUs = 0L
 
     // Correction mode
-    @Volatile override var correctionMode = CorrectionMode.DIRECT; private set
+    // Default SYNC: safer on cold start (sync startup thresholds).
+    // Downgraded to DIRECT only when confirmed solo by group collector.
+    @Volatile override var correctionMode = CorrectionMode.SYNC; private set
     private val isSyncMode get() = correctionMode == CorrectionMode.SYNC
 
     // Stream ownership (epoch invalidation, both modes)
@@ -175,6 +177,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private var dacFrameBaseline = 0L
     // DAC drift tracking: previous raw error for delta-based drift detection
     private var dacPrevRawErrorUs = Long.MIN_VALUE
+    // DAC latency calibration: use stable raw offset to correct measuredOutputLatencyUs
+    private var dacCalibrationDone = false
+    private var dacCalibrationSamples = 0
+    private var dacCalibrationAccumUs = 0L
 
     // Callbacks
     override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
@@ -187,7 +193,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile var smoothedSyncErrorMs = 0.0; private set  // EMA-filtered sync error (DAC-based)
     private var startupOffsetMs = 0.0                // absolute offset captured at startup (positive = late)
     private var lastSyncLogMs = 0L
-    private var resyncCount = 0
+    @Volatile var resyncCount = 0; private set
     private var playbackStartedAtMs = 0L             // wall clock when playback started
     private var clockWaitStartMs = 0L                // wall clock when we started waiting for clock convergence
     private var lastResyncAtMs = 0L                  // wall clock of last hard resync
@@ -210,7 +216,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val old = correctionMode
         correctionMode = mode
         clockPreciseForCorrections = false
-
+        // Reset output latency measurement: different mode may need re-calibration
+        if (mode == CorrectionMode.SYNC) {
+            measuredOutputLatencyUs = 0L
+            latencyPhaseStartup = true
+            startupLatencySamples.clear()
+        }
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         Log.d(TAG, "CorrectionMode: $old -> $mode")
@@ -267,6 +278,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
             ?: serverTimestampUs
         return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
     }
+
+    /** True if we have a valid output latency measurement (not just default 0). */
+    private fun hasOutputLatencyMeasurement(): Boolean = measuredOutputLatencyUs > 0L
 
     private fun leadToLocalNowMs(serverTimestampUs: Long): Long =
         (targetLocalPlayUs(serverTimestampUs) - nowLocalUs()) / 1000L
@@ -402,6 +416,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 totalFramesWritten.set(0)
                 lastWrittenServerTimestampUs = 0L
                 dacPrevRawErrorUs = Long.MIN_VALUE
+                dacCalibrationDone = false
+                dacCalibrationSamples = 0
+                dacCalibrationAccumUs = 0L
                 // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
                 lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
@@ -420,7 +437,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 // CONTINUATION same-codec: preserve queue, fresh timing lock
                 // Keep RELOCK if already set (stream/clear before continuation = hard boundary)
                 if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
-                    syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
+                    syncStartupReason = if (isSyncMode) SyncStartupReason.RELOCK_AFTER_SEEK else SyncStartupReason.SOFT_CONTINUATION
                 }
                 Log.d(TAG, "configure semantic=CONTINUATION path=same-codec action=timing-reset codec=$codecName buf=${bufferDurationMs()}ms reason=$syncStartupReason")
                 configureGeneration++
@@ -503,7 +520,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 Log.d(TAG, "configure semantic=NEW_STREAM path=hot-swap codec=$codecName sync=$syncState reason=$syncStartupReason")
             } else {
                 if (syncStartupReason != SyncStartupReason.RELOCK_AFTER_SEEK) {
-                    syncStartupReason = SyncStartupReason.SOFT_CONTINUATION
+                    syncStartupReason = if (isSyncMode) SyncStartupReason.RELOCK_AFTER_SEEK else SyncStartupReason.SOFT_CONTINUATION
                 }
                 playbackStarted = false
                 requiredSyncBufferMs = defaultBufferMs()
@@ -903,8 +920,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val anchorErrorMs = computeSyncErrorMs(serverTimestampUs)
         // DAC drift detection (secondary: corrects for pipeline changes the anchor can't see)
         val dacDriftUs = measureDacSyncErrorUs(track)
-        val rawErrorMs = if (dacDriftUs != null && kotlin.math.abs(dacDriftUs) > 500) {
-            // Significant DAC drift detected: incorporate into error
+        val rawErrorMs = if (dacDriftUs != null) {
             anchorErrorMs + (dacDriftUs / 1000.0)
         } else {
             anchorErrorMs
@@ -1320,6 +1336,41 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
+                        // Pre-calibrate: write silence to warm up DAC + measure output latency
+                        if (isSyncMode && !hasOutputLatencyMeasurement()) {
+                            val silenceFrames = activeSampleRate / 100  // 10ms
+                            val silenceBytes = silenceFrames * activeChannels * 2
+                            val silence = ByteArray(silenceBytes)
+                            track.play()
+                            track.write(silence, 0, silenceBytes)
+                            collectDacCalibration(track)
+                            // Direct latency measurement (bypass decodedFrameCount gate)
+                            if (track.getTimestamp(outputLatencyTimestamp)) {
+                                val framesAtDac = outputLatencyTimestamp.framePosition
+                                if (framesAtDac > 0) {
+                                    val framesConsumed = track.playbackHeadPosition.toLong()
+                                    val framesInPipeline = framesConsumed - framesAtDac
+                                    if (framesInPipeline >= 0) {
+                                        val tsAgeUs = (System.nanoTime() - outputLatencyTimestamp.nanoTime) / 1000L
+                                        val pipelineUs = framesInPipeline * 1_000_000L / activeSampleRate.toLong()
+                                        val latencyUs = tsAgeUs + pipelineUs
+                                        if (latencyUs in 1..500_000) {
+                                            startupLatencySamples.add(latencyUs)
+                                            if (startupLatencySamples.size >= 5) {
+                                                val sorted = startupLatencySamples.sorted()
+                                                measuredOutputLatencyUs = sorted[sorted.size / 2]
+                                                latencyPhaseStartup = false
+                                                startupLatencySamples.clear()
+                                                Log.d(TAG, "Pre-cal: output latency=${measuredOutputLatencyUs / 1000}ms")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            track.pause()
+                            try { Thread.sleep(20) } catch (_: InterruptedException) { break }
+                            continue
+                        }
                         // Bounded precision wait for sync mode (not for SOFT_CONTINUATION)
                         val precisionWaitMs = syncPrecisionWaitMs()
                         if (isSyncMode && precisionWaitMs > 0 && !clockPreciseForCorrections) {
@@ -1742,7 +1793,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         clockPreciseForCorrections = false
-
+        if (isSyncMode) syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
         // Full stop + IDLE (matches main branch behavior).
