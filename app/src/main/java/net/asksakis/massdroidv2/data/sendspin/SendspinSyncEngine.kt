@@ -1232,9 +1232,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                         while (nowLocalUs() < targetUs && nowLocalUs() < spinDeadline) { /* spin */ }
                                         val overshootUs = nowLocalUs() - targetUs
                                         startupOffsetMs = if (leadMs < 0) -leadMs.toDouble() else -(overshootUs / 1000.0)
+                                        val s2l = clockSynchronizer?.serverToLocalUs(firstFrame.serverTimestampUs) ?: firstFrame.serverTimestampUs
                                         Log.d(TAG, "Startup align (precise): lead=${leadMs}ms " +
                                             "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
-                                            "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
+                                            "filterErr=${clockSynchronizer?.errorUs() ?: -1}us " +
+                                            "[s2l=${s2l / 1000}ms static=${staticDelayMs}ms outLat=${measuredOutputLatencyUs / 1000}ms " +
+                                            "bias=${deviceBiasCorrectionUs}us target=${targetUs / 1000}ms now=${nowLocalUs() / 1000}ms]")
                                     }
                                     clockPreciseForCorrections = true
                                 } else if (isSyncMode) {
