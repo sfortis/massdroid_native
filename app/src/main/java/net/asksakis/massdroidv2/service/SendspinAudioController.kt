@@ -99,10 +99,13 @@ class SendspinAudioController(
         override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
     }
 
+    @Suppress("DEPRECATION")
     private fun resolveOutputRoute(): String {
+        // isBluetoothA2dpOn reflects actual active A2DP routing, not just connected
+        if (audioManager.isBluetoothA2dpOn) return "bt"
+        // Check wired/USB via connected outputs (reliable for non-BT)
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         return when {
-            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP } -> "bt"
             devices.any { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
                 it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET } -> "wired"
             devices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
