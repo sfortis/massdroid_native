@@ -207,8 +207,9 @@ class SendspinAudioController(
                     sendspinManager.setInSyncGroup(true)
                     Log.d(TAG, "Eager group check: inGroup=true before connect")
                 } else {
-                    sendspinManager.setInSyncGroup(false)
-                    Log.d(TAG, "Eager group check: inGroup=false, switching to DIRECT")
+                    // Cold start: keep default SYNC (safe). Continuous collector
+                    // will downgrade to DIRECT once steady-state data confirms solo.
+                    Log.d(TAG, "Eager group check: no group detected, keeping SYNC default (collector will refine)")
                 }
             }
             ensureSendspinConnected()

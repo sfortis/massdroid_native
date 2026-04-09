@@ -1015,7 +1015,7 @@ private fun SendspinStatusSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             SheetDefaults.HeaderTitle(text = "Streaming Status")
 
@@ -1024,15 +1024,26 @@ private fun SendspinStatusSheet(
             StatusLine(label = "Codec", value = status.codec ?: "Unknown")
             StatusLine(label = "Mode", value = status.configuredFormat)
             StatusLine(label = "Network", value = status.networkMode)
-            StatusLine(label = "DAC sync", value = "${"%.1f".format(status.dacSyncErrorMs)} ms")
-            StatusLine(label = "Output latency", value = "${status.outputLatencyMs} ms")
-            StatusLine(label = "Sync", value = "${status.correctionMode} | Clock: ${status.clockSamples} | Resyncs: ${status.resyncs}")
-            StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
+
+            HorizontalDivider()
+
+            // Sync details in compact layout
+            val smallStyle = MaterialTheme.typography.labelMedium
+            val dimColor = MaterialTheme.colorScheme.onSurfaceVariant
+            val valueColor = MaterialTheme.colorScheme.onSurface
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Sync error", "${"%.1f".format(status.dacSyncErrorMs)}ms", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Output latency", "${status.outputLatencyMs}ms", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Clock samples", "${status.clockSamples}", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Buffer", String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000), smallStyle, dimColor, valueColor)
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(10.dp)
+                    .height(8.dp)
                     .clip(RoundedCornerShape(999.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             ) {
@@ -1049,21 +1060,19 @@ private fun SendspinStatusSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("0s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("30s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("0s", style = MaterialTheme.typography.labelSmall, color = dimColor)
+                Text("30s", style = MaterialTheme.typography.labelSmall, color = dimColor)
             }
 
-            StatusLine(label = "Buffered bytes", value = "${status.bufferBytes / 1000} KB")
-
             if (syncHistory.size >= 2) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                HorizontalDivider()
                 var staticDelayMs by remember { mutableIntStateOf(status.staticDelayMs) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Static delay", style = MaterialTheme.typography.bodyMedium)
+                    Text("Static delay", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(
                             onClick = {
@@ -1127,6 +1136,23 @@ private fun StatusLine(label: String, value: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface
         )
+    }
+}
+
+@Composable
+private fun SmallStatusLine(
+    label: String,
+    value: String,
+    style: androidx.compose.ui.text.TextStyle,
+    labelColor: androidx.compose.ui.graphics.Color,
+    valueColor: androidx.compose.ui.graphics.Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = style, color = labelColor)
+        Text(value, style = style, color = valueColor)
     }
 }
 
