@@ -186,10 +186,7 @@ class SendspinAudioController(
         setupAudioFocus()
         registerNoisyReceiver()
 
-        // Persist callbacks for clock/latency measurements
-        sendspinManager.setOutputLatencyPersistCallback { latencyUs ->
-            scope.launch { settingsRepository.setSendspinOutputLatencyUs(latencyUs) }
-        }
+        // Persist callback for clock offset measurements
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
@@ -217,9 +214,7 @@ class SendspinAudioController(
             ensureSendspinConnected()
         }
         scope.launch {
-            val persistedLatency = settingsRepository.sendspinOutputLatencyUs.first()
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
-            sendspinManager.seedOutputLatency(persistedLatency)
             sendspinManager.seedClockOffset(persistedOffset)
         }
 

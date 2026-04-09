@@ -336,14 +336,6 @@ class SendspinManager(
         }
     }
 
-    fun seedOutputLatency(persistedUs: Long) {
-        audio.seedOutputLatency(persistedUs)
-    }
-
-    fun setOutputLatencyPersistCallback(callback: (Long) -> Unit) {
-        audio.onOutputLatencyMeasured = callback
-    }
-
     /** Get the actual routed device type from the AudioTrack, or null if unavailable. */
     fun getRoutedDeviceType(): Int? = audio.getRoutedDeviceType()
 

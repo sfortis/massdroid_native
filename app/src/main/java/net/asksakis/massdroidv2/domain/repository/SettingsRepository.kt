@@ -24,7 +24,6 @@ interface SettingsRepository {
     val themeMode: Flow<String>
     val sendspinAudioFormat: Flow<String>
     val sendspinStaticDelayMs: Flow<Int>
-    val sendspinOutputLatencyUs: Flow<Long>
     val sendspinClockOffsetUs: Flow<Long>
 
 
@@ -46,7 +45,6 @@ interface SettingsRepository {
     suspend fun setThemeMode(mode: String)
     suspend fun setSendspinAudioFormat(format: String)
     suspend fun setSendspinStaticDelayMs(delayMs: Int)
-    suspend fun setSendspinOutputLatencyUs(latencyUs: Long)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
 
 }

@@ -177,13 +177,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private var dacFrameBaseline = 0L
     // DAC drift tracking: previous raw error for delta-based drift detection
     private var dacPrevRawErrorUs = Long.MIN_VALUE
-    // DAC latency calibration: use stable raw offset to correct measuredOutputLatencyUs
-    private var dacCalibrationDone = false
-    private var dacCalibrationSamples = 0
-    private var dacCalibrationAccumUs = 0L
-
     // Callbacks
-    override var onOutputLatencyMeasured: ((Long) -> Unit)? = null
     override var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float) -> Unit)? = null
 
     // Continuation grace: after soft stream/start, suppress correction briefly
@@ -256,17 +250,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile override var measuredOutputLatencyUs = 0L  // runtime-measured pipeline latency
         private set
     private var outputLatencyMeasureCount = 0
-    private var outputLatencyPersistCount = 0
     private val outputLatencyTimestamp = android.media.AudioTimestamp()
-
-    /** Persisted latency is no longer seeded (route-blind). Median bootstrap measures within ~1s. */
-    override fun seedOutputLatency(persistedUs: Long) {
-        // Intentionally not seeding: different route may have different latency.
-        // Median bootstrap provides accurate value within ~1s of playback start.
-        if (persistedUs > 0) {
-            Log.d(TAG, "Output latency seed ignored: ${persistedUs / 1000}ms (median bootstrap preferred)")
-        }
-    }
 
     /**
      * Target local time for this audio chunk.
@@ -416,9 +400,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 totalFramesWritten.set(0)
                 lastWrittenServerTimestampUs = 0L
                 dacPrevRawErrorUs = Long.MIN_VALUE
-                dacCalibrationDone = false
-                dacCalibrationSamples = 0
-                dacCalibrationAccumUs = 0L
                 // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
                 lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
@@ -1299,12 +1280,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
             measuredOutputLatencyUs = (alpha * latencyUs + (1.0 - alpha) * measuredOutputLatencyUs).toLong()
         }
 
-        // Persist periodically
-        outputLatencyPersistCount++
-        if (outputLatencyPersistCount >= 10) {
-            outputLatencyPersistCount = 0
-            onOutputLatencyMeasured?.invoke(measuredOutputLatencyUs)
-        }
         if (decodedFrameCount < 500 || decodedFrameCount % 500 == 0) {
             Log.d(TAG, "OutputLatency: raw=${latencyUs / 1000}ms ema=${measuredOutputLatencyUs / 1000}ms " +
                 "tsAge=${tsAgeUs / 1000}ms pipeline=${pipelineUs / 1000}ms phase=${if (latencyPhaseStartup) "startup" else "steady"}")
@@ -1855,7 +1830,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Reset route-sensitive calibration
         measuredOutputLatencyUs = 0L
         outputLatencyMeasureCount = 0
-        outputLatencyPersistCount = 0
         latencyPhaseStartup = true
         startupLatencySamples.clear()
         outputRouteChangedAtMs = System.currentTimeMillis()
