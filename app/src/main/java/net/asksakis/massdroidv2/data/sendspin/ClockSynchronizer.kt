@@ -215,7 +215,11 @@ class ClockSynchronizer {
     fun currentSampleCount(): Int = count
 
     @Synchronized
-    fun softReset(previousOffsetUs: Long, preserveDrift: Boolean = true) {
+    fun softReset(
+        previousOffsetUs: Long,
+        preserveDrift: Boolean = true,
+        initialCovariance: Double = 50_000.0
+    ) {
         val prevDrift = drift
         val prevUseDrift = useDrift
         reset()
@@ -225,11 +229,11 @@ class ClockSynchronizer {
                 drift = prevDrift
                 useDrift = prevUseDrift
             }
-            offsetCovariance = 50_000.0  // moderate uncertainty, not infinite
+            offsetCovariance = initialCovariance
             count = 2  // skip initialization phase
             publishState()
             Log.d(TAG, "Soft reset: seeded offset=${previousOffsetUs}us " +
-                "drift=${"%.6f".format(drift)} useDrift=$useDrift preserveDrift=$preserveDrift")
+                "drift=${"%.6f".format(drift)} useDrift=$useDrift covariance=${"%.0f".format(initialCovariance)}")
         }
     }
 

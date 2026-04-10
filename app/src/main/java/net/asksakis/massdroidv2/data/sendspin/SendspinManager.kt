@@ -259,7 +259,9 @@ class SendspinManager(
         val nowNanoUs = System.nanoTime() / 1000
         val nowWallUs = System.currentTimeMillis() * 1000L
         val estimatedOffset = serverMinusWallUs - nowNanoUs + nowWallUs
-        clockSynchronizer.softReset(estimatedOffset, preserveDrift = false)
+        // High covariance: persisted offset is a rough hint, may be stale after sleep/reboot.
+        // Fresh NTP samples will quickly dominate. 1e9 = ~31ms error -> filter converges in 3-4 samples.
+        clockSynchronizer.softReset(estimatedOffset, preserveDrift = false, initialCovariance = 1_000_000_000.0)
         clockSynced = true
         Log.d(TAG, "Clock offset seeded: ${estimatedOffset}us (from serverMinusWall=${serverMinusWallUs}us)")
     }

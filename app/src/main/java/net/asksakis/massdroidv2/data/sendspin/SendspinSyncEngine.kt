@@ -43,8 +43,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val SYNC_RELOCK_BUFFER_MS = 1000L
         private const val SYNC_CONTINUATION_BUFFER_MS = 400L
         // Precision wait caps (bounded, not infinite)
-        private const val SYNC_NEW_STREAM_PRECISION_WAIT_MS = 1200L
-        private const val SYNC_RELOCK_PRECISION_WAIT_MS = 1500L
+        private const val SYNC_NEW_STREAM_PRECISION_WAIT_MS = 3000L
+        private const val SYNC_RELOCK_PRECISION_WAIT_MS = 3000L
 
         // Sync mode thresholds
         private const val MIN_SYNC_BUFFER_MS = 200L
@@ -1478,29 +1478,29 @@ class SendspinSyncEngine : SendspinAudioEngine {
                             try { Thread.sleep(20) } catch (_: InterruptedException) { break }
                             // Don't continue: fall through to precision wait + startup
                         }
-                        // Bounded precision wait for sync mode (not for SOFT_CONTINUATION)
-                        // Minimum wait ensures fresh NTP samples even if seeded offset looks precise
+                        // Bounded precision wait: use isReadyForPlaybackStart (count>=8, error<=5ms)
+                        // to ensure the clock has enough fresh NTP samples for reliable alignment.
                         val precisionWaitMs = syncPrecisionWaitMs()
-                        val minPrecisionWaitMs = if (syncStartupReason == SyncStartupReason.NEW_STREAM) 800L else 0L
                         if (isSyncMode && precisionWaitMs > 0 && !clockPreciseForCorrections) {
-                            val filterErr = clockSynchronizer?.errorUs() ?: Long.MAX_VALUE
-                            val precise = filterErr <= CLOCK_PRECISION_THRESHOLD_US
+                            val precise = clockSynchronizer?.isReadyForPlaybackStart() == true
                             val waitingMs = if (clockWaitStartMs > 0) {
                                 System.currentTimeMillis() - clockWaitStartMs
                             } else {
                                 clockWaitStartMs = System.currentTimeMillis()
                                 0L
                             }
-                            if (waitingMs < minPrecisionWaitMs || (!precise && waitingMs < precisionWaitMs)) {
+                            if (!precise && waitingMs < precisionWaitMs) {
                                 dropLateHeadFramesForStartup()
                                 try { Thread.sleep(50) } catch (_: InterruptedException) { break }
                                 continue
                             }
                             clockWaitStartMs = 0L
+                            val readyErr = clockSynchronizer?.errorUs() ?: -1
+                            val readyCount = clockSynchronizer?.currentSampleCount() ?: 0
                             if (precise) {
-                                Log.d(TAG, "Precision wait done: precise after ${waitingMs}ms (reason=$syncStartupReason)")
+                                Log.d(TAG, "Precision wait done: ready after ${waitingMs}ms (reason=$syncStartupReason samples=$readyCount err=${readyErr}us)")
                             } else {
-                                Log.d(TAG, "Precision wait timeout: ${waitingMs}ms (reason=$syncStartupReason, filterErr=${filterErr}us)")
+                                Log.d(TAG, "Precision wait timeout: ${waitingMs}ms (reason=$syncStartupReason samples=$readyCount err=${readyErr}us)")
                             }
                         }
                         if (dropLateHeadFramesForStartup()) {
