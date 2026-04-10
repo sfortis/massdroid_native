@@ -249,40 +249,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
         resyncCount = 0
         lastResyncAtMs = 0L
         requiredSyncBufferMs = defaultBufferMs()
-        // Group join (DIRECT -> SYNC): hard relock, stale DIRECT buffer won't align with group
-        if (mode == CorrectionMode.SYNC && playbackStarted && playbackActive) {
-            syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
-            transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
-            synchronized(codecLock) {
-                playbackStarted = false
-                audioTrack?.setVolume(0f)
-                audioTrack?.pause()
-                audioTrack?.flush()
-                codec?.flush()
-                // DAC counters inside lock: prevents race with playback thread's addAndGet
-                dacFrameBaseline = audioTrack?.playbackHeadPosition?.toLong() ?: 0L
-                totalFramesWritten.set(0)
-                lastWrittenServerTimestampUs = 0L
-            }
-            frameQueue.clear()
-            frameQueueBytes.set(0)
-            lastEnqueuedTimestampUs = 0L
-            presentationTimeUs = 0L
-            continuationGraceUntilMs = 0L
-            // Full sync + DAC/latency bootstrap reset (same rigor as flushForRebuffer)
-            resetSyncState()
-            measuredOutputLatencyUs = 0L
-            outputLatencyMeasureCount = 0
-            latencyPhaseStartup = true
-            startupLatencySamples.clear()
-            dacPrevRawErrorUs = Long.MIN_VALUE
-            resetDacDivergenceState()
-            enqueueLateDropGraceUntilUs = nowLocalUs() + (STARTUP_ENQUEUE_GRACE_MS * 1000L)
-            requiredSyncBufferMs = recoveryBufferMs()
-            Log.d(TAG, "Group join relock: flushed audio, awaiting rebuffer (threshold=${requiredSyncBufferMs}ms)")
-        } else if (mode == CorrectionMode.SYNC && playbackStarted) {
+        // Group join (DIRECT -> SYNC): soft transition.
+        // Audio is already playing at the correct position (server timestamps are the same
+        // for all players). Just enable corrections on the already-playing stream.
+        // Hard relock would disrupt the correct position and cause alignment errors.
+        if (mode == CorrectionMode.SYNC && playbackStarted) {
             playbackStartedAtMs = System.currentTimeMillis()
             continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
+            Log.d(TAG, "Group join: soft transition to SYNC, corrections start after grace")
         }
     }
 
@@ -1389,6 +1363,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 latencyPhaseStartup = false
                 startupLatencySamples.clear()
                 Log.d(TAG, "OutputLatency: startup median=${measuredOutputLatencyUs / 1000}ms (from ${sorted.size} samples)")
+                // After route change, pre-cal may have measured bogus latency (BT codec not ready).
+                // Now that real audio is flowing, we have the true latency. If it's significantly
+                // different from what startup alignment used, re-align with correct value.
+                if (outputRouteChangedAtMs > 0
+                    && System.currentTimeMillis() - outputRouteChangedAtMs < 10_000
+                    && measuredOutputLatencyUs > 30_000L
+                ) {
+                    Log.d(TAG, "Route-change latency correction: ${measuredOutputLatencyUs / 1000}ms, re-aligning")
+                    softRealignForLatencyCorrection()
+                    return
+                }
             }
         } else {
             // Phase 2: EMA (faster after route change)
@@ -1429,14 +1414,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
                         // Pre-calibrate: write continuous silence to warm up DAC + measure output latency
                         // Keep track playing (no pause/flush per iteration) so HAL can warm up timestamps
+                        // BT speakers need ~1-2s of audio flow before getTimestamp() returns valid data
                         if (isSyncMode && !hasOutputLatencyMeasurement()) {
                             suppressRoutingCallbacks = true
                             try {
-                                val silenceFrames = activeSampleRate / 50  // 20ms per write
+                                val silenceFrames = activeSampleRate / 20  // 50ms per write
                                 val silenceBytes = silenceFrames * activeChannels * 2
                                 val silence = ByteArray(silenceBytes)
                                 track.play()
-                                val maxAttempts = 15
+                                val maxAttempts = 40  // 40 * 50ms = 2s max
                                 for (attempt in 1..maxAttempts) {
                                     if (generation != playbackGeneration || !playbackActive) break
                                     track.write(silence, 0, silenceBytes)
@@ -1961,21 +1947,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     override fun onOutputRouteChanged(reason: String) {
         Log.d(TAG, "Output route change: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms sync=$syncState started=$playbackStarted")
-        // Reset route-sensitive calibration
+        // Reset route-sensitive calibration (new device = new latency)
         measuredOutputLatencyUs = 0L
         outputLatencyMeasureCount = 0
         latencyPhaseStartup = true
         startupLatencySamples.clear()
-
         outputRouteChangedAtMs = System.currentTimeMillis()
-        // Re-enter precision gate
         clockPreciseForCorrections = false
-
         applyPlaybackRate(1.0f)
-        // Hard relock in sync mode: flush queue + AudioTrack but keep stream generation
-        // (server is still sending the same stream, no configure needed)
-        // Only relock when audio is actually playing (playbackStarted), not during startup buffering
-        if (isSyncMode && playbackStarted) {
+        // Route change: audio content unchanged, only output device changed.
+        // Flush AudioTrack (new hardware pipeline) but KEEP frame queue intact.
+        // Queue head is at current playback position; flushing it would cause server
+        // to refill from its send-ahead position (25-30s in future) triggering RESYNC spiral.
+        if (playbackStarted) {
             syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
             synchronized(codecLock) {
@@ -1983,26 +1967,67 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 audioTrack?.setVolume(0f)
                 audioTrack?.pause()
                 audioTrack?.flush()
-                codec?.flush()
+                // Keep codec: decoded PCM is device-independent
+                // Reset DAC counters inside lock: new hardware pipeline, prevent race with playback thread
                 dacFrameBaseline = audioTrack?.playbackHeadPosition?.toLong() ?: 0L
                 totalFramesWritten.set(0)
                 lastWrittenServerTimestampUs = 0L
             }
-            frameQueue.clear()
-            frameQueueBytes.set(0)
-            lastEnqueuedTimestampUs = 0L
+            // Keep frameQueue/frameQueueBytes/lastEnqueuedTimestampUs intact
+            presentationTimeUs = 0L
             anchorServerTimestampUs = 0L
             anchorLocalUs = 0L
             anchorLocalEquivalentUs = 0L
             smoothedSyncErrorMs = 0.0
             startupOffsetMs = 0.0
             pendingSampleCorrection = 0
-            presentationTimeUs = 0L
+            pendingSampleCount = 1
+            resyncCount = 0
+            lastResyncAtMs = 0L
             dacPrevRawErrorUs = Long.MIN_VALUE
             resetDacDivergenceState()
-            requiredSyncBufferMs = recoveryBufferMs()
-            Log.d(TAG, "Route change relock: flushed audio, awaiting rebuffer (threshold=${requiredSyncBufferMs}ms)")
+            clearDacCalibrations()  // old route's DAC-to-system-time mapping is invalid
+            requiredSyncBufferMs = if (isSyncMode) SYNC_RELOCK_BUFFER_MS else recoveryBufferMs()
+            Log.d(TAG, "Route change: flushed AudioTrack, kept queue (${bufferDurationMs()}ms), awaiting re-sync")
         }
+    }
+
+    /**
+     * Light re-align: flush AudioTrack, keep queue, re-enter startup with current measured latency.
+     * Called when steady-state measurement reveals the output latency used at startup was wrong
+     * (e.g., BT pipeline latency became visible only after real audio started flowing).
+     */
+    private fun softRealignForLatencyCorrection() {
+        if (!playbackStarted || !isSyncMode) return
+        Log.d(TAG, "Latency re-align: outLat=${measuredOutputLatencyUs / 1000}ms buf=${bufferDurationMs()}ms")
+        syncStartupReason = SyncStartupReason.RELOCK_AFTER_SEEK
+        transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+        synchronized(codecLock) {
+            playbackStarted = false
+            audioTrack?.setVolume(0f)
+            audioTrack?.pause()
+            audioTrack?.flush()
+            dacFrameBaseline = audioTrack?.playbackHeadPosition?.toLong() ?: 0L
+            totalFramesWritten.set(0)
+            lastWrittenServerTimestampUs = 0L
+        }
+        // Keep frameQueue intact, keep measuredOutputLatencyUs (it's now correct)
+        presentationTimeUs = 0L
+        anchorServerTimestampUs = 0L
+        anchorLocalUs = 0L
+        anchorLocalEquivalentUs = 0L
+        smoothedSyncErrorMs = 0.0
+        startupOffsetMs = 0.0
+        pendingSampleCorrection = 0
+        pendingSampleCount = 1
+        resyncCount = 0
+        lastResyncAtMs = 0L
+        dacPrevRawErrorUs = Long.MIN_VALUE
+        resetDacDivergenceState()
+        clearDacCalibrations()
+        clockPreciseForCorrections = false
+        outputRouteChangedAtMs = 0L  // prevent re-trigger
+        requiredSyncBufferMs = SYNC_CONTINUATION_BUFFER_MS  // low threshold, queue has data
     }
 
     override fun release() { release_internal() }
