@@ -276,13 +276,24 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     /**
      * Target local time for this audio chunk.
-     * Used for startup alignment only. DAC-based sync handles steady-state corrections.
-     * outputLatency is rough estimate for initial alignment; DAC measurement refines.
+     * Used for startup alignment and late-frame detection.
+     *
+     * Output latency compensation: only applied for high-latency outputs
+     * (Bluetooth, >50ms pipeline) where the uncorrected offset would be
+     * audible in group sync.  For low-latency outputs (internal speaker,
+     * wired headphones) the measured value consistently overestimates by
+     * a few ms, causing a "plays slightly ahead" artifact.  Skipping
+     * compensation for these leaves a <30ms offset that is within
+     * acceptable tolerance and avoids the measurement bias.
+     * This matches the SendspinDroid approach for non-BT outputs.
      */
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs + (staticDelayMs.toLong() * 1000L) - measuredOutputLatencyUs
+        // Only compensate for high-latency outputs (BT) where the pipeline
+        // delay is large enough to matter and the measurement is reliable.
+        val latencyCompensation = if (measuredOutputLatencyUs > 50_000L) measuredOutputLatencyUs else 0L
+        return localUs + (staticDelayMs.toLong() * 1000L) - latencyCompensation
     }
 
     /** True if we have a valid output latency measurement (not just default 0). */

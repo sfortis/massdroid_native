@@ -122,8 +122,14 @@ class SettingsViewModel @Inject constructor(
 
     // Token persistence is handled by MassDroidApp's connectionState observer
 
+    private fun normalizeUrl(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return trimmed
+        return if (!trimmed.contains("://")) "http://$trimmed" else trimmed
+    }
+
     fun login(url: String, username: String, password: String) {
-        val u = url.trim()
+        val u = normalizeUrl(url)
         val user = username.trim()
         val pass = password.trim()
         if (u.isBlank() || user.isBlank() || pass.isBlank()) {
@@ -145,7 +151,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun connectWithToken(url: String? = null) {
-        val connectUrl = (url ?: serverUrl.value).trim()
+        val connectUrl = normalizeUrl((url ?: serverUrl.value))
         val token = authToken.value
         if (connectUrl.isBlank()) {
             _loginError.value = "Enter a server URL"

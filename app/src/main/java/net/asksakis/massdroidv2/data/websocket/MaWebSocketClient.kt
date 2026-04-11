@@ -190,7 +190,13 @@ class MaWebSocketClient(
             okHttpClient
         }
 
-        val request = Request.Builder().url(wsUrl).build()
+        val request = try {
+            Request.Builder().url(wsUrl).build()
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Invalid server URL: $wsUrl", e)
+            _connectionState.value = ConnectionState.Error("Invalid server URL. Include http:// or https://")
+            return
+        }
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
