@@ -128,12 +128,9 @@ class SendspinManager(
                 setupSyncStateCallback()
                 sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
-                if (engine.correctionMode == CorrectionMode.SYNC) {
-                    startTimeSync()
-                } else {
-                    audio.clockSynchronizer = null
-                    Log.d(TAG, "Skipping time sync (DIRECT mode)")
-                }
+                // Always run time sync, even in DIRECT mode. Keeps the Kalman
+                // clock warm so group join has instant precision (no 2-3s wait).
+                startTimeSync()
             }
 
             is SendspinIncoming.ServerTime -> {
@@ -328,14 +325,18 @@ class SendspinManager(
         val mode = if (grouped) CorrectionMode.SYNC else CorrectionMode.DIRECT
         val wasSync = engine.correctionMode == CorrectionMode.SYNC
         engine.setCorrectionMode(mode)
-        if (grouped && !wasSync && client.state.value != SendspinState.DISCONNECTED) {
-            startTimeSync()
-        } else if (!grouped && wasSync) {
-            timeSyncJob?.cancel()
-            timeSyncJob = null
-            audio.clockSynchronizer = null
-            Log.d(TAG, "Stopped time sync (switched to DIRECT)")
+        if (grouped && !wasSync) {
+            // Clock is already warm (time sync runs in all modes).
+            // Just wire up the synchronizer; don't restart/soft-reset
+            // the Kalman so the converged state is preserved.
+            audio.clockSynchronizer = clockSynchronizer
+            // Safety: start time sync if not running (e.g. after reconnect)
+            if (timeSyncJob?.isActive != true && client.state.value != SendspinState.DISCONNECTED) {
+                startTimeSync()
+            }
+            Log.d(TAG, "Group join: clock already warm, samples=${clockSynchronizer.currentSampleCount()} error=${clockSynchronizer.errorUs()}us")
         }
+        // DIRECT mode: keep time sync running (warm clock for future group join)
     }
 
     /** Get the actual routed device type from the AudioTrack, or null if unavailable. */
@@ -398,7 +399,13 @@ class SendspinManager(
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
     fun dacSyncErrorMs(): Float = (engine as? SendspinSyncEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f
+    fun absoluteSyncMs(): Float {
+        val e = engine as? SendspinSyncEngine ?: return 0f
+        return (e.startupOffsetMs + e.smoothedSyncErrorMs).toFloat()
+    }
+    fun isSyncMuted(): Boolean = (engine as? SendspinSyncEngine)?.syncMuted ?: false
     fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
+    fun clockErrorUs(): Long = clockSynchronizer.errorUs()
     fun resyncCount(): Int = (engine as? SendspinSyncEngine)?.resyncCount ?: 0
     fun correctionModeName(): String = engine.correctionMode.name
 

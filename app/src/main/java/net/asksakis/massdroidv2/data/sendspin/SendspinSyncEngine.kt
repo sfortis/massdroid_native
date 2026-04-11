@@ -40,7 +40,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
         // Sync startup buffer per reason
         private const val SYNC_NEW_STREAM_BUFFER_MS = 800L
-        private const val SYNC_RELOCK_BUFFER_MS = 1000L
+        private const val SYNC_RELOCK_BUFFER_MS = 500L
         private const val SYNC_CONTINUATION_BUFFER_MS = 400L
         // Precision wait caps (bounded, not infinite)
         private const val SYNC_NEW_STREAM_PRECISION_WAIT_MS = 3000L
@@ -167,7 +167,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // Output route change tracking
     @Volatile private var outputRouteChangedAtMs = 0L
     // Sync-mute: mute audio until DAC sync error converges after hard boundary
-    @Volatile private var syncMuted = false
+    @Volatile var syncMuted = false; private set
     // Routing change callback (set by controller for route detection)
     var onRoutingChanged: (() -> Unit)? = null
     @Volatile private var suppressRoutingCallbacks = false
@@ -201,7 +201,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     // Sync correction state
     @Volatile var smoothedSyncErrorMs = 0.0; private set  // EMA-filtered sync error (DAC-based)
-    private var startupOffsetMs = 0.0                // absolute offset captured at startup (positive = late)
+    @Volatile var startupOffsetMs = 0.0; private set  // absolute offset captured at startup (positive = late)
+    // Output latency at startup alignment, for background drift correction
+    @Volatile private var startupAlignLatencyUs = 0L
+    @Volatile private var latencyDriftCorrected = false
     private var lastSyncLogMs = 0L
     @Volatile var resyncCount = 0; private set
     private var playbackStartedAtMs = 0L             // wall clock when playback started
@@ -229,9 +232,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         dacPrevRawErrorUs = Long.MIN_VALUE
         resetDacDivergenceState()
         // Keep existing output latency measurement: same AudioTrack, same hardware pipeline.
-        // Only reset DAC calibrations if switching to SYNC (different timing requirements).
+        // Reset DAC timestamp stability so pre-cal runs on next sync startup
+        // (group join/create needs fresh DAC calibration for precise alignment).
         if (mode == CorrectionMode.SYNC) {
             startupLatencySamples.clear()
+            consecutiveValidTimestamps = 0
+            dacTimestampsStable = false
         }
         rateCorrectionSupported = true
         applyPlaybackRate(1.0f)
@@ -249,14 +255,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         resyncCount = 0
         lastResyncAtMs = 0L
         requiredSyncBufferMs = defaultBufferMs()
-        // Group join (DIRECT -> SYNC): soft transition.
-        // Audio is already playing at the correct position (server timestamps are the same
-        // for all players). Just enable corrections on the already-playing stream.
-        // Hard relock would disrupt the correct position and cause alignment errors.
+        // Group join (DIRECT -> SYNC): hard relock with pre-cal.
+        // Without full re-alignment the local speaker drifts out of sync
+        // because the DIRECT-mode playback position was never clock-aligned.
         if (mode == CorrectionMode.SYNC && playbackStarted) {
-            playbackStartedAtMs = System.currentTimeMillis()
-            continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
-            Log.d(TAG, "Group join: soft transition to SYNC, corrections start after grace")
+            Log.d(TAG, "Group join: flush + pre-cal for precise sync alignment")
+            flushForRebuffer()
+            // Re-accept current generation so incoming frames are not dropped.
+            // flushForRebuffer bumps streamGeneration expecting a configure() to
+            // follow, but group join may not trigger a server stream restart.
+            acceptGeneration = streamGeneration
         }
     }
 
@@ -435,7 +443,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 lastWrittenServerTimestampUs = 0L
                 dacPrevRawErrorUs = Long.MIN_VALUE
                 resetDacDivergenceState()
-                // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
+                // AudioTrack was paused+flushed by onStreamEnd before this
+                // configure call, so DAC calibrations are stale.
+                consecutiveValidTimestamps = 0
+                dacTimestampsStable = false
                 lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
                 anchorLocalUs = 0L
@@ -759,6 +770,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     private fun flushForRebuffer() {
         syncMuted = isSyncMode  // mute until DAC sync converges
+        // Mute immediately BEFORE acquiring the codec lock, so any in-flight
+        // write from the playback thread produces no audible output.
+        audioTrack?.setVolume(0f)
         Log.d(
             DBG,
             "flushForRebuffer codec=$activeCodec sync=$syncState started=$playbackStarted " +
@@ -773,7 +787,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
             playbackStarted = false  // BEFORE lock release to prevent decode+write race
-            audioTrack?.setVolume(0f)  // mute before flush to hide click/pop
             audioTrack?.pause()
             audioTrack?.flush()
             codec?.flush()
@@ -795,7 +808,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
         lastWrittenServerTimestampUs = 0L
         dacPrevRawErrorUs = Long.MIN_VALUE
         resetDacDivergenceState()
-        // Keep DAC calibrations: same AudioTrack, hardware mapping still valid
+        // For low-latency outputs (speaker/wired): keep DAC calibrations stable,
+        // skip pre-cal for fast seek recovery.
+        // For high-latency outputs (BT): reset DAC stability so pre-cal runs.
+        // BT HAL timestamps become unreliable after pause+flush and need
+        // re-calibration; without this, sync is inconsistent after seek/skip.
+        if (measuredOutputLatencyUs > 50_000L) {
+            consecutiveValidTimestamps = 0
+            dacTimestampsStable = false
+        }
         pendingContinuityCheck = false
         forceDiscontinuityUntilMs = 0L
         forceDiscontinuityReason = ""
@@ -1010,11 +1031,21 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val absoluteSyncMs = startupOffsetMs + smoothedSyncErrorMs
         val absTotal = kotlin.math.abs(absoluteSyncMs)
 
-        // Unmute once DAC sync converges after hard boundary
-        if (syncMuted && absTotal < 10.0) {
+        // Fade in once DAC sync converges after hard boundary
+        if (syncMuted && absTotal < 20.0) {
             syncMuted = false
-            audioTrack?.setVolume(if (isMuted) 0f else currentVolume)
-            Log.d(TAG, "Sync converged, unmuting (error=${"%.1f".format(absTotal)}ms)")
+            if (!isMuted) {
+                // 150ms fade-in to avoid abrupt start after silence
+                val track = audioTrack
+                if (track != null) {
+                    val steps = 15
+                    for (i in 1..steps) {
+                        track.setVolume(currentVolume * i / steps)
+                        try { Thread.sleep(10) } catch (_: InterruptedException) { break }
+                    }
+                }
+            }
+            Log.d(TAG, "Sync converged, fade-in complete (error=${"%.1f".format(absTotal)}ms)")
         }
 
         // Tier 4: Hard resync for large errors
@@ -1390,6 +1421,28 @@ class SendspinSyncEngine : SendspinAudioEngine {
             // Phase 2: EMA (faster after route change)
             val alpha = if (recentRouteChange) 0.3 else 0.05
             measuredOutputLatencyUs = (alpha * latencyUs + (1.0 - alpha) * measuredOutputLatencyUs).toLong()
+
+            // Background latency drift correction: if the EMA has settled to a
+            // value significantly different from what startup alignment used,
+            // shift the anchor so the correction loop targets the right position.
+            // One-shot per startup; waits for 10+ steady-state samples before acting.
+            if (isSyncMode && !latencyDriftCorrected && startupAlignLatencyUs > 0
+                && outputLatencyMeasureCount > 10
+                && anchorLocalUs > 0
+            ) {
+                val driftUs = measuredOutputLatencyUs - startupAlignLatencyUs
+                val driftMs = driftUs / 1000.0
+                if (kotlin.math.abs(driftMs) > 5.0) {
+                    // Positive drift = EMA larger than startup = we started too late, shift anchor earlier
+                    anchorLocalUs -= driftUs
+                    startupAlignLatencyUs = measuredOutputLatencyUs
+                    latencyDriftCorrected = true
+                    smoothedSyncErrorMs = 0.0
+                    pendingSampleCorrection = 0
+                    pendingSampleCount = 1
+                    Log.d(TAG, "Latency drift correction: shift=${"%.1f".format(driftMs)}ms, new EMA=${measuredOutputLatencyUs / 1000}ms")
+                }
+            }
         }
 
         if (decodedFrameCount < 500 || decodedFrameCount % 500 == 0) {
@@ -1423,15 +1476,24 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     }
                     if (isStartupBufferReady()) {
                         if (generation != playbackGeneration || track !== audioTrack || !playbackActive) break
-                        // Pre-calibrate: write continuous silence to warm up DAC + measure output latency
-                        // Keep track playing (no pause/flush per iteration) so HAL can warm up timestamps
-                        // BT speakers need ~1-2s of audio flow before getTimestamp() returns valid data
-                        if (isSyncMode && !hasOutputLatencyMeasurement()) {
+                        // Pre-calibrate: write silence to warm up DAC timestamps + measure output latency.
+                        // Runs when: (a) no output latency measurement yet, OR (b) DAC timestamps
+                        // not stable (after AudioTrack rebuild, route change, or mode switch).
+                        // BT speakers need ~1-2s of audio flow before getTimestamp() returns valid data.
+                        if (isSyncMode && (!hasOutputLatencyMeasurement() || !dacTimestampsStable)) {
+                            val alreadyHasMeasurement = hasOutputLatencyMeasurement()
                             suppressRoutingCallbacks = true
                             try {
                                 val silenceFrames = activeSampleRate / 20  // 50ms per write
                                 val silenceBytes = silenceFrames * activeChannels * 2
                                 val silence = ByteArray(silenceBytes)
+                                // Mute + flush before pre-cal to prevent residual PCM
+                                // from the previous stream playing out briefly.
+                                track.setVolume(0f)
+                                track.pause()
+                                track.flush()
+                                dacFrameBaseline = track.playbackHeadPosition.toLong()
+                                totalFramesWritten.set(0)
                                 track.play()
                                 val maxAttempts = 40  // 40 * 50ms = 2s max
                                 for (attempt in 1..maxAttempts) {
@@ -1451,10 +1513,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                                     startupLatencySamples.add(latencyUs)
                                                     if (startupLatencySamples.size >= 5) {
                                                         val sorted = startupLatencySamples.sorted()
-                                                        measuredOutputLatencyUs = sorted[sorted.size / 2]
-                                                        latencyPhaseStartup = false
+                                                        if (alreadyHasMeasurement) {
+                                                            // DAC warmup only: don't replace the stable
+                                                            // EMA with a noisy 5-sample median. This keeps
+                                                            // BT startup alignment consistent across seeks.
+                                                            Log.d(TAG, "Pre-cal: DAC warm (latency=${sorted[sorted.size / 2] / 1000}ms, keeping EMA=${measuredOutputLatencyUs / 1000}ms, $attempt attempts)")
+                                                        } else {
+                                                            measuredOutputLatencyUs = sorted[sorted.size / 2]
+                                                            latencyPhaseStartup = false
+                                                            Log.d(TAG, "Pre-cal: output latency=${measuredOutputLatencyUs / 1000}ms ($attempt attempts)")
+                                                        }
                                                         startupLatencySamples.clear()
-                                                        Log.d(TAG, "Pre-cal: output latency=${measuredOutputLatencyUs / 1000}ms ($attempt attempts)")
                                                         break
                                                     }
                                                 }
@@ -1542,9 +1611,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                             "target=${targetUs / 1000}ms now=${nowLocalUs() / 1000}ms]")
                                     }
                                     clockPreciseForCorrections = true
+                                    startupAlignLatencyUs = measuredOutputLatencyUs
+                                    latencyDriftCorrected = false
                                 } else if (isSyncMode) {
                                     // Clock imprecise: just play, no alignment, no startup offset
                                     startupOffsetMs = 0.0
+                                    startupAlignLatencyUs = measuredOutputLatencyUs
+                                    latencyDriftCorrected = false
                                     Log.d(TAG, "Startup (imprecise clock): playing without alignment, " +
                                         "filterErr=${clockSynchronizer?.errorUs() ?: -1}us")
                                 }
