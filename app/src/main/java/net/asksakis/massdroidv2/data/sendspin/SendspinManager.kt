@@ -401,6 +401,15 @@ class SendspinManager(
         _syncState.value = audio.syncState
     }
 
+    fun setRouteAcousticCorrectionUs(valueUs: Long) {
+        audio.routeAcousticCorrectionUs = valueUs
+        Log.d(TAG, "Acoustic correction: ${valueUs / 1000}ms")
+    }
+
+    fun getRoutedDeviceProductName(): String? = audio.getRoutedDeviceProductName()
+
+    fun acousticCorrectionMs(): Long = audio.routeAcousticCorrectionUs / 1000
+
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
     fun dacSyncErrorMs(): Float = (engine as? SendspinSyncEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f

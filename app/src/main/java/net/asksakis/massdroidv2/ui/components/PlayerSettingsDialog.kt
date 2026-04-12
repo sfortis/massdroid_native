@@ -66,6 +66,16 @@ fun PlayerSettingsDialog(
     onDstmChanged: ((enabled: Boolean) -> Unit)?,
     onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
     onStaticDelayChanged: ((Int) -> Unit)? = null,
+    isBtRoute: Boolean = false,
+    acousticCorrectionMs: Int = 0,
+    calibrator: net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator? = null,
+    hasPhoneBaseline: Boolean = false,
+    phoneBaselineUs: Long = 0L,
+    isPlaybackActive: Boolean = false,
+    btRouteName: String = "",
+    onPausePlayback: (() -> Unit)? = null,
+    onBaselineComplete: ((Long) -> Unit)? = null,
+    onAcousticCalibrationComplete: ((correctionUs: Long, quality: String) -> Unit)? = null,
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
     onDismiss: () -> Unit
 ) {
@@ -255,6 +265,47 @@ fun PlayerSettingsDialog(
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                 }
                             }
+                        }
+                    }
+
+                    // BT Acoustic Calibration
+                    if (isLocalPlayer && isBtRoute && calibrator != null) {
+                        var showCalibrationDialog by remember { mutableStateOf(false) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("BT latency calibration", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    if (acousticCorrectionMs > 0) "+${acousticCorrectionMs}ms correction"
+                                    else "Not calibrated",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(onClick = { showCalibrationDialog = true }) {
+                                Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
+                            }
+                        }
+                        if (showCalibrationDialog) {
+                            AcousticCalibrationDialog(
+                                routeName = btRouteName,
+                                hasPhoneBaseline = hasPhoneBaseline,
+                                phoneBaselineUs = phoneBaselineUs,
+                                isBtRoute = isBtRoute,
+                                isPlaybackActive = isPlaybackActive,
+                                calibrator = calibrator,
+                                onPausePlayback = { onPausePlayback?.invoke() },
+                                onDismiss = { showCalibrationDialog = false },
+                                onBaselineComplete = { baselineUs ->
+                                    onBaselineComplete?.invoke(baselineUs)
+                                },
+                                onCalibrationComplete = { correctionUs, quality ->
+                                    onAcousticCalibrationComplete?.invoke(correctionUs, quality)
+                                }
+                            )
                         }
                     }
                 }

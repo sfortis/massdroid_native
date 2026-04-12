@@ -161,6 +161,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // Clock sync
     @Volatile override var clockSynchronizer: ClockSynchronizer? = null
     @Volatile override var staticDelayMs: Int = 0
+    @Volatile override var routeAcousticCorrectionUs: Long = 0L
     // "Play first, correct later": defer corrections until clock converges
     @Volatile private var clockPreciseForCorrections = false
     // Sync startup reason: controls buffer threshold and precision wait
@@ -309,10 +310,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        // Only compensate for high-latency outputs (BT) where the pipeline
-        // delay is large enough to matter and the measurement is reliable.
-        // Add BT hidden transport compensation (getTimestamp misses ~150ms).
-        val latencyCompensation = if (measuredOutputLatencyUs > 50_000L) measuredOutputLatencyUs else 0L
+        // Acoustic correction (mic-calibrated) includes the FULL round-trip,
+        // so it replaces measuredOutputLatencyUs (not adds to it).
+        // When no acoustic calibration: fall back to measured pipeline latency
+        // for high-latency outputs only (BT >50ms).
+        val latencyCompensation = if (routeAcousticCorrectionUs > 0L) {
+            routeAcousticCorrectionUs
+        } else if (measuredOutputLatencyUs > 50_000L) {
+            measuredOutputLatencyUs
+        } else {
+            0L
+        }
         return localUs + (staticDelayMs.toLong() * 1000L) - latencyCompensation
     }
 
@@ -1619,6 +1627,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                             "absOffset=${"%.1f".format(startupOffsetMs)}ms " +
                                             "filterErr=${clockSynchronizer?.errorUs() ?: -1}us " +
                                             "[s2l=${s2l / 1000}ms static=${staticDelayMs}ms outLat=${measuredOutputLatencyUs / 1000}ms " +
+                                            "acoustic=${routeAcousticCorrectionUs / 1000}ms " +
                                             "target=${targetUs / 1000}ms now=${nowLocalUs() / 1000}ms]")
                                     }
                                     clockPreciseForCorrections = true
@@ -2039,11 +2048,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     override fun getRoutedDeviceType(): Int? = audioTrack?.routedDevice?.type
+    override fun getRoutedDeviceProductName(): String? = audioTrack?.routedDevice?.productName?.toString()
 
     override fun onOutputRouteChanged(reason: String) {
-        Log.d(TAG, "Output route change: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms sync=$syncState started=$playbackStarted")
+        Log.d(TAG, "Output route change: reason=$reason latency=${measuredOutputLatencyUs / 1000}ms acoustic=${routeAcousticCorrectionUs / 1000}ms sync=$syncState started=$playbackStarted")
         // Reset route-sensitive calibration (new device = new latency)
         measuredOutputLatencyUs = 0L
+        routeAcousticCorrectionUs = 0L  // controller will load stored value for new route
         outputLatencyMeasureCount = 0
         latencyPhaseStartup = true
         startupLatencySamples.clear()

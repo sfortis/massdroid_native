@@ -30,6 +30,7 @@ interface SendspinAudioEngine {
     // Clock sync
     var clockSynchronizer: ClockSynchronizer?
     var staticDelayMs: Int
+    var routeAcousticCorrectionUs: Long
 
     // Correction mode
     fun setCorrectionMode(mode: CorrectionMode)
@@ -61,6 +62,7 @@ interface SendspinAudioEngine {
     fun onTransportFailure()
     fun onOutputRouteChanged(reason: String)
     fun getRoutedDeviceType(): Int? = null
+    fun getRoutedDeviceProductName(): String? = null
 
     // Buffer info
     fun bufferDurationMs(): Long

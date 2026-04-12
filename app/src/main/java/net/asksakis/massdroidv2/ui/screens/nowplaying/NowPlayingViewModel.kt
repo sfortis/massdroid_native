@@ -59,6 +59,7 @@ data class SendspinStatusUi(
     val bufferBytes: Long,
     val staticDelayMs: Int,
     val outputLatencyMs: Long = 0L,
+    val acousticCorrectionMs: Long = 0L,
     val dacSyncErrorMs: Float = 0f,
     val absoluteSyncMs: Float = 0f,
     val syncMuted: Boolean = false,
@@ -98,6 +99,7 @@ class NowPlayingViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator,
     val sleepTimerBridge: SleepTimerBridge
 ) : ViewModel() {
 
@@ -110,6 +112,49 @@ class NowPlayingViewModel @Inject constructor(
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
     val sendspinStreamCodec = sendspinManager.streamCodec
     val sendspinSyncHistory = sendspinManager.syncHistory
+    val acousticPhoneBaselineUs = settingsRepository.acousticPhoneBaselineUs
+    val acousticRouteCalibrations = settingsRepository.acousticRouteCalibrations
+
+    fun getBtRouteName(): String = sendspinManager.getRoutedDeviceProductName() ?: "Bluetooth"
+    fun getBtRouteKey(): String = "bt:${sendspinManager.getRoutedDeviceProductName() ?: "unknown"}"
+    fun isBtRoute(): Boolean = sendspinManager.getRoutedDeviceType()?.let {
+        it == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+        it == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+        it == android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER
+    } ?: false
+    fun isPlaybackActive(): Boolean {
+        val player = playerRepository.selectedPlayer.value ?: return false
+        return player.state == net.asksakis.massdroidv2.domain.model.PlaybackState.PLAYING
+    }
+
+    fun pauseForCalibration() {
+        val playerId = playerRepository.selectedPlayer.value?.playerId ?: return
+        viewModelScope.launch { playerRepository.pause(playerId) }
+    }
+
+    fun resumeAfterCalibration() {
+        val playerId = playerRepository.selectedPlayer.value?.playerId ?: return
+        viewModelScope.launch { playerRepository.play(playerId) }
+    }
+
+    fun saveAcousticBaseline(baselineUs: Long) {
+        viewModelScope.launch { settingsRepository.setAcousticPhoneBaselineUs(baselineUs) }
+    }
+
+    fun saveAcousticCalibration(correctionUs: Long, quality: String) {
+        val routeKey = getBtRouteKey()
+        viewModelScope.launch {
+            settingsRepository.setAcousticRouteCalibration(
+                routeKey,
+                net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration(
+                    correctionUs = correctionUs,
+                    quality = quality,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            sendspinManager.setRouteAcousticCorrectionUs(correctionUs)
+        }
+    }
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
@@ -335,6 +380,7 @@ class NowPlayingViewModel @Inject constructor(
                     bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
                     staticDelayMs = cachedSendspinStaticDelayMs,
                     outputLatencyMs = sendspinManager.outputLatencyMs(),
+                    acousticCorrectionMs = sendspinManager.acousticCorrectionMs(),
                     dacSyncErrorMs = sendspinManager.dacSyncErrorMs(),
                     absoluteSyncMs = sendspinManager.absoluteSyncMs(),
                     syncMuted = sendspinManager.isSyncMuted(),

@@ -441,6 +441,12 @@ fun NowPlayingScreen(
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinClientId)
             val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinAudioFormat)
             val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+            val isBt = viewModel.isBtRoute()
+            val phoneBaseline by viewModel.acousticPhoneBaselineUs.collectAsStateWithLifecycle(initialValue = 0L)
+            val calibrations by viewModel.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
+            val btRouteKey = viewModel.getBtRouteKey()
+            val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
+
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
@@ -453,6 +459,18 @@ fun NowPlayingScreen(
                 onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                 onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
+                isBtRoute = isBt,
+                acousticCorrectionMs = acousticCorrectionMs.toInt(),
+                calibrator = viewModel.acousticCalibrator,
+                hasPhoneBaseline = phoneBaseline > 0L,
+                phoneBaselineUs = phoneBaseline,
+                isPlaybackActive = viewModel.isPlaybackActive(),
+                onPausePlayback = { viewModel.pauseForCalibration() },
+                btRouteName = viewModel.getBtRouteName(),
+                onBaselineComplete = { viewModel.saveAcousticBaseline(it) },
+                onAcousticCalibrationComplete = { correctionUs, quality ->
+                    viewModel.saveAcousticCalibration(correctionUs, quality)
+                },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
@@ -1035,7 +1053,7 @@ private fun SendspinStatusSheet(
                 SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
                 SmallStatusLine("Absolute sync", "${"%.1f".format(status.absoluteSyncMs)}ms${if (status.syncMuted) "  (muted)" else ""}", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Drift error", "${"%.1f".format(status.dacSyncErrorMs)}ms", smallStyle, dimColor, valueColor)
-                SmallStatusLine("Output latency", "${status.outputLatencyMs}ms", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Output latency", "${status.outputLatencyMs}ms + ${status.acousticCorrectionMs}ms acoustic", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Clock", "${status.clockSamples} samples / ${status.clockErrorUs / 1000.0}ms err", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Buffer", String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000), smallStyle, dimColor, valueColor)

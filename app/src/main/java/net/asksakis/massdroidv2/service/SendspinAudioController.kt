@@ -133,6 +133,23 @@ class SendspinAudioController(
         currentOutputRoute = newRoute
         Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute")
         sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
+        loadAcousticCorrectionForCurrentRoute()
+    }
+
+    private fun loadAcousticCorrectionForCurrentRoute() {
+        scope.launch {
+            if (currentOutputRoute != "bt") {
+                sendspinManager.setRouteAcousticCorrectionUs(0L)
+                return@launch
+            }
+            val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
+            val routeKey = "bt:$productName"
+            val calibrations = settingsRepository.acousticRouteCalibrations.first()
+            val calibration = calibrations[routeKey]
+            val correctionUs = calibration?.correctionUs ?: 0L
+            sendspinManager.setRouteAcousticCorrectionUs(correctionUs)
+            Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
+        }
     }
 
     // Locks
@@ -174,6 +191,7 @@ class SendspinAudioController(
 
     fun start() {
         currentOutputRoute = resolveOutputRoute()
+        loadAcousticCorrectionForCurrentRoute()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")

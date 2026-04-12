@@ -25,7 +25,8 @@ interface SettingsRepository {
     val sendspinAudioFormat: Flow<String>
     val sendspinStaticDelayMs: Flow<Int>
     val sendspinClockOffsetUs: Flow<Long>
-
+    val acousticPhoneBaselineUs: Flow<Long>
+    val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>>
 
     suspend fun setServerUrl(url: String)
     suspend fun setAuthToken(token: String)
@@ -46,5 +47,14 @@ interface SettingsRepository {
     suspend fun setSendspinAudioFormat(format: String)
     suspend fun setSendspinStaticDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
-
+    suspend fun setAcousticPhoneBaselineUs(baselineUs: Long)
+    suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration)
+    suspend fun removeAcousticRouteCalibration(routeKey: String)
 }
+
+@kotlinx.serialization.Serializable
+data class AcousticRouteCalibration(
+    val correctionUs: Long,
+    val quality: String,
+    val updatedAt: Long
+)

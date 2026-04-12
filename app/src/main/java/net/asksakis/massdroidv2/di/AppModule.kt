@@ -98,6 +98,11 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideAcousticLatencyCalibrator(): net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator =
+        net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator()
+
+    @Provides
+    @Singleton
     fun provideSendspinManager(
         client: SendspinClient,
         engine: SendspinSyncEngine,

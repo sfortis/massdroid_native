@@ -14,6 +14,10 @@ import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SortOption
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,7 +49,8 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
         private val KEY_SENDSPIN_STATIC_DELAY_MS = stringPreferencesKey("sendspin_static_delay_ms")
         private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
-
+        private val KEY_ACOUSTIC_PHONE_BASELINE_US = stringPreferencesKey("acoustic_phone_baseline_us")
+        private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
     }
 
     private val safeData = context.dataStore.data
@@ -217,6 +222,50 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinClockOffsetUs(offsetUs: Long) {
         context.dataStore.edit { it[KEY_SENDSPIN_CLOCK_OFFSET_US] = offsetUs.toString() }
+    }
+
+    override val acousticPhoneBaselineUs: Flow<Long> = safeData.map { prefs ->
+        prefs[KEY_ACOUSTIC_PHONE_BASELINE_US]?.toLongOrNull() ?: 0L
+    }
+
+    override suspend fun setAcousticPhoneBaselineUs(baselineUs: Long) {
+        context.dataStore.edit { it[KEY_ACOUSTIC_PHONE_BASELINE_US] = baselineUs.coerceAtLeast(0L).toString() }
+    }
+
+    override val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>> = safeData.map { prefs ->
+        val raw = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] ?: return@map emptyMap()
+        try {
+            Json.decodeFromString(calibrationSerializer, raw)
+        } catch (_: Exception) { emptyMap() }
+    }
+
+    private val calibrationSerializer = MapSerializer(String.serializer(), AcousticRouteCalibration.serializer())
+
+    private fun encodeCalibrations(map: Map<String, AcousticRouteCalibration>): String =
+        Json.encodeToString(calibrationSerializer, map)
+
+    override suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]?.let { raw ->
+                try {
+                    Json.decodeFromString(calibrationSerializer, raw).toMutableMap()
+                } catch (_: Exception) { mutableMapOf() }
+            } ?: mutableMapOf()
+            current[routeKey] = calibration
+            prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
+        }
+    }
+
+    override suspend fun removeAcousticRouteCalibration(routeKey: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]?.let { raw ->
+                try {
+                    Json.decodeFromString(calibrationSerializer, raw).toMutableMap()
+                } catch (_: Exception) { mutableMapOf() }
+            } ?: return@edit
+            current.remove(routeKey)
+            prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
+        }
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->
