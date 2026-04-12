@@ -255,16 +255,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         resyncCount = 0
         lastResyncAtMs = 0L
         requiredSyncBufferMs = defaultBufferMs()
-        // Group join (DIRECT -> SYNC): hard relock with pre-cal.
-        // Without full re-alignment the local speaker drifts out of sync
-        // because the DIRECT-mode playback position was never clock-aligned.
+        // Group join (DIRECT -> SYNC): soft transition.
+        // Cannot flush+rebuffer because pre-buffered frames are ~30s in the
+        // future, causing a bogus 27s DAC sync error and infinite RESYNC loop.
+        // Instead: mute, reset timing, let correction loop align, then fade in.
         if (mode == CorrectionMode.SYNC && playbackStarted) {
-            Log.d(TAG, "Group join: flush + pre-cal for precise sync alignment")
-            flushForRebuffer()
-            // Re-accept current generation so incoming frames are not dropped.
-            // flushForRebuffer bumps streamGeneration expecting a configure() to
-            // follow, but group join may not trigger a server stream restart.
-            acceptGeneration = streamGeneration
+            syncMuted = true
+            audioTrack?.setVolume(0f)
+            playbackStartedAtMs = System.currentTimeMillis()
+            continuationGraceUntilMs = System.currentTimeMillis() + CONTINUATION_GRACE_MS
+            Log.d(TAG, "Group join: soft transition, muted until sync converges")
         }
     }
 
@@ -769,13 +769,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     private fun flushForRebuffer() {
-        syncMuted = isSyncMode  // mute until DAC sync converges
-        // Mute immediately BEFORE acquiring the codec lock, so any in-flight
-        // write from the playback thread produces no audible output.
+        // Stop playback thread FIRST (volatile write, immediately visible).
+        // The write path checks !playbackStarted before track.write(), so this
+        // prevents new writes. Any write already past the check will complete
+        // but at volume 0 (set next).
+        playbackStarted = false
+        syncMuted = isSyncMode
         audioTrack?.setVolume(0f)
         Log.d(
             DBG,
-            "flushForRebuffer codec=$activeCodec sync=$syncState started=$playbackStarted " +
+            "flushForRebuffer codec=$activeCodec sync=$syncState " +
                 "playbackActive=$playbackActive buf=${bufferDurationMs()}ms queueBytes=${frameQueueBytes.get()}"
         )
         hardBoundaryPending = true
@@ -786,7 +789,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         applyPlaybackRate(1.0f)
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
-            playbackStarted = false  // BEFORE lock release to prevent decode+write race
             audioTrack?.pause()
             audioTrack?.flush()
             codec?.flush()
@@ -1487,13 +1489,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                 val silenceFrames = activeSampleRate / 20  // 50ms per write
                                 val silenceBytes = silenceFrames * activeChannels * 2
                                 val silence = ByteArray(silenceBytes)
-                                // Mute + flush before pre-cal to prevent residual PCM
-                                // from the previous stream playing out briefly.
                                 track.setVolume(0f)
-                                track.pause()
-                                track.flush()
-                                dacFrameBaseline = track.playbackHeadPosition.toLong()
-                                totalFramesWritten.set(0)
                                 track.play()
                                 val maxAttempts = 40  // 40 * 50ms = 2s max
                                 for (attempt in 1..maxAttempts) {
