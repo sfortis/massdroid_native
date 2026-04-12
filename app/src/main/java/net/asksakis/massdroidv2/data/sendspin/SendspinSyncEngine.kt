@@ -77,6 +77,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val DAC_DIVERGENCE_SIGN_COUNT = 10
         private const val DAC_DIVERGENCE_MATURITY = 20  // min DAC absolute samples before trusting
         private const val DAC_RESEAT_COOLDOWN_MS = 15_000L
+
+        // BT hidden transport latency: varies wildly by codec/device (80-200ms).
+        // Not compensated automatically; user tunes via static_delay per device.
+        // TODO: per-device latency UI with auto-save by BT MAC address
     }
 
     private data class EncodedFrame(val serverTimestampUs: Long, val payload: ByteArray, val generation: Long) :
@@ -295,11 +299,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
      * acceptable tolerance and avoids the measurement bias.
      * This matches the SendspinDroid approach for non-BT outputs.
      */
+    private fun isBtOutput(): Boolean {
+        val type = audioTrack?.routedDevice?.type ?: return false
+        return type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+            type == android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER
+    }
+
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
         // Only compensate for high-latency outputs (BT) where the pipeline
         // delay is large enough to matter and the measurement is reliable.
+        // Add BT hidden transport compensation (getTimestamp misses ~150ms).
         val latencyCompensation = if (measuredOutputLatencyUs > 50_000L) measuredOutputLatencyUs else 0L
         return localUs + (staticDelayMs.toLong() * 1000L) - latencyCompensation
     }
@@ -769,10 +781,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     private fun flushForRebuffer() {
-        // Stop playback thread FIRST (volatile write, immediately visible).
-        // The write path checks !playbackStarted before track.write(), so this
-        // prevents new writes. Any write already past the check will complete
-        // but at volume 0 (set next).
+        // 1. pause() FIRST: Android docs guarantee that a blocking write() on
+        //    another thread returns a short count when pause() is called.
+        //    This breaks the playback thread out of track.write() immediately.
+        // 2. Then mute + set flags so no further writes happen.
+        audioTrack?.pause()
         playbackStarted = false
         syncMuted = isSyncMode
         audioTrack?.setVolume(0f)
@@ -789,7 +802,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         applyPlaybackRate(1.0f)
         transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
         synchronized(codecLock) {
-            audioTrack?.pause()
             audioTrack?.flush()
             codec?.flush()
         }
@@ -991,8 +1003,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 dacDivergenceSameSignCount = if (sign != 0) 1 else 0
                 dacDivergenceLastSign = sign
             }
-            // Re-seat anchor if DAC consistently disagrees, with safety gates
-            if (kotlin.math.abs(dacDivergenceEma) > DAC_DIVERGENCE_THRESHOLD_MS
+            // Re-seat anchor if DAC consistently disagrees, with safety gates.
+            // Disabled for high-latency outputs (BT): getTimestamp() noise causes
+            // spurious re-seats every ~15s that destabilize sync.
+            if (measuredOutputLatencyUs <= 50_000L
+                && kotlin.math.abs(dacDivergenceEma) > DAC_DIVERGENCE_THRESHOLD_MS
                 && dacDivergenceSameSignCount >= DAC_DIVERGENCE_SIGN_COUNT
                 && now - lastAnchorReseatMs > DAC_RESEAT_COOLDOWN_MS
                 && clockPreciseForCorrections
@@ -1622,8 +1637,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                 "playbackThread track.play codec=$activeCodec buf=${bufferDurationMs()}ms " +
                                     "required=${requiredSyncBufferMs}ms sync=$syncState"
                             )
-                            track.play()
                             track.setVolume(if (isMuted || syncMuted) 0f else currentVolume)
+                            track.play()
                             playbackStarted = true
                             playbackStartedAtMs = System.currentTimeMillis()
                         }

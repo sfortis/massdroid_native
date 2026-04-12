@@ -180,7 +180,12 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                 hasActiveProtocolStream = true
                 audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
-                audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
+                // Don't call setVolume during sync re-lock: it would overwrite
+                // currentVolume with 0, breaking the fade-in calculation.
+                val engineMuted = (engine as? SendspinSyncEngine)?.syncMuted ?: false
+                if (!engineMuted) {
+                    audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
+                }
                 _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
             }
