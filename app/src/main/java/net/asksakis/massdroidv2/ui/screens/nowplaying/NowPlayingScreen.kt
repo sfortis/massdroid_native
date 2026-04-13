@@ -471,6 +471,8 @@ fun NowPlayingScreen(
                 onAcousticCalibrationComplete = { correctionUs, quality ->
                     viewModel.saveAcousticCalibration(correctionUs, quality)
                 },
+                onResetPhoneBaseline = { viewModel.resetAcousticBaseline() },
+                onResetBtCalibration = { viewModel.resetAcousticCalibration() },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
@@ -1051,9 +1053,9 @@ private fun SendspinStatusSheet(
             val valueColor = MaterialTheme.colorScheme.onSurface
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
-                SmallStatusLine("Absolute sync", "${"%.1f".format(status.absoluteSyncMs)}ms${if (status.syncMuted) "  (muted)" else ""}", smallStyle, dimColor, valueColor)
-                SmallStatusLine("Drift error", "${"%.1f".format(status.dacSyncErrorMs)}ms", smallStyle, dimColor, valueColor)
-                SmallStatusLine("Output latency", "${status.outputLatencyMs}ms + ${status.acousticCorrectionMs}ms acoustic", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Engine correction", "${"%.1f".format(status.absoluteSyncMs)}ms${if (status.syncMuted) "  (muted)" else ""}", smallStyle, dimColor, valueColor)
+                SmallStatusLine("DAC drift", "${"%.1f".format(status.dacSyncErrorMs)}ms", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Latency model", "${status.outputLatencyMs}ms output + ${status.acousticCorrectionMs}ms acoustic", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Clock", "${status.clockSamples} samples / ${status.clockErrorUs / 1000.0}ms err", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Buffer", String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000), smallStyle, dimColor, valueColor)

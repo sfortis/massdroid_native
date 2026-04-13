@@ -99,7 +99,7 @@ class NowPlayingViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
-    val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator,
+    val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator,
     val sleepTimerBridge: SleepTimerBridge
 ) : ViewModel() {
 
@@ -138,7 +138,21 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun saveAcousticBaseline(baselineUs: Long) {
-        viewModelScope.launch { settingsRepository.setAcousticPhoneBaselineUs(baselineUs) }
+        viewModelScope.launch {
+            settingsRepository.setAcousticPhoneBaselineUs(baselineUs)
+            if (!isBtRoute()) {
+                sendspinManager.setRouteAcousticExtraUs(baselineUs)
+            }
+        }
+    }
+
+    fun resetAcousticBaseline() {
+        viewModelScope.launch {
+            settingsRepository.setAcousticPhoneBaselineUs(0L)
+            if (!isBtRoute()) {
+                sendspinManager.setRouteAcousticExtraUs(0L)
+            }
+        }
     }
 
     fun saveAcousticCalibration(correctionUs: Long, quality: String) {
@@ -152,7 +166,15 @@ class NowPlayingViewModel @Inject constructor(
                     updatedAt = System.currentTimeMillis()
                 )
             )
-            sendspinManager.setRouteAcousticCorrectionUs(correctionUs)
+            sendspinManager.setRouteAcousticExtraUs(correctionUs)
+        }
+    }
+
+    fun resetAcousticCalibration() {
+        val routeKey = getBtRouteKey()
+        viewModelScope.launch {
+            settingsRepository.removeAcousticRouteCalibration(routeKey)
+            sendspinManager.setRouteAcousticExtraUs(0L)
         }
     }
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
@@ -380,7 +402,7 @@ class NowPlayingViewModel @Inject constructor(
                     bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
                     staticDelayMs = cachedSendspinStaticDelayMs,
                     outputLatencyMs = sendspinManager.outputLatencyMs(),
-                    acousticCorrectionMs = sendspinManager.acousticCorrectionMs(),
+                    acousticCorrectionMs = sendspinManager.acousticExtraMs(),
                     dacSyncErrorMs = sendspinManager.dacSyncErrorMs(),
                     absoluteSyncMs = sendspinManager.absoluteSyncMs(),
                     syncMuted = sendspinManager.isSyncMuted(),

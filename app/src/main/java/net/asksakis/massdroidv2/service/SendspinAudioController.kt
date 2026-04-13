@@ -94,6 +94,8 @@ class SendspinAudioController(
 
     // Audio route detection: uses AudioTrack.getRoutedDevice() as canonical source
     @Volatile private var currentOutputRoute = "unknown"
+    @Volatile private var currentBtRouteKey = ""
+    @Volatile private var routeChangeGeneration = 0L
     private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
         override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
@@ -128,27 +130,57 @@ class SendspinAudioController(
 
     private fun checkRouteChange() {
         val newRoute = resolveOutputRoute()
-        if (newRoute == currentOutputRoute) return
-        val oldRoute = currentOutputRoute
-        currentOutputRoute = newRoute
-        Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute")
-        sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
-        loadAcousticCorrectionForCurrentRoute()
-    }
-
-    private fun loadAcousticCorrectionForCurrentRoute() {
-        scope.launch {
-            if (currentOutputRoute != "bt") {
-                sendspinManager.setRouteAcousticCorrectionUs(0L)
-                return@launch
+        val routeChanged = newRoute != currentOutputRoute
+        if (routeChanged) {
+            val oldRoute = currentOutputRoute
+            currentOutputRoute = newRoute
+            val gen = ++routeChangeGeneration
+            Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            // Resolve correction and notify engine atomically: set correction BEFORE
+            // onOutputRouteChanged so the engine relocks with the correct value.
+            // Generation guard: if another route change arrives before this coroutine
+            // runs, discard the stale result to prevent out-of-order application.
+            scope.launch {
+                if (gen != routeChangeGeneration) return@launch  // superseded
+                val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
+                if (gen != routeChangeGeneration) return@launch  // superseded during resolve
+                sendspinManager.setRouteAcousticExtraUs(correctionUs)
+                sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             }
+        } else if (newRoute == "bt") {
+            // Same route type but maybe different BT device (bt:A -> bt:B).
+            // Reload correction if product name changed or current correction is 0
+            // (e.g. loaded as bt:unknown before AudioTrack was routed).
             val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
             val routeKey = "bt:$productName"
-            val calibrations = settingsRepository.acousticRouteCalibrations.first()
-            val calibration = calibrations[routeKey]
-            val correctionUs = calibration?.correctionUs ?: 0L
-            sendspinManager.setRouteAcousticCorrectionUs(correctionUs)
-            Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
+            if (routeKey != currentBtRouteKey || sendspinManager.acousticExtraMs() == 0L) {
+                currentBtRouteKey = routeKey
+                val gen = routeChangeGeneration
+                scope.launch {
+                    if (gen != routeChangeGeneration) return@launch
+                    val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
+                    if (gen != routeChangeGeneration) return@launch
+                    sendspinManager.setRouteAcousticExtraUs(correctionUs)
+                }
+            }
+        }
+    }
+
+    private suspend fun resolveAcousticCorrectionForRoute(route: String): Long {
+        return when (route) {
+            // Phone speaker: use acoustic baseline if calibrated (full one-way output delay).
+            "speaker" -> settingsRepository.acousticPhoneBaselineUs.first()
+            "wired", "usb" -> 0L
+            "bt" -> {
+                val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
+                val routeKey = "bt:$productName"
+                val calibrations = settingsRepository.acousticRouteCalibrations.first()
+                val calibration = calibrations[routeKey]
+                val correctionUs = calibration?.correctionUs ?: 0L
+                Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
+                correctionUs
+            }
+            else -> 0L
         }
     }
 
@@ -191,7 +223,10 @@ class SendspinAudioController(
 
     fun start() {
         currentOutputRoute = resolveOutputRoute()
-        loadAcousticCorrectionForCurrentRoute()
+        scope.launch {
+            val correctionUs = resolveAcousticCorrectionForRoute(currentOutputRoute)
+            sendspinManager.setRouteAcousticExtraUs(correctionUs)
+        }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")

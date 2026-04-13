@@ -32,6 +32,11 @@ enum class SendspinState {
     ERROR
 }
 
+sealed class SendspinMessage {
+    data class Text(val incoming: SendspinIncoming) : SendspinMessage()
+    data class Binary(val data: ByteArray) : SendspinMessage()
+}
+
 class SendspinClient(
     private val httpClientProvider: () -> OkHttpClient,
     private val json: Json
@@ -55,6 +60,11 @@ class SendspinClient(
 
     private val _binaryMessages = MutableSharedFlow<ByteArray>(extraBufferCapacity = BINARY_FRAME_BUFFER_CAPACITY)
     val binaryMessages: SharedFlow<ByteArray> = _binaryMessages.asSharedFlow()
+
+    // Ordered protocol stream. Sendspin control messages and audio frames share one WebSocket;
+    // processing them via separate collectors can reorder stream/clear vs binary frames.
+    private val _messages = MutableSharedFlow<SendspinMessage>(extraBufferCapacity = BINARY_FRAME_BUFFER_CAPACITY)
+    val messages: SharedFlow<SendspinMessage> = _messages.asSharedFlow()
 
     private var errorMessage: String? = null
     private var shouldReconnect = false
@@ -116,12 +126,16 @@ class SendspinClient(
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (gen != connectionGeneration) return
                 val incoming = SendspinIncoming.parse(text, json)
+                if (!_messages.tryEmit(SendspinMessage.Text(incoming))) {
+                    Log.w(TAG, "Dropping text message: $incoming")
+                }
                 _textMessages.tryEmit(incoming)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 if (gen != connectionGeneration) return
-                if (!_binaryMessages.tryEmit(bytes.toByteArray())) {
+                val data = bytes.toByteArray()
+                if (!_messages.tryEmit(SendspinMessage.Binary(data))) {
                     droppedBinaryFrames++
                     if (droppedBinaryFrames <= 5 || droppedBinaryFrames % 100 == 0) {
                         Log.w(TAG, "Dropping binary audio frame(s): dropped=$droppedBinaryFrames")
@@ -130,6 +144,7 @@ class SendspinClient(
                     Log.d(TAG, "Recovered after dropping $droppedBinaryFrames binary frame(s)")
                     droppedBinaryFrames = 0
                 }
+                _binaryMessages.tryEmit(data)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

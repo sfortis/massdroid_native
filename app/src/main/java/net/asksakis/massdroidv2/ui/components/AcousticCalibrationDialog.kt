@@ -35,12 +35,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator
+import net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 
 /**
- * Dialog for calibrating BT speaker acoustic latency.
- * Plays chirp tones and records via microphone to measure round-trip delay.
+ * Dialog for acoustic latency calibration.
+ * Phone speaker calibration is stored as the baseline. BT routes store their
+ * own measured round-trip and show the phone baseline for comparison.
  */
 @Composable
 fun AcousticCalibrationDialog(
@@ -49,7 +50,7 @@ fun AcousticCalibrationDialog(
     phoneBaselineUs: Long = 0L,
     isBtRoute: Boolean = true,
     isPlaybackActive: Boolean,
-    calibrator: AcousticLatencyCalibrator,
+    calibrator: NativeAcousticCalibrator,
     onPausePlayback: () -> Unit = {},
     onDismiss: () -> Unit,
     onBaselineComplete: (baselineUs: Long) -> Unit,
@@ -59,8 +60,7 @@ fun AcousticCalibrationDialog(
 
     var phase by remember { mutableStateOf(
         if (isPlaybackActive) CalibrationPhase.PLAYBACK_ACTIVE
-        else if (!hasPhoneBaseline && isBtRoute) CalibrationPhase.NEED_BASELINE
-        else if (!hasPhoneBaseline && !isBtRoute) CalibrationPhase.INSTRUCTIONS
+        else if (isBtRoute && !hasPhoneBaseline) CalibrationPhase.NEED_BASELINE
         else CalibrationPhase.INSTRUCTIONS
     )}
     var progress by remember { mutableIntStateOf(0) }
@@ -69,16 +69,14 @@ fun AcousticCalibrationDialog(
     var resultQuality by remember { mutableStateOf("") }
     var resultCorrectionUs by remember { mutableStateOf(0L) }
     var baselineUs by remember(phoneBaselineUs) { mutableStateOf(phoneBaselineUs) }
+    var pendingBaselineMeasurement by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            phase = if (!hasPhoneBaseline && baselineUs == 0L) {
-                CalibrationPhase.MEASURING_BASELINE
-            } else {
-                CalibrationPhase.MEASURING_BT
-            }
+            phase = if (pendingBaselineMeasurement) CalibrationPhase.MEASURING_BASELINE
+            else CalibrationPhase.MEASURING_BT
         } else {
             phase = CalibrationPhase.PERMISSION_DENIED
         }
@@ -86,6 +84,7 @@ fun AcousticCalibrationDialog(
 
     fun startMeasurement(forBaseline: Boolean) {
         val missing = AppPermissions.missing(context, AppPermissions.acousticCalibrationRequired())
+        pendingBaselineMeasurement = forBaseline
         if (missing.isNotEmpty()) {
             phase = CalibrationPhase.REQUESTING_PERMISSION
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -107,7 +106,7 @@ fun AcousticCalibrationDialog(
             calibrator.onProgress = null
 
             when (result.quality) {
-                AcousticLatencyCalibrator.Quality.FAILED -> {
+                NativeAcousticCalibrator.Quality.FAILED -> {
                     resultText = "Calibration failed. Too much noise or speaker too quiet."
                     phase = CalibrationPhase.ERROR
                 }
@@ -115,12 +114,23 @@ fun AcousticCalibrationDialog(
                     if (isBaseline) {
                         baselineUs = result.roundTripUs
                         onBaselineComplete(result.roundTripUs)
-                        phase = CalibrationPhase.BASELINE_DONE
+                        if (isBtRoute) {
+                            phase = CalibrationPhase.BASELINE_DONE
+                        } else {
+                            resultText = "Phone speaker baseline: ${result.roundTripUs / 1000}ms"
+                            resultQuality = result.quality.name
+                            phase = CalibrationPhase.BASELINE_RESULT
+                        }
                     } else {
-                        val correction = (result.roundTripUs - baselineUs).coerceIn(0, 500_000)
+                        // Store full BT round-trip as correction (not the difference).
+                        // The engine's acousticExtraUs() subtracts measuredPipeline,
+                        // giving totalComp = btRoundTrip. The phone baseline is shown
+                        // for reference but not used in the compensation math.
+                        val correction = result.roundTripUs.coerceIn(0, 500_000)
+                        val extraOverPhone = (result.roundTripUs - baselineUs).coerceAtLeast(0)
                         resultCorrectionUs = correction
                         resultQuality = result.quality.name
-                        resultText = "Extra BT delay: +${correction / 1000}ms"
+                        resultText = "BT delay: ${correction / 1000}ms (+${extraOverPhone / 1000}ms over phone)"
                         phase = CalibrationPhase.RESULT
                     }
                 }
@@ -143,10 +153,12 @@ fun AcousticCalibrationDialog(
                 )
                 Text(
                     when (phase) {
-                        CalibrationPhase.NEED_BASELINE, CalibrationPhase.MEASURING_BASELINE ->
+                        CalibrationPhase.NEED_BASELINE,
+                        CalibrationPhase.MEASURING_BASELINE,
+                        CalibrationPhase.BASELINE_RESULT ->
                             "Phone Speaker Baseline"
                         CalibrationPhase.BASELINE_DONE -> "Baseline Complete"
-                        else -> "BT Speaker Calibration"
+                        else -> if (isBtRoute) "BT Speaker Calibration" else "Phone Speaker Calibration"
                     }
                 )
             }
@@ -176,7 +188,11 @@ fun AcousticCalibrationDialog(
                     CalibrationPhase.INSTRUCTIONS -> {
                         Text("Calibrate \"$routeName\" for tighter sync.")
                         Text(
-                            "Place the phone near the BT speaker. You will hear a few short tones. Keep the room quiet.",
+                            if (isBtRoute) {
+                                "Place the phone near the BT speaker. You will hear a few short tones. Keep the room quiet."
+                            } else {
+                                "Use the phone speaker. You will hear a few short tones. Keep the room quiet."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -223,6 +239,20 @@ fun AcousticCalibrationDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    CalibrationPhase.BASELINE_RESULT -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                            Text(resultText)
+                        }
+                        Text(
+                            "Quality: $resultQuality",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     CalibrationPhase.RESULT -> {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -256,40 +286,43 @@ fun AcousticCalibrationDialog(
         },
         confirmButton = {
             when (phase) {
-                CalibrationPhase.PLAYBACK_ACTIVE -> {
-                    TextButton(onClick = {
-                        onPausePlayback()
-                        phase = if (!hasPhoneBaseline && isBtRoute) CalibrationPhase.NEED_BASELINE
-                            else CalibrationPhase.INSTRUCTIONS
-                    }) { Text("Pause and Continue") }
-                }
+	                CalibrationPhase.PLAYBACK_ACTIVE -> {
+	                    TextButton(onClick = {
+	                        onPausePlayback()
+	                        phase = if (isBtRoute && !hasPhoneBaseline) CalibrationPhase.NEED_BASELINE
+	                            else CalibrationPhase.INSTRUCTIONS
+	                    }) { Text("Pause and Continue") }
+	                }
                 CalibrationPhase.NEED_BASELINE -> {
                     TextButton(onClick = { startMeasurement(forBaseline = true) }) {
                         Text("Calibrate Baseline")
                     }
                 }
-                CalibrationPhase.INSTRUCTIONS -> {
-                    TextButton(onClick = { startMeasurement(forBaseline = false) }) {
-                        Text("Start")
-                    }
-                }
+	                CalibrationPhase.INSTRUCTIONS -> {
+	                    TextButton(onClick = { startMeasurement(forBaseline = !isBtRoute) }) {
+	                        Text("Start")
+	                    }
+	                }
                 CalibrationPhase.BASELINE_DONE -> {
                     TextButton(onClick = {
                         phase = CalibrationPhase.INSTRUCTIONS
                     }) { Text("Continue") }
                 }
-                CalibrationPhase.RESULT -> {
-                    TextButton(onClick = {
-                        onCalibrationComplete(resultCorrectionUs, resultQuality)
-                        onDismiss()
-                    }) { Text("Save") }
-                }
-                CalibrationPhase.ERROR -> {
-                    TextButton(onClick = {
-                        phase = if (!hasPhoneBaseline && baselineUs == 0L)
-                            CalibrationPhase.NEED_BASELINE else CalibrationPhase.INSTRUCTIONS
-                    }) { Text("Retry") }
-                }
+	                CalibrationPhase.RESULT -> {
+	                    TextButton(onClick = {
+	                        onCalibrationComplete(resultCorrectionUs, resultQuality)
+	                        onDismiss()
+	                    }) { Text("Save") }
+	                }
+	                CalibrationPhase.BASELINE_RESULT -> {
+	                    TextButton(onClick = onDismiss) { Text("Done") }
+	                }
+	                CalibrationPhase.ERROR -> {
+	                    TextButton(onClick = {
+	                        phase = if (isBtRoute && !hasPhoneBaseline && baselineUs == 0L)
+	                            CalibrationPhase.NEED_BASELINE else CalibrationPhase.INSTRUCTIONS
+	                    }) { Text("Retry") }
+	                }
                 CalibrationPhase.PERMISSION_DENIED -> {
                     TextButton(onClick = {
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -314,7 +347,8 @@ private enum class CalibrationPhase {
     PERMISSION_DENIED,
     MEASURING_BASELINE,
     MEASURING_BT,
-    BASELINE_DONE,
-    RESULT,
+	    BASELINE_DONE,
+	    BASELINE_RESULT,
+	    RESULT,
     ERROR
 }

@@ -16,3 +16,11 @@
 # OkHttp
 -dontwarn okhttp3.**
 -dontwarn okio.**
+
+# Native acoustic calibrator (JNI bridge)
+-keep class net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator {
+    native <methods>;
+    private void onNativeProgress(int, int);
+}
+-keep class net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator$CalibrationResult { *; }
+-keep class net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator$Quality { *; }

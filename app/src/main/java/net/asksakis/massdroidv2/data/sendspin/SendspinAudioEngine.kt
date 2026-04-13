@@ -25,12 +25,12 @@ interface SendspinAudioEngine {
 
     // Callbacks
     var onSyncStateChanged: ((SyncState) -> Unit)?
-    var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float) -> Unit)?
+    var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float, dacAbsoluteMs: Float?) -> Unit)?
 
     // Clock sync
     var clockSynchronizer: ClockSynchronizer?
     var staticDelayMs: Int
-    var routeAcousticCorrectionUs: Long
+    var routeAcousticExtraUs: Long
 
     // Correction mode
     fun setCorrectionMode(mode: CorrectionMode)

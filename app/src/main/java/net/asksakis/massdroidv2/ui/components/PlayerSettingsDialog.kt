@@ -68,7 +68,7 @@ fun PlayerSettingsDialog(
     onStaticDelayChanged: ((Int) -> Unit)? = null,
     isBtRoute: Boolean = false,
     acousticCorrectionMs: Int = 0,
-    calibrator: net.asksakis.massdroidv2.data.sendspin.AcousticLatencyCalibrator? = null,
+    calibrator: net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator? = null,
     hasPhoneBaseline: Boolean = false,
     phoneBaselineUs: Long = 0L,
     isPlaybackActive: Boolean = false,
@@ -76,6 +76,8 @@ fun PlayerSettingsDialog(
     onPausePlayback: (() -> Unit)? = null,
     onBaselineComplete: ((Long) -> Unit)? = null,
     onAcousticCalibrationComplete: ((correctionUs: Long, quality: String) -> Unit)? = null,
+    onResetPhoneBaseline: (() -> Unit)? = null,
+    onResetBtCalibration: (() -> Unit)? = null,
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
     onDismiss: () -> Unit
 ) {
@@ -268,37 +270,98 @@ fun PlayerSettingsDialog(
                         }
                     }
 
-                    // BT Acoustic Calibration
-                    if (isLocalPlayer && isBtRoute && calibrator != null) {
-                        var showCalibrationDialog by remember { mutableStateOf(false) }
+                    // Acoustic calibration: phone baseline plus optional BT route calibration.
+                    if (isLocalPlayer && calibrator != null) {
+                        var showPhoneCalibrationDialog by remember { mutableStateOf(false) }
+                        var showBtCalibrationDialog by remember { mutableStateOf(false) }
+                        val phoneBaselineMs = phoneBaselineUs / 1000
+                        val btDeviceName = btRouteName.ifBlank { "Bluetooth speaker" }
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("BT latency calibration", style = MaterialTheme.typography.bodyMedium)
+                                Text("Phone speaker calibration", style = MaterialTheme.typography.bodyMedium)
                                 Text(
-                                    if (acousticCorrectionMs > 0) "+${acousticCorrectionMs}ms correction"
-                                    else "Not calibrated",
+                                    if (hasPhoneBaseline) "Baseline: ${phoneBaselineMs}ms" else "Not calibrated",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            TextButton(onClick = { showCalibrationDialog = true }) {
-                                Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (hasPhoneBaseline) {
+                                    TextButton(onClick = { onResetPhoneBaseline?.invoke() }) {
+                                        Text("Reset")
+                                    }
+                                }
+                                TextButton(onClick = { showPhoneCalibrationDialog = true }) {
+                                    Text(if (hasPhoneBaseline) "Recalibrate" else "Calibrate")
+                                }
                             }
                         }
-                        if (showCalibrationDialog) {
+                        if (showPhoneCalibrationDialog) {
                             AcousticCalibrationDialog(
-                                routeName = btRouteName,
+                                routeName = "Phone speaker",
                                 hasPhoneBaseline = hasPhoneBaseline,
                                 phoneBaselineUs = phoneBaselineUs,
-                                isBtRoute = isBtRoute,
+                                isBtRoute = false,
                                 isPlaybackActive = isPlaybackActive,
                                 calibrator = calibrator,
                                 onPausePlayback = { onPausePlayback?.invoke() },
-                                onDismiss = { showCalibrationDialog = false },
+                                onDismiss = { showPhoneCalibrationDialog = false },
+                                onBaselineComplete = { baselineUs ->
+                                    onBaselineComplete?.invoke(baselineUs)
+                                },
+                                onCalibrationComplete = { correctionUs, quality ->
+                                    onAcousticCalibrationComplete?.invoke(correctionUs, quality)
+                                }
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Bluetooth device calibration", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    when {
+                                        !isBtRoute -> "Connect a Bluetooth device to calibrate"
+                                        acousticCorrectionMs > 0 -> "$btDeviceName: ${acousticCorrectionMs}ms"
+                                        !hasPhoneBaseline -> "Phone baseline required first"
+                                        else -> "$btDeviceName not calibrated"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isBtRoute && acousticCorrectionMs > 0) {
+                                    TextButton(onClick = { onResetBtCalibration?.invoke() }) {
+                                        Text("Reset")
+                                    }
+                                }
+                                TextButton(
+                                    enabled = isBtRoute,
+                                    onClick = { showBtCalibrationDialog = true }
+                                ) {
+                                    Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
+                                }
+                            }
+                        }
+                        if (showBtCalibrationDialog) {
+                            AcousticCalibrationDialog(
+                                routeName = btDeviceName,
+                                hasPhoneBaseline = hasPhoneBaseline,
+                                phoneBaselineUs = phoneBaselineUs,
+                                isBtRoute = true,
+                                isPlaybackActive = isPlaybackActive,
+                                calibrator = calibrator,
+                                onPausePlayback = { onPausePlayback?.invoke() },
+                                onDismiss = { showBtCalibrationDialog = false },
                                 onBaselineComplete = { baselineUs ->
                                     onBaselineComplete?.invoke(baselineUs)
                                 },
@@ -353,7 +416,7 @@ fun PlayerSettingsDialog(
 
 @Composable
 internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
-    val rangeMs = 20f  // ±20ms range
+    val rangeMs = 60f  // wide enough to expose DAC baseline shifts
     val latest = samples.lastOrNull()
     val goodColor = MaterialTheme.colorScheme.primary
     val warnColor = MaterialTheme.colorScheme.tertiary
@@ -364,7 +427,7 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = "Sync Error",
+            text = "Correction + DAC timeline",
             style = labelStyle,
             color = labelColor,
             modifier = Modifier.padding(bottom = 4.dp)
@@ -385,13 +448,13 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                 val centerY = topInset + graphHeight / 2f
                 val stepX = size.width / (samples.size.coerceAtLeast(2) - 1).toFloat()
 
-                // Grid: center line (0ms) + ±10ms
+                // Grid: center line (0ms) + ±20ms
                 drawLine(gridColor, Offset(0f, centerY), Offset(size.width, centerY), 1.dp.toPx())
-                val tenMsY = graphHeight / 2f * (10f / rangeMs)
-                drawLine(gridColor, Offset(0f, centerY - tenMsY), Offset(size.width, centerY - tenMsY), 0.5.dp.toPx())
-                drawLine(gridColor, Offset(0f, centerY + tenMsY), Offset(size.width, centerY + tenMsY), 0.5.dp.toPx())
+                val twentyMsY = graphHeight / 2f * (20f / rangeMs)
+                drawLine(gridColor, Offset(0f, centerY - twentyMsY), Offset(size.width, centerY - twentyMsY), 0.5.dp.toPx())
+                drawLine(gridColor, Offset(0f, centerY + twentyMsY), Offset(size.width, centerY + twentyMsY), 0.5.dp.toPx())
 
-                // Sync error curve
+                // Anchor/correction curve
                 val points = samples.mapIndexed { i, s ->
                     val x = stepX * i
                     val normalized = (s.errorMs / rangeMs).coerceIn(-1f, 1f)
@@ -424,6 +487,31 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                     // Endpoint dot
                     drawCircle(lineColor, radius = 3.dp.toPx(), center = points.last())
                 }
+
+                // DAC absolute hardware-timeline curve. This is diagnostic only:
+                // it can have route/device bias, but jumps expose boundary shifts
+                // that the anchor correction line hides.
+                val dacPoints = samples.mapIndexedNotNull { i, s ->
+                    val dac = s.dacAbsoluteMs ?: return@mapIndexedNotNull null
+                    val x = stepX * i
+                    val normalized = (dac / rangeMs).coerceIn(-1f, 1f)
+                    val y = centerY - normalized * (graphHeight / 2f)
+                    Offset(x, y)
+                }
+                if (dacPoints.size >= 2) {
+                    val path = Path()
+                    path.moveTo(dacPoints.first().x, dacPoints.first().y)
+                    for (i in 1 until dacPoints.size) {
+                        val prev = dacPoints[i - 1]
+                        val curr = dacPoints[i]
+                        val midX = (prev.x + curr.x) / 2f
+                        val midY = (prev.y + curr.y) / 2f
+                        path.quadraticTo(prev.x, prev.y, midX, midY)
+                    }
+                    path.lineTo(dacPoints.last().x, dacPoints.last().y)
+                    drawPath(path, warnColor.copy(alpha = 0.75f), style = Stroke(width = 1.5.dp.toPx()))
+                    drawCircle(warnColor, radius = 2.5.dp.toPx(), center = dacPoints.last())
+                }
             }
 
             // Labels
@@ -447,7 +535,8 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                     else -> badColor
                 }
                 Text(
-                    text = "${"%.1f".format(it.errorMs)}ms",
+                    text = "C ${"%.1f".format(it.errorMs)}ms" +
+                        (it.dacAbsoluteMs?.let { dac -> "  D ${"%.0f".format(dac)}ms" } ?: ""),
                     style = labelStyle,
                     color = errColor,
                     modifier = Modifier.align(Alignment.CenterEnd)
@@ -458,7 +547,9 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
         // Output latency + filter error info line
         latest?.let {
             Text(
-                text = "Output: ${"%.0f".format(it.outputLatencyMs)}ms  Clock: ${"%.1f".format(it.filterErrorMs)}ms",
+                text = "Correction=${"%.1f".format(it.errorMs)}ms  " +
+                    "DAC=${it.dacAbsoluteMs?.let { dac -> "%.1f".format(dac) } ?: "n/a"}ms  " +
+                    "Output=${"%.0f".format(it.outputLatencyMs)}ms  Clock=${"%.1f".format(it.filterErrorMs)}ms",
                 style = MaterialTheme.typography.bodySmall,
                 color = labelColor,
                 textAlign = TextAlign.Center,

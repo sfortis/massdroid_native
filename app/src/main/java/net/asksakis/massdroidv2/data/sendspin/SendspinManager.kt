@@ -48,7 +48,12 @@ class SendspinManager(
     private val _syncState = MutableStateFlow(audio.syncState)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
 
-    data class SyncSample(val errorMs: Float, val outputLatencyMs: Float, val filterErrorMs: Float)
+    data class SyncSample(
+        val errorMs: Float,
+        val outputLatencyMs: Float,
+        val filterErrorMs: Float,
+        val dacAbsoluteMs: Float? = null,
+    )
     private val _syncHistory = MutableStateFlow<List<SyncSample>>(emptyList())
     val syncHistory: StateFlow<List<SyncSample>> = _syncHistory.asStateFlow()
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
@@ -84,25 +89,25 @@ class SendspinManager(
             }
         }
 
-        // Handle text messages
+        // Handle ordered protocol messages. Text control messages and binary audio frames
+        // must be processed in WebSocket order for seek/stream-clear correctness.
         messageJob?.cancel()
-        messageJob = scope.launch {
-            client.textMessages.collect { incoming ->
-                handleIncoming(incoming)
-            }
-        }
-
-        // Handle binary messages (audio)
         binaryJob?.cancel()
+        binaryJob = null
         var binaryCount = 0
-        binaryJob = scope.launch {
-            client.binaryMessages.collect { data ->
-                binaryCount++
-                val gen = audio.currentConfigureGeneration()
-                if (binaryCount <= 3 || binaryCount % 1000 == 0) {
-                    Log.d(TAG, "Binary message #$binaryCount: ${data.size} bytes")
+        messageJob = scope.launch {
+            client.messages.collect { message ->
+                when (message) {
+                    is SendspinMessage.Text -> handleIncoming(message.incoming)
+                    is SendspinMessage.Binary -> {
+                        binaryCount++
+                        val gen = audio.currentConfigureGeneration()
+                        if (binaryCount <= 3 || binaryCount % 1000 == 0) {
+                            Log.d(TAG, "Binary message #$binaryCount: ${message.data.size} bytes")
+                        }
+                        audio.onBinaryMessage(message.data, gen)
+                    }
                 }
-                audio.onBinaryMessage(data, gen)
             }
         }
 
@@ -401,14 +406,14 @@ class SendspinManager(
         _syncState.value = audio.syncState
     }
 
-    fun setRouteAcousticCorrectionUs(valueUs: Long) {
-        audio.routeAcousticCorrectionUs = valueUs
-        Log.d(TAG, "Acoustic correction: ${valueUs / 1000}ms")
+    fun setRouteAcousticExtraUs(valueUs: Long) {
+        audio.routeAcousticExtraUs = valueUs
+        Log.d(TAG, "Acoustic extra: ${valueUs / 1000}ms")
     }
 
     fun getRoutedDeviceProductName(): String? = audio.getRoutedDeviceProductName()
 
-    fun acousticCorrectionMs(): Long = audio.routeAcousticCorrectionUs / 1000
+    fun acousticExtraMs(): Long = audio.routeAcousticExtraUs / 1000
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
@@ -426,8 +431,8 @@ class SendspinManager(
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 
     fun setupSyncStateCallback() {
-        audio.onSyncSample = { errorMs, outLatMs, filterErrMs ->
-            val sample = SyncSample(errorMs, outLatMs, filterErrMs)
+        audio.onSyncSample = { errorMs, outLatMs, filterErrMs, dacAbsoluteMs ->
+            val sample = SyncSample(errorMs, outLatMs, filterErrMs, dacAbsoluteMs)
             val history = _syncHistory.value.toMutableList()
             history.add(sample)
             if (history.size > 60) history.removeAt(0)
@@ -436,7 +441,7 @@ class SendspinManager(
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
             val stateStr = when (state) {
-                SyncState.IDLE -> "synchronized"
+                SyncState.IDLE -> "error"
                 SyncState.SYNCHRONIZED -> "synchronized"
                 SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
                 SyncState.SYNC_ERROR_REBUFFERING -> "error"
@@ -452,7 +457,7 @@ class SendspinManager(
 
     private fun currentSyncStatePayloadValue(): String {
         return when (_syncState.value) {
-            SyncState.IDLE -> "synchronized"
+            SyncState.IDLE -> "error"
             SyncState.SYNCHRONIZED -> "synchronized"
             SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
             SyncState.SYNC_ERROR_REBUFFERING -> "error"

@@ -19,6 +19,7 @@ val localProperties = Properties().apply {
 android {
     namespace = "net.asksakis.massdroidv2"
     compileSdk = 35
+    ndkVersion = "27.3.13750724"
 
     defaultConfig {
         applicationId = "net.asksakis.massdroidv2"
@@ -26,6 +27,23 @@ android {
         targetSdk = 35
         versionCode = 16
         versionName = "2.9.1"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     signingConfigs {
@@ -83,6 +101,7 @@ android {
 
     buildFeatures {
         compose = true
+        prefab = true
     }
 }
 
@@ -141,6 +160,9 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+
+    // Native audio (Oboe)
+    implementation("com.google.oboe:oboe:1.10.0")
 
     // Core
     implementation("androidx.core:core-ktx:1.16.0")
