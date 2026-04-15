@@ -79,6 +79,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val DAC_RESEAT_COOLDOWN_MS = 15_000L
         private const val DAC_DIVERGENCE_RESEAT_ENABLED = false
         private const val DAC_WARMUP_MS = 1_000L
+        private const val BT_LIKE_OUTPUT_LATENCY_US = 50_000L
+        private const val BT_LIKE_ACOUSTIC_LATENCY_US = 100_000L
         private const val FADE_IN_STEPS = 15  // ~300ms at 20ms/frame
 
         // BT hidden transport latency: varies wildly by codec/device (80-200ms).
@@ -222,6 +224,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
         fadeInStep++
         track.setVolume(currentVolume * fadeInStep.toFloat() / FADE_IN_STEPS)
         fadeInRemaining--
+    }
+
+    private fun isBtLikeOutput(): Boolean =
+        measuredOutputLatencyUs > BT_LIKE_OUTPUT_LATENCY_US ||
+            routeAcousticExtraUs > BT_LIKE_ACOUSTIC_LATENCY_US
+
+    private fun startSyncFadeIn(errorMs: Double, reason: String) {
+        syncMuted = false
+        if (!isMuted) {
+            fadeInRemaining = FADE_IN_STEPS
+            fadeInStep = 0
+        }
+        Log.d(TAG, "Sync converged, starting fade-in ($reason error=${"%.1f".format(errorMs)}ms)")
     }
 
     override fun bufferDurationMs(): Long {
@@ -462,7 +477,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 dacValidator.resetTimeline(audioTrack)
                 // AudioTrack was paused+flushed by onStreamEnd before this
                 // configure call, so DAC calibrations are stale.
-                dacValidator.resetStability()
+                dacValidator.clearCalibrations()
                 lastFrameReceivedMs = System.currentTimeMillis()
                 anchorServerTimestampUs = 0L
                 anchorLocalUs = 0L
@@ -833,7 +848,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 // Force full re-measurement so pre-cal and startup median
                 // get fresh values instead of keeping stale EMA.
                 latencyModel.resetMeasurementForSeek()
-                dacValidator.resetStability()
+                dacValidator.clearCalibrations()
             }
             pendingContinuityCheck = false
             forceDiscontinuityUntilMs = 0L
@@ -961,18 +976,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val now = System.currentTimeMillis()
         val dacWarmed = playbackStartedAtMs > 0 && now - playbackStartedAtMs >= DAC_WARMUP_MS
 
-        // Early unmute: startup alignment already positioned the audio correctly.
-        // The grace period below suppresses drift CORRECTION (noisy startup transient),
-        // but the audio is already aligned, so unmute immediately.
+        // Early unmute for low-latency routes: startup alignment is enough.
+        // BT-like outputs can shift their DAC/output baseline after seek, so keep them
+        // muted until the post-startup anchor is established below.
         if (syncMuted) {
             val absTotal = kotlin.math.abs(startupOffsetMs + smoothedSyncErrorMs)
-            if (absTotal < 20.0) {
-                syncMuted = false
-                if (!isMuted) {
-                    fadeInRemaining = FADE_IN_STEPS
-                    fadeInStep = 0
-                }
-                Log.d(TAG, "Sync converged, starting fade-in (error=${"%.1f".format(absTotal)}ms)")
+            if (!isBtLikeOutput() && absTotal < 20.0) {
+                startSyncFadeIn(absTotal, "startup")
             }
         }
 
@@ -1098,12 +1108,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Fade in once DAC sync converges after hard boundary.
         // Volume ramp is applied per-write in decodeAndWrite() to avoid blocking the playback thread.
         if (syncMuted && absTotal < 20.0) {
-            syncMuted = false
-            if (!isMuted) {
-                fadeInRemaining = FADE_IN_STEPS
-                fadeInStep = 0
-            }
-            Log.d(TAG, "Sync converged, starting fade-in (error=${"%.1f".format(absTotal)}ms)")
+            startSyncFadeIn(absTotal, "validated")
         }
 
         // Tier 4: Hard resync for large errors
@@ -1346,7 +1351,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                         // DAC timestamp stability is rebuilt from real audio writes and must not
                         // block next-track startup once route latency/acoustic calibration is known.
                         if (isSyncMode && !hasOutputLatencyMeasurement()) {
-                            val alreadyHasMeasurement = hasOutputLatencyMeasurement()
                             suppressRoutingCallbacks = true
                             try {
                                 val silenceFrames = activeSampleRate / 20  // 50ms per write
@@ -1375,11 +1379,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                                     if (preCalSamples.size >= 5) {
                                                         val sorted = preCalSamples.sorted()
                                                         val median = sorted[sorted.size / 2]
-                                                        if (alreadyHasMeasurement) {
-                                                            Log.d(TAG, "Pre-cal: DAC warm (latency=${median / 1000}ms, keeping EMA=${measuredOutputLatencyUs / 1000}ms, $attempt attempts)")
-                                                        } else {
-                                                            latencyModel.seedFromPreCal(median)
-                                                        }
+                                                        latencyModel.seedFromPreCal(median)
                                                         break
                                                     }
                                                 }
@@ -1391,6 +1391,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                 track.pause()
                                 track.flush()
                                 dacValidator.frameBaseline = track.playbackHeadPosition.toLong()
+                                dacValidator.clearCalibrations()
                                 if (!hasOutputLatencyMeasurement()) {
                                     Log.d(TAG, "Pre-cal: no measurement after $maxAttempts attempts, proceeding")
                                 }
@@ -1833,11 +1834,11 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     override fun setVolume(volume: Float) {
         currentVolume = volume.coerceIn(0f, 1f)
-        if (!isMuted) audioTrack?.setVolume(currentVolume)
+        audioTrack?.setVolume(if (isMuted || syncMuted) 0f else currentVolume)
     }
     override fun setMuted(muted: Boolean) {
         isMuted = muted
-        audioTrack?.setVolume(if (muted) 0f else currentVolume)
+        audioTrack?.setVolume(if (muted || syncMuted) 0f else currentVolume)
     }
 
     override fun clearBuffer() {
@@ -1879,7 +1880,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             lateDropCount = 0L
             dacValidator.resetTimeline(audioTrack)
             if (measuredOutputLatencyUs > 50_000L) {
-                dacValidator.resetStability()
+                dacValidator.clearCalibrations()
             }
             resetSyncState()
 

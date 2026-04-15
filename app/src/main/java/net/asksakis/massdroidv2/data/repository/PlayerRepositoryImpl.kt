@@ -1001,8 +1001,12 @@ class PlayerRepositoryImpl @Inject constructor(
 
     @Volatile private var volumeOverrideUntilMs = 0L
 
-    override suspend fun setVolume(playerId: String, volumeLevel: Int) {
-        // Optimistic update with cooldown to prevent bounce from stale server responses
+    /**
+     * Synchronous optimistic volume update + cooldown.
+     * Call from the UI thread BEFORE launching the async WS command
+     * to prevent PLAYER_UPDATED echoes from flickering the slider.
+     */
+    override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int) {
         volumeOverrideUntilMs = System.currentTimeMillis() + 800
         _players.update { list ->
             list.map { if (it.playerId == playerId) it.copy(volumeLevel = volumeLevel) else it }
@@ -1010,6 +1014,10 @@ class PlayerRepositoryImpl @Inject constructor(
         if (_selectedPlayer.value?.playerId == playerId) {
             _selectedPlayer.update { it?.copy(volumeLevel = volumeLevel) }
         }
+    }
+
+    override suspend fun setVolume(playerId: String, volumeLevel: Int) {
+        applyVolumeOptimistic(playerId, volumeLevel)
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_SET,
             VolumeSetArgs(playerId = playerId, volumeLevel = volumeLevel)

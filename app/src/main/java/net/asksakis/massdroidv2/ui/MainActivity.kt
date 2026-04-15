@@ -231,17 +231,30 @@ class MainActivity : ComponentActivity() {
                     // Local speaker: let system handle HW volume, then mirror to MA
                     if (event.action == KeyEvent.ACTION_DOWN) {
                         hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
-                        val result = super.dispatchKeyEvent(event)
+                        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                            AudioManager.ADJUST_RAISE
+                        } else {
+                            AudioManager.ADJUST_LOWER
+                        }
+                        audio.adjustStreamVolume(
+                            AudioManager.STREAM_MUSIC,
+                            direction,
+                            AudioManager.FLAG_SHOW_UI
+                        )
                         val maVol = readPhoneVolumePercent()
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
-                        return result
+                        return true
                     }
-                    return super.dispatchKeyEvent(event)
+                    return true
                 }
                 // Remote speaker: consume both DOWN and UP to prevent system volume change
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
                     val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
+                    // Optimistic update + cooldown synchronously to prevent PLAYER_UPDATED
+                    // echo from flickering the slider before the coroutine starts.
+                    playerRepository.applyVolumeOptimistic(player.playerId, newVol)
                     lifecycleScope.launch {
                         if (player.groupChilds.any { it != player.playerId }) {
                             playerRepository.setGroupVolume(player.playerId, newVol)

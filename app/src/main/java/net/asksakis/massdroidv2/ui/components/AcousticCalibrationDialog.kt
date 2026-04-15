@@ -52,6 +52,7 @@ fun AcousticCalibrationDialog(
     isPlaybackActive: Boolean,
     calibrator: NativeAcousticCalibrator,
     onPausePlayback: () -> Unit = {},
+    onResumePlayback: () -> Unit = {},
     onDismiss: () -> Unit,
     onBaselineComplete: (baselineUs: Long) -> Unit,
     onCalibrationComplete: (correctionUs: Long, quality: String) -> Unit
@@ -70,6 +71,13 @@ fun AcousticCalibrationDialog(
     var resultCorrectionUs by remember { mutableStateOf(0L) }
     var baselineUs by remember(phoneBaselineUs) { mutableStateOf(phoneBaselineUs) }
     var pendingBaselineMeasurement by remember { mutableStateOf(false) }
+    var didPausePlayback by remember { mutableStateOf(false) }
+
+    // Resume playback if we paused it and the dialog is being dismissed
+    val dismissWithResume = {
+        if (didPausePlayback) onResumePlayback()
+        onDismiss()
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -139,7 +147,7 @@ fun AcousticCalibrationDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismissWithResume,
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -189,9 +197,9 @@ fun AcousticCalibrationDialog(
                         Text("Calibrate \"$routeName\" for tighter sync.")
                         Text(
                             if (isBtRoute) {
-                                "Place the phone near the BT speaker. You will hear a few short tones. Keep the room quiet."
+                                "Place the phone near the BT speaker. Set media volume around 50-70%, then keep the room quiet."
                             } else {
-                                "Use the phone speaker. You will hear a few short tones. Keep the room quiet."
+                                "Use the phone speaker. Set media volume around 50-70%, then keep the room quiet."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -276,7 +284,7 @@ fun AcousticCalibrationDialog(
                             Text(resultText)
                         }
                         Text(
-                            "Move the phone closer to the speaker and try again.",
+                            "Move the phone closer to the speaker, raise media volume if needed, and try again.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -289,6 +297,7 @@ fun AcousticCalibrationDialog(
 	                CalibrationPhase.PLAYBACK_ACTIVE -> {
 	                    TextButton(onClick = {
 	                        onPausePlayback()
+	                        didPausePlayback = true
 	                        phase = if (isBtRoute && !hasPhoneBaseline) CalibrationPhase.NEED_BASELINE
 	                            else CalibrationPhase.INSTRUCTIONS
 	                    }) { Text("Pause and Continue") }
@@ -333,7 +342,7 @@ fun AcousticCalibrationDialog(
         },
         dismissButton = {
             if (phase != CalibrationPhase.MEASURING_BASELINE && phase != CalibrationPhase.MEASURING_BT) {
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+                TextButton(onClick = dismissWithResume) { Text("Cancel") }
             }
         }
     )

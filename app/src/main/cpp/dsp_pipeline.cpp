@@ -58,17 +58,23 @@ CalibrationResult analyzeRecording(
         return CalibrationResult{0, 0, 0.0, 0.0f, 2}; // FAILED
     }
 
-    // Noise floor from pre-roll region
+    // Noise floor from pre-roll region (skip first 10% for envelope warmup)
     float noiseFloor = 0.0f;
-    if (preRollSamples > 0 && preRollSamples <= envSize) {
-        noiseFloor = std::accumulate(envelope.begin(),
-                                     envelope.begin() + preRollSamples,
-                                     0.0f) / preRollSamples;
+    if (preRollSamples > 100) {
+        int warmup = preRollSamples / 10;
+        int count = preRollSamples - warmup;
+        float sumSq = 0.0f;
+        for (int i = warmup; i < preRollSamples && i < envSize; ++i) {
+            sumSq += envelope[i] * envelope[i];
+        }
+        noiseFloor = std::sqrt(sumSq / count);
     }
 
-    float snrDb = (noiseFloor > 0.0f)
+    float snrDb = (noiseFloor > 1e-8f)
         ? 20.0f * std::log10(peakEnvelope / noiseFloor)
         : 40.0f;
+
+    LOGD("Noise floor: %.6f peak: %.6f SNR: %.1f dB", noiseFloor, peakEnvelope, snrDb);
 
     float threshold = noiseFloor + (peakEnvelope - noiseFloor) * ONSET_THRESHOLD_FRACTION;
 
@@ -84,11 +90,20 @@ CalibrationResult analyzeRecording(
         int searchEnd    = std::min(recToneStart + maxDelaySamp, envSize);
         if (searchStart >= searchEnd) continue;
 
+        // Require MIN_ONSET_SAMPLES consecutive samples above threshold
+        // to avoid false positives from transient clicks/noise.
+        constexpr int MIN_ONSET_SAMPLES = 8;
         int onsetSample = -1;
+        int consecutiveAbove = 0;
         for (int s = searchStart; s < searchEnd; ++s) {
             if (envelope[s] > threshold) {
-                onsetSample = s;
-                break;
+                consecutiveAbove++;
+                if (consecutiveAbove >= MIN_ONSET_SAMPLES) {
+                    onsetSample = s - MIN_ONSET_SAMPLES + 1;  // first sample of the run
+                    break;
+                }
+            } else {
+                consecutiveAbove = 0;
             }
         }
 
@@ -107,6 +122,15 @@ CalibrationResult analyzeRecording(
     int detected = static_cast<int>(delays.size());
     if (detected < MIN_TONES_DETECTED) {
         LOGW("Too few tones: %d/%d", detected, toneCount);
+        return CalibrationResult{0, detected, 0.0, snrDb, 2}; // FAILED
+    }
+
+    // Reject physically impossible delays (< 5ms = no real acoustic path)
+    delays.erase(
+        std::remove_if(delays.begin(), delays.end(), [](int64_t d) { return d < 5000; }),
+        delays.end());
+    if (static_cast<int>(delays.size()) < MIN_TONES_DETECTED) {
+        LOGW("Too few valid tones after min-delay filter: %zu", delays.size());
         return CalibrationResult{0, detected, 0.0, snrDb, 2}; // FAILED
     }
 

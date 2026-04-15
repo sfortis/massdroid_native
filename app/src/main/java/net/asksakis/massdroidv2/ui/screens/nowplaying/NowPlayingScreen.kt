@@ -97,6 +97,9 @@ import coil.compose.AsyncImage
 
 private enum class SwipeCommitDirection { NEXT, PREVIOUS }
 
+private fun formatMs(valueMs: Float): String =
+    String.format(java.util.Locale.US, "%.1fms", valueMs)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NowPlayingScreen(
@@ -466,6 +469,7 @@ fun NowPlayingScreen(
                 phoneBaselineUs = phoneBaseline,
                 isPlaybackActive = viewModel.isPlaybackActive(),
                 onPausePlayback = { viewModel.pauseForCalibration() },
+                onResumePlayback = { viewModel.resumeAfterCalibration() },
                 btRouteName = viewModel.getBtRouteName(),
                 onBaselineComplete = { viewModel.saveAcousticBaseline(it) },
                 onAcousticCalibrationComplete = { correctionUs, quality ->
@@ -1010,6 +1014,7 @@ private fun SendspinStatusSheet(
     val bufferSeconds = status.activeBufferMs / 1000f
     val maxSeconds = 30f
     val bufferColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+    val syncAbsMs = kotlin.math.abs(status.absoluteSyncMs)
     val stateLabel = when (status.syncState) {
         SyncState.IDLE -> "Idle"
         SyncState.SYNCHRONIZED -> "Synchronized"
@@ -1025,6 +1030,26 @@ private fun SendspinStatusSheet(
         SendspinState.ERROR -> "Error"
         SendspinState.DISCONNECTED -> "Disconnected"
     }
+    val syncLockLabel = when {
+        status.syncState != SyncState.SYNCHRONIZED -> stateLabel
+        status.syncMuted -> "Aligning (muted)"
+        syncAbsMs < 5f -> "Locked (${formatMs(status.absoluteSyncMs)})"
+        syncAbsMs < 20f -> "Correcting (${formatMs(status.absoluteSyncMs)})"
+        else -> "Converging (${formatMs(status.absoluteSyncMs)})"
+    }
+    val routeCorrectionMs = status.acousticCorrectionMs
+    val routeExtraMs = (routeCorrectionMs - status.outputLatencyMs).coerceAtLeast(0L)
+    val latencyPrimary = when {
+        routeCorrectionMs > 0L -> "${routeCorrectionMs}ms calibrated"
+        status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms output estimate"
+        else -> "Measuring"
+    }
+    val latencyDetail = when {
+        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + route ${routeExtraMs}ms"
+        status.outputLatencyMs > 0L -> "no acoustic calibration loaded"
+        else -> "waiting for output timestamp"
+    }
+    val clockLabel = "${status.clockSamples} samples / ${formatMs(status.clockErrorUs / 1000f)} clock error"
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1053,10 +1078,10 @@ private fun SendspinStatusSheet(
             val valueColor = MaterialTheme.colorScheme.onSurface
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
-                SmallStatusLine("Engine correction", "${"%.1f".format(status.absoluteSyncMs)}ms${if (status.syncMuted) "  (muted)" else ""}", smallStyle, dimColor, valueColor)
-                SmallStatusLine("DAC drift", "${"%.1f".format(status.dacSyncErrorMs)}ms", smallStyle, dimColor, valueColor)
-                SmallStatusLine("Latency model", "${status.outputLatencyMs}ms output + ${status.acousticCorrectionMs}ms acoustic", smallStyle, dimColor, valueColor)
-                SmallStatusLine("Clock", "${status.clockSamples} samples / ${status.clockErrorUs / 1000.0}ms err", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Sync lock", syncLockLabel, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Sync error", formatMs(status.absoluteSyncMs), smallStyle, dimColor, valueColor)
+                DetailStatusLine("Latency", latencyPrimary, latencyDetail, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Clock", clockLabel, smallStyle, dimColor, valueColor)
                 SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
                 SmallStatusLine("Buffer", String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000), smallStyle, dimColor, valueColor)
             }
@@ -1085,42 +1110,43 @@ private fun SendspinStatusSheet(
                 Text("30s", style = MaterialTheme.typography.labelSmall, color = dimColor)
             }
 
-            if (syncHistory.size >= 2) {
-                HorizontalDivider()
-                var staticDelayMs by remember { mutableIntStateOf(status.staticDelayMs) }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Static delay", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = {
-                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
-                                onStaticDelayChanged(staticDelayMs)
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                        Text(
-                            "${staticDelayMs}ms",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 2.dp)
-                        )
-                        IconButton(
-                            onClick = {
-                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
-                                onStaticDelayChanged(staticDelayMs)
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
+            HorizontalDivider()
+            var staticDelayMs by remember(status.staticDelayMs) { mutableIntStateOf(status.staticDelayMs) }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Static delay", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                            onStaticDelayChanged(staticDelayMs)
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
+                    }
+                    Text(
+                        "${staticDelayMs}ms",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    IconButton(
+                        onClick = {
+                            staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                            onStaticDelayChanged(staticDelayMs)
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
                 }
+            }
+
+            if (syncHistory.size >= 2) {
                 net.asksakis.massdroidv2.ui.components.SyncErrorGraph(syncHistory)
             }
             Spacer(modifier = Modifier.height(12.dp))
@@ -1174,6 +1200,33 @@ private fun SmallStatusLine(
     ) {
         Text(label, style = style, color = labelColor)
         Text(value, style = style, color = valueColor)
+    }
+}
+
+@Composable
+private fun DetailStatusLine(
+    label: String,
+    value: String,
+    detail: String,
+    style: androidx.compose.ui.text.TextStyle,
+    labelColor: androidx.compose.ui.graphics.Color,
+    valueColor: androidx.compose.ui.graphics.Color
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, style = style, color = labelColor)
+            Text(value, style = style, color = valueColor)
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.labelSmall,
+            color = labelColor,
+            textAlign = TextAlign.End,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 

@@ -481,10 +481,11 @@ class SendspinManager(
         audio.onSyncStateChanged = null
         audio.onSyncSample = null
         _syncHistory.value = emptyList()
+        val finalSyncState = audio.syncState
         engine.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null
-        _syncState.value = audio.syncState
+        _syncState.value = finalSyncState
         _serverMetadata.value = null
         Log.d(TAG, "Sendspin stopped")
     }

@@ -74,6 +74,7 @@ fun PlayerSettingsDialog(
     isPlaybackActive: Boolean = false,
     btRouteName: String = "",
     onPausePlayback: (() -> Unit)? = null,
+    onResumePlayback: (() -> Unit)? = null,
     onBaselineComplete: ((Long) -> Unit)? = null,
     onAcousticCalibrationComplete: ((correctionUs: Long, quality: String) -> Unit)? = null,
     onResetPhoneBaseline: (() -> Unit)? = null,
@@ -310,6 +311,7 @@ fun PlayerSettingsDialog(
                                 isPlaybackActive = isPlaybackActive,
                                 calibrator = calibrator,
                                 onPausePlayback = { onPausePlayback?.invoke() },
+                                onResumePlayback = { onResumePlayback?.invoke() },
                                 onDismiss = { showPhoneCalibrationDialog = false },
                                 onBaselineComplete = { baselineUs ->
                                     onBaselineComplete?.invoke(baselineUs)
@@ -361,6 +363,7 @@ fun PlayerSettingsDialog(
                                 isPlaybackActive = isPlaybackActive,
                                 calibrator = calibrator,
                                 onPausePlayback = { onPausePlayback?.invoke() },
+                                onResumePlayback = { onResumePlayback?.invoke() },
                                 onDismiss = { showBtCalibrationDialog = false },
                                 onBaselineComplete = { baselineUs ->
                                     onBaselineComplete?.invoke(baselineUs)
@@ -416,7 +419,8 @@ fun PlayerSettingsDialog(
 
 @Composable
 internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
-    val rangeMs = 60f  // wide enough to expose DAC baseline shifts
+    val maxAbsError = samples.maxOfOrNull { kotlin.math.abs(it.errorMs) } ?: 0f
+    val rangeMs = maxOf(25f, kotlin.math.ceil(maxAbsError / 10f).toInt() * 10f).coerceAtMost(250f)
     val latest = samples.lastOrNull()
     val goodColor = MaterialTheme.colorScheme.primary
     val warnColor = MaterialTheme.colorScheme.tertiary
@@ -427,7 +431,7 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = "Correction + DAC timeline",
+            text = "Sync convergence",
             style = labelStyle,
             color = labelColor,
             modifier = Modifier.padding(bottom = 4.dp)
@@ -448,13 +452,16 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                 val centerY = topInset + graphHeight / 2f
                 val stepX = size.width / (samples.size.coerceAtLeast(2) - 1).toFloat()
 
-                // Grid: center line (0ms) + ±20ms
+                // Grid: center line (0ms), lock band (±5ms), correction threshold (±20ms).
                 drawLine(gridColor, Offset(0f, centerY), Offset(size.width, centerY), 1.dp.toPx())
+                val lockMsY = graphHeight / 2f * (5f / rangeMs)
+                drawLine(goodColor.copy(alpha = 0.45f), Offset(0f, centerY - lockMsY), Offset(size.width, centerY - lockMsY), 0.5.dp.toPx())
+                drawLine(goodColor.copy(alpha = 0.45f), Offset(0f, centerY + lockMsY), Offset(size.width, centerY + lockMsY), 0.5.dp.toPx())
                 val twentyMsY = graphHeight / 2f * (20f / rangeMs)
-                drawLine(gridColor, Offset(0f, centerY - twentyMsY), Offset(size.width, centerY - twentyMsY), 0.5.dp.toPx())
-                drawLine(gridColor, Offset(0f, centerY + twentyMsY), Offset(size.width, centerY + twentyMsY), 0.5.dp.toPx())
+                drawLine(warnColor.copy(alpha = 0.6f), Offset(0f, centerY - twentyMsY), Offset(size.width, centerY - twentyMsY), 0.5.dp.toPx())
+                drawLine(warnColor.copy(alpha = 0.6f), Offset(0f, centerY + twentyMsY), Offset(size.width, centerY + twentyMsY), 0.5.dp.toPx())
 
-                // Anchor/correction curve
+                // Actual sync convergence: anchor error moving toward 0ms.
                 val points = samples.mapIndexed { i, s ->
                     val x = stepX * i
                     val normalized = (s.errorMs / rangeMs).coerceIn(-1f, 1f)
@@ -477,8 +484,8 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                     // Color based on latest error magnitude
                     val absErr = kotlin.math.abs(latest?.errorMs ?: 0f)
                     val lineColor = when {
-                        absErr < 3f -> goodColor
-                        absErr < 10f -> warnColor
+                        absErr < 5f -> goodColor
+                        absErr < 20f -> warnColor
                         else -> badColor
                     }
 
@@ -486,31 +493,6 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
 
                     // Endpoint dot
                     drawCircle(lineColor, radius = 3.dp.toPx(), center = points.last())
-                }
-
-                // DAC absolute hardware-timeline curve. This is diagnostic only:
-                // it can have route/device bias, but jumps expose boundary shifts
-                // that the anchor correction line hides.
-                val dacPoints = samples.mapIndexedNotNull { i, s ->
-                    val dac = s.dacAbsoluteMs ?: return@mapIndexedNotNull null
-                    val x = stepX * i
-                    val normalized = (dac / rangeMs).coerceIn(-1f, 1f)
-                    val y = centerY - normalized * (graphHeight / 2f)
-                    Offset(x, y)
-                }
-                if (dacPoints.size >= 2) {
-                    val path = Path()
-                    path.moveTo(dacPoints.first().x, dacPoints.first().y)
-                    for (i in 1 until dacPoints.size) {
-                        val prev = dacPoints[i - 1]
-                        val curr = dacPoints[i]
-                        val midX = (prev.x + curr.x) / 2f
-                        val midY = (prev.y + curr.y) / 2f
-                        path.quadraticTo(prev.x, prev.y, midX, midY)
-                    }
-                    path.lineTo(dacPoints.last().x, dacPoints.last().y)
-                    drawPath(path, warnColor.copy(alpha = 0.75f), style = Stroke(width = 1.5.dp.toPx()))
-                    drawCircle(warnColor, radius = 2.5.dp.toPx(), center = dacPoints.last())
                 }
             }
 
@@ -530,13 +512,12 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
             latest?.let {
                 val absErr = kotlin.math.abs(it.errorMs)
                 val errColor = when {
-                    absErr < 3f -> goodColor
-                    absErr < 10f -> warnColor
+                    absErr < 5f -> goodColor
+                    absErr < 20f -> warnColor
                     else -> badColor
                 }
                 Text(
-                    text = "C ${"%.1f".format(it.errorMs)}ms" +
-                        (it.dacAbsoluteMs?.let { dac -> "  D ${"%.0f".format(dac)}ms" } ?: ""),
+                    text = "${"%.1f".format(it.errorMs)}ms",
                     style = labelStyle,
                     color = errColor,
                     modifier = Modifier.align(Alignment.CenterEnd)
@@ -547,8 +528,7 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
         // Output latency + filter error info line
         latest?.let {
             Text(
-                text = "Correction=${"%.1f".format(it.errorMs)}ms  " +
-                    "DAC=${it.dacAbsoluteMs?.let { dac -> "%.1f".format(dac) } ?: "n/a"}ms  " +
+                text = "Sync=${"%.1f".format(it.errorMs)}ms  " +
                     "Output=${"%.0f".format(it.outputLatencyMs)}ms  Clock=${"%.1f".format(it.filterErrorMs)}ms",
                 style = MaterialTheme.typography.bodySmall,
                 color = labelColor,

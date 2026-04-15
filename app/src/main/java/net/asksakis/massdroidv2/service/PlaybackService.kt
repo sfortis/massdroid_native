@@ -2678,16 +2678,19 @@ class RemoteControlPlayer(
     }
 
     override fun handleIncreaseDeviceVolume(flags: Int): ListenableFuture<*> {
+        Log.d("RemoteControlPlayer", "handleIncreaseDeviceVolume flags=$flags")
         onVolumeUp()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleDecreaseDeviceVolume(flags: Int): ListenableFuture<*> {
+        Log.d("RemoteControlPlayer", "handleDecreaseDeviceVolume flags=$flags")
         onVolumeDown()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
+        Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
         val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
         onVolumeSet(maVolume)
         return Futures.immediateVoidFuture()

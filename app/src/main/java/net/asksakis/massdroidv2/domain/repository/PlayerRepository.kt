@@ -56,6 +56,8 @@ interface PlayerRepository {
     suspend fun next(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
+    /** Synchronous optimistic volume update + cooldown. Prevents UI flicker from server echoes. */
+    fun applyVolumeOptimistic(playerId: String, volumeLevel: Int)
     suspend fun setVolume(playerId: String, volumeLevel: Int)
     suspend fun setGroupVolume(parentId: String, volume: Int)
     fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int)
