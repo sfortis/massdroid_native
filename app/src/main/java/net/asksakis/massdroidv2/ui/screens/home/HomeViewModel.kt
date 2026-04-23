@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.asksakis.massdroidv2.data.repository.QueueDstmCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
@@ -30,7 +31,8 @@ class HomeViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore,
     private val roomDetector: RoomDetector,
-    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager
+    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    private val queueDstmCache: QueueDstmCache
 ) : ViewModel() {
 
     val players = playerRepository.players
@@ -38,6 +40,7 @@ class HomeViewModel @Inject constructor(
     val connectionState = wsClient.connectionState
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
+    val queueDstmStates: StateFlow<Map<String, Boolean>> = queueDstmCache.states
     val sendspinClientId = settingsRepository.sendspinClientId
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
@@ -203,6 +206,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        queueDstmCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
                 musicRepository.setDontStopTheMusic(queueId, enabled)

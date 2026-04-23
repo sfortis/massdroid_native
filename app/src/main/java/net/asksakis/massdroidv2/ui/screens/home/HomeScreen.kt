@@ -1,8 +1,13 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -164,15 +169,14 @@ fun HomeScreen(
     val pullToRefreshState = rememberPullToRefreshState()
     var showConnectionDialog by remember { mutableStateOf(false) }
     val guard = rememberConnectionGuard()
-    val snackbarHostState = remember { SnackbarHostState() }
-
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         floatingActionButton = {
             if (connectionState is ConnectionState.Connected) {
                 SmartMixFab(
                     isBusy = isBuildingSmartMix,
+                    message = smartMixMessage,
+                    onMessageShown = { viewModel.clearSmartMixMessage() },
                     onClick = { guard { viewModel.makePlaylistForMe() } },
                     modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
                 )
@@ -346,14 +350,6 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(smartMixMessage) {
-        val message = smartMixMessage ?: return@LaunchedEffect
-        if (message.isNotBlank()) {
-            snackbarHostState.showSnackbar(message = message)
-            viewModel.clearSmartMixMessage()
-        }
-    }
-
     LaunchedEffect(showConnectionDialog) {
         if (showConnectionDialog) {
             viewModel.startContinuousConnectionProbe()
@@ -403,6 +399,8 @@ private fun EmptyStateView(onNavigateToSettings: () -> Unit) {
 @Composable
 private fun SmartMixFab(
     isBusy: Boolean,
+    message: String?,
+    onMessageShown: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -412,8 +410,19 @@ private fun SmartMixFab(
         androidx.lifecycle.Lifecycle.State.RESUMED
     )
 
-    LaunchedEffect(isBusy, isResumed) {
-        if (!isBusy && isResumed) {
+    // Keep the message visible in the FAB for a bit, then collapse back to "Smart Mix"
+    // by asking the ViewModel to clear it. Calling onMessageShown BEFORE the delay would
+    // cancel this LaunchedEffect (message key changes to null), leaving the FAB stuck.
+    LaunchedEffect(message) {
+        if (!message.isNullOrBlank()) {
+            delay(SMART_MIX_MESSAGE_MS)
+            onMessageShown()
+        }
+    }
+    val displayMessage = message?.takeIf { it.isNotBlank() }
+
+    LaunchedEffect(isBusy, isResumed, displayMessage) {
+        if (!isBusy && isResumed && displayMessage == null) {
             val framesPerPulse = 24          // 24 * 50ms = 1.2s per pulse
             val pi = Math.PI.toFloat()
             while (true) {
@@ -432,9 +441,13 @@ private fun SmartMixFab(
         }
     }
 
+    val displayLabel = displayMessage ?: "Smart Mix"
+
     ExtendedFloatingActionButton(
-        onClick = { if (!isBusy) onClick() },
-        modifier = modifier,
+        onClick = { if (!isBusy && displayMessage == null) onClick() },
+        modifier = modifier.animateContentSize(
+            animationSpec = tween(durationMillis = 280)
+        ),
         shape = CircleShape,
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
         contentColor = MaterialTheme.colorScheme.onSurface,
@@ -459,9 +472,28 @@ private fun SmartMixFab(
                 )
             }
         },
-        text = { Text("Smart Mix") }
+        text = {
+            AnimatedContent(
+                targetState = displayLabel,
+                transitionSpec = {
+                    (fadeIn(tween(220)) + slideInHorizontally(tween(260)) { width -> width / 3 })
+                        .togetherWith(
+                            fadeOut(tween(180)) + slideOutHorizontally(tween(200)) { width -> -width / 3 }
+                        )
+                },
+                label = "SmartMixFabText"
+            ) { text ->
+                Text(
+                    text = text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     )
 }
+
+private const val SMART_MIX_MESSAGE_MS = 3_500L
 
 @Composable
 private fun ConnectionStatusDialog(

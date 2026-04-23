@@ -449,10 +449,11 @@ fun NowPlayingScreen(
             val calibrations by viewModel.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
             val btRouteKey = viewModel.getBtRouteKey()
             val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
+            val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
 
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
-                initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                initialDstmEnabled = dstmStates[currentPlayer.playerId] ?: false,
                 isSendspinPlayer = currentPlayer.provider == "sendspin",
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),

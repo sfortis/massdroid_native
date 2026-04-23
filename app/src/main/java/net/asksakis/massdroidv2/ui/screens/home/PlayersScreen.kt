@@ -69,6 +69,7 @@ fun PlayersScreen(
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle()
+    val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
@@ -245,7 +246,7 @@ fun PlayersScreen(
                         if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
-                            initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                            initialDstmEnabled = dstmStates[player.playerId] ?: false,
                             isSendspinPlayer = player.provider == "sendspin",
                             isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
                             initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),

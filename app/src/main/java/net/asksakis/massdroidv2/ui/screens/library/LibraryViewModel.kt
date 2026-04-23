@@ -1630,7 +1630,8 @@ enum class PlaylistSortKey(val label: String) {
     NAME("Name"),
     ARTIST("Artist"),
     ALBUM("Album"),
-    DURATION("Duration")
+    DURATION("Duration"),
+    RECENTLY_ADDED("Recently Added")
 }
 
 @HiltViewModel
@@ -1663,8 +1664,9 @@ class PlaylistDetailViewModel @Inject constructor(
             PlaylistSortKey.ARTIST -> filtered.sortedBy { it.artistNames.lowercase() }
             PlaylistSortKey.ALBUM -> filtered.sortedBy { it.albumName.lowercase() }
             PlaylistSortKey.DURATION -> filtered.sortedBy { it.duration ?: 0.0 }
+            PlaylistSortKey.RECENTLY_ADDED -> filtered.sortedByDescending { it.dateAdded ?: "" }
         }
-        if (desc && key != PlaylistSortKey.POSITION) sorted.reversed() else sorted
+        if (desc && key != PlaylistSortKey.POSITION && key != PlaylistSortKey.RECENTLY_ADDED) sorted.reversed() else sorted
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val currentTrackUri: StateFlow<String?> = playerRepository.queueState

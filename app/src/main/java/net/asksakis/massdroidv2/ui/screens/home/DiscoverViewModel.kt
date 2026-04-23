@@ -134,7 +134,8 @@ class DiscoverViewModel @Inject constructor(
     private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker,
-    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
 ) : ViewModel() {
 
     private val sectionCoordinator = DiscoverSectionCoordinator(
@@ -375,16 +376,16 @@ class DiscoverViewModel @Inject constructor(
                     )
                     return@launch
                 }
-                val hadDstm = playerRepository.queueState.value?.dontStopTheMusicEnabled ?: false
+                playerRepository.setQueueFilterMode(
+                    queueId,
+                    PlayerRepository.QueueFilterMode.SMART_GENERATED
+                )
+                lastSmartMixSelection = mixResult.tracks
+                val hadDstm = queueDstmCache.dstmFor(queueId)
                 if (hadDstm) {
                     musicRepository.setDontStopTheMusic(queueId, false)
                 }
                 try {
-                    playerRepository.setQueueFilterMode(
-                        queueId,
-                        PlayerRepository.QueueFilterMode.SMART_GENERATED
-                    )
-                    lastSmartMixSelection = mixResult.tracks
                     musicRepository.playMedia(
                         queueId = queueId,
                         uris = trackUris,

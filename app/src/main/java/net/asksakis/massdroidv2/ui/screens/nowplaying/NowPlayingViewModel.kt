@@ -100,12 +100,14 @@ class NowPlayingViewModel @Inject constructor(
     private val lyricsProvider: LyricsProvider,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
     val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator,
-    val sleepTimerBridge: SleepTimerBridge
+    val sleepTimerBridge: SleepTimerBridge,
+    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
     val allPlayers: StateFlow<List<net.asksakis.massdroidv2.domain.model.Player>> = playerRepository.players
     val queueState = playerRepository.queueState
+    val queueDstmStates: StateFlow<Map<String, Boolean>> = queueDstmCache.states
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
@@ -920,6 +922,7 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        queueDstmCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
                 musicRepository.setDontStopTheMusic(queueId, enabled)

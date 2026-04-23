@@ -119,6 +119,7 @@ data class ServerMediaItem(
     @SerialName("is_playable") val isPlayable: Boolean? = null,
     val path: String? = null,
     @SerialName("translation_key") val translationKey: String? = null,
+    @SerialName("date_added") val dateAdded: String? = null,
     @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images. */

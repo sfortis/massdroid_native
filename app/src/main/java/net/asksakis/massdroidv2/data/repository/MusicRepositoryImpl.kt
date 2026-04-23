@@ -645,7 +645,8 @@ class MusicRepositoryImpl @Inject constructor(
             year = sanitizeYear(album?.year ?: year),
             providerDomains = extractProviderDomains(),
             lyrics = metadata?.lyrics,
-            lrcLyrics = metadata?.lrcLyrics
+            lrcLyrics = metadata?.lrcLyrics,
+            dateAdded = dateAdded
         )
     }
 
