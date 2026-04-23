@@ -1,7 +1,6 @@
 package net.asksakis.massdroidv2.ui.components
 
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonColors
@@ -15,8 +14,14 @@ import androidx.compose.ui.Modifier
 import kotlinx.coroutines.delay
 
 /**
- * IconButton that fires onClick once on tap and continues firing while held,
- * after a short initial delay, ramping up the repeat rate for faster adjustments.
+ * IconButton that fires onClick on every tap AND keeps firing while held, after
+ * a short initial delay, ramping up the repeat rate for fast adjustments.
+ *
+ * onClick fires through the IconButton's own callback (reliable for single taps)
+ * and additionally through the LaunchedEffect for hold-to-repeat. Because the
+ * initial press also triggers IconButton.onClick, the LaunchedEffect skips the
+ * first call and only starts repeating after initialDelayMs to avoid a
+ * double-tap on every press.
  */
 @Composable
 fun RepeatingIconButton(
@@ -34,8 +39,8 @@ fun RepeatingIconButton(
 
     LaunchedEffect(isPressed, enabled) {
         if (!enabled || !isPressed) return@LaunchedEffect
-        // Initial tap fires immediately, then we hold-repeat while pressed.
-        currentOnClick()
+        // IconButton.onClick already fires for the initial press. Wait for the
+        // initial hold threshold, then start repeat-firing while still pressed.
         delay(initialDelayMs)
         var interval = initialDelayMs / 2
         while (isPressed) {
@@ -46,7 +51,7 @@ fun RepeatingIconButton(
     }
 
     IconButton(
-        onClick = {},  // fires via interactionSource (initial press) + LaunchedEffect (repeat)
+        onClick = { currentOnClick() },
         modifier = modifier,
         enabled = enabled,
         colors = colors,

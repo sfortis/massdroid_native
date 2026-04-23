@@ -4,10 +4,21 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -17,7 +28,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -53,6 +63,7 @@ import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerSettingsDialog(
     player: Player,
@@ -105,16 +116,50 @@ fun PlayerSettingsDialog(
         isLoading = false
     }
 
-    AlertDialog(
+    // BasicAlertDialog + custom layout so the action buttons don't eat the
+    // vertical space that the Material3 AlertDialog reserves for its default
+    // title/content/buttons sections.
+    androidx.compose.material3.BasicAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Player Settings") },
-        text = {
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        modifier = Modifier
+            .widthIn(min = 320.dp, max = 480.dp)
+            .heightIn(max = 560.dp)
+            .windowInsetsPadding(
+                WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+                )
+            ),
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        androidx.compose.material3.Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+                Text(
+                    "Player Settings",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                    }
+                } else {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                    ) {
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
@@ -236,39 +281,18 @@ fun PlayerSettingsDialog(
                     }
 
                     if (isLocalPlayer) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Static delay", style = MaterialTheme.typography.bodyMedium)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                RepeatingIconButton(
-                                    onClick = {
-                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
-                                        onStaticDelayChanged?.invoke(staticDelayMs)
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
-                                }
-                                Text(
-                                    "${staticDelayMs}ms",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = 2.dp)
-                                )
-                                RepeatingIconButton(
-                                    onClick = {
-                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
-                                        onStaticDelayChanged?.invoke(staticDelayMs)
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                }
+                        SteppedValueRow(
+                            label = "Static delay",
+                            valueLabel = "${staticDelayMs}ms",
+                            onDecrement = {
+                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                                onStaticDelayChanged?.invoke(staticDelayMs)
+                            },
+                            onIncrement = {
+                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
+                                onStaticDelayChanged?.invoke(staticDelayMs)
                             }
-                        }
+                        )
                     }
 
                     // Acoustic calibration: phone baseline plus optional BT route calibration.
@@ -374,47 +398,52 @@ fun PlayerSettingsDialog(
                             )
                         }
                     }
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    TextButton(
+                        onClick = {
+                            val values = mutableMapOf<String, Any>(
+                                "smart_fades_mode" to crossfadeMode.apiValue,
+                                "volume_normalization" to volumeNormalization
+                            )
+                            if (name.isNotBlank() && name.trim() != player.displayName) {
+                                values["name"] = name.trim()
+                            }
+                            val newFormat = selectedFormatValue
+                            if (isSendspinPlayer && newFormat != null) {
+                                val serverValue = if (newFormat == "smart") "automatic" else newFormat
+                                values["preferred_sendspin_format"] = serverValue
+                                if (isLocalPlayer) {
+                                    val localFormat = when {
+                                        newFormat == "smart" -> SendspinAudioFormat.SMART
+                                        newFormat.startsWith("opus") -> SendspinAudioFormat.OPUS
+                                        newFormat.startsWith("flac") -> SendspinAudioFormat.FLAC
+                                        newFormat.startsWith("pcm") -> SendspinAudioFormat.PCM
+                                        else -> null
+                                    }
+                                    if (localFormat != null) onAudioFormatChanged?.invoke(localFormat)
+                                }
+                            }
+                            onSave(player.playerId, values)
+                            if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
+                                onDstmChanged?.invoke(dontStopTheMusic)
+                            }
+                            onDismiss()
+                        },
+                        enabled = !isLoading
+                    ) { Text("Save") }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val values = mutableMapOf<String, Any>(
-                        "smart_fades_mode" to crossfadeMode.apiValue,
-                        "volume_normalization" to volumeNormalization
-                    )
-                    if (name.isNotBlank() && name.trim() != player.displayName) {
-                        values["name"] = name.trim()
-                    }
-                    val newFormat = selectedFormatValue
-                    if (isSendspinPlayer && newFormat != null) {
-                        val serverValue = if (newFormat == "smart") "automatic" else newFormat
-                        values["preferred_sendspin_format"] = serverValue
-                        if (isLocalPlayer) {
-                            val localFormat = when {
-                                newFormat == "smart" -> SendspinAudioFormat.SMART
-                                newFormat.startsWith("opus") -> SendspinAudioFormat.OPUS
-                                newFormat.startsWith("flac") -> SendspinAudioFormat.FLAC
-                                newFormat.startsWith("pcm") -> SendspinAudioFormat.PCM
-                                else -> null
-                            }
-                            if (localFormat != null) onAudioFormatChanged?.invoke(localFormat)
-                        }
-                    }
-                    onSave(player.playerId, values)
-                    if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
-                        onDstmChanged?.invoke(dontStopTheMusic)
-                    }
-                    onDismiss()
-                },
-                enabled = !isLoading
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
-    )
+    }
 }
 
 @Composable

@@ -337,21 +337,21 @@ private fun PlayerListItem(
             .padding(horizontal = 8.dp)
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = containerColor,
         tonalElevation = if (isSelected || isPlaying) 1.dp else 0.dp,
         shadowElevation = 0.dp
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     SoundWaveIcon(
@@ -364,7 +364,7 @@ private fun PlayerListItem(
                     ) {
                         PlayerIcon(
                             player = player,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(20.dp),
                             tint = accentColor
                         )
                     }
@@ -397,11 +397,12 @@ private fun PlayerListItem(
                     }
                 }
 
-                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(28.dp)) {
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = "Player options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }

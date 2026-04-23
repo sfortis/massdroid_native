@@ -7,6 +7,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -1060,6 +1062,7 @@ private fun SendspinStatusSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1113,39 +1116,19 @@ private fun SendspinStatusSheet(
 
             HorizontalDivider()
             var staticDelayMs by remember(status.staticDelayMs) { mutableIntStateOf(status.staticDelayMs) }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Static delay", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    net.asksakis.massdroidv2.ui.components.RepeatingIconButton(
-                        onClick = {
-                            staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
-                            onStaticDelayChanged(staticDelayMs)
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(Icons.Default.Remove, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                    Text(
-                        "${staticDelayMs}ms",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 2.dp)
-                    )
-                    net.asksakis.massdroidv2.ui.components.RepeatingIconButton(
-                        onClick = {
-                            staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
-                            onStaticDelayChanged(staticDelayMs)
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                }
-            }
+            net.asksakis.massdroidv2.ui.components.SteppedValueRow(
+                label = "Static delay",
+                valueLabel = "${staticDelayMs}ms",
+                onDecrement = {
+                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                    onStaticDelayChanged(staticDelayMs)
+                },
+                onIncrement = {
+                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
+                    onStaticDelayChanged(staticDelayMs)
+                },
+                labelStyle = MaterialTheme.typography.labelMedium
+            )
 
             if (syncHistory.size >= 2) {
                 net.asksakis.massdroidv2.ui.components.SyncErrorGraph(syncHistory)

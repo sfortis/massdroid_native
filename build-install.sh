@@ -3,6 +3,9 @@ set -e
 
 cd "$(dirname "$0")"
 BUILD_ROOT="${MASSDROID_BUILD_DIR:-$HOME/massdroid-native-build}"
+declare -a TARGET_SERIALS=()
+USAGE="Usage: ./build-install.sh [--build-root <path>] [-d|--device <serial>]..."
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -b|--build-root)
@@ -14,13 +17,25 @@ while [[ $# -gt 0 ]]; do
       BUILD_ROOT="${1#*=}"
       shift
       ;;
+    -d|--device)
+      [[ $# -lt 2 ]] && { echo "Missing value for $1"; exit 1; }
+      TARGET_SERIALS+=("$2")
+      shift 2
+      ;;
+    --device=*)
+      TARGET_SERIALS+=("${1#*=}")
+      shift
+      ;;
     -h|--help)
-      echo "Usage: ./build-install.sh [--build-root <path>]"
+      echo "$USAGE"
+      echo ""
+      echo "  -d, --device <serial>  install on the given device (repeatable)"
+      echo "                         if omitted, installs on every connected device"
       exit 0
       ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: ./build-install.sh [--build-root <path>]"
+      echo "$USAGE"
       exit 1
       ;;
   esac
@@ -111,6 +126,33 @@ fi
 
 echo "=== Install ==="
 echo "Using adb: $ADB_BIN"
-"$ADB_BIN" install -r "$APK"
+
+mapfile -t CONNECTED < <("$ADB_BIN" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+
+if [[ ${#CONNECTED[@]} -eq 0 ]]; then
+  echo "No connected devices"
+  exit 1
+fi
+
+if [[ ${#TARGET_SERIALS[@]} -eq 0 ]]; then
+  TARGET_SERIALS=("${CONNECTED[@]}")
+else
+  for serial in "${TARGET_SERIALS[@]}"; do
+    found=0
+    for c in "${CONNECTED[@]}"; do
+      [[ "$serial" == "$c" ]] && { found=1; break; }
+    done
+    if [[ $found -eq 0 ]]; then
+      echo "Requested device not connected: $serial"
+      echo "Connected: ${CONNECTED[*]}"
+      exit 1
+    fi
+  done
+fi
+
+for serial in "${TARGET_SERIALS[@]}"; do
+  echo "-- $serial"
+  "$ADB_BIN" -s "$serial" install -r "$APK"
+done
 
 echo "=== Done ==="

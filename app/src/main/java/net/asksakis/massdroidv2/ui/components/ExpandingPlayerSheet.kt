@@ -6,6 +6,10 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.union
 import net.asksakis.massdroidv2.ui.components.rememberConnectionGuard
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -68,7 +72,11 @@ fun ExpandingPlayerSheet(
     val config = LocalConfiguration.current
     val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
     val bottomBarDp = bottomBarHeight.value
-    val effectiveBottomBar = if (isLandscape) 0f else bottomBarDp
+    // In landscape the scaffold bottomBar only contains the mini player (no nav bar),
+    // but we still must stay clear of the system navigation bar inset.
+    val navInsetBottomPx = WindowInsets.navigationBars.getBottom(density)
+    val navInsetBottomDp = with(density) { navInsetBottomPx.toDp() }.value
+    val effectiveBottomBar = if (isLandscape) navInsetBottomDp else bottomBarDp
 
     val animatable = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
@@ -97,20 +105,29 @@ fun ExpandingPlayerSheet(
     // f = current fraction (0=collapsed, 1=expanded), driven by drag OR animation
     val f = animatable.value.coerceIn(0f, 1f)
 
+    // Horizontal insets (display cutout + side nav bar) so the collapsed mini
+    // player and the expanded sheet don't slide under a side-mounted gesture bar
+    // in landscape or a display cutout in portrait.
+    val sideInsets = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
+    val leftInsetPx = sideInsets.getLeft(density, androidx.compose.ui.unit.LayoutDirection.Ltr).toFloat()
+    val rightInsetPx = sideInsets.getRight(density, androidx.compose.ui.unit.LayoutDirection.Ltr).toFloat()
+    val leftInsetDp = leftInsetPx / density.density
+    val rightInsetDp = rightInsetPx / density.density
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val parentH = maxHeight.value
         val parentW = maxWidth.value
 
-        // Collapsed: above measured bottom bar + margin
+        // Collapsed: above measured bottom bar + margin, clear of side insets.
         val cTop = parentH - effectiveBottomBar - 72f - 8f
-        val cLeft = 8f
-        val cWidth = parentW - 16f
+        val cLeft = 8f + leftInsetDp
+        val cWidth = parentW - 16f - leftInsetDp - rightInsetDp
         val cHeight = 72f
 
-        // Expanded: near full screen
+        // Expanded: near full screen, also clear of side insets.
         val eTop = if (isLandscape) 0f else parentH * 0.08f
-        val eLeft = 0f
-        val eWidth = parentW
+        val eLeft = leftInsetDp
+        val eWidth = parentW - leftInsetDp - rightInsetDp
         val eHeight = parentH - eTop
 
         val range = (cTop - eTop).coerceAtLeast(1f)
