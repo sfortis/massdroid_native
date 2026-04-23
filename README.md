@@ -2,7 +2,7 @@
 
 Native Android client for [Music Assistant](https://music-assistant.io/), the open-source music server that integrates all your music sources and players.
 
-MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers. Lightweight at under 4 MB, with no ads, no trackers, and no cloud dependencies.
+MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers. Small footprint, with no ads, no trackers, and no cloud dependencies.
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
