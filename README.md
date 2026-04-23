@@ -6,12 +6,15 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- **Now Playing:** smoother album-art swipe transitions, cleaner previous/next gesture behavior, and a more polished full-player experience
-- **Lyrics:** improved synced lyric highlighting and scrolling, more reliable plain-lyrics support, tap-to-seek on lyric lines, timing adjustment controls, and the screen stays awake while lyrics are open
-- **Smart Mix:** more predictable queue replacement behavior, better failure feedback, and broader discovery with less repetition from the same artists
-- **Library:** remembers the last section you were viewing and restores state more reliably when navigating back from Home
-- **Players:** improved player badges, including a visual indicator for the speaker currently selected by Follow Me
-- **Stability:** better handling around connection changes, queue updates, playback startup edge cases, and older Android layout quirks
+- **Sendspin sync:** major overhaul of the phone-as-speaker engine. Tighter group sync with a new clock convergence gate, hard relock on route and stream boundaries, and cleaner recovery after seeks, song changes, and Bluetooth switches. Adaptive buffering on cellular and a new audio-focus-aware resume.
+- **Bluetooth acoustic calibration:** new built-in calibration that plays a test tone and listens through the microphone to measure your actual Bluetooth headset or speaker latency. Per-route correction values, phone speaker baseline, and native C++ DSP pipeline for onset detection.
+- **Grouped Players UI:** group members are now absorbed under the parent as a single card, with a master ratio-based volume slider, hardware volume rocker fan-out, and a 3-dot menu on individual group members for quick actions.
+- **Streaming status sheet:** live sync graph, output latency, network mode (WiFi/cellular), static delay control with hold-to-repeat and negative values, and full landscape scrolling support.
+- **Follow Me (proximity):** WiFi fingerprint matching alongside BLE, vector k-NN room scoring, live confidence UI, per-room stop-on-leave, away-mode recovery, and detection sensitivity controls.
+- **Smart Mix:** per-player DSTM state so each speaker shows its real "Don't Stop the Music" value, animated FAB message instead of a toast, and more predictable queue replacement behavior.
+- **Library & Playlists:** Recently Added sort for playlist tracks, cleaner Library and Players headers, and a Configure Room shortcut from the players view.
+- **UI polish:** compact redesigned Player Settings dialog, landscape-safe insets everywhere (respects navigation bar and display cutout on both sides), and smoother mini-player and dialog behavior on older Android devices.
+- **Security:** user-installed CA certificates are now accepted, fixing connections to servers behind corporate or self-signed trust chains.
 
 ## Screenshots
 
