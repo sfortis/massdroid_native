@@ -152,53 +152,61 @@ fun LibraryScreen(
                 onOpenControls = { showControlsSheet = true }
             )
         } else {
-            LibraryHeader(
-                onOpenControls = { showControlsSheet = true }
-            )
-
-            TextField(
-                value = searchQuery,
-                onValueChange = { viewModel.updateSearch(it) },
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                placeholder = {
-                    Text(
-                        when (selectedTab) {
-                            0 -> "Search artists..."
-                            1 -> "Search albums..."
-                            2 -> "Search tracks..."
-                            3 -> "Search playlists..."
-                            4 -> "Search radios..."
-                            else -> "Search..."
+                    .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { viewModel.updateSearch(it) },
+                    modifier = Modifier.weight(1f),
+                    placeholder = {
+                        Text(
+                            when (selectedTab) {
+                                0 -> "Search artists..."
+                                1 -> "Search albums..."
+                                2 -> "Search tracks..."
+                                3 -> "Search playlists..."
+                                4 -> "Search radios..."
+                                else -> "Search..."
+                            }
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp))
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.updateSearch("") }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                            }
                         }
+                    },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onSearch = { focusManager.clearFocus() }
+                    ),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
                     )
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.updateSearch("") }) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                },
-                singleLine = true,
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                ),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onSearch = { focusManager.clearFocus() }
-                ),
-                shape = MaterialTheme.shapes.extraLarge,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
                 )
-            )
+                FilledTonalIconButton(
+                    onClick = { showControlsSheet = true },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = "Library options")
+                }
+            }
         }
 
         LazyRow(
@@ -651,30 +659,6 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun LibraryHeader(
-    onOpenControls: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, top = 8.dp, end = 12.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = "Library",
-            style = MaterialTheme.typography.headlineSmall
-        )
-        FilledTonalIconButton(
-            onClick = onOpenControls,
-            modifier = Modifier.size(40.dp)
-        ) {
-            Icon(Icons.Default.Tune, contentDescription = "Library options")
-        }
-    }
-}
-
-@Composable
 private fun LibraryCompactHeader(
     searchExpanded: Boolean,
     searchQuery: String,
@@ -692,11 +676,6 @@ private fun LibraryCompactHeader(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "Library",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold
-        )
         // Persistent search in landscape
         TextField(
             value = searchQuery,

@@ -286,22 +286,12 @@ private fun PlayersHeader(
     activePlayers: Int,
     assignedRooms: Int
 ) {
-    Column(
-        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Text(
-            text = "Players",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    Text(
+        text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp)
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
