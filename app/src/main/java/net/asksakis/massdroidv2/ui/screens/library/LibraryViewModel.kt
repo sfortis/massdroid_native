@@ -1625,6 +1625,15 @@ class AlbumDetailViewModel @Inject constructor(
     }
 }
 
+enum class PlaylistSortKey(val label: String) {
+    POSITION("Position"),
+    NAME("Name"),
+    ARTIST("Artist"),
+    ALBUM("Album"),
+    DURATION("Duration"),
+    RECENTLY_ADDED("Recently Added")
+}
+
 @HiltViewModel
 class PlaylistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -1637,8 +1646,49 @@ class PlaylistDetailViewModel @Inject constructor(
     val provider: String = savedStateHandle["provider"] ?: ""
     private val playlistUri: String = savedStateHandle["uri"] ?: ""
 
-    private val _tracks = MutableStateFlow<List<Track>>(emptyList())
-    val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
+    private val _rawTracks = MutableStateFlow<List<Track>>(emptyList())
+    private val _sortKey = MutableStateFlow(PlaylistSortKey.POSITION)
+    val sortKey: StateFlow<PlaylistSortKey> = _sortKey.asStateFlow()
+    private val _sortDescending = MutableStateFlow(false)
+    val sortDescending: StateFlow<Boolean> = _sortDescending.asStateFlow()
+    private val _favoritesOnly = MutableStateFlow(false)
+    val favoritesOnly: StateFlow<Boolean> = _favoritesOnly.asStateFlow()
+
+    val tracks: StateFlow<List<Track>> = combine(
+        _rawTracks, _sortKey, _sortDescending, _favoritesOnly
+    ) { raw, key, desc, favsOnly ->
+        val filtered = if (favsOnly) raw.filter { it.favorite } else raw
+        val sorted = when (key) {
+            PlaylistSortKey.POSITION -> if (desc) filtered else filtered.reversed()
+            PlaylistSortKey.NAME -> filtered.sortedBy { it.name.lowercase() }
+            PlaylistSortKey.ARTIST -> filtered.sortedBy { it.artistNames.lowercase() }
+            PlaylistSortKey.ALBUM -> filtered.sortedBy { it.albumName.lowercase() }
+            PlaylistSortKey.DURATION -> filtered.sortedBy { it.duration ?: 0.0 }
+            PlaylistSortKey.RECENTLY_ADDED -> filtered.sortedByDescending { it.dateAdded ?: "" }
+        }
+        if (desc && key != PlaylistSortKey.POSITION && key != PlaylistSortKey.RECENTLY_ADDED) sorted.reversed() else sorted
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val currentTrackUri: StateFlow<String?> = playerRepository.queueState
+        .map { it?.currentItem?.track?.uri }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isPlaying: StateFlow<Boolean> = playerRepository.selectedPlayer
+        .map { it?.state == PlaybackState.PLAYING }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setSortKey(key: PlaylistSortKey) {
+        if (_sortKey.value == key) {
+            _sortDescending.value = !_sortDescending.value
+        } else {
+            _sortKey.value = key
+            _sortDescending.value = false
+        }
+    }
+
+    fun toggleFavoritesOnly() {
+        _favoritesOnly.value = !_favoritesOnly.value
+    }
 
     private val _playlistName = MutableStateFlow(savedStateHandle.get<String>("name") ?: "Playlist")
     val playlistName: StateFlow<String> = _playlistName.asStateFlow()
@@ -1660,7 +1710,7 @@ class PlaylistDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             try {
-                _tracks.value = musicRepository.getPlaylistTracks(itemId, provider)
+                _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider)
             } catch (e: Exception) {
                 Log.w(TAG, "Load playlist tracks failed: ${e.message}")
             }
@@ -1729,6 +1779,63 @@ class PlaylistDetailViewModel @Inject constructor(
 
     fun playTrack(track: Track) = playUri(track.uri)
 
+    fun playAll() {
+        val uris = tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = "replace")
+            } catch (e: Exception) {
+                Log.w(TAG, "playAll failed: ${e.message}")
+            }
+        }
+    }
+
+    fun addAllToQueue() {
+        val uris = tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = "add")
+            } catch (e: Exception) {
+                Log.w(TAG, "addAllToQueue failed: ${e.message}")
+            }
+        }
+    }
+
+    fun playAllNext() {
+        val uris = tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = "next")
+            } catch (e: Exception) {
+                Log.w(TAG, "playAllNext failed: ${e.message}")
+            }
+        }
+    }
+
+    fun replaceQueue() {
+        val uris = tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = "replace")
+            } catch (e: Exception) {
+                Log.w(TAG, "replaceQueue failed: ${e.message}")
+            }
+        }
+    }
+
+    fun startRadioAll() {
+        val first = tracks.value.firstOrNull()?.uri ?: return
+        startRadio(first)
+    }
+
     fun removeTrackFromPlaylist(track: Track, fallbackPosition: Int) {
         val playlist = currentPlaylist() ?: return
         val position = track.position ?: fallbackPosition
@@ -1736,7 +1843,7 @@ class PlaylistDetailViewModel @Inject constructor(
             _busyTrackUri.value = track.uri
             try {
                 musicRepository.removeTrackFromPlaylist(playlist, position)
-                _tracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+                _rawTracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
             } catch (e: Exception) {
                 Log.w(TAG, "removeTrackFromPlaylist failed: ${e.message}")
                 _error.tryEmit("Failed to remove track from playlist")
@@ -1755,7 +1862,7 @@ class PlaylistDetailViewModel @Inject constructor(
             try {
                 musicRepository.addTrackToPlaylist(destination, track.uri)
                 musicRepository.removeTrackFromPlaylist(source, position)
-                _tracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+                _rawTracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
             } catch (e: Exception) {
                 Log.w(TAG, "moveTrackToPlaylist failed: ${e.message}")
                 _error.tryEmit("Failed to move track to playlist")
@@ -1782,7 +1889,7 @@ class PlaylistDetailViewModel @Inject constructor(
             try {
                 musicRepository.setFavorite(uri, mediaType, itemId, !currentFavorite)
                 if (mediaType == MediaType.TRACK) {
-                    _tracks.update { list ->
+                    _rawTracks.update { list ->
                         list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
                     }
                 }

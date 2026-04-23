@@ -74,7 +74,8 @@ fun MassDroidNavHost(
         composable(Routes.PLAYERS) {
             PlayersScreen(
                 onNavigateToNowPlaying = { navController.navigate(Routes.NOW_PLAYING) },
-                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
+                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToRoomSetup = { roomId -> navController.navigate(Routes.roomSetup(roomId)) }
             )
         }
 

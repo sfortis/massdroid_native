@@ -54,15 +54,13 @@ fun PlayerNameWithBadge(
             }
         }
         if (isFollowMePlayer) {
-            Spacer(modifier = Modifier.width(8.dp))
-            PlayerBadgeChip {
-                Icon(
-                    imageVector = Icons.Default.LocationOn,
-                    contentDescription = "Follow Me selected player",
-                    tint = Color.Black,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
+                imageVector = Icons.Default.LocationOn,
+                contentDescription = "Follow Me selected player",
+                tint = Color.Red.copy(alpha = 0.8f),
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }

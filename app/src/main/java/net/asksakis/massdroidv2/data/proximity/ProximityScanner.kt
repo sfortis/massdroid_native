@@ -14,6 +14,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.CompletableDeferred
@@ -27,10 +30,9 @@ import javax.inject.Singleton
 
 private const val TAG = "ProximityScanner"
 private const val SCAN_DURATION_MS = 5_000L
-private const val DEVICE_RETAIN_MS = 15_000L
+private const val DEVICE_RETAIN_MS = 30_000L
 private const val MIN_VALID_RSSI = -126
 private const val MAX_VALID_RSSI = 20
-private const val MIN_CONNECTED_WIFI_RSSI = -90
 private const val INVALID_WIFI_BSSID = "02:00:00:00:00:00"
 private val MAC_ADDRESS_REGEX = Regex("^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 private val LE_PREFIX_REGEX = Regex("^le[-_ ]+")
@@ -221,6 +223,71 @@ class ProximityScanner @Inject constructor(
         return false
     }
 
+    // WiFi identity: callback-based cache with freshness validation on read
+    private data class CachedWifi(val info: ConnectedWifiInfo, val network: android.net.Network)
+
+    @Volatile private var cachedWifi: CachedWifi? = null
+    @Volatile private var wifiCallbackRegistered = false
+    private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    private fun wifiCallbackOnCapabilities(network: android.net.Network, caps: NetworkCapabilities) {
+        val wi = caps.transportInfo as? WifiInfo ?: return
+        val bssid = wi.bssid
+        if (bssid == null || bssid == INVALID_WIFI_BSSID) return
+        val ssid = wi.ssid
+            ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
+            ?.trim('"')
+        cachedWifi = CachedWifi(ConnectedWifiInfo(bssid = bssid, ssid = ssid, rssi = wi.rssi), network)
+    }
+
+    private fun wifiCallbackOnLost(network: android.net.Network) {
+        if (cachedWifi?.network == network) cachedWifi = null
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startWifiMonitor() {
+        if (wifiCallbackRegistered) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Log.d(TAG, "WiFi monitor skipped (API ${Build.VERSION.SDK_INT} < 31, using WifiManager fallback)")
+            return
+        }
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val request = android.net.NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        val callback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            @SuppressLint("NewApi")
+            object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) { wifiCallbackOnCapabilities(network, caps) }
+                override fun onLost(network: android.net.Network) { wifiCallbackOnLost(network) }
+            }
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) { wifiCallbackOnCapabilities(network, caps) }
+                override fun onLost(network: android.net.Network) { wifiCallbackOnLost(network) }
+            }
+        }
+        try {
+            cm.registerNetworkCallback(request, callback)
+            wifiNetworkCallback = callback
+            wifiCallbackRegistered = true
+            Log.d(TAG, "WiFi monitor started")
+        } catch (e: Exception) {
+            Log.w(TAG, "WiFi monitor start failed: ${e.message}")
+        }
+    }
+
+    fun stopWifiMonitor() {
+        if (!wifiCallbackRegistered) return
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        wifiNetworkCallback?.let { cb ->
+            try { cm?.unregisterNetworkCallback(cb) } catch (_: Exception) { }
+        }
+        wifiNetworkCallback = null
+        wifiCallbackRegistered = false
+        cachedWifi = null
+    }
+
     // Persistent background scan: start once, read snapshot anytime
     private val persistentDevices = ConcurrentHashMap<String, ScannedDevice>()
     private val persistentLastSeen = ConcurrentHashMap<String, Long>()
@@ -234,11 +301,15 @@ class ProximityScanner @Inject constructor(
     @Volatile var uiHighAccuracyRequested = false
 
     @SuppressLint("MissingPermission")
-    fun startPersistentScan(lowPower: Boolean = true) {
+    private var persistentLowPower: Boolean? = null
+
+    fun startPersistentScan(lowPower: Boolean = true, anchorAddresses: Set<String> = emptySet(), anchorNames: Set<String> = emptySet()) {
         val scanner = getScanner() ?: return
         val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
-        if (persistentRunning) {
-            if (persistentCallback != null) return // Already running, skip mode switch to avoid throttle
+        if (persistentRunning && persistentCallback != null) {
+            if (persistentLowPower == lowPower) return // Same mode, skip
+            // Mode differs: restart with new mode, keep buffers
+            stopPersistentScan(clearBuffers = false)
         }
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -250,12 +321,29 @@ class ProximityScanner @Inject constructor(
                     lastPersistentCallbackMs = now
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.w(TAG, "Persistent scan failed: errorCode=$errorCode")
+                persistentRunning = false
+            }
+        }
+        // Use ScanFilters so Android delivers results even with screen off.
+        // Unfiltered callback scans are silently stopped when screen turns off.
+        val macFilters = anchorAddresses.mapNotNull { addr ->
+            if (MAC_ADDRESS_REGEX.matches(addr)) ScanFilter.Builder().setDeviceAddress(addr).build() else null
+        }
+        val nameFilters = anchorNames.map { name ->
+            ScanFilter.Builder().setDeviceName(name).build()
+        }
+        val filters = (macFilters + nameFilters).ifEmpty {
+            listOf(ScanFilter.Builder().build())
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
         try {
-            scanner.startScan(null, settings, callback)
+            scanner.startScan(filters, settings, callback)
             persistentCallback = callback
             persistentRunning = true
+            persistentLowPower = lowPower
             Log.d(
                 TAG,
                 "Persistent scan: ${if (lowPower) "LOW_POWER" else "LOW_LATENCY"} " +
@@ -282,6 +370,7 @@ class ProximityScanner @Inject constructor(
         persistentCallback?.let { cb -> try { scanner?.stopScan(cb) } catch (_: Exception) { } }
         persistentCallback = null
         persistentRunning = false
+        persistentLowPower = null
         if (clearBuffers) {
             persistentDevices.clear()
             persistentLastSeen.clear()
@@ -402,31 +491,35 @@ class ProximityScanner @Inject constructor(
         awaitClose { try { context.unregisterReceiver(receiver) } catch (_: Exception) { } }
     }
 
-    /** Get connected WiFi AP BSSID/SSID + RSSI. No scanning needed. */
+    /** Get connected WiFi AP BSSID/SSID + RSSI. Callback-cached, validated against activeNetwork. */
     @SuppressLint("MissingPermission")
     fun readConnectedWifiInfo(): ConnectedWifiInfo? {
-        val wifiManager = context.applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-            ?: return null
-        return try {
-            @Suppress("DEPRECATION")
-            val info = wifiManager.connectionInfo
-            val bssid = info?.bssid
-            val rssi = info?.rssi ?: -100
-            if (bssid != null && bssid != INVALID_WIFI_BSSID && rssi > MIN_CONNECTED_WIFI_RSSI) {
-                ConnectedWifiInfo(
-                    bssid = bssid,
-                    ssid = info?.ssid
-                        ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
-                        ?.trim('"'),
-                    rssi = rssi
-                )
-            } else {
-                null
-            }
-        } catch (e: SecurityException) {
-            Log.w(TAG, "WiFi: permission denied: ${e.message}")
-            null
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
+        val active = cm.activeNetwork
+        val caps = active?.let { cm.getNetworkCapabilities(it) }
+        val isWifi = caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+
+        if (!isWifi) {
+            cachedWifi = null
+            return null
         }
+
+        val cached = cachedWifi
+        if (cached != null && cached.network == active) return cached.info
+
+        // Callback hasn't delivered yet; bootstrap from WifiManager
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            ?: return null
+        @Suppress("DEPRECATION")
+        val info = wm.connectionInfo ?: return null
+        val bssid = info.bssid ?: return null
+        if (bssid == INVALID_WIFI_BSSID) return null
+        val ssid = info.ssid
+            ?.takeUnless { it == android.net.wifi.WifiManager.UNKNOWN_SSID }
+            ?.trim('"')
+        val result = ConnectedWifiInfo(bssid = bssid, ssid = ssid, rssi = info.rssi)
+        cachedWifi = CachedWifi(result, active!!)
+        return result
     }
 
     /** Get connected WiFi AP BSSID + RSSI. No scanning needed. */

@@ -12,7 +12,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
-import net.asksakis.massdroidv2.data.sendspin.AudioStreamManager
+import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -94,14 +94,19 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideAudioStreamManager(): AudioStreamManager = AudioStreamManager()
+    fun provideSendspinEngine(): SendspinSyncEngine = SendspinSyncEngine()
+
+    @Provides
+    @Singleton
+    fun provideAcousticLatencyCalibrator(): net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator =
+        net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator()
 
     @Provides
     @Singleton
     fun provideSendspinManager(
         client: SendspinClient,
-        audio: AudioStreamManager,
-    ): SendspinManager = SendspinManager(client, audio)
+        engine: SendspinSyncEngine,
+    ): SendspinManager = SendspinManager(client, engine)
 
     private val MIGRATION_4_5 = object : Migration(4, 5) {
         override fun migrate(database: SupportSQLiteDatabase) {

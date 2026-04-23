@@ -73,6 +73,9 @@ object MaCommands {
         const val CMD_SEEK = "$CMD_PREFIX/seek"
         const val CMD_VOLUME_SET = "players/cmd/volume_set"
         const val CMD_VOLUME_MUTE = "players/cmd/volume_mute"
+        const val CMD_SET_MEMBERS = "$CMD_PREFIX/set_members"
+        const val CREATE_GROUP = "players/create_group_player"
+        const val REMOVE_GROUP = "players/remove_group_player"
 
         fun cmd(command: String): String = "$CMD_PREFIX/$command"
     }
@@ -396,6 +399,38 @@ data class BrowseArgs(
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         path?.let { put("path", it) }
+    }
+}
+
+data class SetMembersArgs(
+    val targetPlayer: String,
+    val playerIdsToAdd: List<String>? = null,
+    val playerIdsToRemove: List<String>? = null
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("target_player", targetPlayer)
+        playerIdsToAdd?.let { put("player_ids_to_add", JsonArray(it.map(::JsonPrimitive))) }
+        playerIdsToRemove?.let { put("player_ids_to_remove", JsonArray(it.map(::JsonPrimitive))) }
+    }
+}
+
+data class CreateGroupPlayerArgs(
+    val provider: String = "universal_group",
+    val name: String,
+    val members: List<String>,
+    val dynamic: Boolean = true
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("provider", provider)
+        put("name", name)
+        put("members", JsonArray(members.map(::JsonPrimitive)))
+        put("dynamic", dynamic)
+    }
+}
+
+data class RemoveGroupPlayerArgs(val playerId: String) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("player_id", playerId)
     }
 }
 

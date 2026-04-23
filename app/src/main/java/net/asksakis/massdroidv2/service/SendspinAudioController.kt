@@ -64,6 +64,8 @@ class SendspinAudioController(
         private const val TAG = "SendspinCtrl"
         private const val PAUSE_DEBOUNCE_MS = 400L
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
+        private const val GROUP_JOIN_RELOCK_COOLDOWN_MS = 5_000L
+        private const val GROUP_SOLO_STARTUP_GRACE_MS = 5_000L
     }
 
     private val exceptionHandler = CoroutineExceptionHandler { _, e ->
@@ -89,6 +91,102 @@ class SendspinAudioController(
                 notifyStateChanged()
                 scope.launch { playerRepository.pause(id) }
             }
+        }
+    }
+
+    // Audio route detection: uses AudioTrack.getRoutedDevice() as canonical source
+    @Volatile private var currentOutputRoute = "unknown"
+    @Volatile private var currentBtRouteKey = ""
+    @Volatile private var routeChangeGeneration = 0L
+    private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
+    }
+
+    private fun classifyDeviceType(type: Int): String = when (type) {
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> "bt"
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> "usb"
+        else -> "speaker"
+    }
+
+    private fun resolveOutputRoute(): String {
+        // Primary: ask the actual AudioTrack where it's routing (canonical truth)
+        sendspinManager.getRoutedDeviceType()?.let { return classifyDeviceType(it) }
+        // Fallback: heuristic from connected devices
+        @Suppress("DEPRECATION")
+        if (audioManager.isBluetoothA2dpOn) return "bt"
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return when {
+            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET } -> "wired"
+            devices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE } -> "usb"
+            else -> "speaker"
+        }
+    }
+
+    private fun resolveBtRouteKey(): String =
+        "bt:${sendspinManager.getRoutedDeviceProductName() ?: "unknown"}"
+
+    private fun checkRouteChange() {
+        val newRoute = resolveOutputRoute()
+        val routeChanged = newRoute != currentOutputRoute
+        if (routeChanged) {
+            val oldRoute = currentOutputRoute
+            currentOutputRoute = newRoute
+            val gen = ++routeChangeGeneration
+            Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            // Resolve correction and notify engine atomically: set correction BEFORE
+            // onOutputRouteChanged so the engine relocks with the correct value.
+            // Generation guard: if another route change arrives before this coroutine
+            // runs, discard the stale result to prevent out-of-order application.
+            scope.launch {
+                if (gen != routeChangeGeneration) return@launch  // superseded
+                val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
+                if (gen != routeChangeGeneration) return@launch  // superseded during resolve
+                sendspinManager.setRouteAcousticExtraUs(correctionUs)
+                sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
+                currentBtRouteKey = if (newRoute == "bt") resolveBtRouteKey() else ""
+            }
+        } else if (newRoute == "bt") {
+            // Same route type but maybe different BT device (bt:A -> bt:B).
+            // Use route-key state, not correction value: valid uncalibrated routes can be 0ms.
+            val routeKey = resolveBtRouteKey()
+            if (routeKey != currentBtRouteKey) {
+                val gen = ++routeChangeGeneration
+                Log.d(TAG, "BT device change: $currentBtRouteKey -> $routeKey (gen=$gen)")
+                scope.launch {
+                    if (gen != routeChangeGeneration) return@launch
+                    val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
+                    if (gen != routeChangeGeneration) return@launch
+                    sendspinManager.setRouteAcousticExtraUs(correctionUs)
+                    sendspinManager.onOutputRouteChanged("bt:device-switch")
+                    currentBtRouteKey = routeKey  // commit only after successful apply
+                }
+            }
+        }
+    }
+
+    private suspend fun resolveAcousticCorrectionForRoute(route: String): Long {
+        return when (route) {
+            // Phone speaker: use acoustic baseline if calibrated (full one-way output delay).
+            "speaker" -> settingsRepository.acousticPhoneBaselineUs.first()
+            "wired", "usb" -> 0L
+            "bt" -> {
+                val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
+                val routeKey = "bt:$productName"
+                val calibrations = settingsRepository.acousticRouteCalibrations.first()
+                val calibration = calibrations[routeKey]
+                val correctionUs = calibration?.correctionUs ?: 0L
+                Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
+                correctionUs
+            }
+            else -> 0L
         }
     }
 
@@ -123,24 +221,87 @@ class SendspinAudioController(
     private var autoRecoveryJob: Job? = null
     private var reconnectJob: Deferred<Boolean>? = null
     private var lastPlayingAtMs = 0L
+    private var lastObservedInGroup: Boolean? = null
+    private var groupObserverStartedAtMs = 0L
+    private var lastGroupJoinRelockAtMs = 0L
 
-    private fun audiblePositionMs(rawPositionMs: Long): Long {
-        if (rawPositionMs <= 0L) return 0L
-        val bufferedMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L)
-        return (rawPositionMs - bufferedMs.coerceAtMost(rawPositionMs)).coerceAtLeast(0L)
+    /** Use MA player timeline as source of truth (matches seek command target). */
+    private fun serverPositionMs(rawPositionMs: Long): Long {
+        return rawPositionMs.coerceAtLeast(0L)
+    }
+
+    private fun requestGroupJoinRelock(player: net.asksakis.massdroidv2.domain.model.Player) {
+        if (!isStreaming || player.state != PlaybackState.PLAYING) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastGroupJoinRelockAtMs < GROUP_JOIN_RELOCK_COOLDOWN_MS) return
+        lastGroupJoinRelockAtMs = now
+
+        val targetPlayerId = player.activeGroup ?: player.playerId
+        val positionSec = when {
+            currentPositionMs > 0L -> currentPositionMs / 1000.0
+            player.currentMedia?.elapsedTime != null -> player.currentMedia.elapsedTime
+            else -> playerRepository.elapsedTime.value
+        }.coerceAtLeast(0.0)
+
+        Log.d(TAG, "Group join relock: seek($targetPlayerId, ${"%.3f".format(positionSec)}s) streaming=$isStreaming")
+        if (targetPlayerId != player.playerId) {
+            sendspinManager.expectDiscontinuity("group-join")
+        }
+        scope.launch { playerRepository.seek(targetPlayerId, positionSec) }
     }
 
     fun start() {
+        currentOutputRoute = resolveOutputRoute()
+        scope.launch {
+            val correctionUs = resolveAcousticCorrectionForRoute(currentOutputRoute)
+            sendspinManager.setRouteAcousticExtraUs(correctionUs)
+        }
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")
             return
         }
+        groupObserverStartedAtMs = System.currentTimeMillis()
+
+        // AudioTrack routing change listener (canonical route detection from actual track)
+        sendspinManager.setOnRoutingChangedCallback { checkRouteChange() }
 
         setupAudioFocus()
         registerNoisyReceiver()
 
-        // Immediately start sendspin connection
-        scope.launch { ensureSendspinConnected() }
+        // Persist callback for clock offset measurements
+        sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
+            scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
+        }
+        // Eager group check before connect so engine starts in correct mode
+        scope.launch {
+            val ssId = settingsRepository.sendspinClientId.first()
+            if (ssId != null) {
+                // Wait for player data (up to 5s) if empty on cold start
+                val allPlayers = playerRepository.players.value.ifEmpty {
+                    kotlinx.coroutines.withTimeoutOrNull(5000) {
+                        playerRepository.players.first { it.isNotEmpty() }
+                    } ?: emptyList()
+                }
+                val self = allPlayers.find { it.playerId == ssId }
+                val selfInGroup = self?.groupChilds?.any { it != ssId } == true
+                val childOfOther = allPlayers.any { it.playerId != ssId && ssId in it.groupChilds }
+                if (selfInGroup || childOfOther) {
+                    sendspinManager.setInSyncGroup(true)
+                    Log.d(TAG, "Eager group check: inGroup=true before connect")
+                } else {
+                    // Cold start: keep default SYNC (safe). Continuous collector
+                    // will downgrade to DIRECT once steady-state data confirms solo.
+                    Log.d(TAG, "Eager group check: no group detected, keeping SYNC default (collector will refine)")
+                }
+            }
+            ensureSendspinConnected()
+        }
+        scope.launch {
+            val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
+            sendspinManager.seedClockOffset(persistedOffset)
+        }
 
         collectorJobs += scope.launch {
             settingsRepository.sendspinStaticDelayMs.collect { delayMs ->
@@ -226,7 +387,7 @@ class SendspinAudioController(
                 val album = metadata.album ?: currentAlbum
                 val durationMs = metadata.progress?.trackDuration ?: currentDurationMs
                 val rawPositionMs = metadata.progress?.trackProgress
-                val positionMs = rawPositionMs?.let(::audiblePositionMs) ?: currentPositionMs
+                val positionMs = rawPositionMs?.let(::serverPositionMs) ?: currentPositionMs
                 val artUrl = metadata.artworkUrl ?: currentArtUrl
                 val artChanged = artUrl != currentArtUrl
 
@@ -262,6 +423,7 @@ class SendspinAudioController(
                     net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.PREVIOUS -> "previous"
                     net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand.Kind.SEEK -> "seek"
                 }
+                Log.d("sendspindbg", "discontinuity command: $reason buf=${sendspinManager.bufferedAudioMs()}ms")
                 sendspinManager.expectDiscontinuity(reason)
             }
         }
@@ -269,10 +431,32 @@ class SendspinAudioController(
         // Collector 2: Observe sendspin player metadata from the players list
         collectorJobs += scope.launch {
             playerRepository.players
-                .map { list -> list.find { it.playerId == sendspinPlayerId } }
+                .map { list ->
+                    val ssId = sendspinPlayerId ?: return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
+                    val self = list.find { it.playerId == ssId }
+                    val selfInGroup = self?.activeGroup != null || self?.groupChilds?.isNotEmpty() == true
+                    val childOfOther = list.any { it.playerId != ssId && ssId in it.groupChilds }
+                    Pair(self, selfInGroup || childOfOther)
+                }
                 .distinctUntilChanged()
-                .collect { player ->
-                    lastSendspinReportedPlaying = player?.state == PlaybackState.PLAYING
+                .collect { (player, inGroup) ->
+                    // Don't decide group state until player data is available
+                    if (player == null) return@collect
+                    Log.d(TAG, "Group check: inGroup=$inGroup player=${player.displayName}")
+                    val previousGroupState = lastObservedInGroup
+                    val deferInitialSoloVerdict = previousGroupState == null &&
+                        !inGroup &&
+                        !isStreaming &&
+                        System.currentTimeMillis() - groupObserverStartedAtMs < GROUP_SOLO_STARTUP_GRACE_MS
+                    if (deferInitialSoloVerdict) {
+                        Log.d(TAG, "Group check: deferring initial solo verdict, keeping SYNC default")
+                    } else {
+                        val joinedGroup = previousGroupState == false && inGroup
+                        lastObservedInGroup = inGroup
+                        sendspinManager.setInSyncGroup(inGroup)
+                        if (joinedGroup) requestGroupJoinRelock(player)
+                    }
+                    lastSendspinReportedPlaying = player.state == PlaybackState.PLAYING
                     val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
                     if (outsideOptimistic) {
                         if (lastSendspinReportedPlaying) {
@@ -289,7 +473,7 @@ class SendspinAudioController(
                             currentIsPlaying = false
                         }
                     }
-                    if (!isStreaming || player == null) return@collect
+                    if (!isStreaming) return@collect
                     val media = player.currentMedia
                     val hasMeaningfulMetadata =
                         media?.title?.isNotBlank() == true ||
@@ -319,7 +503,7 @@ class SendspinAudioController(
                         currentArt = loadArt(artUrl)
                     }
 
-                    currentPositionMs = audiblePositionMs(((media?.elapsedTime ?: 0.0) * 1000).toLong())
+                    currentPositionMs = serverPositionMs(((media?.elapsedTime ?: 0.0) * 1000).toLong())
 
                     notifyMetadataChanged()
                     notifyStateChanged()
@@ -409,14 +593,14 @@ class SendspinAudioController(
                         settingsRepository.setSendspinClientId(clientId)
                     }
 
+                    // Always force-restart Sendspin after MA reconnect.
+                    // After server reboot, the existing Sendspin WS may be connected
+                    // (SYNCING/STREAMING) but the server no longer recognizes the player.
                     val currentSsState = sendspinManager.connectionState.value
-                    if (currentSsState == SendspinState.DISCONNECTED || currentSsState == SendspinState.ERROR) {
-                        Log.d(TAG, "MA reconnected, sendspin is $currentSsState, restarting")
-                        if (url.isNotBlank() && token.isNotBlank()) {
-                            ensureSendspinConnected()
-                        }
-                    } else {
-                        Log.d(TAG, "MA reconnected, sendspin already $currentSsState")
+                    Log.d(TAG, "MA reconnected, sendspin is $currentSsState, force-restarting")
+                    if (url.isNotBlank() && token.isNotBlank()) {
+                        sendspinManager.stop()
+                        sendspinManager.start(url, token, clientId, "MassDroid")
                     }
                 }
                 if (isConnected) connectedBefore = true
@@ -444,6 +628,7 @@ class SendspinAudioController(
     }
 
     fun destroy() {
+        try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) } catch (_: Exception) {}
         stop()
         scope.cancel()
     }
@@ -537,11 +722,19 @@ class SendspinAudioController(
             .setOnAudioFocusChangeListener { focusChange ->
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
-                        Log.d(TAG, "Audio focus gained")
+                        Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady")
                         hasAudioFocus = true
                         if (isStreaming) {
                             sendspinManager.resumeAudio()
                             sendspinManager.restoreVolume()
+                        } else if (isReady) {
+                            // After phone call: server may have stopped streaming.
+                            // Resume by sending play command.
+                            sendspinManager.resumeAudio()
+                            val id = sendspinPlayerId
+                            if (id != null) {
+                                scope.launch { playerRepository.play(id) }
+                            }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
@@ -686,8 +879,34 @@ class SendspinAudioController(
         if (url.isBlank() || token.isBlank()) return false
 
         val job = scope.async {
+            val beforeFormatState = sendspinManager.connectionState.value
+            if (beforeFormatState == SendspinState.SYNCING || beforeFormatState == SendspinState.STREAMING) {
+                Log.d(TAG, "Sendspin became $beforeFormatState before reconnect, skipping restart")
+                return@async true
+            }
+            if (beforeFormatState != SendspinState.DISCONNECTED && beforeFormatState != SendspinState.ERROR) {
+                Log.d(TAG, "Sendspin became $beforeFormatState before reconnect, waiting for ready")
+                return@async withTimeoutOrNull(10000) {
+                    sendspinManager.connectionState
+                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+                } != null
+            }
+
             applyPreferredFormatForCurrentNetwork(clientId)
-            Log.d(TAG, "Restarting sendspin for playback (was $state)")
+            val latestState = sendspinManager.connectionState.value
+            if (latestState == SendspinState.SYNCING || latestState == SendspinState.STREAMING) {
+                Log.d(TAG, "Sendspin became $latestState after format apply, skipping restart")
+                return@async true
+            }
+            if (latestState != SendspinState.DISCONNECTED && latestState != SendspinState.ERROR) {
+                Log.d(TAG, "Sendspin became $latestState after format apply, waiting for ready")
+                return@async withTimeoutOrNull(10000) {
+                    sendspinManager.connectionState
+                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+                } != null
+            }
+
+            Log.d(TAG, "Restarting sendspin for playback (was $state, latest=$latestState)")
             sendspinManager.start(url, token, clientId, "MassDroid")
 
             withTimeoutOrNull(10000) {

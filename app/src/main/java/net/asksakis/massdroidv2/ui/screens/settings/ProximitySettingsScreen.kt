@@ -179,15 +179,31 @@ fun ProximitySettingsScreen(
                 )
 
                 ListItem(
-                    headlineContent = { Text("Stop when no room is detected") },
+                    headlineContent = { Text("Detection Tolerance") },
                     supportingContent = {
-                        Text("After 10 minutes without a detected room, pause the last active speaker.")
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = config.stopWhenNoRoomActive,
-                            onCheckedChange = { viewModel.setStopWhenNoRoomActive(it) }
-                        )
+                        Column {
+                            val label = when {
+                                config.detectionTolerance <= 25f -> "Strict"
+                                config.detectionTolerance <= 45f -> "Normal"
+                                else -> "Relaxed"
+                            }
+                            Text(
+                                "$label (${config.detectionTolerance.toInt()})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            androidx.compose.material3.Slider(
+                                value = config.detectionTolerance,
+                                onValueChange = { viewModel.setDetectionTolerance(it) },
+                                valueRange = 15f..80f,
+                                steps = 12
+                            )
+                            Text(
+                                "How much signal variation to tolerate. Higher = easier match, lower = stricter.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 )
 

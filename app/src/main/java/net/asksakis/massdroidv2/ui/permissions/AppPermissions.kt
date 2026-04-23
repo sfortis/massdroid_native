@@ -17,6 +17,8 @@ object AppPermissions {
         }
     }
 
+    fun acousticCalibrationRequired(): List<String> = listOf(Manifest.permission.RECORD_AUDIO)
+
     fun missing(context: Context, permissions: List<String>): List<String> =
         permissions.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
 }

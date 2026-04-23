@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.asksakis.massdroidv2.data.repository.QueueDstmCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
@@ -29,7 +30,9 @@ class HomeViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val wsClient: MaWebSocketClient,
     private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore,
-    private val roomDetector: RoomDetector
+    private val roomDetector: RoomDetector,
+    private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    private val queueDstmCache: QueueDstmCache
 ) : ViewModel() {
 
     val players = playerRepository.players
@@ -37,12 +40,14 @@ class HomeViewModel @Inject constructor(
     val connectionState = wsClient.connectionState
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
+    val queueDstmStates: StateFlow<Map<String, Boolean>> = queueDstmCache.states
     val sendspinClientId = settingsRepository.sendspinClientId
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinStaticDelayMs = settingsRepository.sendspinStaticDelayMs
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    val sendspinSyncHistory = sendspinManager.syncHistory
     val proximityConfig = proximityConfigStore.config
     val currentDetectedRoom = roomDetector.currentRoom
 
@@ -136,6 +141,23 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun setGroupVolume(parentId: String, volume: Int) {
+        viewModelScope.launch {
+            try {
+                playerRepository.setGroupVolume(parentId, volume)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun onMemberVolumeChanged(parentId: String, memberId: String, volume: Int) {
+        playerRepository.updateGroupMemberOffset(parentId, memberId, volume)
+        viewModelScope.launch {
+            try {
+                playerRepository.setVolume(memberId, volume)
+            } catch (_: Exception) {}
+        }
+    }
+
     fun playPause() {
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {
@@ -184,6 +206,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+        queueDstmCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
                 musicRepository.setDontStopTheMusic(queueId, enabled)
@@ -262,6 +285,28 @@ class HomeViewModel @Inject constructor(
                 } catch (e: Exception) {
                     Log.w(TAG, "transferQueue failed: ${e.message}")
                 }
+            }
+        }
+    }
+
+    fun applyGroupMembers(targetPlayerId: String, currentChilds: List<String>, selectedIds: List<String>) {
+        Log.d(TAG, "applyGroupMembers: target=$targetPlayerId, current=$currentChilds, selected=$selectedIds")
+        viewModelScope.launch {
+            try {
+                val toAdd = selectedIds.filter { it !in currentChilds }
+                val toRemove = currentChilds.filter { it !in selectedIds }
+                if (selectedIds.isEmpty() && currentChilds.isNotEmpty()) {
+                    // Unsync all
+                    playerRepository.setGroupMembers(targetPlayerId, removeIds = currentChilds)
+                } else if (toAdd.isNotEmpty() || toRemove.isNotEmpty()) {
+                    playerRepository.setGroupMembers(
+                        targetPlayerId,
+                        addIds = toAdd.ifEmpty { null },
+                        removeIds = toRemove.ifEmpty { null }
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "applyGroupMembers failed: ${e.message}")
             }
         }
     }

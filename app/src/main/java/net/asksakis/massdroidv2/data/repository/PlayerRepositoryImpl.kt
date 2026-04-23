@@ -195,6 +195,9 @@ class PlayerRepositoryImpl @Inject constructor(
                     } ?: return@collect
                     val trackImg = queueTracking[serverPlayer.playerId]?.track?.imageUrl
                     var player = serverPlayer.toDomain(wsClient, trackImg)
+                    if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
+                        Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
+                    }
                     // During volume cooldown, preserve local optimistic volume
                     if (System.currentTimeMillis() < volumeOverrideUntilMs) {
                         val localVol = _players.value.firstOrNull { it.playerId == player.playerId }?.volumeLevel
@@ -974,18 +977,21 @@ class PlayerRepositoryImpl @Inject constructor(
         blockedArtistUrisSnapshot.isNotEmpty()
 
     override suspend fun next(playerId: String) {
+        Log.d("sendspindbg", "WS>>> next($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))
         playerCmd("next", playerId)
     }
 
     override suspend fun previous(playerId: String) {
+        Log.d("sendspindbg", "WS>>> previous($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.PREVIOUS))
         playerCmd("previous", playerId)
     }
 
     override suspend fun seek(playerId: String, position: Double) {
+        Log.d("sendspindbg", "WS>>> seek($playerId, ${position}s)")
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.SEEK))
         sendPlayerCommandWithRetry(
             MaCommands.Players.CMD_SEEK,
@@ -995,8 +1001,12 @@ class PlayerRepositoryImpl @Inject constructor(
 
     @Volatile private var volumeOverrideUntilMs = 0L
 
-    override suspend fun setVolume(playerId: String, volumeLevel: Int) {
-        // Optimistic update with cooldown to prevent bounce from stale server responses
+    /**
+     * Synchronous optimistic volume update + cooldown.
+     * Call from the UI thread BEFORE launching the async WS command
+     * to prevent PLAYER_UPDATED echoes from flickering the slider.
+     */
+    override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int) {
         volumeOverrideUntilMs = System.currentTimeMillis() + 800
         _players.update { list ->
             list.map { if (it.playerId == playerId) it.copy(volumeLevel = volumeLevel) else it }
@@ -1004,10 +1014,55 @@ class PlayerRepositoryImpl @Inject constructor(
         if (_selectedPlayer.value?.playerId == playerId) {
             _selectedPlayer.update { it?.copy(volumeLevel = volumeLevel) }
         }
+    }
+
+    override suspend fun setVolume(playerId: String, volumeLevel: Int) {
+        applyVolumeOptimistic(playerId, volumeLevel)
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_SET,
             VolumeSetArgs(playerId = playerId, volumeLevel = volumeLevel)
         )
+    }
+
+    // Group volume: ratio-based so proportions are preserved and min/max hit 0/100 for all
+    private val groupMemberRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private var groupRatioParentId: String? = null
+
+    private fun ensureGroupRatios(parentId: String) {
+        val allPlayers = _players.value
+        val parent = allPlayers.find { it.playerId == parentId } ?: return
+        if (groupRatioParentId != parentId) {
+            groupMemberRatios.clear()
+            groupRatioParentId = parentId
+        }
+        val parentVol = parent.volumeLevel.coerceAtLeast(1)
+        for (childId in parent.groupChilds) {
+            if (childId != parentId && !groupMemberRatios.containsKey(childId)) {
+                val child = allPlayers.find { it.playerId == childId }
+                groupMemberRatios[childId] = (child?.volumeLevel ?: 0).toFloat() / parentVol
+            }
+        }
+    }
+
+    override suspend fun setGroupVolume(parentId: String, volume: Int) {
+        val parent = _players.value.find { it.playerId == parentId } ?: return
+        ensureGroupRatios(parentId)
+        setVolume(parentId, volume)
+        for (childId in parent.groupChilds) {
+            if (childId != parentId) {
+                val ratio = groupMemberRatios[childId] ?: 1f
+                val memberVol = (volume * ratio).toInt().coerceIn(0, 100)
+                setVolume(childId, memberVol)
+            }
+        }
+    }
+
+    override fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int) {
+        val parent = _players.value.find { it.playerId == parentId }
+        if (parent != null) {
+            val parentVol = parent.volumeLevel.coerceAtLeast(1)
+            groupMemberRatios[memberId] = volume.toFloat() / parentVol
+        }
     }
 
     override suspend fun toggleMute(playerId: String, muted: Boolean) {
@@ -1149,6 +1204,27 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
     }
 
+    override suspend fun createGroupPlayer(name: String, memberIds: List<String>) {
+        wsClient.sendCommand(
+            MaCommands.Players.CREATE_GROUP,
+            CreateGroupPlayerArgs(name = name, members = memberIds)
+        )
+    }
+
+    override suspend fun setGroupMembers(targetPlayerId: String, addIds: List<String>?, removeIds: List<String>?) {
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_SET_MEMBERS,
+            SetMembersArgs(targetPlayer = targetPlayerId, playerIdsToAdd = addIds, playerIdsToRemove = removeIds)
+        )
+    }
+
+    override suspend fun removeGroupPlayer(playerId: String) {
+        wsClient.sendCommand(
+            MaCommands.Players.REMOVE_GROUP,
+            RemoveGroupPlayerArgs(playerId = playerId)
+        )
+    }
+
     private fun maybeRecordManualSkip(playerId: String) {
         val current = queueTracking[playerId] ?: return
         if (!smartListeningEnabledSnapshot) return
@@ -1223,6 +1299,8 @@ fun ServerPlayer.toDomain(
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
     groupChilds = groupChilds,
+    supportedFeatures = supportedFeatures.toSet(),
+    canGroupWith = canGroupWith,
     currentMedia = currentMedia?.let {
         NowPlaying(
             queueId = it.queueId,

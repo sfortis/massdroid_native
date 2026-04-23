@@ -22,7 +22,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,11 +50,17 @@ import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import coil.compose.SubcomposeAsyncImage
 
+private data class PlayerGroupInfo(
+    val isParent: Boolean = false,
+    val childPlayers: List<Player> = emptyList()
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayersScreen(
     onNavigateToNowPlaying: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToRoomSetup: (roomId: String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val players by viewModel.players.collectAsStateWithLifecycle()
@@ -64,6 +69,7 @@ fun PlayersScreen(
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle()
+    val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
@@ -71,8 +77,39 @@ fun PlayersScreen(
     val playerRoomMap = remember(proximityConfig) {
         proximityConfig.rooms.groupBy { it.playerId }.mapValues { (_, rooms) -> rooms.map { it.name } }
     }
-    val availablePlayers = remember(players) {
-        players.filter { it.available }.sortedBy { it.displayName.lowercase() }
+    val playerRoomIdMap = remember(proximityConfig) {
+        proximityConfig.rooms.associate { it.playerId to it.id }
+    }
+    // MA includes the parent itself in group_childs. Actual children = childs minus self.
+    val groupData = remember(players) {
+        val available = players.filter { it.available }
+        val parentMap = mutableMapOf<String, List<String>>()
+        for (p in available) {
+            val actualChilds = p.groupChilds.filter { it != p.playerId }
+            if (actualChilds.isNotEmpty()) parentMap[p.playerId] = actualChilds
+        }
+        val childIds = parentMap.values.flatten().toSet()
+        Triple(available, parentMap, childIds)
+    }
+    val availablePlayers = remember(groupData) {
+        val (available, _, childIds) = groupData
+        available.filter { it.playerId !in childIds }
+            .sortedBy { it.displayName.lowercase() }
+    }
+    val groupInfoMap = remember(groupData) {
+        val (available, parentMap, _) = groupData
+        val playerMap = available.associateBy { it.playerId }
+        buildMap {
+            for ((parentId, childIds) in parentMap) {
+                val allMembers = (listOfNotNull(playerMap[parentId]) +
+                    childIds.mapNotNull { playerMap[it] })
+                    .sortedBy { it.displayName.lowercase() }
+                put(parentId, PlayerGroupInfo(
+                    isParent = true,
+                    childPlayers = allMembers
+                ))
+            }
+        }
     }
     val activePlayerCount = remember(availablePlayers) {
         availablePlayers.count { it.state != PlaybackState.IDLE }
@@ -107,6 +144,7 @@ fun PlayersScreen(
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
+                    var groupPlayer by remember { mutableStateOf<Player?>(null) }
 
                     PlayersHeader(
                         totalPlayers = availablePlayers.size,
@@ -122,19 +160,33 @@ fun PlayersScreen(
                             availablePlayers,
                             key = { it.playerId }
                         ) { player ->
+                            val groupInfo = groupInfoMap[player.playerId] ?: PlayerGroupInfo()
                             PlayerListItem(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
                                 isFollowMeSelected = proximityConfig.enabled &&
-                                    currentDetectedRoom?.playerId == player.playerId &&
-                                    selectedPlayer?.playerId == player.playerId,
+                                    currentDetectedRoom?.playerId == player.playerId,
                                 roomNames = playerRoomMap[player.playerId] ?: emptyList(),
+                                groupInfo = groupInfo,
                                 onClick = { viewModel.selectPlayer(player) },
                                 onIconLongPress = { iconPickerPlayer = player },
                                 onQueueMenuClick = { queueMenuPlayer = player },
                                 onVolumeChange = { volume ->
-                                    viewModel.setVolume(player.playerId, volume)
+                                    if (groupInfo.isParent) {
+                                        viewModel.setGroupVolume(player.playerId, volume)
+                                    } else {
+                                        viewModel.setVolume(player.playerId, volume)
+                                    }
+                                },
+                                onMemberVolumeChange = { memberId, volume ->
+                                    viewModel.onMemberVolumeChanged(player.playerId, memberId, volume)
+                                },
+                                onMemberClick = { member ->
+                                    viewModel.selectPlayer(member)
+                                },
+                                onMemberMenuClick = { member ->
+                                    queueMenuPlayer = member
                                 }
                             )
                             Spacer(modifier = Modifier.height(10.dp))
@@ -163,6 +215,13 @@ fun PlayersScreen(
                                 settingsPlayer = player
                                 queueMenuPlayer = null
                             },
+                            onConfigureRoom = playerRoomIdMap[player.playerId]?.let { roomId ->
+                                { onNavigateToRoomSetup(roomId) }
+                            },
+                            onGroupWith = {
+                                groupPlayer = player
+                                queueMenuPlayer = null
+                            },
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
                                 queueMenuPlayer = null
@@ -183,10 +242,11 @@ fun PlayersScreen(
                     settingsPlayer?.let { player ->
                         val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
                         val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+                        val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
                         if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
-                            initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                            initialDstmEnabled = dstmStates[player.playerId] ?: false,
                             isSendspinPlayer = player.provider == "sendspin",
                             isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
                             initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),
@@ -196,7 +256,20 @@ fun PlayersScreen(
                             onDstmChanged = { viewModel.setDontStopTheMusic(player.playerId, it) },
                             onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                             onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
+                            syncHistory = syncHistory,
                             onDismiss = { settingsPlayer = null }
+                        )
+                    }
+
+                    groupPlayer?.let { player ->
+                        net.asksakis.massdroidv2.ui.components.GroupPlayersSheet(
+                            targetPlayer = player,
+                            allPlayers = players.filter { it.available },
+                            onApply = { selectedIds ->
+                                android.util.Log.d("PlayersScreen", "GroupSheet onApply: target=${player.playerId} selected=$selectedIds childs=${player.groupChilds}")
+                                viewModel.applyGroupMembers(player.playerId, player.groupChilds, selectedIds)
+                            },
+                            onDismiss = { groupPlayer = null }
                         )
                     }
 
@@ -213,22 +286,12 @@ private fun PlayersHeader(
     activePlayers: Int,
     assignedRooms: Int
 ) {
-    Column(
-        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Text(
-            text = "Players",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    Text(
+        text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp)
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -239,10 +302,14 @@ private fun PlayerListItem(
     isLocalPlayer: Boolean = false,
     isFollowMeSelected: Boolean = false,
     roomNames: List<String> = emptyList(),
+    groupInfo: PlayerGroupInfo = PlayerGroupInfo(),
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
     onQueueMenuClick: () -> Unit,
-    onVolumeChange: (Int) -> Unit
+    onVolumeChange: (Int) -> Unit,
+    onMemberVolumeChange: (String, Int) -> Unit = { _, _ -> },
+    onMemberClick: (Player) -> Unit = {},
+    onMemberMenuClick: (Player) -> Unit = {}
 ) {
     var volumeSliderValue by remember { mutableFloatStateOf(player.volumeLevel.toFloat()) }
 
@@ -263,27 +330,28 @@ private fun PlayerListItem(
     }
     val title = player.currentMedia?.title
     val artist = player.currentMedia?.artist
+    val groupAccentColor = MaterialTheme.colorScheme.tertiary
 
     Surface(
         modifier = Modifier
             .padding(horizontal = 8.dp)
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = containerColor,
         tonalElevation = if (isSelected || isPlaying) 1.dp else 0.dp,
         shadowElevation = 0.dp
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     SoundWaveIcon(
@@ -296,7 +364,7 @@ private fun PlayerListItem(
                     ) {
                         PlayerIcon(
                             player = player,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(20.dp),
                             tint = accentColor
                         )
                     }
@@ -308,19 +376,33 @@ private fun PlayerListItem(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(1.dp)
                 ) {
-                    PlayerNameWithBadge(
-                        name = player.displayName,
-                        isLocalPlayer = isLocalPlayer,
-                        isFollowMePlayer = isFollowMeSelected,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        PlayerNameWithBadge(
+                            name = player.displayName,
+                            isLocalPlayer = isLocalPlayer,
+                            isFollowMePlayer = isFollowMeSelected,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (groupInfo.isParent) {
+                            Icon(
+                                Icons.Default.Link,
+                                contentDescription = null,
+                                tint = groupAccentColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
 
-                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(28.dp)) {
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = "Player options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -408,6 +490,105 @@ private fun PlayerListItem(
                     textAlign = TextAlign.End
                 )
             }
+
+                if (groupInfo.isParent && groupInfo.childPlayers.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .height(0.5.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    )
+                    groupInfo.childPlayers.forEach { member ->
+                        GroupMemberRow(
+                            member = member,
+                            onVolumeChange = { onMemberVolumeChange(member.playerId, it) },
+                            onClick = { onMemberClick(member) },
+                            onMenuClick = { onMemberMenuClick(member) }
+                        )
+                    }
+                }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GroupMemberRow(
+    member: Player,
+    onVolumeChange: (Int) -> Unit,
+    onClick: () -> Unit,
+    onMenuClick: () -> Unit
+) {
+    var volume by remember { mutableFloatStateOf(member.volumeLevel.toFloat()) }
+    LaunchedEffect(member.volumeLevel) { volume = member.volumeLevel.toFloat() }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PlayerIcon(
+            player = member,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = member.displayName,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(80.dp)
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Slider(
+            value = volume,
+            onValueChange = { volume = it },
+            onValueChangeFinished = { onVolumeChange(volume.toInt()) },
+            valueRange = 0f..100f,
+            modifier = Modifier
+                .weight(1f)
+                .height(20.dp),
+            thumb = {},
+            track = { sliderState ->
+                val fraction = ((sliderState.value - sliderState.valueRange.start) /
+                    (sliderState.valueRange.endInclusive - sliderState.valueRange.start))
+                    .coerceIn(0f, 1f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant)
+                    )
+                }
+            }
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "${volume.toInt()}%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.End
+        )
+        IconButton(onClick = onMenuClick, modifier = Modifier.size(24.dp)) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Member options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp)
+            )
         }
     }
 }
@@ -438,13 +619,15 @@ private fun PlayerQueueSheet(
     sendspinClientId: String?,
     playerRoomMap: Map<String, List<String>> = emptyMap(),
     onPlayerSettings: () -> Unit,
+    onConfigureRoom: (() -> Unit)? = null,
+    onGroupWith: () -> Unit,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
     onStartSongRadio: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var showTransferList by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val otherPlayers = remember(allPlayers, player.playerId) {
         allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }
     }
@@ -488,6 +671,20 @@ private fun PlayerQueueSheet(
                         modifier = Modifier.clickable { showTransferList = true }
                     )
                 }
+                if ("set_members" in player.supportedFeatures) {
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text(if (player.groupChilds.isNotEmpty()) "Edit Sync Group..." else "Synchronize with...") },
+                        leadingContent = {
+                            Icon(Icons.Default.SpeakerGroup, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onGroupWith()
+                            onDismiss()
+                        }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                }
                 if (player.currentMedia?.uri != null) {
                     ListItem(
                         colors = SheetDefaults.listItemColors(),
@@ -509,6 +706,20 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onClearQueue)
                 )
+                if (onConfigureRoom != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Configure Room") },
+                        leadingContent = {
+                            Icon(Icons.Default.MeetingRoom, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onConfigureRoom()
+                            onDismiss()
+                        }
+                    )
+                }
             } else {
                 ListItem(
                     colors = SheetDefaults.listItemColors(),

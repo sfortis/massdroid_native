@@ -25,7 +25,8 @@ data class Track(
     val year: Int? = null,
     val providerDomains: List<String> = emptyList(),
     val lyrics: String? = null,
-    val lrcLyrics: String? = null
+    val lrcLyrics: String? = null,
+    val dateAdded: String? = null
 )
 
 @Serializable

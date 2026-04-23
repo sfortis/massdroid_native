@@ -7,8 +7,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -46,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.isSystemInDarkTheme
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.blue
@@ -95,6 +99,9 @@ import coil.compose.AsyncImage
 
 private enum class SwipeCommitDirection { NEXT, PREVIOUS }
 
+private fun formatMs(valueMs: Float): String =
+    String.format(java.util.Locale.US, "%.1fms", valueMs)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NowPlayingScreen(
@@ -132,6 +139,7 @@ fun NowPlayingScreen(
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
     val lyricsTimingOffsetMs by viewModel.lyricsTimingOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
     val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
+    val isSendspinPlayer by viewModel.isSendspinPlayer.collectAsStateWithLifecycle()
     val cachedTrackDisplay by viewModel.cachedTrackDisplay.collectAsStateWithLifecycle()
     val adjacentArtwork by viewModel.adjacentArtwork.collectAsStateWithLifecycle()
     val title = currentTrack?.name ?: player?.currentMedia?.title
@@ -278,6 +286,7 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     controlsEnabled = player != null,
+                    isSendspinPlayer = isSendspinPlayer,
                     sleepTimerActive = sleepTimerActive,
                     viewModel = viewModel,
                     onBack = onBack,
@@ -294,7 +303,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onShowPlayerMenu = { showPlayerMenu = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -316,6 +325,7 @@ fun NowPlayingScreen(
                     duration = duration,
                     player = player,
                     controlsEnabled = player != null,
+                    isSendspinPlayer = isSendspinPlayer,
                     viewModel = viewModel,
                     onShowPlaylistDialog = {
                         showPlaylistDialog = true
@@ -329,7 +339,7 @@ fun NowPlayingScreen(
                         showLyricsSheet = true
                         viewModel.loadLyrics()
                     },
-                    onShowSendspinStatus = { if (sendspinStatus != null) showSendspinStatusSheet = true },
+                    onShowSendspinStatus = { showSendspinStatusSheet = true },
                     onNavigateToQueue = { showQueueSheet = true },
                     onNavigateToArtist = onNavigateToArtist,
                     onNavigateToAlbum = onNavigateToAlbum
@@ -436,9 +446,16 @@ fun NowPlayingScreen(
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinClientId)
             val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinAudioFormat)
             val staticDelayMs by viewModel.sendspinStaticDelayMs.collectAsStateWithLifecycle(initialValue = 0)
+            val isBt = viewModel.isBtRoute()
+            val phoneBaseline by viewModel.acousticPhoneBaselineUs.collectAsStateWithLifecycle(initialValue = 0L)
+            val calibrations by viewModel.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
+            val btRouteKey = viewModel.getBtRouteKey()
+            val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
+            val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
+
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
-                initialDstmEnabled = viewModel.queueState.value?.dontStopTheMusicEnabled ?: false,
+                initialDstmEnabled = dstmStates[currentPlayer.playerId] ?: false,
                 isSendspinPlayer = currentPlayer.provider == "sendspin",
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
@@ -448,6 +465,21 @@ fun NowPlayingScreen(
                 onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                 onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
+                isBtRoute = isBt,
+                acousticCorrectionMs = acousticCorrectionMs.toInt(),
+                calibrator = viewModel.acousticCalibrator,
+                hasPhoneBaseline = phoneBaseline > 0L,
+                phoneBaselineUs = phoneBaseline,
+                isPlaybackActive = viewModel.isPlaybackActive(),
+                onPausePlayback = { viewModel.pauseForCalibration() },
+                onResumePlayback = { viewModel.resumeAfterCalibration() },
+                btRouteName = viewModel.getBtRouteName(),
+                onBaselineComplete = { viewModel.saveAcousticBaseline(it) },
+                onAcousticCalibrationComplete = { correctionUs, quality ->
+                    viewModel.saveAcousticCalibration(correctionUs, quality)
+                },
+                onResetPhoneBaseline = { viewModel.resetAcousticBaseline() },
+                onResetBtCalibration = { viewModel.resetAcousticCalibration() },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }
@@ -471,9 +503,12 @@ fun NowPlayingScreen(
     }
 
     val statusSnapshot = sendspinStatus
+    val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
     if (showSendspinStatusSheet && statusSnapshot != null) {
         SendspinStatusSheet(
             status = statusSnapshot,
+            syncHistory = syncHistory,
+            onStaticDelayChanged = { viewModel.setSendspinStaticDelayMs(it) },
             onDismiss = { showSendspinStatusSheet = false }
         )
     }
@@ -512,6 +547,7 @@ private fun NowPlayingPortrait(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
+    isSendspinPlayer: Boolean,
     viewModel: NowPlayingViewModel,
     onShowPlaylistDialog: () -> Unit,
     onShowLyrics: () -> Unit,
@@ -550,6 +586,7 @@ private fun NowPlayingPortrait(
             onShowLyrics = onShowLyrics,
             onNavigateToQueue = onNavigateToQueue,
             onShowSendspinStatus = onShowSendspinStatus,
+            isSendspinPlayer = isSendspinPlayer,
             enabled = controlsEnabled
         )
 
@@ -661,6 +698,7 @@ private fun NowPlayingLandscape(
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
+    isSendspinPlayer: Boolean,
     sleepTimerActive: Boolean,
     viewModel: NowPlayingViewModel,
     onBack: () -> Unit,
@@ -684,7 +722,7 @@ private fun NowPlayingLandscape(
         // Left: close/name overlay + centered album art
         Box(
             modifier = Modifier
-                .weight(1f)
+                .weight(0.92f)
                 .fillMaxHeight()
                 .padding(8.dp)
         ) {
@@ -715,7 +753,9 @@ private fun NowPlayingLandscape(
 
             // Album art (true center)
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 20.dp),
                 contentAlignment = Alignment.Center
             ) {
                 SwipeableAlbumArt(
@@ -734,7 +774,7 @@ private fun NowPlayingLandscape(
         // Right: track info + controls (grouped, constrained width)
         Box(
             modifier = Modifier
-                .weight(1.2f)
+                .weight(1.32f)
                 .fillMaxHeight()
                 .padding(start = 16.dp, end = 8.dp)
         ) {
@@ -766,7 +806,7 @@ private fun NowPlayingLandscape(
 
             // Constrained controls block
             Column(
-                modifier = Modifier.fillMaxWidth(0.75f),
+                modifier = Modifier.fillMaxWidth(0.94f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 SeekBar(
@@ -774,7 +814,7 @@ private fun NowPlayingLandscape(
                     duration = duration,
                     onSeek = { if (controlsEnabled) viewModel.seek(it) },
                     enabled = controlsEnabled,
-                    compact = true
+                    compact = false
                 )
 
                 // Action row (playlist, lyrics, badges, queue) below seekbar
@@ -786,18 +826,19 @@ private fun NowPlayingLandscape(
                     onShowLyrics = onShowLyrics,
                     onNavigateToQueue = onNavigateToQueue,
                     onShowSendspinStatus = onShowSendspinStatus,
+                    isSendspinPlayer = isSendspinPlayer,
                     enabled = controlsEnabled,
-                    compact = true
+                    compact = false
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
                 TransportControls(
                     isPlaying = isPlaying,
                     queueState = queueState,
                     viewModel = viewModel,
                     enabled = controlsEnabled,
-                    compact = true,
+                    compact = false,
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
                 )
 
@@ -811,18 +852,20 @@ private fun NowPlayingLandscape(
 private fun AudioQualityBadges(
     audioFormat: AudioFormatInfo?,
     outputCodec: String? = null,
+    isSendspinPlayer: Boolean = false,
     compact: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
     val badges = remember(audioFormat, outputCodec) { buildAudioQualityBadges(audioFormat, outputCodec) }
-    if (badges.isEmpty()) return
+    val displayBadges = if (badges.isEmpty() && isSendspinPlayer) listOf("Sendspin") else badges
+    if (displayBadges.isEmpty()) return
 
     Row(
         modifier = if (onClick != null) Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() } else Modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        badges.forEach { badge ->
+        displayBadges.forEach { badge ->
             Surface(
                 shape = RoundedCornerShape(999.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
@@ -848,6 +891,7 @@ private fun QualityActionRow(
     onShowLyrics: () -> Unit,
     onNavigateToQueue: () -> Unit,
     onShowSendspinStatus: () -> Unit,
+    isSendspinPlayer: Boolean = false,
     enabled: Boolean = true,
     compact: Boolean = false
 ) {
@@ -919,8 +963,9 @@ private fun QualityActionRow(
             AudioQualityBadges(
                 audioFormat = audioFormat,
                 outputCodec = outputCodec,
+                isSendspinPlayer = isSendspinPlayer,
                 compact = compact,
-                onClick = if (outputCodec != null) onShowSendspinStatus else null
+                onClick = if (isSendspinPlayer) onShowSendspinStatus else null
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
@@ -964,12 +1009,15 @@ private fun QualityActionRow(
 @Composable
 private fun SendspinStatusSheet(
     status: SendspinStatusUi,
+    syncHistory: List<net.asksakis.massdroidv2.data.sendspin.SendspinManager.SyncSample> = emptyList(),
+    onStaticDelayChanged: (Int) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val bufferSeconds = status.activeBufferMs / 1000f
     val maxSeconds = 30f
     val bufferColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+    val syncAbsMs = kotlin.math.abs(status.absoluteSyncMs)
     val stateLabel = when (status.syncState) {
         SyncState.IDLE -> "Idle"
         SyncState.SYNCHRONIZED -> "Synchronized"
@@ -985,6 +1033,26 @@ private fun SendspinStatusSheet(
         SendspinState.ERROR -> "Error"
         SendspinState.DISCONNECTED -> "Disconnected"
     }
+    val syncLockLabel = when {
+        status.syncState != SyncState.SYNCHRONIZED -> stateLabel
+        status.syncMuted -> "Aligning (muted)"
+        syncAbsMs < 5f -> "Locked (${formatMs(status.absoluteSyncMs)})"
+        syncAbsMs < 20f -> "Correcting (${formatMs(status.absoluteSyncMs)})"
+        else -> "Converging (${formatMs(status.absoluteSyncMs)})"
+    }
+    val routeCorrectionMs = status.acousticCorrectionMs
+    val routeExtraMs = (routeCorrectionMs - status.outputLatencyMs).coerceAtLeast(0L)
+    val latencyPrimary = when {
+        routeCorrectionMs > 0L -> "${routeCorrectionMs}ms calibrated"
+        status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms output estimate"
+        else -> "Measuring"
+    }
+    val latencyDetail = when {
+        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + route ${routeExtraMs}ms"
+        status.outputLatencyMs > 0L -> "no acoustic calibration loaded"
+        else -> "waiting for output timestamp"
+    }
+    val clockLabel = "${status.clockSamples} samples / ${formatMs(status.clockErrorUs / 1000f)} clock error"
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -994,8 +1062,9 @@ private fun SendspinStatusSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             SheetDefaults.HeaderTitle(text = "Streaming Status")
 
@@ -1003,13 +1072,28 @@ private fun SendspinStatusSheet(
             StatusLine(label = "Playback", value = stateLabel)
             StatusLine(label = "Codec", value = status.codec ?: "Unknown")
             StatusLine(label = "Mode", value = status.configuredFormat)
-            StatusLine(label = "Static delay", value = "${status.staticDelayMs} ms")
-            StatusLine(label = "Buffer", value = String.format(java.util.Locale.US, "%.1fs", bufferSeconds))
+            StatusLine(label = "Network", value = status.networkMode)
+
+            HorizontalDivider()
+
+            // Sync details in compact layout
+            val smallStyle = MaterialTheme.typography.labelMedium
+            val dimColor = MaterialTheme.colorScheme.onSurfaceVariant
+            val valueColor = MaterialTheme.colorScheme.onSurface
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Sync lock", syncLockLabel, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Sync error", formatMs(status.absoluteSyncMs), smallStyle, dimColor, valueColor)
+                DetailStatusLine("Latency", latencyPrimary, latencyDetail, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Clock", clockLabel, smallStyle, dimColor, valueColor)
+                SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
+                SmallStatusLine("Buffer", String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000), smallStyle, dimColor, valueColor)
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(10.dp)
+                    .height(8.dp)
                     .clip(RoundedCornerShape(999.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             ) {
@@ -1026,11 +1110,29 @@ private fun SendspinStatusSheet(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("0s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("30s", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("0s", style = MaterialTheme.typography.labelSmall, color = dimColor)
+                Text("30s", style = MaterialTheme.typography.labelSmall, color = dimColor)
             }
 
-            StatusLine(label = "Buffered bytes", value = "${status.bufferBytes / 1000} KB")
+            HorizontalDivider()
+            var staticDelayMs by remember(status.staticDelayMs) { mutableIntStateOf(status.staticDelayMs) }
+            net.asksakis.massdroidv2.ui.components.SteppedValueRow(
+                label = "Static delay",
+                valueLabel = "${staticDelayMs}ms",
+                onDecrement = {
+                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                    onStaticDelayChanged(staticDelayMs)
+                },
+                onIncrement = {
+                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
+                    onStaticDelayChanged(staticDelayMs)
+                },
+                labelStyle = MaterialTheme.typography.labelMedium
+            )
+
+            if (syncHistory.size >= 2) {
+                net.asksakis.massdroidv2.ui.components.SyncErrorGraph(syncHistory)
+            }
             Spacer(modifier = Modifier.height(12.dp))
         }
     }
@@ -1064,6 +1166,50 @@ private fun StatusLine(label: String, value: String) {
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+@Composable
+private fun SmallStatusLine(
+    label: String,
+    value: String,
+    style: androidx.compose.ui.text.TextStyle,
+    labelColor: androidx.compose.ui.graphics.Color,
+    valueColor: androidx.compose.ui.graphics.Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = style, color = labelColor)
+        Text(value, style = style, color = valueColor)
+    }
+}
+
+@Composable
+private fun DetailStatusLine(
+    label: String,
+    value: String,
+    detail: String,
+    style: androidx.compose.ui.text.TextStyle,
+    labelColor: androidx.compose.ui.graphics.Color,
+    valueColor: androidx.compose.ui.graphics.Color
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, style = style, color = labelColor)
+            Text(value, style = style, color = valueColor)
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.labelSmall,
+            color = labelColor,
+            textAlign = TextAlign.End,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
@@ -1857,7 +2003,7 @@ private fun SwipeableAlbumArt(
     val outerModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.82f).aspectRatio(1f)
     } else {
-        Modifier.fillMaxWidth(0.9f).heightIn(max = 240.dp).aspectRatio(1f)
+        Modifier.fillMaxWidth(0.82f).heightIn(max = 196.dp).aspectRatio(1f)
     }
     val artworkModifier = if (fillMaxWidth) {
         Modifier.fillMaxWidth(0.915f).aspectRatio(1f)
@@ -2117,6 +2263,7 @@ private fun extractColor(bitmap: Bitmap, isDark: Boolean): Color {
     return Color(clamped)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SeekBar(
     elapsed: Double,
@@ -2126,6 +2273,7 @@ private fun SeekBar(
     compact: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
     var seeking by remember { mutableStateOf(false) }
     var seekValue by remember { mutableFloatStateOf(0f) }
     var seekTarget by remember { mutableFloatStateOf(-1f) }
@@ -2142,6 +2290,9 @@ private fun SeekBar(
         seekTarget >= 0f -> seekTarget
         else -> elapsed.toFloat()
     }
+    val thumbWidth = if (compact) 5.dp else 5.dp
+    val thumbHeight = if (compact) 14.dp else 16.dp
+    val trackHeight = if (compact) 6.dp else 8.dp
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
@@ -2158,7 +2309,21 @@ private fun SeekBar(
             },
             valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
             enabled = enabled,
-            modifier = if (compact) Modifier.height(28.dp) else Modifier
+            modifier = if (compact) Modifier.height(30.dp) else Modifier.height(34.dp),
+            interactionSource = interactionSource,
+            thumb = {
+                SliderDefaults.Thumb(
+                    interactionSource = interactionSource,
+                    thumbSize = DpSize(thumbWidth, thumbHeight)
+                )
+            },
+            track = { sliderState ->
+                SliderDefaults.Track(
+                    sliderState = sliderState,
+                    modifier = Modifier.height(trackHeight),
+                    thumbTrackGapSize = 0.dp
+                )
+            }
         )
 
         Row(

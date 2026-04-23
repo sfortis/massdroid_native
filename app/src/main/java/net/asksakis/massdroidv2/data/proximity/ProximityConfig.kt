@@ -11,6 +11,9 @@ enum class DetectionPolicy { STRICT, NORMAL }
 @Serializable
 enum class AnchorType { MAC, NAME }
 
+@Serializable
+enum class WifiMatchMode { BSSID, SSID }
+
 data class PolicyRules(
     val allowWeakCalibration: Boolean,
     val minBleCoverage: Int,
@@ -43,7 +46,7 @@ fun DetectionPolicy.rules(): PolicyRules = when (this) {
 data class ProximityConfig(
     val enabled: Boolean = false,
     val autoTransfer: Boolean = false,
-    val stopWhenNoRoomActive: Boolean = false,
+    val detectionTolerance: Float = 40.0f,
     val schedule: ProximitySchedule = ProximitySchedule(),
     val rooms: List<RoomConfig> = emptyList()
 )
@@ -97,7 +100,8 @@ data class RoomConfig(
     val playbackConfig: RoomPlaybackConfig = RoomPlaybackConfig(),
     val connectedBssid: String? = null,
     val connectedSsid: String? = null,
-    val stickToConnectedWifi: Boolean = false
+    val wifiMatchMode: WifiMatchMode? = null,
+    val stopOnLeave: Boolean = false
 )
 
 @Serializable

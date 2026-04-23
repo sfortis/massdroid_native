@@ -13,13 +13,12 @@ import kotlinx.coroutines.launch
 
 class SendspinManager(
     private val client: SendspinClient,
-    private val audio: AudioStreamManager,
+    private val engine: SendspinAudioEngine,
 ) {
+    private val audio: SendspinAudioEngine get() = engine
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
-        private const val TIME_SYNC_SAMPLES = 8
-        private const val MAX_TIME_SYNC_RTT_US = 150_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -30,11 +29,11 @@ class SendspinManager(
     private var stateJob: Job? = null
     private val clockSynchronizer = ClockSynchronizer()
 
-    // Clock sync: offset = server_clock - local_clock (microseconds)
-    private val offsetSamples = mutableListOf<Long>()
-    @Volatile var clockOffsetUs: Long = 0L; private set
+    // Clock sync: Kalman filter is the primary offset source
     @Volatile var clockSynced: Boolean = false; private set
-    @Volatile var filteredClockOffsetUs: Long = 0L; private set
+    var onClockOffsetPersist: ((serverMinusWallUs: Long) -> Unit)? = null
+    private var clockOffsetPersistCount = 0
+
 
     private val _connectionState = MutableStateFlow(SendspinState.DISCONNECTED)
     val connectionState: StateFlow<SendspinState> = _connectionState.asStateFlow()
@@ -44,14 +43,26 @@ class SendspinManager(
 
     private val _streamCodec = MutableStateFlow<String?>(null)
     val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
+    private val _networkMode = MutableStateFlow("WiFi")
+    val networkMode: StateFlow<String> = _networkMode.asStateFlow()
     private val _syncState = MutableStateFlow(audio.syncState)
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+
+    data class SyncSample(
+        val errorMs: Float,
+        val outputLatencyMs: Float,
+        val filterErrorMs: Float,
+        val dacAbsoluteMs: Float? = null,
+    )
+    private val _syncHistory = MutableStateFlow<List<SyncSample>>(emptyList())
+    val syncHistory: StateFlow<List<SyncSample>> = _syncHistory.asStateFlow()
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
     val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
 
     var currentVolume = 100
         private set
     private var muted = false
+    @Volatile private var hasActiveProtocolStream = false
     @Volatile private var lastSentSyncState = ""
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
@@ -78,26 +89,25 @@ class SendspinManager(
             }
         }
 
-        // Handle text messages
+        // Handle ordered protocol messages. Text control messages and binary audio frames
+        // must be processed in WebSocket order for seek/stream-clear correctness.
         messageJob?.cancel()
-        messageJob = scope.launch {
-            client.textMessages.collect { incoming ->
-                handleIncoming(incoming)
-            }
-        }
-
-        // Handle binary messages (audio)
         binaryJob?.cancel()
+        binaryJob = null
         var binaryCount = 0
-        binaryJob = scope.launch {
-            client.binaryMessages.collect { data ->
-                binaryCount++
-                val gen = audio.currentConfigureGeneration()
-                if (binaryCount <= 3 || binaryCount % 1000 == 0) {
-                    Log.d(TAG, "Binary message #$binaryCount: ${data.size} bytes")
+        messageJob = scope.launch {
+            client.messages.collect { message ->
+                when (message) {
+                    is SendspinMessage.Text -> handleIncoming(message.incoming)
+                    is SendspinMessage.Binary -> {
+                        binaryCount++
+                        val gen = audio.currentConfigureGeneration()
+                        if (binaryCount <= 3 || binaryCount % 1000 == 0) {
+                            Log.d(TAG, "Binary message #$binaryCount: ${message.data.size} bytes")
+                        }
+                        audio.onBinaryMessage(message.data, gen)
+                    }
                 }
-                audio.clockOffsetUs = clockOffsetUs
-                audio.onBinaryMessage(data, gen)
             }
         }
 
@@ -121,89 +131,95 @@ class SendspinManager(
                 Log.d(TAG, "Server hello received")
                 client.updateState(SendspinState.SYNCING)
                 setupSyncStateCallback()
-                client.sendClientState(
-                    volume = currentVolume,
-                    muted = muted,
-                    syncState = currentSyncStatePayloadValue()
-                )
+                sendCurrentState(currentSyncStatePayloadValue())
                 startHeartbeat()
+                // Always run time sync, even in DIRECT mode. Keeps the Kalman
+                // clock warm so group join has instant precision (no 2-3s wait).
                 startTimeSync()
             }
 
             is SendspinIncoming.ServerTime -> {
-                val now = System.nanoTime() / 1000
                 val t1 = incoming.payload.clientTransmitted
                 val t2 = incoming.payload.serverReceived
                 val t3 = incoming.payload.serverTransmitted
-                val t4 = now
-                val offset = ((t2 - t1) + (t3 - t4)) / 2
+                val t4 = System.nanoTime() / 1000
                 val rttUs = (t4 - t1) - (t3 - t2)
+                // Reject absurd RTT only during initial convergence (first 5 samples)
+                if (rttUs > 150_000L && clockSynchronizer.currentSampleCount() < 5) {
+                    Log.d(TAG, "Clock sync: REJECTED rtt=${rttUs}us (startup, samples=${clockSynchronizer.currentSampleCount()})")
+                    return
+                }
                 clockSynchronizer.processTimeResponse(
                     clientTransmittedUs = t1,
                     serverReceivedUs = t2,
                     serverTransmittedUs = t3,
                     clientReceivedUs = t4
                 )
-                filteredClockOffsetUs = clockSynchronizer.currentOffsetUs()
-                if (rttUs > MAX_TIME_SYNC_RTT_US) {
-                    Log.d(
-                        TAG,
-                        "Clock sync sample ignored: rtt=${rttUs}us offset=${offset}us " +
-                            "current=${clockOffsetUs}us samples=${offsetSamples.size}"
-                    )
-                    return
+                clockSynced = clockSynchronizer.isSynced()
+                val count = clockSynchronizer.currentSampleCount()
+                if (count <= 5 || count % 20 == 0) {
+                    Log.d(TAG, "Clock sync: offset=${clockSynchronizer.currentOffsetUs()}us " +
+                        "error=${clockSynchronizer.errorUs()}us rtt=${rttUs}us " +
+                        "ready=${clockSynchronizer.isReadyForPlaybackStart()} samples=$count")
                 }
-                synchronized(offsetSamples) {
-                    offsetSamples.add(offset)
-                    if (offsetSamples.size > TIME_SYNC_SAMPLES) offsetSamples.removeAt(0)
-                    clockOffsetUs = offsetSamples.sorted()[offsetSamples.size / 2]
-                    clockSynced = offsetSamples.size >= 3
-                }
-                audio.clockOffsetUs = clockOffsetUs
-                if (offsetSamples.size <= 3 || offsetSamples.size % 8 == 0) {
-                    Log.d(
-                        TAG,
-                        "Clock sync: median=${clockOffsetUs}us filtered=${filteredClockOffsetUs}us " +
-                            "delta=${filteredClockOffsetUs - clockOffsetUs}us samples=${offsetSamples.size} " +
-                            "applied=${audio.clockOffsetUs}us"
-                    )
+                // Persist offset every ~30 samples for next startup seed
+                clockOffsetPersistCount++
+                if (clockOffsetPersistCount >= 100 && clockSynchronizer.errorUs() < 2_000) {
+                    clockOffsetPersistCount = 0
+                    val nanoUs = System.nanoTime() / 1000
+                    val wallUs = System.currentTimeMillis() * 1000L
+                    val serverMinusWall = clockSynchronizer.currentOffsetUs() + nanoUs - wallUs
+                    onClockOffsetPersist?.invoke(serverMinusWall)
                 }
             }
 
             is SendspinIncoming.GroupUpdate -> {
-                // Group state updates are informative only for now.
+                // Group state managed by player list collector in SendspinAudioController.
+                // group/update arrives for both solo and multi groups, can't distinguish here.
+                Log.d("sendspindbg", ">>> group/update")
             }
 
             is SendspinIncoming.StreamStart -> {
                 val info = incoming.payload.player
-                Log.d(TAG, "Stream start: ${info.codec} ${info.sampleRate}Hz/${info.bitDepth}bit ${info.channels}ch, " +
-                        "codecHeader=${info.codecHeader != null}")
-                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader)
-                audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
+                val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
+                Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                hasActiveProtocolStream = true
+                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
+                // Don't call setVolume during sync re-lock: it would overwrite
+                // currentVolume with 0, breaking the fade-in calculation.
+                val engineMuted = (engine as? SendspinSyncEngine)?.syncMuted ?: false
+                if (!engineMuted) {
+                    audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
+                }
                 _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
             }
 
             is SendspinIncoming.StreamEnd -> {
+                Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                hasActiveProtocolStream = false
                 audio.onStreamEnd()
             }
 
             is SendspinIncoming.StreamClear -> {
-                Log.d(TAG, "Stream clear")
+                Log.d("sendspindbg", ">>> stream/clear buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                // stream/clear: clear buffers but keep stream context active
                 _serverMetadata.value = null
                 audio.clearBuffer()
             }
 
             is SendspinIncoming.ServerState -> {
+                Log.d("sendspindbg", ">>> server/state metadata=${incoming.payload.metadata != null}")
                 _serverMetadata.value = incoming.payload.metadata
             }
 
             is SendspinIncoming.ServerCommand -> {
+                Log.d("sendspindbg", ">>> server/command ${incoming.payload.player?.command}")
                 handleCommand(incoming.payload)
             }
 
             is SendspinIncoming.Unknown -> {
-                Log.d(TAG, "Unknown message type: ${incoming.type}")
+                Log.d("sendspindbg", ">>> unknown type: ${incoming.type}")
             }
         }
     }
@@ -229,36 +245,43 @@ class SendspinManager(
         }
     }
 
+
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (System.currentTimeMillis() - lastCallbackSentAtMs < 500L) continue
-                client.sendClientState(
-                    volume = currentVolume,
-                    muted = muted,
-                    syncState = currentSyncStatePayloadValue()
-                )
+                sendCurrentState(currentSyncStatePayloadValue())
             }
         }
     }
 
+    /**
+     * Seed Kalman from persisted value. We store server_time - wallClock (reboot-safe),
+     * then reconstruct the nanoTime-based offset on restore.
+     */
+    fun seedClockOffset(serverMinusWallUs: Long) {
+        if (serverMinusWallUs == 0L) return
+        val nowNanoUs = System.nanoTime() / 1000
+        val nowWallUs = System.currentTimeMillis() * 1000L
+        val estimatedOffset = serverMinusWallUs - nowNanoUs + nowWallUs
+        // High covariance: persisted offset is a rough hint, may be stale after sleep/reboot.
+        // Fresh NTP samples will quickly dominate. 1e9 = ~31ms error -> filter converges in 3-4 samples.
+        clockSynchronizer.softReset(estimatedOffset, preserveDrift = false, initialCovariance = 1_000_000_000.0)
+        clockSynced = true
+        Log.d(TAG, "Clock offset seeded: ${estimatedOffset}us (from serverMinusWall=${serverMinusWallUs}us)")
+    }
+
     private fun startTimeSync() {
         timeSyncJob?.cancel()
-        val previousOffsetUs = clockOffsetUs
-        synchronized(offsetSamples) {
-            offsetSamples.clear()
-            clockSynced = false
-            if (previousOffsetUs != 0L) {
-                offsetSamples.add(previousOffsetUs)
-                clockOffsetUs = previousOffsetUs
-                clockSynced = true
-            }
+        val previousOffsetUs = clockSynchronizer.currentOffsetUs()
+        if (previousOffsetUs != 0L) {
+            clockSynchronizer.softReset(previousOffsetUs)
+            clockSynced = true
         }
-        filteredClockOffsetUs = previousOffsetUs
-        clockSynchronizer.reset()
-        audio.clockOffsetUs = clockOffsetUs
+        clockOffsetPersistCount = 0
+        audio.clockSynchronizer = clockSynchronizer
         timeSyncJob = scope.launch {
             while (true) {
                 val clientTimeUs = System.nanoTime() / 1000
@@ -308,13 +331,74 @@ class SendspinManager(
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
+    fun setInSyncGroup(grouped: Boolean) {
+        val mode = if (grouped) CorrectionMode.SYNC else CorrectionMode.DIRECT
+        val wasSync = engine.correctionMode == CorrectionMode.SYNC
+        engine.setCorrectionMode(mode)
+        if (grouped && !wasSync) {
+            // Clock is already warm (time sync runs in all modes).
+            // Just wire up the synchronizer; don't restart/soft-reset
+            // the Kalman so the converged state is preserved.
+            audio.clockSynchronizer = clockSynchronizer
+            // Safety: start time sync if not running (e.g. after reconnect)
+            if (timeSyncJob?.isActive != true && client.state.value != SendspinState.DISCONNECTED) {
+                startTimeSync()
+            }
+            Log.d(TAG, "Group join: clock already warm, samples=${clockSynchronizer.currentSampleCount()} error=${clockSynchronizer.errorUs()}us")
+        }
+        // DIRECT mode: keep time sync running (warm clock for future group join)
+    }
+
+    /** Get the actual routed device type from the AudioTrack, or null if unavailable. */
+    fun getRoutedDeviceType(): Int? = audio.getRoutedDeviceType()
+
+    fun setOnRoutingChangedCallback(callback: () -> Unit) {
+        (engine as? SendspinSyncEngine)?.onRoutingChanged = callback
+    }
+
+    fun onOutputRouteChanged(reason: String) {
+        Log.d(TAG, "Output route changed: $reason")
+        audio.onOutputRouteChanged(reason)
+    }
+
     fun setStaticDelayMs(delayMs: Int) {
-        audio.staticDelayMs = delayMs.coerceIn(0, 5000)
-        Log.d(TAG, "Static delay set to ${audio.staticDelayMs}ms")
+        val clamped = delayMs.coerceIn(-500, 5000)
+        val oldDelay = audio.staticDelayMs
+        if (clamped == oldDelay) return
+        audio.staticDelayMs = clamped
+        audio.shiftAnchorForDelayChange(clamped - oldDelay)
+        // Value changes immediately (affects targetLocalPlayUs, late-frame detection).
+        // Full alignment effect at next startup (seek/track change).
+        // No flush: flushing causes buffer storm and desync.
+        // Notify server of new delay so it adjusts buffer headroom
+        sendCurrentState(currentSyncStatePayloadValue())
+        Log.d(TAG, "Static delay: ${oldDelay}ms -> ${clamped}ms")
+    }
+
+    @Volatile private var isCellularTransport = false
+
+    fun setCellularHint(cellular: Boolean) {
+        isCellularTransport = cellular
+        _networkMode.value = if (cellular) "Mobile" else "WiFi"
+        engine.setCellularTransport(cellular)
+    }
+
+    private fun sendCurrentState(syncState: String) {
+        // Send only user-specified delay to server. The hw pipeline latency
+        // is compensated locally in targetLocalPlayUs() and should NOT be
+        // reported to the server (it's internal AudioTrack compensation).
+        client.sendClientState(
+            volume = currentVolume,
+            muted = muted,
+            syncState = syncState,
+            staticDelayMs = audio.staticDelayMs
+        )
     }
 
     fun expectDiscontinuity(reason: String) {
+        Log.d("sendspindbg", "expectDiscontinuity($reason) buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
         audio.expectDiscontinuity(reason)
+        Log.d("sendspindbg", "expectDiscontinuity($reason) DONE buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
     }
 
     fun onTransportFailure() {
@@ -322,15 +406,42 @@ class SendspinManager(
         _syncState.value = audio.syncState
     }
 
+    fun setRouteAcousticExtraUs(valueUs: Long) {
+        audio.routeAcousticExtraUs = valueUs
+        Log.d(TAG, "Acoustic extra: ${valueUs / 1000}ms")
+    }
+
+    fun getRoutedDeviceProductName(): String? = audio.getRoutedDeviceProductName()
+
+    fun acousticExtraMs(): Long = audio.routeAcousticExtraUs / 1000
+
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
+    fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
+    fun dacSyncErrorMs(): Float = (engine as? SendspinSyncEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f
+    fun absoluteSyncMs(): Float {
+        val e = engine as? SendspinSyncEngine ?: return 0f
+        return (e.startupOffsetMs + e.smoothedSyncErrorMs).toFloat()
+    }
+    fun isSyncMuted(): Boolean = (engine as? SendspinSyncEngine)?.syncMuted ?: false
+    fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
+    fun clockErrorUs(): Long = clockSynchronizer.errorUs()
+    fun resyncCount(): Int = (engine as? SendspinSyncEngine)?.resyncCount ?: 0
+    fun correctionModeName(): String = engine.correctionMode.name
 
     fun bufferedAudioBytes(): Long = audio.bufferedBytes()
 
     fun setupSyncStateCallback() {
+        audio.onSyncSample = { errorMs, outLatMs, filterErrMs, dacAbsoluteMs ->
+            val sample = SyncSample(errorMs, outLatMs, filterErrMs, dacAbsoluteMs)
+            val history = _syncHistory.value.toMutableList()
+            history.add(sample)
+            if (history.size > 60) history.removeAt(0)
+            _syncHistory.value = history
+        }
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
             val stateStr = when (state) {
-                SyncState.IDLE -> "synchronized"
+                SyncState.IDLE -> "error"
                 SyncState.SYNCHRONIZED -> "synchronized"
                 SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
                 SyncState.SYNC_ERROR_REBUFFERING -> "error"
@@ -338,15 +449,15 @@ class SendspinManager(
             if (stateStr != lastSentSyncState) {
                 lastSentSyncState = stateStr
                 lastCallbackSentAtMs = System.currentTimeMillis()
-                Log.d(TAG, "Sending client/state: $stateStr (from $state)")
-                client.sendClientState(volume = currentVolume, muted = muted, syncState = stateStr)
+                Log.d("sendspindbg", ">>> client/state: $stateStr (from $state) buf=${audio.bufferDurationMs()}ms")
+                sendCurrentState(stateStr)
             }
         }
     }
 
     private fun currentSyncStatePayloadValue(): String {
         return when (_syncState.value) {
-            SyncState.IDLE -> "synchronized"
+            SyncState.IDLE -> "error"
             SyncState.SYNCHRONIZED -> "synchronized"
             SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
             SyncState.SYNC_ERROR_REBUFFERING -> "error"
@@ -354,6 +465,7 @@ class SendspinManager(
     }
 
     fun stop() {
+        hasActiveProtocolStream = false
         _enabled.value = false
         heartbeatJob?.cancel()
         timeSyncJob?.cancel()
@@ -367,10 +479,13 @@ class SendspinManager(
         stateJob = null
         client.disconnect()
         audio.onSyncStateChanged = null
-        audio.release()
+        audio.onSyncSample = null
+        _syncHistory.value = emptyList()
+        val finalSyncState = audio.syncState
+        engine.release()
         _connectionState.value = SendspinState.DISCONNECTED
         _streamCodec.value = null
-        _syncState.value = audio.syncState
+        _syncState.value = finalSyncState
         _serverMetadata.value = null
         Log.d(TAG, "Sendspin stopped")
     }

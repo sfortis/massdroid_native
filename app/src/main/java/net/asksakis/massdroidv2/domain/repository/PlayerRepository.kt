@@ -56,7 +56,11 @@ interface PlayerRepository {
     suspend fun next(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
+    /** Synchronous optimistic volume update + cooldown. Prevents UI flicker from server echoes. */
+    fun applyVolumeOptimistic(playerId: String, volumeLevel: Int)
     suspend fun setVolume(playerId: String, volumeLevel: Int)
+    suspend fun setGroupVolume(parentId: String, volume: Int)
+    fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int)
     suspend fun toggleMute(playerId: String, muted: Boolean)
     suspend fun updatePlayerIcon(playerId: String, icon: String)
     suspend fun renamePlayer(playerId: String, name: String)
@@ -66,4 +70,8 @@ interface PlayerRepository {
     fun updateCurrentTrackLyrics(plainLyrics: String?, lrcLyrics: String?)
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
     fun notifyQueueReplacement(queueId: String)
+
+    suspend fun createGroupPlayer(name: String, memberIds: List<String>)
+    suspend fun setGroupMembers(targetPlayerId: String, addIds: List<String>? = null, removeIds: List<String>? = null)
+    suspend fun removeGroupPlayer(playerId: String)
 }

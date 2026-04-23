@@ -42,6 +42,8 @@ data class ServerPlayer(
     @SerialName("active_source") val activeSource: String? = null,
     @SerialName("active_group") val activeGroup: String? = null,
     @SerialName("group_childs") val groupChilds: List<String> = emptyList(),
+    @SerialName("supported_features") val supportedFeatures: List<String> = emptyList(),
+    @SerialName("can_group_with") val canGroupWith: List<String> = emptyList(),
     @SerialName("current_media") val currentMedia: CurrentMedia? = null,
     val icon: String? = null
 )
@@ -117,6 +119,7 @@ data class ServerMediaItem(
     @SerialName("is_playable") val isPlayable: Boolean? = null,
     val path: String? = null,
     @SerialName("translation_key") val translationKey: String? = null,
+    @SerialName("date_added") val dateAdded: String? = null,
     @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
 ) {
     /** Get the best image: direct image field, or first thumb from metadata.images. */
