@@ -52,7 +52,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 Walk between rooms and your music follows you. MassDroid uses BLE fingerprinting to detect which room you are in and automatically transfer playback or notify you to switch speakers.
 
-- **BLE Room Detection** : Scans nearby Bluetooth devices (TVs, speakers, routers, IoT) and compares the live BLE anchor snapshot against calibrated room fingerprints using room-fit scoring.
+- **Room Detection** : Scans nearby Bluetooth devices (TVs, speakers, routers, IoT) and compares the live BLE anchor snapshot against calibrated room fingerprints using vector k-NN room-fit scoring. For distinct locations, Wi-Fi BSSID or SSID matching can be used as an alternative to BLE.
 - **Per-Room Configuration** : Assign a Music Assistant player to each room, set a preferred playlist for auto-play, configure volume level, and toggle shuffle.
 - **Calibration Wizard** : Walk through each room while the app collects 20 BLE sampling windows, builds anchor fingerprints, and computes beacon profiles with quality assessment (Good/Weak).
 - **Time Schedule** : Set active days and times so proximity detection only runs when you want it.
@@ -72,7 +72,7 @@ To get reliable room detection, treat each room like a BLE fingerprinting proble
 - **Prefer stationary devices** : TVs, speakers, consoles, routers, and smart home hubs are good anchors. Phones, watches, earbuds, and other personal devices are intentionally ignored.
 - **Private-address devices are not automatically bad** : Some useful devices advertise with private BLE addresses. Use the inspection tools below to see what the app is actually using or ignoring.
 - **Use `STRICT` as the default** : Use `NORMAL` only for genuinely weaker rooms that need a more forgiving BLE policy.
-- **Use Wi-Fi AP override only for separate locations** : `Stick to connected Wi-Fi AP` is best for distinct places like `Home`, `Office`, or a detached space. It is not meant for nearby rooms on the same Wi-Fi.
+- **Use Wi-Fi override only for separate locations** : Wi-Fi BSSID or SSID matching is best for distinct places like `Home`, `Office`, or a detached space. It is not meant for nearby rooms on the same Wi-Fi. Use BSSID when different APs cover different locations, or SSID when each location has its own network name.
 
 ### Follow Me Tools
 
@@ -85,7 +85,8 @@ MassDroid includes a few built-in tools to help you tune room detection without 
   - which stable devices are visible but not yet in the room profile
   - which devices are ignored because they are mobile or excluded by the current policy
 - **Detection Mode** : `STRICT` requires a cleaner BLE match. `NORMAL` is a fallback for weaker rooms.
-- **Wi-Fi AP Override** : Lets a room use the currently connected Wi-Fi access point instead of BLE anchors.
+- **Detection Tolerance** : Global slider that controls how much signal variation is accepted. Higher is more forgiving, lower is stricter.
+- **Wi-Fi Override** : Lets a room match by Wi-Fi `BSSID` (specific access point) or `SSID` (network name) instead of BLE anchors, useful for clearly separate locations.
 
 ### Practical Troubleshooting
 
@@ -93,6 +94,38 @@ MassDroid includes a few built-in tools to help you tune room detection without 
 - If two nearby rooms confuse each other, recalibrate both away from the doorway and compare their `Inspect BLE` results.
 - If a remote location keeps false-triggering from home, store its Wi-Fi AP and enable `Stick to connected Wi-Fi AP`.
 - If detection feels slow during movement, test with the screen off as well as screen on. The motion-driven scanning path is more aggressive during real room-to-room movement.
+
+## Acoustic Calibration
+
+When the phone is used as a Music Assistant player (Sendspin), either through its own speaker or over Bluetooth, there is an extra audio delay added by the output buffers, DAC, driver, and, for Bluetooth, the wireless codec and the speaker's own DSP. Most of this delay is invisible to the audio framework, so grouped playback on other MA players drifts relative to the phone output. MassDroid measures this delay directly using the phone microphone and corrects for it per route.
+
+**Where to find it**
+
+Open the Sendspin (local) player, tap the 3-dot menu, and open **Player Settings**. Inside you will find two rows:
+
+- **Phone speaker calibration** : measures the internal path of the phone speaker itself. It is also the prerequisite baseline for Bluetooth calibration.
+- **Bluetooth device calibration** : only enabled while a Bluetooth output is connected. Each BT device gets its own correction value and is stored separately.
+
+**How it works**
+
+- The phone plays short 1 kHz test tones through the active output route.
+- The microphone records the response and a native C++ DSP pipeline detects the tone onset using SNR thresholding.
+- The round-trip time (output to DAC to air to mic) is computed from multiple tone bursts and averaged. Quality is graded as Good, Fair, or Weak based on consistency.
+- The resulting correction is stored per route, so swapping between the internal speaker and different BT devices each uses its own calibrated value.
+
+**Running a calibration**
+
+- If music is playing, the app will offer to pause automatically. Calibration cannot run at the same time as music because it needs exclusive access to the microphone.
+- For Bluetooth, calibrate the phone speaker baseline first (with Bluetooth disconnected), then connect the BT device and run the Bluetooth calibration.
+- Set media volume around 50 to 70 percent. Too low fails to detect the tone, too loud causes clipping.
+- The room must be quiet while the tones play, otherwise onset detection misses the edge and the result is reported as Weak.
+- For Bluetooth, place the phone close to the speaker so the returning sound is clearly picked up by the microphone.
+- Calibration lasts a few seconds. When it finishes, playback automatically resumes if the app paused it.
+- If calibration reports Weak quality, move the phone closer, raise the media volume, reduce background noise, and retry.
+
+**Privacy note**
+
+The microphone is used only during calibration, for a few seconds at a time. Audio is processed locally by the DSP pipeline and is never stored or transmitted.
 
 ## Recommendation Engine
 
@@ -115,8 +148,8 @@ All recommendation data stays on-device in a local Room database. Nothing is sen
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, synced/plain lyrics, tap-to-seek on synced lyric lines, timing adjustment, and artist blocking
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
-- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player. Audio streams as Opus or FLAC over WebSocket, decoded and played through your phone speaker or headphones. Smart mode can switch format automatically based on network conditions.
-- **Follow Me** : BLE fingerprint-based room detection with auto-transfer, per-room playlists, volume, and scheduling
+- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player, solo or grouped with other MA players in tight sync. Audio streams as Opus or FLAC over WebSocket, decoded and played through your phone speaker, headphones, or Bluetooth device. Smart mode can switch format automatically based on network conditions. A built-in acoustic calibration measures real Bluetooth latency via microphone so grouped playback stays in sync even on wireless speakers. A streaming status sheet shows live sync graph, output latency, network mode, and a static delay control.
+- **Follow Me** : Room detection with auto-transfer, per-room playlists, volume, and scheduling. Uses BLE fingerprinting by default, with optional Wi-Fi BSSID or SSID matching for distinct locations.
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade and volume normalization
