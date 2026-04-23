@@ -362,7 +362,7 @@ class SendspinManager(
     }
 
     fun setStaticDelayMs(delayMs: Int) {
-        val clamped = delayMs.coerceIn(0, 5000)
+        val clamped = delayMs.coerceIn(-500, 5000)
         val oldDelay = audio.staticDelayMs
         if (clamped == oldDelay) return
         audio.staticDelayMs = clamped
@@ -391,7 +391,7 @@ class SendspinManager(
             volume = currentVolume,
             muted = muted,
             syncState = syncState,
-            staticDelayMs = audio.staticDelayMs.coerceAtLeast(0)
+            staticDelayMs = audio.staticDelayMs
         )
     }
 

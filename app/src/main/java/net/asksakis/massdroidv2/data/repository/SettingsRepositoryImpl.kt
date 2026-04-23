@@ -209,11 +209,11 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     override val sendspinStaticDelayMs: Flow<Int> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_STATIC_DELAY_MS]?.toIntOrNull()?.coerceIn(0, 5000) ?: 0
+        prefs[KEY_SENDSPIN_STATIC_DELAY_MS]?.toIntOrNull()?.coerceIn(-500, 5000) ?: 0
     }
 
     override suspend fun setSendspinStaticDelayMs(delayMs: Int) {
-        context.dataStore.edit { it[KEY_SENDSPIN_STATIC_DELAY_MS] = delayMs.coerceIn(0, 5000).toString() }
+        context.dataStore.edit { it[KEY_SENDSPIN_STATIC_DELAY_MS] = delayMs.coerceIn(-500, 5000).toString() }
     }
 
     override val sendspinClockOffsetUs: Flow<Long> = safeData.map { prefs ->

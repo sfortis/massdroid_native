@@ -1120,9 +1120,9 @@ private fun SendspinStatusSheet(
             ) {
                 Text("Static delay", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
+                    net.asksakis.massdroidv2.ui.components.RepeatingIconButton(
                         onClick = {
-                            staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                            staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
                             onStaticDelayChanged(staticDelayMs)
                         },
                         modifier = Modifier.size(32.dp)
@@ -1135,9 +1135,9 @@ private fun SendspinStatusSheet(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(horizontal = 2.dp)
                     )
-                    IconButton(
+                    net.asksakis.massdroidv2.ui.components.RepeatingIconButton(
                         onClick = {
-                            staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                            staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
                             onStaticDelayChanged(staticDelayMs)
                         },
                         modifier = Modifier.size(32.dp)

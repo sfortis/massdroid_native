@@ -917,10 +917,21 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     // ── Drift correction ──
 
-    /** Shift anchor for static delay change (gradual correction via samples). */
+    /**
+     * Shift anchor so the sync engine treats the new static delay as the correction
+     * target (gradual correction via samples).
+     *
+     * Positive delta (user added delay): we want audio to play LATER. To make the
+     * engine insert silence/samples and actually delay playback, we need syncError
+     * to become negative ("too fast"). Moving anchorLocalUs LATER shrinks actualElapsed
+     * and yields the needed negative error, triggering sample insertion.
+     *
+     * Negative delta (advance): symmetric, anchor moves earlier → positive error →
+     * sample removal → audio speeds up to advance.
+     */
     override fun shiftAnchorForDelayChange(deltaMs: Int) {
         if (anchorLocalUs == 0L) return
-        anchorLocalUs -= deltaMs.toLong() * 1000L
+        anchorLocalUs += deltaMs.toLong() * 1000L
         smoothedSyncErrorMs = 0.0
         pendingSampleCorrection = 0
         pendingSampleCount = 1

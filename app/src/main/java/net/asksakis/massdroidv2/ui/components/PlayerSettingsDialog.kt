@@ -243,9 +243,9 @@ fun PlayerSettingsDialog(
                         ) {
                             Text("Static delay", style = MaterialTheme.typography.bodyMedium)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
+                                RepeatingIconButton(
                                     onClick = {
-                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                                        staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
                                         onStaticDelayChanged?.invoke(staticDelayMs)
                                     },
                                     modifier = Modifier.size(32.dp)
@@ -258,9 +258,9 @@ fun PlayerSettingsDialog(
                                     color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.padding(horizontal = 2.dp)
                                 )
-                                IconButton(
+                                RepeatingIconButton(
                                     onClick = {
-                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(200)
+                                        staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
                                         onStaticDelayChanged?.invoke(staticDelayMs)
                                     },
                                     modifier = Modifier.size(32.dp)
