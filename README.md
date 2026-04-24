@@ -1,6 +1,23 @@
-# <img src="assets/logo.png" width="40" alt="MassDroid" /> MassDroid
+<div align="center">
 
-Native Android client for [Music Assistant](https://music-assistant.io/), the open-source music server that integrates all your music sources and players.
+<img src="assets/logo.png" width="120" alt="MassDroid logo" />
+
+# MassDroid
+
+**Native Android client for [Music Assistant](https://music-assistant.io/), the open-source music server that integrates all your music sources and players.**
+
+[![Release](https://img.shields.io/github/v/release/sfortis/massdroid_native?logo=github)](https://github.com/sfortis/massdroid_native/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/sfortis/massdroid_native/build.yml?branch=dev&label=build&logo=github-actions)](https://github.com/sfortis/massdroid_native/actions/workflows/build.yml)
+[![License](https://img.shields.io/github/license/sfortis/massdroid_native)](LICENSE)
+![Android](https://img.shields.io/badge/Android-8%2B-3DDC84?logo=android&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.0-7F52FF?logo=kotlin&logoColor=white)
+[![Downloads](https://img.shields.io/github/downloads/sfortis/massdroid_native/total?logo=github)](https://github.com/sfortis/massdroid_native/releases)
+
+_This app is an unofficial third-party client and is not affiliated with the Music Assistant project._
+
+</div>
+
+---
 
 MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers. Small footprint, with no ads, no trackers, and no cloud dependencies.
 
