@@ -57,6 +57,7 @@ class SendspinAudioController(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
+    private val localVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge,
     private val onMetadataChanged: (SendspinMetadata) -> Unit,
     private val onStateChanged: (ready: Boolean, streaming: Boolean, playing: Boolean) -> Unit
 ) {
@@ -258,6 +259,7 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
         }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+        localVolumeBridge.start(scope)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")
             return
@@ -619,6 +621,7 @@ class SendspinAudioController(
         abandonAudioFocus()
         unregisterNoisyReceiver()
         releaseLocks()
+        localVolumeBridge.stop()
         sendspinManager.stop()
         currentIsPlaying = false
         isReady = false

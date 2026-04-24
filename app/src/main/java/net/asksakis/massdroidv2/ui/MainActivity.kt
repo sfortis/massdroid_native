@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
     @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
     @Inject lateinit var playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository
+    @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
 
     private val volumeStep = 5
     @Volatile private var cachedSsClientId: String? = null
@@ -247,23 +248,58 @@ class MainActivity : ComponentActivity() {
                             AudioManager.FLAG_SHOW_UI
                         )
                         val maVol = readPhoneVolumePercent()
+                        localSpeakerVolumeBridge.recordLocalPush(maVol)
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
                         return true
                     }
                     return true
                 }
-                // Remote speaker: consume both DOWN and UP to prevent system volume change
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
-                    val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
-                    // Optimistic update + cooldown synchronously to prevent PLAYER_UPDATED
-                    // echo from flickering the slider before the coroutine starts.
-                    playerRepository.applyVolumeOptimistic(player.playerId, newVol)
-                    lifecycleScope.launch {
-                        if (player.groupChilds.any { it != player.playerId }) {
-                            playerRepository.setGroupVolume(player.playerId, newVol)
+                    val isGroup = player.groupChilds.any { it != player.playerId }
+                    val localId = cachedSsClientId
+                    val localIsMember = localId != null &&
+                        isGroup &&
+                        player.groupChilds.any { it == localId }
+                    if (localIsMember && localId != null) {
+                        // Hardware keys drive ONLY the local speaker's own MA
+                        // volume (not the entire group). We change phone
+                        // STREAM_MUSIC first, read the resulting phone %, and
+                        // push exactly that value to MA so the server echo
+                        // confirms rather than competes.
+                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
+                        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                            AudioManager.ADJUST_RAISE
                         } else {
-                            playerRepository.setVolume(player.playerId, newVol)
+                            AudioManager.ADJUST_LOWER
+                        }
+                        audio.adjustStreamVolume(
+                            AudioManager.STREAM_MUSIC,
+                            direction,
+                            AudioManager.FLAG_SHOW_UI
+                        )
+                        val phonePct = readPhoneVolumePercent()
+                        localSpeakerVolumeBridge.recordLocalPush(phonePct)
+                        playerRepository.applyVolumeOptimistic(localId, phonePct)
+                        lifecycleScope.launch {
+                            playerRepository.setVolume(localId, phonePct)
+                        }
+                    } else {
+                        // Plain remote speaker / non-local group: adjust the
+                        // selected player's volume (or the group volume for a
+                        // group-type parent). The group fan-out is handled by
+                        // MA's cmd/group_volume.
+                        val basis = if (isGroup) player.groupVolume ?: player.volumeLevel
+                            else player.volumeLevel
+                        val newVol = (basis + delta).coerceIn(0, 100)
+                        playerRepository.applyVolumeOptimistic(player.playerId, newVol)
+                        lifecycleScope.launch {
+                            if (isGroup) {
+                                playerRepository.setGroupVolume(player.playerId, newVol)
+                            } else {
+                                playerRepository.setVolume(player.playerId, newVol)
+                            }
                         }
                     }
                 }

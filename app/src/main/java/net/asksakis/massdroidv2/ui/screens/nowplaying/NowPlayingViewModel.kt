@@ -506,6 +506,14 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    fun setPlayerPower(playerId: String, powered: Boolean) {
+        viewModelScope.launch {
+            try {
+                playerRepository.setPower(playerId, powered)
+            } catch (_: Exception) {}
+        }
+    }
+
     fun setLyricsTimingOffsetMs(offsetMs: Int) {
         _lyricsTimingOffsetMs.value = offsetMs.coerceIn(-10_000, 10_000)
     }

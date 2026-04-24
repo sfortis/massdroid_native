@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.domain.repository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import net.asksakis.massdroidv2.domain.model.GroupProviderOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueState
@@ -62,6 +63,7 @@ interface PlayerRepository {
     suspend fun setGroupVolume(parentId: String, volume: Int)
     fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int)
     suspend fun toggleMute(playerId: String, muted: Boolean)
+    suspend fun setPower(playerId: String, powered: Boolean)
     suspend fun updatePlayerIcon(playerId: String, icon: String)
     suspend fun renamePlayer(playerId: String, name: String)
     suspend fun getPlayerConfig(playerId: String): PlayerConfig?
@@ -71,7 +73,12 @@ interface PlayerRepository {
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
     fun notifyQueueReplacement(queueId: String)
 
-    suspend fun createGroupPlayer(name: String, memberIds: List<String>)
+    /** Returns player-provider instances that expose the CREATE_GROUP_PLAYER feature. */
+    suspend fun getGroupCapableProviders(): List<GroupProviderOption>
+    suspend fun createGroupPlayer(provider: String, name: String, memberIds: List<String>)
     suspend fun setGroupMembers(targetPlayerId: String, addIds: List<String>? = null, removeIds: List<String>? = null)
     suspend fun removeGroupPlayer(playerId: String)
+    /** Break any protocol-level sync this player is currently part of. */
+    suspend fun ungroupPlayer(playerId: String)
+    suspend fun ungroupPlayers(playerIds: List<String>)
 }

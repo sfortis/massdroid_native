@@ -100,6 +100,7 @@ class PlaybackService : MediaLibraryService() {
 
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var sendspinManager: SendspinManager
+    @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
     @Inject lateinit var sleepTimerBridge: SleepTimerBridge
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
@@ -226,6 +227,7 @@ class PlaybackService : MediaLibraryService() {
             settingsRepository = settingsRepository,
             playerRepository = playerRepository,
             wsClient = wsClient,
+            localVolumeBridge = localSpeakerVolumeBridge,
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> updateConnectionNotification() }
         )

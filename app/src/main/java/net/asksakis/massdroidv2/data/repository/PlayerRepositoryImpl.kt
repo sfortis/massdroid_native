@@ -72,6 +72,18 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     @Volatile private var selectedPlayerId: String? = null
+
+    /**
+     * When the selected player is a member of a group (activeGroup != null),
+     * the authoritative queue events arrive under the group's ID, not the
+     * member's. Resolve to whichever one the server is actually pushing
+     * updates for so Now Playing / mini-player keep updating in group mode.
+     */
+    private fun effectiveQueueId(): String? {
+        val id = selectedPlayerId ?: return null
+        val player = _players.value.find { it.playerId == id }
+        return player?.activeGroup?.takeIf { it.isNotEmpty() } ?: id
+    }
     @Volatile private var pendingRestoredPlayerId: String? = null
 
 
@@ -198,11 +210,16 @@ class PlayerRepositoryImpl @Inject constructor(
                     if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
                         Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
                     }
-                    // During volume cooldown, preserve local optimistic volume
-                    if (System.currentTimeMillis() < volumeOverrideUntilMs) {
-                        val localVol = _players.value.firstOrNull { it.playerId == player.playerId }?.volumeLevel
-                        if (localVol != null) {
-                            player = player.copy(volumeLevel = localVol)
+                    // During volume cooldown for THIS specific player, preserve
+                    // local optimistic values. Other players' echoes still flow
+                    // through (needed when group volume fans out to children).
+                    if (volumeCooldownActive(player.playerId)) {
+                        val local = _players.value.firstOrNull { it.playerId == player.playerId }
+                        if (local != null) {
+                            player = player.copy(
+                                volumeLevel = local.volumeLevel,
+                                groupVolume = local.groupVolume ?: player.groupVolume
+                            )
                         }
                     }
                     _players.update { list ->
@@ -277,7 +294,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     // Play history: track all queues, not just selected
                     trackPlayHistory(serverQueue)
 
-                    if (serverQueue.queueId == selectedPlayerId) {
+                    if (serverQueue.queueId == effectiveQueueId()) {
                         var domainState = preserveCurrentAudioFormat(
                             previous = _queueState.value,
                             incoming = serverQueue.toDomain(wsClient)
@@ -303,13 +320,13 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
                 EventType.QUEUE_ITEMS_UPDATED -> {
                     val queueId = event.objectId ?: return@collect
-                    if (queueId == selectedPlayerId) {
+                    if (queueId == effectiveQueueId()) {
                         _queueItemsChanged.tryEmit(queueId)
                         scheduleBlockedQueueCleanup(queueId, reason = "queue_items_updated")
                     }
                 }
                 EventType.QUEUE_TIME_UPDATED -> {
-                    if (event.objectId != selectedPlayerId) return@collect
+                    if (event.objectId != effectiveQueueId()) return@collect
                     val elapsed = event.data?.jsonPrimitive?.doubleOrNull ?: return@collect
                     updatePosition(elapsed)
                 }
@@ -999,20 +1016,38 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
-    @Volatile private var volumeOverrideUntilMs = 0L
+    // Per-player cooldowns so that an optimistic update on one player doesn't
+    // suppress server echoes for OTHER players. Group volume fans out to
+    // children — we need their echoes to arrive.
+    private val volumeOverrideUntilMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun volumeCooldownActive(playerId: String): Boolean =
+        System.currentTimeMillis() < (volumeOverrideUntilMs[playerId] ?: 0L)
 
     /**
      * Synchronous optimistic volume update + cooldown.
      * Call from the UI thread BEFORE launching the async WS command
      * to prevent PLAYER_UPDATED echoes from flickering the slider.
+     *
+     * For group-type players we also update [Player.groupVolume] so that the
+     * hardware rocker keeps incrementing from the new basis instead of the
+     * stale server average.
      */
     override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int) {
-        volumeOverrideUntilMs = System.currentTimeMillis() + 800
+        volumeOverrideUntilMs[playerId] = System.currentTimeMillis() + 800
         _players.update { list ->
-            list.map { if (it.playerId == playerId) it.copy(volumeLevel = volumeLevel) else it }
+            list.map {
+                if (it.playerId != playerId) return@map it
+                val patched = it.copy(volumeLevel = volumeLevel)
+                if (it.groupVolume != null) patched.copy(groupVolume = volumeLevel) else patched
+            }
         }
         if (_selectedPlayer.value?.playerId == playerId) {
-            _selectedPlayer.update { it?.copy(volumeLevel = volumeLevel) }
+            _selectedPlayer.update {
+                val s = it ?: return@update null
+                val patched = s.copy(volumeLevel = volumeLevel)
+                if (s.groupVolume != null) patched.copy(groupVolume = volumeLevel) else patched
+            }
         }
     }
 
@@ -1024,51 +1059,43 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
-    // Group volume: ratio-based so proportions are preserved and min/max hit 0/100 for all
-    private val groupMemberRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
-    private var groupRatioParentId: String? = null
-
-    private fun ensureGroupRatios(parentId: String) {
-        val allPlayers = _players.value
-        val parent = allPlayers.find { it.playerId == parentId } ?: return
-        if (groupRatioParentId != parentId) {
-            groupMemberRatios.clear()
-            groupRatioParentId = parentId
-        }
-        val parentVol = parent.volumeLevel.coerceAtLeast(1)
-        for (childId in parent.groupChilds) {
-            if (childId != parentId && !groupMemberRatios.containsKey(childId)) {
-                val child = allPlayers.find { it.playerId == childId }
-                groupMemberRatios[childId] = (child?.volumeLevel ?: 0).toFloat() / parentVol
-            }
-        }
-    }
-
     override suspend fun setGroupVolume(parentId: String, volume: Int) {
-        val parent = _players.value.find { it.playerId == parentId } ?: return
-        ensureGroupRatios(parentId)
-        setVolume(parentId, volume)
-        for (childId in parent.groupChilds) {
-            if (childId != parentId) {
-                val ratio = groupMemberRatios[childId] ?: 1f
-                val memberVol = (volume * ratio).toInt().coerceIn(0, 100)
-                setVolume(childId, memberVol)
-            }
-        }
+        // Delegate to the server-side group-volume command. It handles the fan-out
+        // to members while preserving their current volume ratios, for both
+        // proper group players (type=GROUP) and ad-hoc sync leaders.
+        applyVolumeOptimistic(parentId, volume)
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_GROUP_VOLUME,
+            VolumeSetArgs(playerId = parentId, volumeLevel = volume)
+        )
     }
 
     override fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int) {
-        val parent = _players.value.find { it.playerId == parentId }
-        if (parent != null) {
-            val parentVol = parent.volumeLevel.coerceAtLeast(1)
-            groupMemberRatios[memberId] = volume.toFloat() / parentVol
-        }
+        // No-op: group volume ratios are now tracked server-side. Individual
+        // member volume changes go straight through setVolume() and the server
+        // preserves the new ratio on the next group-volume command.
     }
 
     override suspend fun toggleMute(playerId: String, muted: Boolean) {
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_MUTE,
             VolumeMuteArgs(playerId = playerId, muted = muted)
+        )
+    }
+
+    override suspend fun setPower(playerId: String, powered: Boolean) {
+        // Optimistic local flip so the switch in Player Settings reacts
+        // immediately; the authoritative value lands with the next
+        // PLAYER_UPDATED event.
+        _players.update { list ->
+            list.map { if (it.playerId == playerId) it.copy(powered = powered) else it }
+        }
+        if (_selectedPlayer.value?.playerId == playerId) {
+            _selectedPlayer.update { it?.copy(powered = powered) }
+        }
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_POWER,
+            PowerArgs(playerId = playerId, powered = powered)
         )
     }
 
@@ -1123,6 +1150,11 @@ class PlayerRepositoryImpl @Inject constructor(
                 is JsonObject -> this["value"]?.jsonPrimitive?.booleanOrNull
                 else -> null
             }
+            fun JsonElement.configInt(): Int? = when (this) {
+                is JsonPrimitive -> intOrNull
+                is JsonObject -> this["value"]?.jsonPrimitive?.intOrNull
+                else -> null
+            }
 
             val configName = obj["name"]?.jsonPrimitive?.contentOrNull
                 ?: obj["default_name"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -1145,7 +1177,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 ),
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
                 sendspinFormat = formatEntry?.configValue(),
-                sendspinFormatOptions = formatOptions
+                sendspinFormatOptions = formatOptions,
+                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt()
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")
@@ -1204,10 +1237,26 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
     }
 
-    override suspend fun createGroupPlayer(name: String, memberIds: List<String>) {
+    override suspend fun getGroupCapableProviders(): List<GroupProviderOption> {
+        val result = wsClient.sendCommand(MaCommands.Providers.LIST) ?: return emptyList()
+        return try {
+            val instances = json.decodeFromJsonElement(
+                kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
+                result
+            )
+            instances
+                .filter { it.type == "player" && "create_group_player" in it.supportedFeatures }
+                .map { GroupProviderOption(instanceId = it.instanceId, domain = it.domain, name = it.name) }
+        } catch (e: Exception) {
+            Log.w(TAG, "getGroupCapableProviders parse failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    override suspend fun createGroupPlayer(provider: String, name: String, memberIds: List<String>) {
         wsClient.sendCommand(
             MaCommands.Players.CREATE_GROUP,
-            CreateGroupPlayerArgs(name = name, members = memberIds)
+            CreateGroupPlayerArgs(provider = provider, name = name, members = memberIds)
         )
     }
 
@@ -1215,6 +1264,21 @@ class PlayerRepositoryImpl @Inject constructor(
         wsClient.sendCommand(
             MaCommands.Players.CMD_SET_MEMBERS,
             SetMembersArgs(targetPlayer = targetPlayerId, playerIdsToAdd = addIds, playerIdsToRemove = removeIds)
+        )
+    }
+
+    override suspend fun ungroupPlayer(playerId: String) {
+        wsClient.sendCommand(
+            MaCommands.Players.UNGROUP,
+            UngroupArgs(playerId = playerId)
+        )
+    }
+
+    override suspend fun ungroupPlayers(playerIds: List<String>) {
+        if (playerIds.isEmpty()) return
+        wsClient.sendCommand(
+            MaCommands.Players.UNGROUP_MANY,
+            UngroupManyArgs(playerIds = playerIds)
         )
     }
 
@@ -1295,10 +1359,14 @@ fun ServerPlayer.toDomain(
         "paused" -> PlaybackState.PAUSED
         else -> PlaybackState.IDLE
     },
+    powered = powered,
     volumeLevel = volumeLevel,
+    groupVolume = groupVolume,
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
+    syncedTo = syncedTo,
     groupChilds = groupChilds,
+    staticGroupMembers = staticGroupMembers,
     supportedFeatures = supportedFeatures.toSet(),
     canGroupWith = canGroupWith,
     currentMedia = currentMedia?.let {

@@ -72,10 +72,14 @@ object MaCommands {
         const val CMD_PREVIOUS = "$CMD_PREFIX/previous"
         const val CMD_SEEK = "$CMD_PREFIX/seek"
         const val CMD_VOLUME_SET = "players/cmd/volume_set"
+        const val CMD_GROUP_VOLUME = "players/cmd/group_volume"
         const val CMD_VOLUME_MUTE = "players/cmd/volume_mute"
+        const val CMD_POWER = "players/cmd/power"
         const val CMD_SET_MEMBERS = "$CMD_PREFIX/set_members"
         const val CREATE_GROUP = "players/create_group_player"
         const val REMOVE_GROUP = "players/remove_group_player"
+        const val UNGROUP = "players/cmd/ungroup"
+        const val UNGROUP_MANY = "players/cmd/ungroup_many"
 
         fun cmd(command: String): String = "$CMD_PREFIX/$command"
     }
@@ -356,6 +360,16 @@ data class VolumeSetArgs(
     }
 }
 
+data class PowerArgs(
+    val playerId: String,
+    val powered: Boolean
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("player_id", playerId)
+        put("powered", powered)
+    }
+}
+
 data class VolumeMuteArgs(
     val playerId: String,
     val muted: Boolean
@@ -415,7 +429,7 @@ data class SetMembersArgs(
 }
 
 data class CreateGroupPlayerArgs(
-    val provider: String = "universal_group",
+    val provider: String,
     val name: String,
     val members: List<String>,
     val dynamic: Boolean = true
@@ -431,6 +445,18 @@ data class CreateGroupPlayerArgs(
 data class RemoveGroupPlayerArgs(val playerId: String) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("player_id", playerId)
+    }
+}
+
+data class UngroupArgs(val playerId: String) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("player_id", playerId)
+    }
+}
+
+data class UngroupManyArgs(val playerIds: List<String>) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("player_ids", JsonArray(playerIds.map(::JsonPrimitive)))
     }
 }
 

@@ -6,8 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -40,6 +43,16 @@ class SendspinManager(
 
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
+
+    // Server-pushed volume and mute events. Consumed by
+    // [LocalSpeakerVolumeBridge] to translate MA-side values into the phone's
+    // STREAM_MUSIC so the local Sendspin playback is always controlled by a
+    // single gain stage (the system volume) rather than a mix of system and
+    // AudioTrack gains. Keep replay=0 so we only react to live changes.
+    private val _serverVolumeEvents = MutableSharedFlow<Int>(extraBufferCapacity = 4)
+    val serverVolumeEvents: SharedFlow<Int> = _serverVolumeEvents.asSharedFlow()
+    private val _serverMuteEvents = MutableSharedFlow<Boolean>(extraBufferCapacity = 4)
+    val serverMuteEvents: SharedFlow<Boolean> = _serverMuteEvents.asSharedFlow()
 
     private val _streamCodec = MutableStateFlow<String?>(null)
     val streamCodec: StateFlow<String?> = _streamCodec.asStateFlow()
@@ -185,11 +198,12 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                 hasActiveProtocolStream = true
                 audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
-                // Don't call setVolume during sync re-lock: it would overwrite
-                // currentVolume with 0, breaking the fade-in calculation.
+                // Local playback gain is now STREAM_MUSIC-driven via
+                // LocalSpeakerVolumeBridge, so the engine stays at its default
+                // 1.0 AudioTrack gain. Only the mute state needs to propagate.
                 val engineMuted = (engine as? SendspinSyncEngine)?.syncMuted ?: false
                 if (!engineMuted) {
-                    audio.setVolume(if (muted) 0f else perceptualGain(currentVolume))
+                    audio.setMuted(muted)
                 }
                 _streamCodec.value = info.codec.uppercase()
                 client.updateState(SendspinState.STREAMING)
@@ -230,12 +244,17 @@ class SendspinManager(
             "volume" -> {
                 val vol = playerCmd.volume ?: return
                 currentVolume = vol
-                if (!muted) audio.setVolume(perceptualGain(vol))
-                Log.d(TAG, "Volume set to $vol")
+                // Hand off to the local volume bridge; STREAM_MUSIC is now the
+                // single source of truth for local playback gain.
+                _serverVolumeEvents.tryEmit(vol)
+                Log.d(TAG, "Volume set to $vol (bridged to STREAM_MUSIC)")
             }
             "mute" -> {
                 val m = playerCmd.mute ?: true
                 muted = m
+                _serverMuteEvents.tryEmit(m)
+                // Also tell the engine: it uses this to silence/unsilence the
+                // AudioTrack during fade-in and sync-mute transitions.
                 audio.setMuted(m)
                 Log.d(TAG, "Mute set to $m")
             }
@@ -304,21 +323,23 @@ class SendspinManager(
         return linear * linear
     }
 
+    /**
+     * Track the MA-side volume value locally but don't apply it as engine gain.
+     * The local gain stage is STREAM_MUSIC, driven by [LocalSpeakerVolumeBridge].
+     */
     fun setVolume(volume: Int) {
         currentVolume = volume
-        if (!muted) audio.setVolume(perceptualGain(volume))
     }
 
     fun duck() {
-        // Lower AudioTrack gain without changing currentVolume, so restoreVolume() recovers
-        val originalGain = perceptualGain(currentVolume)
-        val duckedGain = originalGain * 0.5f
-        Log.d(TAG, "Duck: vol=$currentVolume gain=$originalGain -> ducked=$duckedGain")
-        if (!muted) audio.setVolume(duckedGain)
+        // Transient AudioTrack attenuation. Keeps currentVolume unchanged so
+        // restoreVolume() can bring us back to full gain.
+        if (!muted) audio.setVolume(0.5f)
+        Log.d(TAG, "Duck -> 0.5 AudioTrack gain")
     }
 
     fun restoreVolume() {
-        if (!muted) audio.setVolume(perceptualGain(currentVolume))
+        if (!muted) audio.setVolume(1f)
     }
 
     fun setMuted(muted: Boolean) {

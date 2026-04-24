@@ -101,9 +101,16 @@ fun PlayersScreen(
         val playerMap = available.associateBy { it.playerId }
         buildMap {
             for ((parentId, childIds) in parentMap) {
-                val allMembers = (listOfNotNull(playerMap[parentId]) +
-                    childIds.mapNotNull { playerMap[it] })
-                    .sortedBy { it.displayName.lowercase() }
+                val parent = playerMap[parentId]
+                // A real speaker acting as sync leader (type=PLAYER) participates in
+                // playback, so we list it among members. A virtual sync_group player
+                // (type=GROUP) is just a container; listing it inside itself creates
+                // the duplicate "test -> test" card the user reported.
+                val includeParent = parent?.type == PlayerType.PLAYER
+                val allMembers = buildList {
+                    if (includeParent && parent != null) add(parent)
+                    addAll(childIds.mapNotNull { playerMap[it] })
+                }.sortedBy { it.displayName.lowercase() }
                 put(parentId, PlayerGroupInfo(
                     isParent = true,
                     childPlayers = allMembers
@@ -112,7 +119,7 @@ fun PlayersScreen(
         }
     }
     val activePlayerCount = remember(availablePlayers) {
-        availablePlayers.count { it.state != PlaybackState.IDLE }
+        availablePlayers.count { it.state == PlaybackState.PLAYING }
     }
     val assignedRoomCount = remember(availablePlayers, playerRoomMap) {
         availablePlayers.flatMap { playerRoomMap[it.playerId].orEmpty() }.distinct().size
@@ -145,11 +152,22 @@ fun PlayersScreen(
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
                     var groupPlayer by remember { mutableStateOf<Player?>(null) }
+                    var showCreateGroup by remember { mutableStateOf(false) }
 
+                    val groupCandidates = remember(players) {
+                        players.filter { it.available && it.type != PlayerType.GROUP }
+                            .sortedBy { it.displayName.lowercase() }
+                    }
+
+                    val groupCount = remember(groupData) { groupData.second.size }
                     PlayersHeader(
                         totalPlayers = availablePlayers.size,
                         activePlayers = activePlayerCount,
-                        assignedRooms = assignedRoomCount
+                        assignedRooms = assignedRoomCount,
+                        groups = groupCount,
+                        onCreateGroup = if (groupCandidates.size >= 2) {
+                            { showCreateGroup = true }
+                        } else null
                     )
 
                     LazyColumn(
@@ -222,6 +240,33 @@ fun PlayersScreen(
                                 groupPlayer = player
                                 queueMenuPlayer = null
                             },
+                            onDeleteGroup = if (player.type == PlayerType.GROUP) {
+                                {
+                                    viewModel.deleteGroup(player.playerId)
+                                    queueMenuPlayer = null
+                                }
+                            } else null,
+                            // Show "Break sync" when the protocol sync is active OUTSIDE
+                            // a managed group (i.e. stale sendspin sync left over after
+                            // a sync_group was removed). Inside a managed group the user
+                            // edits via the group parent card, not the member.
+                            onBreakSync = if (
+                                player.type != PlayerType.GROUP &&
+                                player.activeGroup.isNullOrEmpty() &&
+                                (player.syncedTo != null ||
+                                    player.groupChilds.any { it != player.playerId })
+                            ) {
+                                {
+                                    viewModel.breakSyncForPlayer(player.playerId)
+                                    queueMenuPlayer = null
+                                }
+                            } else null,
+                            onPowerToggle = if ("power" in player.supportedFeatures) {
+                                { powered ->
+                                    viewModel.setPlayerPower(player.playerId, powered)
+                                    queueMenuPlayer = null
+                                }
+                            } else null,
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
                                 queueMenuPlayer = null
@@ -269,7 +314,21 @@ fun PlayersScreen(
                                 android.util.Log.d("PlayersScreen", "GroupSheet onApply: target=${player.playerId} selected=$selectedIds childs=${player.groupChilds}")
                                 viewModel.applyGroupMembers(player.playerId, player.groupChilds, selectedIds)
                             },
+                            onJoinLeader = { leaderId ->
+                                viewModel.addPlayerToGroup(leaderId, player.playerId)
+                            },
                             onDismiss = { groupPlayer = null }
+                        )
+                    }
+
+                    if (showCreateGroup) {
+                        net.asksakis.massdroidv2.ui.components.CreateGroupDialog(
+                            candidates = groupCandidates,
+                            loadProviders = { viewModel.loadGroupProviders() },
+                            onConfirm = { provider, name, memberIds ->
+                                viewModel.createGroup(provider, name, memberIds)
+                            },
+                            onDismiss = { showCreateGroup = false }
                         )
                     }
 
@@ -284,14 +343,33 @@ fun PlayersScreen(
 private fun PlayersHeader(
     totalPlayers: Int,
     activePlayers: Int,
-    assignedRooms: Int
+    assignedRooms: Int,
+    groups: Int = 0,
+    onCreateGroup: (() -> Unit)? = null
 ) {
-    Text(
-        text = "$totalPlayers players · $activePlayers active · $assignedRooms rooms",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 16.dp, top = 10.dp, end = 16.dp)
-    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, top = 6.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = "$totalPlayers players · $activePlayers active · $groups groups · $assignedRooms rooms",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        if (onCreateGroup != null) {
+            IconButton(onClick = onCreateGroup) {
+                Icon(
+                    Icons.Default.SpeakerGroup,
+                    contentDescription = "Create group",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -311,10 +389,13 @@ private fun PlayerListItem(
     onMemberClick: (Player) -> Unit = {},
     onMemberMenuClick: (Player) -> Unit = {}
 ) {
-    var volumeSliderValue by remember { mutableFloatStateOf(player.volumeLevel.toFloat()) }
+    // For group players the server maintains a separate `group_volume` (average of
+    // children). Plain players use their own volume_level.
+    val effectiveVolume = player.groupVolume ?: player.volumeLevel
+    var volumeSliderValue by remember { mutableFloatStateOf(effectiveVolume.toFloat()) }
 
-    LaunchedEffect(player.volumeLevel) {
-        volumeSliderValue = player.volumeLevel.toFloat()
+    LaunchedEffect(effectiveVolume) {
+        volumeSliderValue = effectiveVolume.toFloat()
     }
 
     val isPlaying = player.state == PlaybackState.PLAYING
@@ -621,6 +702,9 @@ private fun PlayerQueueSheet(
     onPlayerSettings: () -> Unit,
     onConfigureRoom: (() -> Unit)? = null,
     onGroupWith: () -> Unit,
+    onDeleteGroup: (() -> Unit)? = null,
+    onBreakSync: (() -> Unit)? = null,
+    onPowerToggle: ((powered: Boolean) -> Unit)? = null,
     onClearQueue: () -> Unit,
     onTransferQueue: (targetId: String) -> Unit,
     onStartSongRadio: () -> Unit,
@@ -671,7 +755,10 @@ private fun PlayerQueueSheet(
                         modifier = Modifier.clickable { showTransferList = true }
                     )
                 }
-                if ("set_members" in player.supportedFeatures) {
+                // Hide grouping entry when this player is managed by a sync_group
+                // parent. Editing members here would bypass the group and cause
+                // the server to repeatedly re-sync the removed members.
+                if ("set_members" in player.supportedFeatures && player.activeGroup == null) {
                     ListItem(
                         colors = SheetDefaults.listItemColors(),
                         headlineContent = { Text(if (player.groupChilds.isNotEmpty()) "Edit Sync Group..." else "Synchronize with...") },
@@ -706,6 +793,49 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onClearQueue)
                 )
+                if (onBreakSync != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Break sync") },
+                        supportingContent = {
+                            Text(
+                                "Leave the sendspin sync group",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.LinkOff, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onBreakSync()
+                            onDismiss()
+                        }
+                    )
+                }
+                if (onDeleteGroup != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = {
+                            Text(
+                                "Delete Group",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            onDeleteGroup()
+                            onDismiss()
+                        }
+                    )
+                }
                 if (onConfigureRoom != null) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     ListItem(
@@ -716,6 +846,27 @@ private fun PlayerQueueSheet(
                         },
                         modifier = Modifier.clickable {
                             onConfigureRoom()
+                            onDismiss()
+                        }
+                    )
+                }
+                if (onPowerToggle != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = {
+                            Text(if (player.powered) "Power off" else "Power on")
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.Default.PowerSettingsNew,
+                                contentDescription = null,
+                                tint = if (player.powered) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            onPowerToggle(!player.powered)
                             onDismiss()
                         }
                     )

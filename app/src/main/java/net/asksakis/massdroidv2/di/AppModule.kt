@@ -108,6 +108,20 @@ object AppModule {
         engine: SendspinSyncEngine,
     ): SendspinManager = SendspinManager(client, engine)
 
+    @Provides
+    @Singleton
+    fun provideLocalSpeakerVolumeBridge(
+        @ApplicationContext ctx: Context,
+        sendspinManager: SendspinManager
+    ): net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        return net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge(
+            audioManager = am,
+            volumeEvents = sendspinManager.serverVolumeEvents,
+            muteEvents = sendspinManager.serverMuteEvents
+        )
+    }
+
     private val MIGRATION_4_5 = object : Migration(4, 5) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(

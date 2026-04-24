@@ -66,7 +66,7 @@ fun PlayerNameWithBadge(
 }
 
 @Composable
-private fun PlayerBadgeChip(
+fun PlayerBadgeChip(
     content: @Composable () -> Unit
 ) {
     Box(

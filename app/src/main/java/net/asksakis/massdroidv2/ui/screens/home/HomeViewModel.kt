@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.data.repository.QueueDstmCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
+import net.asksakis.massdroidv2.domain.model.GroupProviderOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -289,15 +290,99 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    suspend fun loadGroupProviders(): List<GroupProviderOption> = try {
+        playerRepository.getGroupCapableProviders()
+    } catch (e: Exception) {
+        Log.w(TAG, "loadGroupProviders failed: ${e.message}")
+        emptyList()
+    }
+
+    fun createGroup(provider: String, name: String, memberIds: List<String>) {
+        Log.d(TAG, "createGroup: provider=$provider name=$name members=$memberIds")
+        viewModelScope.launch {
+            try {
+                playerRepository.createGroupPlayer(provider, name, memberIds)
+            } catch (e: Exception) {
+                Log.w(TAG, "createGroup failed: ${e.message}")
+            }
+        }
+    }
+
+    fun deleteGroup(playerId: String) {
+        Log.d(TAG, "deleteGroup: $playerId")
+        viewModelScope.launch {
+            try {
+                // MA's remove_group_player only unregisters the group entity; it
+                // leaves the underlying protocol sync between members intact, so
+                // they'd keep appearing grouped. Break the protocol sync first.
+                val group = players.value.find { it.playerId == playerId }
+                val members = group?.groupChilds?.filter { it != playerId } ?: emptyList()
+                if (members.isNotEmpty()) {
+                    runCatching { playerRepository.ungroupPlayers(members) }
+                        .onFailure { Log.w(TAG, "pre-delete ungroup failed: ${it.message}") }
+                }
+                playerRepository.removeGroupPlayer(playerId)
+            } catch (e: Exception) {
+                Log.w(TAG, "deleteGroup failed: ${e.message}")
+            }
+        }
+    }
+
+    fun breakSyncForPlayer(playerId: String) {
+        Log.d(TAG, "breakSyncForPlayer: $playerId")
+        viewModelScope.launch {
+            try {
+                // Collect self plus any current childs so we clean both sides of
+                // the protocol sync regardless of whether this player is the
+                // leader or a synced member.
+                val player = players.value.find { it.playerId == playerId }
+                val ids = buildSet {
+                    add(playerId)
+                    player?.groupChilds?.forEach { if (it != playerId) add(it) }
+                }.toList()
+                playerRepository.ungroupPlayers(ids)
+            } catch (e: Exception) {
+                Log.w(TAG, "breakSyncForPlayer failed: ${e.message}")
+            }
+        }
+    }
+
+    fun addPlayerToGroup(leaderPlayerId: String, memberPlayerId: String) {
+        Log.d(TAG, "addPlayerToGroup: leader=$leaderPlayerId member=$memberPlayerId")
+        viewModelScope.launch {
+            try {
+                playerRepository.setGroupMembers(leaderPlayerId, addIds = listOf(memberPlayerId))
+            } catch (e: Exception) {
+                Log.w(TAG, "addPlayerToGroup failed: ${e.message}")
+            }
+        }
+    }
+
+    fun setPlayerPower(playerId: String, powered: Boolean) {
+        Log.d(TAG, "setPlayerPower: $playerId powered=$powered")
+        viewModelScope.launch {
+            try {
+                playerRepository.setPower(playerId, powered)
+            } catch (e: Exception) {
+                Log.w(TAG, "setPlayerPower failed: ${e.message}")
+            }
+        }
+    }
+
     fun applyGroupMembers(targetPlayerId: String, currentChilds: List<String>, selectedIds: List<String>) {
         Log.d(TAG, "applyGroupMembers: target=$targetPlayerId, current=$currentChilds, selected=$selectedIds")
         viewModelScope.launch {
             try {
-                val toAdd = selectedIds.filter { it !in currentChilds }
-                val toRemove = currentChilds.filter { it !in selectedIds }
-                if (selectedIds.isEmpty() && currentChilds.isNotEmpty()) {
+                // MA includes the parent itself in group_childs. Filter it out of
+                // both sides so we never try to "remove the leader from its own
+                // group" — the server rejects that with an error.
+                val currentMembers = currentChilds.filter { it != targetPlayerId }
+                val selectedMembers = selectedIds.filter { it != targetPlayerId }
+                val toAdd = selectedMembers.filter { it !in currentMembers }
+                val toRemove = currentMembers.filter { it !in selectedMembers }
+                if (selectedMembers.isEmpty() && currentMembers.isNotEmpty()) {
                     // Unsync all
-                    playerRepository.setGroupMembers(targetPlayerId, removeIds = currentChilds)
+                    playerRepository.setGroupMembers(targetPlayerId, removeIds = currentMembers)
                 } else if (toAdd.isNotEmpty() || toRemove.isNotEmpty()) {
                     playerRepository.setGroupMembers(
                         targetPlayerId,
