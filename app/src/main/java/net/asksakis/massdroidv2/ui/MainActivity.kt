@@ -107,6 +107,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
     @Inject lateinit var playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository
     @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+    @Inject lateinit var oauthCallbackBus: net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+    @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 
     private val volumeStep = 5
     @Volatile private var cachedSsClientId: String? = null
@@ -143,6 +145,8 @@ class MainActivity : ComponentActivity() {
             requestNotificationPermission()
             requestFollowMePermissionsIfNeeded()
         }
+        // The activity may be (re)launched via the OAuth callback deep link.
+        handleOAuthCallback(intent)
         checkBatteryOptimization()
         handleShortcutIntent(intent)
 
@@ -224,6 +228,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShortcutIntent(intent)
+        handleOAuthCallback(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Detect OAuth abandonment: user pressed back/close in the browser tab
+        // without completing the sign-in. The repo handles the grace window.
+        maAuthRepository.handleAppResumed()
+    }
+
+    private fun handleOAuthCallback(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "musicassistant" || data.host != "auth") return
+        val code = data.getQueryParameter("code") ?: return
+        if (code.isBlank()) return
+        oauthCallbackBus.publish(code)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

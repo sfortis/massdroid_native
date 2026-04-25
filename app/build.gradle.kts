@@ -145,6 +145,9 @@ dependencies {
     implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("com.caverock:androidsvg-aar:1.4")
 
+    // Custom Tabs for OAuth flows (Home Assistant SSO)
+    implementation("androidx.browser:browser:1.8.0")
+
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")
 

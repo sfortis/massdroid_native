@@ -10,12 +10,16 @@ import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
+import net.asksakis.massdroidv2.data.repository.MaAuthRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayHistoryRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayerRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SettingsRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.SmartListeningRepositoryImpl
+import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -74,4 +78,16 @@ object RepositoryModule {
         json: Json,
         playerRepository: dagger.Lazy<PlayerRepository>
     ): MusicRepository = MusicRepositoryImpl(wsClient, json, playerRepository)
+
+    @Provides
+    @Singleton
+    fun provideMaAuthRepository(
+        probe: MaAuthProbe,
+        wsClient: MaWebSocketClient,
+        settingsRepository: SettingsRepository,
+        callbackBus: OAuthCallbackBus,
+        discoverCache: net.asksakis.massdroidv2.data.cache.DiscoverCache
+    ): MaAuthRepository = MaAuthRepositoryImpl(
+        probe, wsClient, settingsRepository, callbackBus, discoverCache
+    )
 }

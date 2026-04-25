@@ -110,6 +110,14 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideMaAuthProbe(
+        okHttpClient: OkHttpClient,
+        json: Json
+    ): net.asksakis.massdroidv2.data.websocket.MaAuthProbe =
+        net.asksakis.massdroidv2.data.websocket.MaAuthProbe(okHttpClient, json)
+
+    @Provides
+    @Singleton
     fun provideLocalSpeakerVolumeBridge(
         @ApplicationContext ctx: Context,
         sendspinManager: SendspinManager

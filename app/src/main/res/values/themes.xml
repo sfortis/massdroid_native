@@ -2,4 +2,14 @@
 <resources>
     <style name="Theme.MassDroidV2" parent="android:Theme.Material.Light.NoActionBar" />
     <style name="Theme.MassDroidV2.Dark" parent="android:Theme.Material.NoActionBar" />
+
+    <!-- Splash theme for the launcher activity. Lives here so pre-Android-12
+         devices also pick it up (the API 31+ override is in values-v31/).
+         Uses the AndroidX SplashScreen library attributes which work on all
+         API levels via the compat layer in androidx.core:core-splashscreen. -->
+    <style name="Theme.MassDroidV2.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/logo_md_splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.MassDroidV2</item>
+    </style>
 </resources>

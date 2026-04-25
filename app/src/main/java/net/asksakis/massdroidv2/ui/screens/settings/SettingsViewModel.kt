@@ -45,8 +45,67 @@ class SettingsViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val lastFmGenreResolver: LastFmGenreResolver,
     private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
-    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 ) : ViewModel() {
+
+    val availableAuthProviders = maAuthRepository.availableProviders
+    val oauthInProgress = maAuthRepository.oauthInProgress
+    val oauthErrors = maAuthRepository.oauthErrors
+
+    /**
+     * Resolved identity of the currently authenticated user, or null when not
+     * signed in. Derived from the saved JWT (preferred) or falls back to the
+     * saved built-in username so the UI can still show "Signed in as X" even
+     * if the token couldn't be parsed.
+     */
+    val currentUser: StateFlow<net.asksakis.massdroidv2.domain.repository.CurrentUser?> =
+        kotlinx.coroutines.flow.combine(
+            settingsRepository.authToken,
+            settingsRepository.username
+        ) { token, username ->
+            net.asksakis.massdroidv2.data.websocket.MaTokenInfo.decode(token)
+                ?: username.takeIf { it.isNotBlank() }?.let {
+                    net.asksakis.massdroidv2.domain.repository.CurrentUser(
+                        username = it,
+                        authMethod = "Username & password"
+                    )
+                }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /**
+     * Triggered when the user's typed server URL stabilises. Refreshes the
+     * provider list so the UI can show "Sign in with Home Assistant" if the
+     * server advertises it.
+     */
+    fun probeAuthProviders(url: String) {
+        viewModelScope.launch {
+            maAuthRepository.probeProviders(normalizeUrl(url))
+        }
+    }
+
+    /**
+     * Returns the URL to open in a browser tab to begin the HA OAuth flow,
+     * or null on failure (errors are emitted to [oauthErrors]).
+     */
+    suspend fun startHomeAssistantOAuth(url: String): String? {
+        val normalized = normalizeUrl(url).ifBlank {
+            _loginError.value = "Enter a server URL"
+            return null
+        }
+        viewModelScope.launch { settingsRepository.setServerUrl(normalized) }
+        return maAuthRepository.startHomeAssistantOAuth(normalized)
+    }
+
+    fun cancelOAuth() {
+        maAuthRepository.cancelOAuth()
+    }
+
+    fun signOut() {
+        viewModelScope.launch {
+            maAuthRepository.signOut()
+        }
+    }
 
     val enrichmentProgress = lastFmLibraryEnricher.progress
 
@@ -172,6 +231,10 @@ class SettingsViewModel @Inject constructor(
 
     fun clearLoginError() {
         _loginError.value = null
+    }
+
+    fun setLoginError(message: String) {
+        _loginError.value = message
     }
 
     fun clearUpdateMessage() {
