@@ -517,9 +517,18 @@ private fun MassDroidApp(
     val miniPlayerCollapsedHeight = 72.dp
     val miniPlayerMargin = 8.dp
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
-    val miniPlayerPadding = if (showMiniPlayer) miniPlayerCollapsedHeight + miniPlayerMargin else 0.dp
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val isConnected = miniPlayerUiState.connected
+    // Mirror the visibility predicate used by MiniPlayerContainer so any FAB or
+    // scrollable content that compensates for the mini player only does so when
+    // one is actually rendered. Otherwise (no player selected, etc.) the slot
+    // sits empty and content like the Smart Mix FAB ends up floating too high.
+    val hasActiveMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
+    val miniPlayerPadding = if (hasActiveMiniPlayer) {
+        miniPlayerCollapsedHeight + miniPlayerMargin
+    } else {
+        0.dp
+    }
 
     CompositionLocalProvider(
         LocalMiniPlayerPadding provides miniPlayerPadding,
