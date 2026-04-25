@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -156,6 +163,7 @@ fun HomeScreen(
     onAlbumClick: (Album) -> Unit,
     onPlaylistClick: (Playlist) -> Unit,
     onNavigateToSettings: () -> Unit,
+    onConfigureServer: () -> Unit = onNavigateToSettings,
     viewModel: DiscoverViewModel = hiltViewModel()
 ) {
     val sections by viewModel.sections.collectAsStateWithLifecycle()
@@ -207,7 +215,7 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showConnectionDialog = true }) {
+                    MdIconButton(onClick = { showConnectionDialog = true }) {
                         val (icon, tint) = when (connectionState) {
                             is ConnectionState.Connected -> Icons.Default.Cloud to MaterialTheme.colorScheme.primary
                             is ConnectionState.Connecting -> Icons.Default.CloudSync to MaterialTheme.colorScheme.tertiary
@@ -216,7 +224,7 @@ fun HomeScreen(
                         }
                         Icon(icon, contentDescription = "Connection status", tint = tint)
                     }
-                    IconButton(onClick = onNavigateToSettings) {
+                    MdIconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 }
@@ -238,7 +246,7 @@ fun HomeScreen(
                     CircularProgressIndicator()
                 }
             } else if (sections.isEmpty() && isDisconnected) {
-                EmptyStateView(onNavigateToSettings)
+                EmptyStateView(onConfigureServer)
             } else {
                 PullToRefreshBox(
                     isRefreshing = isRefreshing,
@@ -368,7 +376,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun EmptyStateView(onNavigateToSettings: () -> Unit) {
+private fun EmptyStateView(onConfigureServer: () -> Unit) {
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -389,7 +397,7 @@ private fun EmptyStateView(onNavigateToSettings: () -> Unit) {
                 style = MaterialTheme.typography.bodyLarge
             )
             Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = onNavigateToSettings) {
+            MdButton(onClick = onConfigureServer) {
                 Text("Configure Server")
             }
         }
@@ -548,7 +556,7 @@ private fun ConnectionStatusDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            MdTextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }

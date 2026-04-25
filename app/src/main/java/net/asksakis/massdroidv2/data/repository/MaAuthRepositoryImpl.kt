@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -28,7 +29,8 @@ class MaAuthRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val settingsRepository: SettingsRepository,
     private val callbackBus: OAuthCallbackBus,
-    private val discoverCache: DiscoverCache
+    private val discoverCache: DiscoverCache,
+    private val sessionEventBus: SessionEventBus
 ) : MaAuthRepository {
 
     companion object {
@@ -108,8 +110,13 @@ class MaAuthRepositoryImpl @Inject constructor(
         settingsRepository.setAuthToken("")
         settingsRepository.setUsername("")
         settingsRepository.setPassword("")
+        // Drop the saved player choice too, otherwise reconnecting against a
+        // server that happens to expose a same-id player would silently latch
+        // back onto something the user did not choose.
+        runCatching { settingsRepository.setSelectedPlayerId(null) }
         runCatching { discoverCache.clear() }
-        // Leave the server URL alone — the user is signing OUT, not switching
+        sessionEventBus.emitReset()
+        // Leave the server URL alone, the user is signing OUT and not switching
         // servers. They can edit the URL field if they want to move on.
     }
 
@@ -148,9 +155,16 @@ class MaAuthRepositoryImpl @Inject constructor(
                 // so the persisted auth state is unambiguous: OAuth-token only.
                 settingsRepository.setUsername("")
                 settingsRepository.setPassword("")
+                // The previous account's selected player almost certainly does
+                // not exist on the new server; drop it so we don't try to
+                // restore a phantom selection.
+                settingsRepository.setSelectedPlayerId(null)
                 // Discover content is per-account; wipe the on-disk cache so the
                 // home screen doesn't briefly show items the new user hasn't seen.
                 discoverCache.clear()
+                // Notify everyone holding per-account in-memory state to drop it
+                // before the new connection brings fresh data in.
+                sessionEventBus.emitReset()
                 wsClient.connect(url, token)
                 Log.d(TAG, "OAuth completed, connecting to $url with new token")
             } catch (e: Exception) {

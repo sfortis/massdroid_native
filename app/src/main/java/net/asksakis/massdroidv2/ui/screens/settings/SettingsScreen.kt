@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
@@ -72,8 +79,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -81,7 +90,33 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
-private enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, ABOUT }
+enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, ABOUT }
+
+/**
+ * Matches text the user could plausibly be typing as a leading "http" / "https"
+ * scheme: any prefix of "https" optionally followed by ":", "/", or "//".
+ * Used so the scheme suggestion chips REPLACE a half-typed scheme rather than
+ * concatenate "https://" to "htt".
+ */
+private val PARTIAL_HTTP_SCHEME = Regex(
+    "^h(t(t(p(s?(:(/(/)?)?)?)?)?)?)?$",
+    RegexOption.IGNORE_CASE
+)
+
+/**
+ * Apply a scheme chip to the current URL field text. Three cases:
+ *  1. The text already has "://" somewhere: swap whatever was before it.
+ *  2. The text is itself a partial scheme (e.g. "h", "htt", "https:"): drop
+ *     it so the new scheme stands alone.
+ *  3. Anything else (host-looking text): prepend.
+ */
+private fun applyUrlScheme(scheme: String, current: String): String {
+    val trimmed = current.trim()
+    val sep = trimmed.indexOf("://")
+    if (sep >= 0) return scheme + trimmed.substring(sep + 3)
+    val host = if (PARTIAL_HTTP_SCHEME.matches(trimmed)) "" else trimmed
+    return scheme + host
+}
 
 private fun launchCustomTab(context: android.content.Context, url: String) {
     val intent = CustomTabsIntent.Builder()
@@ -96,11 +131,14 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenRecommendationInsights: () -> Unit,
     onSetupRoom: (roomId: String?) -> Unit = {},
+    initialCategory: SettingsCategory? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var selectedCategoryName by rememberSaveable { mutableStateOf<String?>(null) }
+    // initialCategory only seeds the FIRST composition. Process death restores
+    // whatever the user had drilled into (rememberSaveable wins on recreation).
+    var selectedCategoryName by rememberSaveable { mutableStateOf(initialCategory?.name) }
     val selectedCategory = selectedCategoryName?.let { name -> SettingsCategory.entries.find { it.name == name } }
 
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
@@ -140,7 +178,7 @@ fun SettingsScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
+                    MdIconButton(onClick = {
                         if (selectedCategory != null) selectedCategoryName = null else onBack()
                     }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -435,7 +473,9 @@ private fun ServerConnectionCard(
     val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
     val savedPassword by viewModel.savedPassword.collectAsStateWithLifecycle()
 
-    var editUrl by remember(serverUrl) { mutableStateOf(serverUrl) }
+    var editUrl by remember(serverUrl) {
+        mutableStateOf(TextFieldValue(serverUrl, TextRange(serverUrl.length)))
+    }
     var username by remember(savedUsername) { mutableStateOf(savedUsername) }
     var password by remember(savedPassword) { mutableStateOf(savedPassword) }
     var showPassword by remember { mutableStateOf(false) }
@@ -455,11 +495,11 @@ private fun ServerConnectionCard(
     val coroutineScope = rememberCoroutineScope()
 
     // Probe the server's providers as the URL stabilises (debounced).
-    LaunchedEffect(editUrl, isConnected) {
+    LaunchedEffect(editUrl.text, isConnected) {
         if (isConnected) return@LaunchedEffect
-        if (editUrl.isBlank()) return@LaunchedEffect
+        if (editUrl.text.isBlank()) return@LaunchedEffect
         kotlinx.coroutines.delay(400)
-        viewModel.probeAuthProviders(editUrl)
+        viewModel.probeAuthProviders(editUrl.text)
     }
     // Surface OAuth errors as login errors so the existing error row picks them up.
     LaunchedEffect(Unit) {
@@ -517,7 +557,7 @@ private fun ServerConnectionCard(
                     }
                 }
             }
-            Button(
+            MdButton(
                 onClick = { viewModel.signOut() },
                 modifier = Modifier.fillMaxWidth(),
                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(
@@ -538,21 +578,44 @@ private fun ServerConnectionCard(
         } else {
             // Disconnected (or connecting / error). Show editable URL and the
             // sign-in options.
+            val urlMissingScheme = editUrl.text.isNotBlank() && !editUrl.text.contains("://")
             OutlinedTextField(
                 value = editUrl,
                 onValueChange = { editUrl = it },
                 label = { Text("Server URL") },
                 placeholder = { Text("https://ma.example.com") },
                 singleLine = true,
+                isError = urlMissingScheme,
+                supportingText = if (urlMissingScheme) {
+                    { Text("Add http:// or https:// to the URL") }
+                } else null,
                 modifier = Modifier.fillMaxWidth()
             )
+            if (urlMissingScheme) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.SuggestionChip(
+                        onClick = {
+                            val next = applyUrlScheme("http://", editUrl.text)
+                            editUrl = TextFieldValue(next, TextRange(next.length))
+                        },
+                        label = { Text("Use http://") }
+                    )
+                    androidx.compose.material3.SuggestionChip(
+                        onClick = {
+                            val next = applyUrlScheme("https://", editUrl.text)
+                            editUrl = TextFieldValue(next, TextRange(next.length))
+                        },
+                        label = { Text("Use https://") }
+                    )
+                }
+            }
 
             if (haProviderAvailable) {
-                Button(
+                MdButton(
                     onClick = {
                         viewModel.clearLoginError()
                         coroutineScope.launch {
-                            val authUrl = viewModel.startHomeAssistantOAuth(editUrl)
+                            val authUrl = viewModel.startHomeAssistantOAuth(editUrl.text)
                             if (authUrl != null) launchCustomTab(context, authUrl)
                         }
                     },
@@ -608,7 +671,7 @@ private fun ServerConnectionCard(
                     else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 trailingIcon = {
-                    IconButton(onClick = { showPassword = !showPassword }) {
+                    MdIconButton(onClick = { showPassword = !showPassword }) {
                         Icon(
                             if (showPassword) Icons.Default.VisibilityOff
                             else Icons.Default.Visibility,
@@ -630,12 +693,12 @@ private fun ServerConnectionCard(
                 )
             }
 
-            Button(
+            MdButton(
                 onClick = {
                     if (hasToken && username.isBlank() && password.isBlank()) {
-                        viewModel.connectWithToken(editUrl)
+                        viewModel.connectWithToken(editUrl.text)
                     } else {
-                        viewModel.login(editUrl, username, password)
+                        viewModel.login(editUrl.text, username, password)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -684,8 +747,8 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     color = MaterialTheme.colorScheme.primary
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        val activity = context as? Activity ?: return@OutlinedButton
+                    MdOutlinedButton(onClick = {
+                        val activity = context as? Activity ?: return@MdOutlinedButton
                         KeyChain.choosePrivateKeyAlias(
                             activity,
                             { alias -> viewModel.onCertificateSelected(alias, context) },
@@ -694,7 +757,7 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     }) {
                         Text("Change")
                     }
-                    OutlinedButton(onClick = { viewModel.clearCertificate() }) {
+                    MdOutlinedButton(onClick = { viewModel.clearCertificate() }) {
                         Text("Remove")
                     }
                 }
@@ -704,8 +767,8 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedButton(onClick = {
-                    val activity = context as? Activity ?: return@OutlinedButton
+                MdOutlinedButton(onClick = {
+                    val activity = context as? Activity ?: return@MdOutlinedButton
                     KeyChain.choosePrivateKeyAlias(
                         activity,
                         { alias -> viewModel.onCertificateSelected(alias, context) },
@@ -734,7 +797,7 @@ private fun SmartListeningCard(viewModel: SettingsViewModel) {
             headlineContent = { Text("Smart Listening") },
             supportingContent = { Text("Learns from skip/like/listen actions and improves recommendations.") },
             trailingContent = {
-                Switch(checked = smartListeningEnabled, onCheckedChange = { viewModel.toggleSmartListening(it) })
+                MdSwitch(checked = smartListeningEnabled, onCheckedChange = { viewModel.toggleSmartListening(it) })
             }
         )
     }
@@ -762,7 +825,7 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
                 }
             },
             trailingContent = {
-                Button(onClick = onOpen, enabled = smartListeningEnabled) {
+                MdButton(onClick = onOpen, enabled = smartListeningEnabled) {
                     Text("Open")
                 }
             }
@@ -814,14 +877,14 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                 trailingIcon = {
                     Row {
                         if (apiKeyInput.isNotBlank()) {
-                            IconButton(onClick = {
+                            MdIconButton(onClick = {
                                 apiKeyInput = ""
                                 viewModel.clearLastFmValidation()
                             }) {
                                 Icon(Icons.Filled.Close, contentDescription = "Clear")
                             }
                         }
-                        IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                        MdIconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
                             Icon(
                                 if (apiKeyVisible) Icons.Filled.VisibilityOff
                                 else Icons.Filled.Visibility,
@@ -857,7 +920,7 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                     )
                 }
             }
-            Button(
+            MdButton(
                 onClick = { viewModel.setLastFmApiKey(apiKeyInput) },
                 enabled = apiKeyInput.trim() != lastFmApiKey && !isValidating
             ) {
@@ -931,7 +994,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                 )
             },
             trailingContent = {
-                Switch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
+                MdSwitch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
             }
         )
     }
@@ -960,7 +1023,7 @@ private fun UpdatesCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Button(
+            MdButton(
                 onClick = onCheck,
                 enabled = !state.isChecking && !state.isDownloading,
                 modifier = Modifier.fillMaxWidth()
@@ -988,7 +1051,7 @@ private fun UpdatesCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Include beta updates", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = state.includeBetaUpdates, onCheckedChange = onToggleIncludeBeta)
+                MdSwitch(checked = state.includeBetaUpdates, onCheckedChange = onToggleIncludeBeta)
             }
             state.downloadProgress?.let { progress ->
                 if (state.isDownloading) {
@@ -1035,12 +1098,12 @@ private fun UpdateAvailableDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm, enabled = !busy) {
+            MdButton(onClick = onConfirm, enabled = !busy) {
                 Text("Download & Install")
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss, enabled = !busy) {
+            MdOutlinedButton(onClick = onDismiss, enabled = !busy) {
                 Text("Later")
             }
         }

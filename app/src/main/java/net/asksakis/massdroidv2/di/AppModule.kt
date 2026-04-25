@@ -106,7 +106,8 @@ object AppModule {
     fun provideSendspinManager(
         client: SendspinClient,
         engine: SendspinSyncEngine,
-    ): SendspinManager = SendspinManager(client, engine)
+        sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus,
+    ): SendspinManager = SendspinManager(client, engine, sessionEventBus)
 
     @Provides
     @Singleton

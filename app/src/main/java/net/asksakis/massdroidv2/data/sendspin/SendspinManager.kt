@@ -13,10 +13,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 
 class SendspinManager(
     private val client: SendspinClient,
     private val engine: SendspinAudioEngine,
+    sessionEventBus: SessionEventBus,
 ) {
     private val audio: SendspinAudioEngine get() = engine
     companion object {
@@ -80,6 +82,17 @@ class SendspinManager(
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
     private var clientName: String = ""
+
+    init {
+        scope.launch {
+            sessionEventBus.resets.collect {
+                if (_enabled.value || _connectionState.value != SendspinState.DISCONNECTED) {
+                    Log.d(TAG, "Session reset received, stopping sendspin")
+                    stop()
+                }
+            }
+        }
+    }
 
     fun start(url: String, token: String, clientId: String, clientName: String) {
         this.clientId = clientId

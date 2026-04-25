@@ -161,7 +161,9 @@ class MaAuthProbe(
             trimmed.startsWith("ws://") || trimmed.startsWith("wss://") -> trimmed
             trimmed.startsWith("https://") -> "wss://" + trimmed.removePrefix("https://")
             trimmed.startsWith("http://") -> "ws://" + trimmed.removePrefix("http://")
-            else -> "ws://$trimmed"
+            // Refuse to guess a scheme: an unscoped URL would point at an
+            // arbitrary host. Caller is expected to validate first.
+            else -> return null
         }
         return "$withScheme/ws"
     }

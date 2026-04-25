@@ -30,6 +30,7 @@ import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.ItemByUriArgs
+import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Artist
@@ -135,7 +136,8 @@ class DiscoverViewModel @Inject constructor(
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
+    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache,
+    private val sessionEventBus: SessionEventBus
 ) : ViewModel() {
 
     private val sectionCoordinator = DiscoverSectionCoordinator(
@@ -195,6 +197,9 @@ class DiscoverViewModel @Inject constructor(
             observeMediaEvents()
         }
         viewModelScope.launch {
+            sessionEventBus.resets.collect { resetForAccountSwitch() }
+        }
+        viewModelScope.launch {
             shortcutDispatcher.pendingAction
                 .filterNotNull()
                 .collect { action ->
@@ -213,15 +218,36 @@ class DiscoverViewModel @Inject constructor(
         }
     }
 
+    private fun resetForAccountSwitch() {
+        Log.d(TAG, "Session reset: dropping in-memory discover state")
+        fullLoadJob?.cancel()
+        radioStartJob?.cancel()
+        connectionProbeJob?.cancel()
+        mediaEventJob?.cancel()
+        loadGeneration++
+        genreArtists = emptyMap()
+        strictGenreArtists = emptyMap()
+        bllArtistScoreMap = emptyMap()
+        artistDominantDecades = emptyMap()
+        artistByUri = emptyMap()
+        smartArtistScoreMap = emptyMap()
+        excludedArtistUris = emptySet()
+        excludedTrackUris = emptySet()
+        lastRadioStartAtMs = 0L
+        lastRadioStartGenre = null
+        lastSmartMixSelection = emptyList()
+        cacheStale = true
+        _uiState.value = DiscoverUiState(isLoading = false)
+    }
+
     private fun autoConnect() {
         viewModelScope.launch {
             wsClient.startupReady.first { it }
             if (wsClient.connectionState.value is ConnectionState.Disconnected && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
-                if (url.isNotBlank() && token.isNotBlank()) {
-                    val normalizedUrl = if (!url.contains("://")) "http://$url" else url
-                    wsClient.connect(normalizedUrl, token)
+                if (url.isNotBlank() && token.isNotBlank() && url.contains("://")) {
+                    wsClient.connect(url, token)
                 }
             }
         }

@@ -25,7 +25,8 @@ class PlayerRepositoryImpl @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmGenreResolver: LastFmGenreResolver
+    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val sessionEventBus: SessionEventBus
 ) : PlayerRepository {
 
     companion object {
@@ -125,6 +126,9 @@ class PlayerRepositoryImpl @Inject constructor(
     init {
         scope.launch { observeEvents() }
         scope.launch {
+            sessionEventBus.resets.collect { resetForAccountSwitch() }
+        }
+        scope.launch {
             settingsRepository.smartListeningEnabled.collect { enabled ->
                 smartListeningEnabledSnapshot = enabled
             }
@@ -196,6 +200,41 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Wipes all per-account state. The default disconnect path intentionally
+     * keeps the last selectedPlayer and queue snapshot around so the mini
+     * player remains visible during a flap; that is wrong when the account
+     * itself changes, because the cached entities belong to a different user.
+     */
+    private fun resetForAccountSwitch() {
+        Log.d(TAG, "Session reset: dropping cached player and queue state")
+        blockedQueueCleanupJob?.cancel()
+        blockedQueueCleanupJob = null
+        stopPositionTicker()
+        selectedPlayerId = null
+        pendingRestoredPlayerId = null
+        favoriteOverride = null
+        favoriteOverrideUri = null
+        trackDuration = 0.0
+        positionBaseTime = 0.0
+        positionBaseTimestamp = 0L
+        isPlaying = false
+        _players.value = emptyList()
+        _selectedPlayer.value = null
+        _queueState.value = null
+        _elapsedTime.value = 0.0
+        queueTracking.clear()
+        artistGenreCache.clear()
+        libraryArtistUriCache.clear()
+        manualSkipByQueue.clear()
+        queueReplacementByQueue.clear()
+        blockedAutoSkipByQueue.clear()
+        blockedQueueCleanupAtByQueue.clear()
+        queueFilterModeByQueue.clear()
+        volumeOverrideUntilMs.clear()
+        suppressedArtistUrisSnapshot = emptySet()
     }
 
     private suspend fun observeEvents() {
