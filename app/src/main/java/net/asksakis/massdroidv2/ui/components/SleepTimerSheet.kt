@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Schedule
@@ -92,7 +99,7 @@ fun SleepTimerSheet(
             }
 
             if (isActive) {
-                TextButton(
+                MdTextButton(
                     onClick = { onCancel(); onDismiss() },
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -128,11 +135,11 @@ private fun SleepTimerPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            MdTextButton(onClick = {
                 val totalMinutes = pickerState.hour * 60 + pickerState.minute
                 if (totalMinutes > 0) onSelect(totalMinutes)
             }) { Text("OK") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { MdTextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }

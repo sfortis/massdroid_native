@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.util.Log
@@ -245,12 +252,12 @@ fun NowPlayingScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
+                        MdIconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showPlayerMenu = true }, modifier = Modifier.size(40.dp)) {
+                        MdIconButton(onClick = { showPlayerMenu = true }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(22.dp))
                         }
                     },
@@ -573,7 +580,7 @@ private fun NowPlayingPortrait(
             onNext = { if (controlsEnabled) viewModel.next() },
             onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
             canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
-            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
         )
 
         Spacer(modifier = Modifier.weight(0.5f))
@@ -618,7 +625,7 @@ private fun NowPlayingPortrait(
             queueState = queueState,
             viewModel = viewModel,
             enabled = controlsEnabled,
-            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -731,7 +738,7 @@ private fun NowPlayingLandscape(
                 modifier = Modifier.fillMaxWidth().align(Alignment.TopStart),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
+                MdIconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                 }
                 Text(
@@ -765,7 +772,7 @@ private fun NowPlayingLandscape(
                     onNext = { if (controlsEnabled) viewModel.next() },
                     onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
                     canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
-                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) },
+                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
                     fillMaxWidth = false
                 )
             }
@@ -779,7 +786,7 @@ private fun NowPlayingLandscape(
                 .padding(start = 16.dp, end = 8.dp)
         ) {
             // Menu overlay top-right (doesn't affect centering)
-            IconButton(
+            MdIconButton(
                 onClick = onShowPlayerMenu,
                 modifier = Modifier.size(36.dp).align(Alignment.TopEnd)
             ) {
@@ -839,7 +846,7 @@ private fun NowPlayingLandscape(
                     viewModel = viewModel,
                     enabled = controlsEnabled,
                     compact = false,
-                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                    onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
                 )
 
             }
@@ -909,9 +916,9 @@ private fun QualityActionRow(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onShowPlaylistDialog()
                     },
                     modifier = Modifier.size(actionButtonSize),
@@ -933,9 +940,9 @@ private fun QualityActionRow(
                 }
                 val lyricsEnabled = lyricsAvailability != LyricsAvailability.LOADING &&
                     lyricsAvailability != LyricsAvailability.UNAVAILABLE
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         Log.d(
                             "LyricsDbg",
                             "icon tap availability=$lyricsAvailability uri=${currentTrack?.uri} title=${currentTrack?.name} enabled=$lyricsEnabled"
@@ -969,9 +976,9 @@ private fun QualityActionRow(
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 @Suppress("DEPRECATION")
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onNavigateToQueue()
                     },
                     modifier = Modifier.size(actionButtonSize),
@@ -984,9 +991,9 @@ private fun QualityActionRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.toggleFavorite()
                     },
                     modifier = Modifier.size(actionButtonSize),
@@ -1515,7 +1522,7 @@ private fun SyncedLyricsContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onSeekToPosition(line.timeMs / 1000.0)
                             }
                             .padding(vertical = 6.dp)
@@ -1921,7 +1928,7 @@ private fun TransportControls(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = {
+        MdIconButton(onClick = {
             onHaptic()
             viewModel.toggleShuffle()
         }, enabled = enabled) {
@@ -1934,7 +1941,7 @@ private fun TransportControls(
             )
         }
 
-        IconButton(onClick = {
+        MdIconButton(onClick = {
             onHaptic()
             viewModel.previous()
         }, modifier = Modifier.size(buttonSize), enabled = enabled) {
@@ -1952,14 +1959,14 @@ private fun TransportControls(
             )
         }
 
-        IconButton(onClick = {
+        MdIconButton(onClick = {
             onHaptic()
             viewModel.next()
         }, modifier = Modifier.size(buttonSize), enabled = enabled) {
             Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(iconSize))
         }
 
-        IconButton(onClick = {
+        MdIconButton(onClick = {
             onHaptic()
             viewModel.cycleRepeat()
         }, enabled = enabled) {
@@ -2302,7 +2309,7 @@ private fun SeekBar(
                 seekValue = it
             },
             onValueChangeFinished = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onSeek(seekValue.toDouble())
                 seekTarget = seekValue
                 seeking = false

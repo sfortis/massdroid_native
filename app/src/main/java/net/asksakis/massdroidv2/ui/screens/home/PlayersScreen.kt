@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
@@ -361,7 +368,7 @@ private fun PlayersHeader(
             modifier = Modifier.weight(1f, fill = false)
         )
         if (onCreateGroup != null) {
-            IconButton(onClick = onCreateGroup) {
+            MdIconButton(onClick = onCreateGroup) {
                 Icon(
                     Icons.Default.SpeakerGroup,
                     contentDescription = "Create group",
@@ -478,7 +485,7 @@ private fun PlayerListItem(
                     }
                 }
 
-                IconButton(onClick = onQueueMenuClick, modifier = Modifier.size(28.dp)) {
+                MdIconButton(onClick = onQueueMenuClick, modifier = Modifier.size(28.dp)) {
                     Icon(
                         Icons.Default.MoreVert,
                         contentDescription = "Player options",
@@ -663,7 +670,7 @@ private fun GroupMemberRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.End
         )
-        IconButton(onClick = onMenuClick, modifier = Modifier.size(24.dp)) {
+        MdIconButton(onClick = onMenuClick, modifier = Modifier.size(24.dp)) {
             Icon(
                 Icons.Default.MoreVert,
                 contentDescription = "Member options",
@@ -878,7 +885,7 @@ private fun PlayerQueueSheet(
                         Text("Transfer queue to", style = MaterialTheme.typography.labelMedium)
                     },
                         leadingContent = {
-                            IconButton(onClick = { showTransferList = false }) {
+                            MdIconButton(onClick = { showTransferList = false }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
@@ -987,7 +994,7 @@ private fun IconPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            MdTextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }
@@ -1045,7 +1052,7 @@ private fun ConnectionPrompt(
             style = MaterialTheme.typography.bodyLarge
         )
         Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onSettings) {
+        MdButton(onClick = onSettings) {
             Text("Configure Server")
         }
     }

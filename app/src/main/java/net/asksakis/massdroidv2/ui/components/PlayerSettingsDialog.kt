@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -356,11 +363,11 @@ fun PlayerSettingsDialog(
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (hasPhoneBaseline) {
-                                    TextButton(onClick = { onResetPhoneBaseline?.invoke() }) {
+                                    MdTextButton(onClick = { onResetPhoneBaseline?.invoke() }) {
                                         Text("Reset")
                                     }
                                 }
-                                TextButton(onClick = { showPhoneCalibrationDialog = true }) {
+                                MdTextButton(onClick = { showPhoneCalibrationDialog = true }) {
                                     Text(if (hasPhoneBaseline) "Recalibrate" else "Calibrate")
                                 }
                             }
@@ -405,11 +412,11 @@ fun PlayerSettingsDialog(
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (isBtRoute && acousticCorrectionMs > 0) {
-                                    TextButton(onClick = { onResetBtCalibration?.invoke() }) {
+                                    MdTextButton(onClick = { onResetBtCalibration?.invoke() }) {
                                         Text("Reset")
                                     }
                                 }
-                                TextButton(
+                                MdTextButton(
                                     enabled = isBtRoute,
                                     onClick = { showBtCalibrationDialog = true }
                                 ) {
@@ -446,8 +453,8 @@ fun PlayerSettingsDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
-                    TextButton(
+                    MdTextButton(onClick = onDismiss) { Text("Cancel") }
+                    MdTextButton(
                         onClick = {
                             val values = mutableMapOf<String, Any>(
                                 "smart_fades_mode" to crossfadeMode.apiValue,
@@ -508,7 +515,7 @@ private fun StaticDelayCard(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            TextButton(
+            MdTextButton(
                 onClick = onReset,
                 enabled = valueMs != 0,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(

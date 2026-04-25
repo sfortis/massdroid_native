@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -146,7 +153,7 @@ fun GroupPlayersSheet(
                     // "Unsync All" would call set_members(remove=all) which fails on
                     // static members. Keep it only when the group has no statics.
                     if (initialSelected.isNotEmpty() && staticIds.isEmpty()) {
-                        TextButton(onClick = {
+                        MdTextButton(onClick = {
                             onApply(emptyList())
                             onDismiss()
                         }) {
@@ -154,7 +161,7 @@ fun GroupPlayersSheet(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Button(
+                    MdButton(
                         onClick = {
                             Log.d("GroupSheet", "Sync: target=${targetPlayer.playerId} selected=$selected")
                             onApply(selected.toList())

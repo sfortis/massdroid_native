@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -430,7 +437,7 @@ private fun UpdatePrompt(checker: net.asksakis.massdroidv2.data.update.AppUpdate
                 )
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(
+                MdTextButton(
                     onClick = {
                         isDownloading = true
                         scope.launch {
@@ -452,7 +459,7 @@ private fun UpdatePrompt(checker: net.asksakis.massdroidv2.data.update.AppUpdate
                 }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(
+                MdTextButton(
                     onClick = { checker.dismissPendingUpdate() },
                     enabled = !isDownloading
                 ) {

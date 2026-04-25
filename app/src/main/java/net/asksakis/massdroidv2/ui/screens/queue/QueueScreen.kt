@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.queue
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -169,7 +176,7 @@ fun QueueSheet(
                     .padding(start = 4.dp, end = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onDismiss) {
+                MdIconButton(onClick = onDismiss) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close")
                 }
                 Column(modifier = Modifier.weight(1f)) {
@@ -181,16 +188,16 @@ fun QueueSheet(
                     )
                 }
                 Row {
-                    IconButton(onClick = {
+                    MdIconButton(onClick = {
                         viewModel.getPlaylists()
                         showSaveQueueDialog = true
                     }) {
                         Icon(Icons.Default.PlaylistAdd, contentDescription = "Save queue to playlist")
                     }
-                    IconButton(onClick = { showQueueMenu = true }) {
+                    MdIconButton(onClick = { showQueueMenu = true }) {
                         Icon(Icons.Default.SwapHoriz, contentDescription = "Transfer queue")
                     }
-                    IconButton(onClick = { viewModel.clearQueue() }) {
+                    MdIconButton(onClick = { viewModel.clearQueue() }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear queue")
                     }
                 }
@@ -289,7 +296,7 @@ fun QueueSheet(
                                                             toIndex >= 0 &&
                                                             fromIndex != toIndex
                                                         ) {
-                                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                             viewModel.moveItem(queueItemId, fromIndex, toIndex)
                                                         }
                                                     }

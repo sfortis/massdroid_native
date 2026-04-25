@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -82,15 +89,15 @@ fun PlaylistDetailScreen(
             TopAppBar(
                 title = { Text(playlistName) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showSortSheet = true }) {
+                    MdIconButton(onClick = { showSortSheet = true }) {
                         Icon(Icons.Default.Tune, contentDescription = "Sort options")
                     }
-                    IconButton(onClick = { viewModel.togglePlaylistFavorite() }) {
+                    MdIconButton(onClick = { viewModel.togglePlaylistFavorite() }) {
                         Icon(
                             if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Toggle favorite",
@@ -117,7 +124,7 @@ fun PlaylistDetailScreen(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(
+                    MdTextButton(
                         onClick = { viewModel.playAll() },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
@@ -125,7 +132,7 @@ fun PlaylistDetailScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Play All")
                     }
-                    TextButton(
+                    MdTextButton(
                         onClick = { showPlaySheet = true },
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
@@ -437,7 +444,7 @@ private fun MoveTrackDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            MdTextButton(onClick = onDismiss) {
                 Text("Close")
             }
         }

@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -195,9 +202,9 @@ fun CreateGroupDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            MdTextButton(
                 onClick = {
-                    val provider = selectedProvider ?: return@TextButton
+                    val provider = selectedProvider ?: return@MdTextButton
                     onConfirm(provider, name.trim(), selected)
                     onDismiss()
                 },
@@ -211,7 +218,7 @@ fun CreateGroupDialog(
             ) { Text("Create") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            MdTextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }

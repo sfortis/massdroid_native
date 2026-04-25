@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -74,7 +81,7 @@ fun RecommendationInsightsScreen(
             TopAppBar(
                 title = { Text("Recommendation Insights") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
@@ -118,13 +125,13 @@ fun RecommendationInsightsScreen(
                     Text("Database Actions", style = MaterialTheme.typography.titleSmall)
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
+                        MdOutlinedButton(
                             onClick = { viewModel.refreshRecommendationData() },
                             enabled = smartListeningEnabled && !recommendationBusy
                         ) {
                             Text("Refresh Stats")
                         }
-                        Button(
+                        MdButton(
                             onClick = { showResetConfirm = true },
                             enabled = smartListeningEnabled && !recommendationBusy,
                             colors = ButtonDefaults.buttonColors(
@@ -257,7 +264,7 @@ fun RecommendationInsightsScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.weight(1f)
                                 )
-                                TextButton(
+                                MdTextButton(
                                     onClick = {
                                         viewModel.unblockArtist(blocked.artistUri, blocked.artistName)
                                     },
@@ -323,7 +330,7 @@ fun RecommendationInsightsScreen(
                 )
             },
             confirmButton = {
-                Button(
+                MdButton(
                     onClick = {
                         showResetConfirm = false
                         viewModel.resetRecommendationDatabase()
@@ -336,7 +343,7 @@ fun RecommendationInsightsScreen(
                 }
             },
             dismissButton = {
-                OutlinedButton(onClick = { showResetConfirm = false }) {
+                MdOutlinedButton(onClick = { showResetConfirm = false }) {
                     Text("Cancel")
                 }
             }

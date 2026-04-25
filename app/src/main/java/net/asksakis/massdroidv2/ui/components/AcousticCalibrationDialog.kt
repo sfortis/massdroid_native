@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -295,7 +302,7 @@ fun AcousticCalibrationDialog(
         confirmButton = {
             when (phase) {
 	                CalibrationPhase.PLAYBACK_ACTIVE -> {
-	                    TextButton(onClick = {
+	                    MdTextButton(onClick = {
 	                        onPausePlayback()
 	                        didPausePlayback = true
 	                        phase = if (isBtRoute && !hasPhoneBaseline) CalibrationPhase.NEED_BASELINE
@@ -303,37 +310,37 @@ fun AcousticCalibrationDialog(
 	                    }) { Text("Pause and Continue") }
 	                }
                 CalibrationPhase.NEED_BASELINE -> {
-                    TextButton(onClick = { startMeasurement(forBaseline = true) }) {
+                    MdTextButton(onClick = { startMeasurement(forBaseline = true) }) {
                         Text("Calibrate Baseline")
                     }
                 }
 	                CalibrationPhase.INSTRUCTIONS -> {
-	                    TextButton(onClick = { startMeasurement(forBaseline = !isBtRoute) }) {
+	                    MdTextButton(onClick = { startMeasurement(forBaseline = !isBtRoute) }) {
 	                        Text("Start")
 	                    }
 	                }
                 CalibrationPhase.BASELINE_DONE -> {
-                    TextButton(onClick = {
+                    MdTextButton(onClick = {
                         phase = CalibrationPhase.INSTRUCTIONS
                     }) { Text("Continue") }
                 }
 	                CalibrationPhase.RESULT -> {
-	                    TextButton(onClick = {
+	                    MdTextButton(onClick = {
 	                        onCalibrationComplete(resultCorrectionUs, resultQuality)
 	                        onDismiss()
 	                    }) { Text("Save") }
 	                }
 	                CalibrationPhase.BASELINE_RESULT -> {
-	                    TextButton(onClick = onDismiss) { Text("Done") }
+	                    MdTextButton(onClick = onDismiss) { Text("Done") }
 	                }
 	                CalibrationPhase.ERROR -> {
-	                    TextButton(onClick = {
+	                    MdTextButton(onClick = {
 	                        phase = if (isBtRoute && !hasPhoneBaseline && baselineUs == 0L)
 	                            CalibrationPhase.NEED_BASELINE else CalibrationPhase.INSTRUCTIONS
 	                    }) { Text("Retry") }
 	                }
                 CalibrationPhase.PERMISSION_DENIED -> {
-                    TextButton(onClick = {
+                    MdTextButton(onClick = {
                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }) { Text("Grant Permission") }
                 }
@@ -342,7 +349,7 @@ fun AcousticCalibrationDialog(
         },
         dismissButton = {
             if (phase != CalibrationPhase.MEASURING_BASELINE && phase != CalibrationPhase.MEASURING_BT) {
-                TextButton(onClick = dismissWithResume) { Text("Cancel") }
+                MdTextButton(onClick = dismissWithResume) { Text("Cancel") }
             }
         }
     )

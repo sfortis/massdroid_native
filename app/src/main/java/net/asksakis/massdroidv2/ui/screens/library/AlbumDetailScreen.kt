@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -76,12 +83,12 @@ fun AlbumDetailScreen(
             TopAppBar(
                 title = { Text(albumName) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.toggleAlbumFavorite() }) {
+                    MdIconButton(onClick = { viewModel.toggleAlbumFavorite() }) {
                         Icon(
                             if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Toggle favorite",
@@ -345,7 +352,7 @@ private fun AlbumHeader(
 
     var showPlaySheet by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        TextButton(
+        MdTextButton(
             onClick = { viewModel.playAll() },
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
         ) {
@@ -353,7 +360,7 @@ private fun AlbumHeader(
             Spacer(modifier = Modifier.width(8.dp))
             Text("Play All")
         }
-        TextButton(
+        MdTextButton(
             onClick = { showPlaySheet = true },
             contentPadding = PaddingValues(horizontal = 8.dp)
         ) {
@@ -456,7 +463,7 @@ private fun AlbumTrackItem(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-                IconButton(
+                MdIconButton(
                     onClick = {
                         onAction(
                             ActionSheetItem(
