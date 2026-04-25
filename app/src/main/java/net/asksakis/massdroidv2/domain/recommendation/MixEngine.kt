@@ -12,9 +12,14 @@ private const val TAG = "MixEngine"
 
 // SmartMix artist-ordering constants
 private const val TOP_ARTISTS_LIMIT = 16
-private const val TOP_GENRES_LIMIT = 4
-private const val ARTISTS_PER_GENRE = 12
-private const val COMFORT_ANCHOR_LIMIT = 4
+// Broaden the genre net so secondary interests get a turn instead of always
+// drawing from the same 3 to 4 favourites.
+private const val TOP_GENRES_LIMIT = 6
+// Deeper sampling per genre lets less-played but on-genre artists into the pool.
+private const val ARTISTS_PER_GENRE = 20
+// Fewer guaranteed top-scorers so the mix isn't dominated by 4 comfort artists
+// every single time.
+private const val COMFORT_ANCHOR_LIMIT = 2
 private const val EXPLORATION_ARTIST_TARGET = 28
 private const val FAVORITE_ARTISTS_CANDIDATE_LIMIT = 24
 private const val RECENT_ARTIST_WEIGHT = 0.65
@@ -109,11 +114,30 @@ class MixEngine @Inject constructor() {
                 .sortedByDescending { it.score }
                 .toList()
 
-            for (candidate in ranked) {
-                val bucketArtist = MediaIdentity.canonicalArtistKey(
-                    itemId = candidate.track.artistItemId,
-                    uri = candidate.track.artistUri
-                ) ?: MediaIdentity.artistKeyFromUri(candidate.artistUri) ?: candidate.artistUri
+            // Sample from the top-K candidates instead of strictly taking the
+            // top maxPerArtist by score. Without this, favourite-album and
+            // favourite-track bonuses (~+1.2 combined) so far outweigh the
+            // ±0.7 jitter that the same two "hit" tracks emerge from a long
+            // discography on every mix. Drawing maxPerArtist out of a wider
+            // bucket keeps quality high (still scored top tier) while letting
+            // less-played album cuts surface across mixes.
+            val candidatePoolSize = (maxPerArtist * 5).coerceAtLeast(maxPerArtist)
+            val sampled = ranked.take(candidatePoolSize).shuffled(random)
+
+            for (candidate in sampled) {
+                // Bucket by the iteration artist first; the per-track artistUri
+                // can be a provider URI (e.g. spotify://artist/abc) while the
+                // iteration URI is the canonical library:// one. If we trust
+                // track-level URIs we end up with one logical artist split
+                // across multiple buckets, and the per-artist cap silently
+                // doubles. Fall back to track-level only if iteration URI is
+                // missing for some reason.
+                val bucketArtist = MediaIdentity.artistKeyFromUri(candidate.artistUri)
+                    ?: MediaIdentity.canonicalArtistKey(
+                        itemId = candidate.track.artistItemId,
+                        uri = candidate.track.artistUri
+                    )
+                    ?: candidate.artistUri
                 val count = byArtistCount[bucketArtist] ?: 0
                 if (count >= maxPerArtist) continue
                 scored += candidate
@@ -435,8 +459,11 @@ class MixEngine @Inject constructor() {
 
     // --- Constants ---
 
+    // Cap at 2 so a 40-track mix needs at least ~20 distinct artists, which
+    // forces the interleaver to pull deeper into the candidate pool instead of
+    // bunching three tracks each from the top half-dozen scorers.
     @Suppress("UnusedParameter")
-    private fun maxTracksPerArtist(mode: MixMode): Int = 3
+    private fun maxTracksPerArtist(mode: MixMode): Int = 2
     @Suppress("UnusedParameter")
     private fun firstPassUnique(mode: MixMode): Int = 20
     @Suppress("UnusedParameter")
@@ -445,10 +472,14 @@ class MixEngine @Inject constructor() {
     private fun trackJitter(mode: MixMode): Double = 0.7
     @Suppress("UnusedParameter")
     private fun favArtistBonus(mode: MixMode): Double = 0.8
+    // Lowered so favourite-album/track bonuses no longer overwhelm the ±jitter
+    // that's meant to rotate which album cuts surface across mixes. With the
+    // old values the same 1-2 "hit" tracks of a favourited artist won every
+    // single time and the user heard them on repeat.
     @Suppress("UnusedParameter")
-    private fun favAlbumBonus(mode: MixMode): Double = 0.7
+    private fun favAlbumBonus(mode: MixMode): Double = 0.3
     @Suppress("UnusedParameter")
-    private fun favTrackBonus(mode: MixMode): Double = 0.5
+    private fun favTrackBonus(mode: MixMode): Double = 0.2
     @Suppress("UnusedParameter")
     private fun modeTag(mode: MixMode): String = "SmartMix"
 
