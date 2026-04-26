@@ -19,9 +19,18 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Declares optional support for Android Automotive OS (AAOS). The system
+         uses this together with the meta-data inside <application> below to
+         surface MassDroid in the car's media center. required="false" so the
+         APK still installs on regular phones. -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+
     <application
         android:name=".MassDroidApp"
         android:allowBackup="true"
+        android:appCategory="audio"
         android:fullBackupContent="@xml/full_backup_content"
         android:dataExtractionRules="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -31,11 +40,27 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.MassDroidV2">
 
+        <!-- Tells AAOS this is a media app. The XML resource declares
+             <uses name="media"/>, which is what the AAOS Media Center reads
+             to surface MassDroid as a media source. The meta-data name
+             "com.android.automotive" is the AAOS path; the projected Android
+             Auto equivalent ("com.google.android.gms.car.application") is
+             intentionally NOT used here, that's a different host. -->
+        <meta-data
+            android:name="com.android.automotive"
+            android:resource="@xml/automotive_app_desc" />
+
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.MassDroidV2.Splash">
+            <!-- distractionOptimized intentionally NOT set: that flag is only
+                 valid for Car App Library CarAppActivity, and adding it to a
+                 regular media UI activity is a Play rejection trigger (rule
+                 DD-2). The car media center is the host while driving; this
+                 activity is parked-only and opens only when the user taps the
+                 app icon while parked. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -62,6 +87,14 @@
                 <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+            <!-- The AAOS Media Center filters MediaBrowserServices by this
+                 opt-in flag. Without it, the service shows up as "non media
+                 template app" in com.android.car.media's MediaSource log and
+                 the app never appears in the car's media quadrant. Verified
+                 against system LocalMediaPlayer in the AAOS-15 emulator. -->
+            <meta-data
+                android:name="androidx.car.app.launchable"
+                android:value="true" />
         </service>
 
         <provider
