@@ -1825,6 +1825,27 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Play the whole playlist with shuffle on. Two-step: kick playMedia off
+     * with awaitResponse=true so the queue is loaded, then flip the queue's
+     * shuffle flag. Calling shuffle before playMedia would target an empty
+     * queue and the server would no-op.
+     */
+    fun playAllShuffled() {
+        val uris = tracks.value.map { it.uri }
+        if (uris.isEmpty()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uris, option = "replace", awaitResponse = true)
+                musicRepository.shuffleQueue(queueId, true)
+            } catch (e: Exception) {
+                Log.w(TAG, "playAllShuffled failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
     fun addAllToQueue() {
         val uris = tracks.value.map { it.uri }
         if (uris.isEmpty()) return

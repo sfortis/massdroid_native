@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
@@ -94,6 +95,9 @@ fun PlaylistDetailScreen(
                     }
                 },
                 actions = {
+                    MdIconButton(onClick = { viewModel.playAllShuffled() }) {
+                        Icon(Icons.Default.Shuffle, contentDescription = "Shuffle play")
+                    }
                     MdIconButton(onClick = { showSortSheet = true }) {
                         Icon(Icons.Default.Tune, contentDescription = "Sort options")
                     }
