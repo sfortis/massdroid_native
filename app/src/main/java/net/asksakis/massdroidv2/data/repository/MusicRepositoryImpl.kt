@@ -41,6 +41,23 @@ class MusicRepositoryImpl @Inject constructor(
         return parseMediaItems(result).mapNotNull { it.toArtist() }
     }
 
+    override suspend fun getLibraryGenresFromServer(limit: Int): List<String> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.GENRES_LIBRARY_ITEMS,
+            LibraryItemsArgs(limit = limit, offset = 0, orderBy = "name")
+        ) ?: return emptyList()
+        // MA returns the genre name as-is (sometimes with a parenthesised
+        // description, e.g. "afrobeats (West African urban/pop music)").
+        // Strip the description so the car UI shows clean labels and so the
+        // string is usable as a stable mediaId fragment for Genre Radio.
+        return result.jsonArray.mapNotNull { entry ->
+            entry.jsonObject["name"]?.jsonPrimitive?.contentOrNull
+                ?.substringBefore('(')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        }.distinct()
+    }
+
     override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Album> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ALBUMS_LIBRARY_ITEMS,

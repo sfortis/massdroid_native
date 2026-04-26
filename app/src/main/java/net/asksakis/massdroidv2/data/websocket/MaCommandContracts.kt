@@ -40,6 +40,7 @@ object MaCommands {
         const val LIBRARY_REMOVE_ITEM = "music/library/remove_item"
         const val BROWSE = "music/browse"
         const val SYNC = "music/sync"
+        const val GENRES_LIBRARY_ITEMS = "music/genres/library_items"
     }
 
     object Providers {

@@ -10,6 +10,14 @@ interface MusicRepository {
     suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Playlist>
     suspend fun getRadios(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Radio>
 
+    /**
+     * Genre names known to the MA library, fetched server-side. Bypasses the
+     * local Last.fm-driven enrichment cache and returns the full set the
+     * server has for any artist/album/track in the user's library, not just
+     * the ones we have a Last.fm tag-cache hit for.
+     */
+    suspend fun getLibraryGenresFromServer(limit: Int = 200): List<String>
+
     suspend fun getArtist(itemId: String, provider: String, lazy: Boolean = true): Artist?
     suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean = true): Album?
 

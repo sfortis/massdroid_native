@@ -58,7 +58,6 @@ interface PlayHistoryDao {
         FROM genres g
         JOIN artist_genres ag ON ag.genre_name = g.name
         JOIN artists a ON a.uri = ag.artist_uri
-        WHERE a.uri LIKE 'library://%'
         ORDER BY g.name
     """)
     suspend fun getLibraryGenres(): List<String>
@@ -67,7 +66,7 @@ interface PlayHistoryDao {
         SELECT DISTINCT a.name, a.uri
         FROM artist_genres ag
         JOIN artists a ON a.uri = ag.artist_uri
-        WHERE ag.genre_name = :genre AND a.uri LIKE 'library://%'
+        WHERE ag.genre_name = :genre
         ORDER BY a.name
     """)
     suspend fun getLibraryArtistsByGenre(genre: String): List<ArtistNameUri>

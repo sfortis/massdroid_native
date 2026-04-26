@@ -88,6 +88,13 @@ class PlaybackService : MediaLibraryService() {
         private const val CMD_SMART_MIX = "net.asksakis.massdroidv2.cmd.smart_mix"
         private const val CMD_GENRE_RADIO = "net.asksakis.massdroidv2.cmd.genre_radio"
         private const val CMD_TOGGLE_FAVORITE = "net.asksakis.massdroidv2.cmd.toggle_favorite"
+        private const val CMD_TOGGLE_SHUFFLE = "net.asksakis.massdroidv2.cmd.toggle_shuffle"
+        // Resize target for now-playing artwork. 320 was crisp on phone but
+        // pixelated when AAOS Media Center upscaled it to a 600+ dp player
+        // canvas; 720 keeps the bitmap reasonable for MediaSession transport
+        // (~70KB JPEG at q=82) while looking sharp on car displays.
+        private const val ARTWORK_MAX_PX = 720
+        private const val ARTWORK_JPEG_QUALITY = 82
         const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
         const val PROXIMITY_REEVALUATE_ACTION = "net.asksakis.massdroidv2.PROXIMITY_REEVALUATE"
         private const val BURST_SCAN_INTERVAL_MS = 4_000L
@@ -168,6 +175,7 @@ class PlaybackService : MediaLibraryService() {
         loadSendspinPlayerId()
         observePlayerState()
         observeQueueItems()
+        observeCustomLayoutTriggers()
         createSendspinController()
         createSleepTimer()
         observeSendspinEnabled()
@@ -1716,6 +1724,31 @@ class PlaybackService : MediaLibraryService() {
         return playerRepository.selectedPlayer.value?.playerId
     }
 
+    /**
+     * Returns the player to use for an action triggered from a context where
+     * the user can't easily pick (AAOS Media Center, headless service start).
+     * Prefers, in order:
+     *   1. The explicitly selected player.
+     *   2. The Sendspin player if one is registered (phone-as-speaker is the
+     *      natural target in a car since the phone is the audio source).
+     *   3. The first available non-group player.
+     *   4. Any first player.
+     * Also persists the choice via [PlayerRepository.selectPlayer] so future
+     * playback events route correctly and the user sees a stable UI.
+     */
+    private fun resolveOrSelectDefaultPlayer(): String? {
+        playerRepository.selectedPlayer.value?.playerId?.let { return it }
+        val players = playerRepository.players.value
+        if (players.isEmpty()) return null
+        val sendspinId = sendspinController?.sendspinPlayerId
+        val candidate = players.firstOrNull { it.playerId == sendspinId }
+            ?: players.firstOrNull { it.activeGroup.isNullOrEmpty() }
+            ?: players.first()
+        Log.d(TAG, "resolveOrSelectDefaultPlayer: auto-selecting ${candidate.playerId} (${candidate.displayName})")
+        playerRepository.selectPlayer(candidate.playerId)
+        return candidate.playerId
+    }
+
     private fun sendVolumeCommand(playerId: String, volume: Int) {
         scope.launch(Dispatchers.IO) {
             try {
@@ -1829,6 +1862,21 @@ class PlaybackService : MediaLibraryService() {
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
                     scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
+                }
+            },
+            onSetShuffleMode = { enabled ->
+                val queueId = activePlayerId() ?: resolveOrSelectDefaultPlayer()
+                if (queueId == null) {
+                    Log.w(TAG, "RemotePlayer onSetShuffleMode: no player available")
+                    return@RemoteControlPlayer
+                }
+                Log.d(TAG, "RemotePlayer onSetShuffleMode: shuffle=$enabled queue=$queueId")
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        musicRepository.shuffleQueue(queueId, enabled)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "RemotePlayer onSetShuffleMode failed: ${e.message}")
+                    }
                 }
             },
             onVolumeUp = {
@@ -1963,6 +2011,7 @@ class PlaybackService : MediaLibraryService() {
                     isMuted = player.volumeMuted,
                     isRemotePlayback = !isSendspinPlayer
                 )
+                remotePlayer?.updateShuffleEnabled(queue?.shuffleEnabled == true)
             }
         }
     }
@@ -1973,6 +2022,32 @@ class PlaybackService : MediaLibraryService() {
             playerRepository.queueItemsChanged.collect { queueId ->
                 fetchQueueItems(queueId)
             }
+        }
+    }
+
+    /**
+     * Re-publish the AAOS custom layout whenever the inputs that drive icon
+     * state change: shuffle on/off and the current track's favourite flag.
+     * Without this, toggling shuffle from another client (or favourite from a
+     * server event) leaves the car button stuck on the previous icon.
+     */
+    @OptIn(UnstableApi::class)
+    private fun observeCustomLayoutTriggers() {
+        scope.launch {
+            playerRepository.queueState
+                .map { state ->
+                    Triple(
+                        state?.shuffleEnabled == true,
+                        state?.currentItem?.track?.uri,
+                        state?.currentItem?.track?.favorite == true
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    withContext(Dispatchers.Main) {
+                        mediaLibrarySession?.setCustomLayout(buildCustomLayout())
+                    }
+                }
         }
     }
 
@@ -2048,7 +2123,7 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun resizeArtwork(rawBytes: ByteArray, maxSize: Int = 320): ByteArray {
+    private fun resizeArtwork(rawBytes: ByteArray, maxSize: Int = ARTWORK_MAX_PX): ByteArray {
         val original = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return rawBytes
         val scale = maxSize.toFloat() / maxOf(original.width, original.height)
         if (scale >= 1f) {
@@ -2063,7 +2138,7 @@ class PlaybackService : MediaLibraryService() {
         )
         original.recycle()
         val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+        scaled.compress(Bitmap.CompressFormat.JPEG, ARTWORK_JPEG_QUALITY, out)
         scaled.recycle()
         return out.toByteArray()
     }
@@ -2098,6 +2173,91 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
+     * Dispatch a [ShortcutAction] from the service. The dispatcher is a
+     * SharedFlow consumed by DiscoverViewModel, which only exists when
+     * MainActivity is composed. When the user is interacting via the AAOS
+     * Media Center (or any external MediaBrowser) MainActivity may not be
+     * alive, so the shortcut would queue indefinitely.
+     *
+     * Workaround: launch MainActivity right before dispatching. This brings
+     * up DiscoverViewModel's init block, which (a) auto-connects the WS
+     * (already connected here, no-op) and (b) collects the shortcut and runs
+     * the actual playback flow. AAOS will overlay ActivityBlockingActivity on
+     * the visible MainActivity in drive mode, but the shortcut is consumed
+     * before that overlay matters and playback starts via MediaSession,
+     * which the car media center renders directly. The user never has to
+     * interact with the Compose UI.
+     */
+    /**
+     * Run a Smart Mix or Genre Radio action without going through the phone
+     * UI. Android 35 blocks `startActivity` from background services, so the
+     * MainActivity / DiscoverViewModel path is unreachable when the user
+     * triggers playback from the AAOS Media Center. Instead we drive the
+     * play directly via the existing `musicRepository.playMedia(... radio_mode)`
+     * which lets the MA server build the dynamic queue server-side.
+     *
+     * The result is intentionally simpler than DiscoverViewModel's
+     * BLL+MMR mix builder; it's a "good enough" version for the in-car
+     * one-tap entry, where deep personalisation matters less than getting
+     * something playing immediately.
+     */
+    private fun dispatchShortcutFromService(action: ShortcutAction) {
+        val queueId = resolveOrSelectDefaultPlayer()
+        if (queueId == null) {
+            Log.w(TAG, "dispatchShortcutFromService: no player available, skipping $action")
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                when (action) {
+                    is ShortcutAction.SmartMix -> {
+                        // Pick the user's most-played artist in the last 30
+                        // days and ask MA to build a radio off that. Genre-
+                        // weighted variety isn't possible service-side, but
+                        // any seed-driven mix is more useful in a car than
+                        // an empty queue.
+                        val seed = playHistoryRepository.getTopArtists(days = 30, limit = 1).firstOrNull()
+                            ?: playHistoryRepository.getTopArtists(days = 365, limit = 1).firstOrNull()
+                        val seedUri = seed?.artistUri
+                        if (seedUri == null) {
+                            Log.w(TAG, "dispatchShortcutFromService: no seed artist for Smart Mix")
+                            return@launch
+                        }
+                        Log.d(TAG, "dispatchShortcutFromService: Smart Mix radio_mode on $seedUri (${seed.artistName})")
+                        playerRepository.setQueueFilterMode(
+                            queueId,
+                            net.asksakis.massdroidv2.domain.repository.PlayerRepository.QueueFilterMode.NORMAL
+                        )
+                        musicRepository.playMedia(queueId, seedUri, option = "replace", radioMode = true)
+                    }
+                    is ShortcutAction.GenreRadio -> {
+                        // Find one library artist in the picked genre, kick
+                        // server-side radio off them. The MA radio engine
+                        // pulls in similar artists / tracks automatically.
+                        val artists = genreRepository.libraryArtistsForGenre(action.genre)
+                        val seedUri = artists.firstOrNull()?.uri
+                        if (seedUri == null) {
+                            Log.w(TAG, "dispatchShortcutFromService: no artist for genre '${action.genre}'")
+                            return@launch
+                        }
+                        Log.d(TAG, "dispatchShortcutFromService: Genre Radio '${action.genre}' radio_mode on $seedUri")
+                        playerRepository.setQueueFilterMode(
+                            queueId,
+                            net.asksakis.massdroidv2.domain.repository.PlayerRepository.QueueFilterMode.NORMAL
+                        )
+                        musicRepository.playMedia(queueId, seedUri, option = "replace", radioMode = true)
+                    }
+                    is ShortcutAction.PlayNow -> {
+                        // Phone-only entry; nothing to do here.
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "dispatchShortcutFromService: action failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Builds the AAOS Media Center custom-layout buttons. Reads the current
      * track's favourite flag so the heart icon reflects state. Re-call after
      * favourite toggles or queue changes via `mediaLibrarySession?.setCustomLayout`.
@@ -2106,22 +2266,39 @@ class PlaybackService : MediaLibraryService() {
     private fun buildCustomLayout(): com.google.common.collect.ImmutableList<CommandButton> {
         val track = playerRepository.queueState.value?.currentItem?.track
         val isFav = track?.favorite == true
-        val smartMix = CommandButton.Builder()
-            .setDisplayName("Smart Mix")
-            .setSessionCommand(SessionCommand(CMD_SMART_MIX, Bundle.EMPTY))
-            .setIconResId(R.drawable.ic_aaos_smart_mix)
+        val isShuffleOn = playerRepository.queueState.value?.shuffleEnabled == true
+        // Order matters: AAOS Media Center surfaces the leftmost buttons as
+        // primary actions and pushes the rest into the overflow. Use Media3
+        // built-in icon enums so the car renders the correct on/off variant
+        // without us shipping custom drawables.
+        // Must use a custom session command + custom drawable: AAOS Media
+        // Center reads custom buttons from PlaybackStateCompat.customActions,
+        // which only carries SessionCommand-backed buttons. Player-command
+        // buttons (e.g. setPlayerCommand(COMMAND_SET_SHUFFLE_MODE)) collapse
+        // into PlaybackStateCompat.actions bits, and Media Center has no
+        // built-in UI affordance for shuffle there, so the button vanishes.
+        // Built-in ICON_SHUFFLE_* enums also fall back to a disabled visual
+        // when bound via setSessionCommand, so we ship explicit on/off
+        // drawables to render the correct state.
+        val shuffle = CommandButton.Builder()
+            .setDisplayName(if (isShuffleOn) "Shuffle on" else "Shuffle")
+            .setSessionCommand(SessionCommand(CMD_TOGGLE_SHUFFLE, Bundle.EMPTY))
+            .setIconResId(if (isShuffleOn) R.drawable.ic_aaos_shuffle_on else R.drawable.ic_aaos_shuffle)
             .build()
-        val genreRadio = CommandButton.Builder()
-            .setDisplayName("Genre Radio")
-            .setSessionCommand(SessionCommand(CMD_GENRE_RADIO, Bundle.EMPTY))
-            .setIconResId(R.drawable.ic_aaos_radio)
-            .build()
-        val favorite = CommandButton.Builder()
+        val favoriteIcon = if (isFav) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED
+        val favorite = CommandButton.Builder(favoriteIcon)
             .setDisplayName(if (isFav) "Unfavorite" else "Favorite")
             .setSessionCommand(SessionCommand(CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
-            .setIconResId(if (isFav) R.drawable.ic_aaos_favorite else R.drawable.ic_aaos_favorite_outline)
             .build()
-        return com.google.common.collect.ImmutableList.of(favorite, smartMix, genreRadio)
+        val smartMix = CommandButton.Builder(CommandButton.ICON_PLAYLIST_ADD)
+            .setDisplayName("Smart Mix")
+            .setSessionCommand(SessionCommand(CMD_SMART_MIX, Bundle.EMPTY))
+            .build()
+        val genreRadio = CommandButton.Builder(CommandButton.ICON_RADIO)
+            .setDisplayName("Genre Radio")
+            .setSessionCommand(SessionCommand(CMD_GENRE_RADIO, Bundle.EMPTY))
+            .build()
+        return com.google.common.collect.ImmutableList.of(shuffle, favorite, smartMix, genreRadio)
     }
 
     // region Browse / Search callbacks
@@ -2137,6 +2314,7 @@ class PlaybackService : MediaLibraryService() {
                 .add(SessionCommand(CMD_SMART_MIX, Bundle.EMPTY))
                 .add(SessionCommand(CMD_GENRE_RADIO, Bundle.EMPTY))
                 .add(SessionCommand(CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+                .add(SessionCommand(CMD_TOGGLE_SHUFFLE, Bundle.EMPTY))
                 .build()
             val playerCommands = Player.Commands.Builder().addAllCommands().build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -2156,7 +2334,7 @@ class PlaybackService : MediaLibraryService() {
             return when (customCommand.customAction) {
                 CMD_SMART_MIX -> {
                     Log.d(TAG, "onCustomCommand: Smart Mix")
-                    shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+                    dispatchShortcutFromService(ShortcutAction.SmartMix)
                     Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 CMD_GENRE_RADIO -> {
@@ -2166,15 +2344,35 @@ class PlaybackService : MediaLibraryService() {
                     // now-playing custom command.
                     scope.launch(Dispatchers.IO) {
                         val genres = try {
-                            genreRepository.topGenres(days = 60, limit = 1)
+                            genreRepository.topGenres(days = 365, limit = 1)
                         } catch (e: Exception) {
                             Log.w(TAG, "onCustomCommand: topGenres failed: ${e.message}")
                             emptyList()
                         }
                         val first = genres.firstOrNull()?.genre
+                            ?: try { genreRepository.libraryGenres().firstOrNull() }
+                                catch (_: Exception) { null }
                         if (first != null) {
                             Log.d(TAG, "onCustomCommand: Genre Radio start '$first'")
-                            shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(first))
+                            dispatchShortcutFromService(ShortcutAction.GenreRadio(first))
+                        }
+                    }
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CMD_TOGGLE_SHUFFLE -> {
+                    val queueId = activePlayerId() ?: resolveOrSelectDefaultPlayer()
+                    if (queueId == null) {
+                        Log.w(TAG, "onCustomCommand: shuffle with no player")
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_INVALID_STATE))
+                    }
+                    val newShuffle = playerRepository.queueState.value?.shuffleEnabled?.not() ?: true
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            musicRepository.shuffleQueue(queueId, newShuffle)
+                            Log.d(TAG, "onCustomCommand: shuffle -> $newShuffle")
+                            withContext(Dispatchers.Main) { mediaLibrarySession?.setCustomLayout(buildCustomLayout()) }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onCustomCommand: shuffleQueue failed: ${e.message}")
                         }
                     }
                     Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
@@ -2376,8 +2574,9 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<List<MediaItem>> {
             val queueId = activePlayerId()
                 ?: playerRepository.queueState.value?.queueId
+                ?: resolveOrSelectDefaultPlayer()
             if (queueId == null) {
-                Log.w(TAG, "onAddMediaItems: no active queue")
+                Log.w(TAG, "onAddMediaItems: no active queue and no available players")
                 return Futures.immediateFuture(emptyList())
             }
             scope.launch(Dispatchers.IO) {
@@ -2386,12 +2585,12 @@ class PlaybackService : MediaLibraryService() {
                     when {
                         mediaId == "smart_mix" -> {
                             Log.d(TAG, "onAddMediaItems: dispatching Smart Mix")
-                            shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+                            dispatchShortcutFromService(ShortcutAction.SmartMix)
                         }
                         mediaId.startsWith("genre_radio|") -> {
                             val genre = mediaId.removePrefix("genre_radio|")
                             Log.d(TAG, "onAddMediaItems: dispatching Genre Radio '$genre'")
-                            shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(genre))
+                            dispatchShortcutFromService(ShortcutAction.GenreRadio(genre))
                         }
                         else -> {
                             val uri = item.requestMetadata.mediaUri?.toString()
@@ -2459,8 +2658,23 @@ class PlaybackService : MediaLibraryService() {
     )
 
     private suspend fun buildGenreList(): List<MediaItem> {
-        val genres = genreRepository.libraryGenres()
-        return genres.map { genre ->
+        // Combine MA's server-side library_items genre set with our local
+        // Last.fm-enriched cache. The server has the comprehensive provider
+        // taxonomy (~30+ entries even on a young library); the local cache
+        // adds the user-specific Last.fm tags that aren't part of MA's
+        // first-class genres list. Distinct + lowercase keeps duplicates out.
+        val server = try {
+            musicRepository.getLibraryGenresFromServer(limit = 200)
+        } catch (e: Exception) {
+            Log.w(TAG, "buildGenreList: server fetch failed: ${e.message}")
+            emptyList()
+        }
+        val local = genreRepository.libraryGenres()
+        val all = (server + local)
+            .map { it.lowercase() }
+            .distinct()
+            .sorted()
+        return all.map { genre ->
             browseFolder("genre|$genre", genre.replaceFirstChar { it.uppercase() }, MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
         }
     }
@@ -2473,10 +2687,24 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private suspend fun buildGenreRadioList(): List<MediaItem> {
-        val genres = genreRepository.topGenres(days = 60, limit = 20)
-        return genres.map { genreScore ->
-            val genre = genreScore.genre.replaceFirstChar { it.uppercase() }
-            playableItem("genre_radio|${genreScore.genre}", genre, MediaMetadata.MEDIA_TYPE_PLAYLIST)
+        // Prefer scored genres (BLL-weighted by recent listening) so the
+        // first entries are the user's most-relevant. Fill the rest from the
+        // server-side library list so a fresh install / rare-genre listener
+        // still gets a populated menu instead of just 1-2 entries.
+        val scored = genreRepository.topGenres(days = 365, limit = 30)
+        val serverGenres = try {
+            musicRepository.getLibraryGenresFromServer(limit = 200)
+        } catch (e: Exception) {
+            Log.w(TAG, "buildGenreRadioList: server fetch failed: ${e.message}")
+            emptyList()
+        }
+        val ordered = (scored.map { it.genre } + serverGenres + genreRepository.libraryGenres())
+            .map { it.lowercase() }
+            .distinct()
+            .take(50)
+        return ordered.map { raw ->
+            val display = raw.replaceFirstChar { it.uppercase() }
+            playableItem("genre_radio|$raw", display, MediaMetadata.MEDIA_TYPE_PLAYLIST)
         }
     }
 
@@ -2721,7 +2949,8 @@ class RemoteControlPlayer(
     private val onSeek: (Long) -> Unit,
     private val onVolumeUp: () -> Unit = {},
     private val onVolumeDown: () -> Unit = {},
-    private val onVolumeSet: (Int) -> Unit = {}
+    private val onVolumeSet: (Int) -> Unit = {},
+    private val onSetShuffleMode: (Boolean) -> Unit = {}
 ) : SimpleBasePlayer(looper) {
 
     private var _isPlaying = false
@@ -2736,6 +2965,7 @@ class RemoteControlPlayer(
     private var _volumeLevel = 0
     private var _isMuted = false
     private var _isRemotePlayback = true
+    private var _shuffleEnabled = false
 
     val currentTitle: String get() = _title
     val currentArtist: String get() = _artist
@@ -2770,6 +3000,12 @@ class RemoteControlPlayer(
 
     fun updateVolume(volume: Int) {
         _volumeLevel = volume
+        invalidateState()
+    }
+
+    fun updateShuffleEnabled(enabled: Boolean) {
+        if (_shuffleEnabled == enabled) return
+        _shuffleEnabled = enabled
         invalidateState()
     }
 
@@ -2850,7 +3086,12 @@ class RemoteControlPlayer(
                 COMMAND_GET_METADATA,
                 COMMAND_GET_CURRENT_MEDIA_ITEM,
                 COMMAND_GET_TIMELINE,
-                COMMAND_SET_MEDIA_ITEM
+                COMMAND_SET_MEDIA_ITEM,
+                // Required so AAOS Media Center treats ICON_SHUFFLE_ON/OFF as
+                // a live shuffle button and not a disabled stub. Without this,
+                // Media3 1.6.0 maps the icon to COMMAND_SET_SHUFFLE_MODE
+                // availability and renders it greyed out.
+                COMMAND_SET_SHUFFLE_MODE
             )
         if (_isRemotePlayback) {
             commandsBuilder.addAll(
@@ -2870,6 +3111,7 @@ class RemoteControlPlayer(
             .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(20).build())
             .setDeviceVolume(_volumeLevel / VOLUME_SCALE)
             .setIsDeviceMuted(_isMuted)
+            .setShuffleModeEnabled(_shuffleEnabled)
             .build()
     }
 
@@ -2907,6 +3149,16 @@ class RemoteControlPlayer(
         Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
         val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
         onVolumeSet(maVolume)
+        return Futures.immediateVoidFuture()
+    }
+
+    override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
+        // Optimistic local flip so the AAOS button visually toggles instantly,
+        // then forward to MA. The server's QUEUE_UPDATED event will reconcile
+        // via observeQueueShuffleForRemotePlayer().
+        _shuffleEnabled = shuffleModeEnabled
+        invalidateState()
+        onSetShuffleMode(shuffleModeEnabled)
         return Futures.immediateVoidFuture()
     }
 
