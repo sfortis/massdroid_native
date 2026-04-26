@@ -107,5 +107,15 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Serves artwork bytes to AAOS Media Center over content:// URIs.
+             Exported because the car media app lives in a different process
+             and needs Binder access. grantUriPermissions because we hand out
+             URIs as artwork hints in MediaItems. -->
+        <provider
+            android:name=".service.ArtworkContentProvider"
+            android:authorities="${applicationId}.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
     </application>
 </manifest>

@@ -2018,12 +2018,13 @@ class PlaybackService : MediaLibraryService() {
                 }
                 cachedArtworkData = resized
                 Log.d(TAG, "Artwork decoded+resized: ${resized.size} bytes, setting on player")
+                val artworkUri = ArtworkContentProvider.wrap("$packageName.artwork", url)
                 scope.launch {
                     if (url != cachedArtworkUrl) {
                         Log.d(TAG, "Skipping setArtwork for stale URL $url")
                         return@launch
                     }
-                    remotePlayer?.setArtwork(resized)
+                    remotePlayer?.setArtwork(resized, artworkUri)
                     Log.d(TAG, "Artwork setArtwork() called on Main thread")
                 }
             } else {
@@ -2422,12 +2423,23 @@ class PlaybackService : MediaLibraryService() {
 
     // region Domain -> MediaItem converters
 
+    /**
+     * Wrap a remote artwork URL in our content provider URI so the AAOS
+     * Media Center (which won't fetch arbitrary HTTPS URLs) can render it
+     * via Binder IPC into our process. Returns null for blank/missing URLs
+     * so we don't pollute MediaItems with empty content URIs.
+     */
+    private fun artworkContentUri(remoteUrl: String?): Uri? {
+        if (remoteUrl.isNullOrBlank()) return null
+        return ArtworkContentProvider.wrap("$packageName.artwork", remoteUrl)
+    }
+
     private fun Artist.toBrowsableMediaItem(): MediaItem = MediaItem.Builder()
         .setMediaId("artist|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(artworkContentUri(imageUrl))
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
@@ -2441,7 +2453,7 @@ class PlaybackService : MediaLibraryService() {
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(artworkContentUri(imageUrl))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
@@ -2461,7 +2473,7 @@ class PlaybackService : MediaLibraryService() {
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
                 .setAlbumTitle(albumName.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(artworkContentUri(imageUrl))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
@@ -2479,7 +2491,7 @@ class PlaybackService : MediaLibraryService() {
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(artworkContentUri(imageUrl))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
@@ -2555,6 +2567,7 @@ class RemoteControlPlayer(
     private var _durationMs = 0L
     private var _positionMs = 0L
     private var _artworkData: ByteArray? = null
+    private var _artworkUri: Uri? = null
     private var _queueEntries: List<QueueEntry> = emptyList()
     private var _volumeLevel = 0
     private var _isMuted = false
@@ -2596,8 +2609,15 @@ class RemoteControlPlayer(
         invalidateState()
     }
 
-    fun setArtwork(data: ByteArray) {
+    fun setArtwork(data: ByteArray, uri: Uri? = null) {
         _artworkData = data
+        _artworkUri = uri
+        invalidateState()
+    }
+
+    fun clearArtwork() {
+        _artworkData = null
+        _artworkUri = null
         invalidateState()
     }
 
@@ -2614,6 +2634,12 @@ class RemoteControlPlayer(
         _artworkData?.let {
             currentMetadataBuilder.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
         }
+        // AAOS Media Center renders the now-playing card from artworkUri rather
+        // than artworkData; without setting both, the car shows blank artwork
+        // even when the bytes are present in metadata. The phone path keeps
+        // using the byte payload, the car path follows the URI through our
+        // ArtworkContentProvider.
+        _artworkUri?.let { currentMetadataBuilder.setArtworkUri(it) }
         val currentMetadata = currentMetadataBuilder.build()
 
         val playlist = if (_queueEntries.isNotEmpty()) {
