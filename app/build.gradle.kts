@@ -173,6 +173,9 @@ dependencies {
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Modules
+    implementation(project(":auto"))
 }
 
 kapt {

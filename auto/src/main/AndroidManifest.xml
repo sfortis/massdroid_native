@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <meta-data
+            android:name="androidx.car.app.TintableAttributionIcon"
+            android:resource="@drawable/ic_car_attribution" />
+
+        <provider
+            android:name="net.asksakis.massdroidv2.auto.PlaceholderArtworkProvider"
+            android:authorities="${applicationId}.placeholder"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

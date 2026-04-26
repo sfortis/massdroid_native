@@ -37,6 +37,9 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.future
 import net.asksakis.massdroidv2.R
+import net.asksakis.massdroidv2.auto.AaProjectionObserver
+import net.asksakis.massdroidv2.auto.AutoBrowseExtras
+import net.asksakis.massdroidv2.auto.PackageValidator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
@@ -162,6 +165,7 @@ class PlaybackService : MediaLibraryService() {
         observeShortcutActions()
         observeAudioFormatPreference()
         registerBtAudioDeviceCallback()
+        observeAaProjection()
         createProximityNotificationChannel()
         observePhoneVolumeForSendspin()
         androidx.core.content.ContextCompat.registerReceiver(
@@ -215,7 +219,9 @@ class PlaybackService : MediaLibraryService() {
     private fun loadSendspinPlayerId() {
         scope.launch {
             settingsRepository.sendspinClientId.collect { id ->
+                val changed = sendspinPlayerId != id
                 sendspinPlayerId = id
+                if (changed && id != null) maybeAutoSelectSendspinForAa("sendspin_id_loaded")
             }
         }
     }
@@ -301,6 +307,7 @@ class PlaybackService : MediaLibraryService() {
                     if (connected) {
                         sendspinActive = true
                         sendspinController?.start()
+                        maybeAutoSelectSendspinForAa("sendspin_active")
                     }
                 } else if (!enabled && sendspinActive) {
                     sendspinActive = false
@@ -320,6 +327,7 @@ class PlaybackService : MediaLibraryService() {
                     if (sendspinOn && !sendspinActive) {
                         sendspinActive = true
                         sendspinController?.start()
+                        maybeAutoSelectSendspinForAa("ws_connected")
                     }
                 }
             }
@@ -1714,6 +1722,34 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private var btAudioCallback: android.media.AudioDeviceCallback? = null
+    private var aaProjectionObserver: AaProjectionObserver? = null
+    private val isAaProjecting = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    private fun observeAaProjection() {
+        val observer = AaProjectionObserver(applicationContext)
+        aaProjectionObserver = observer
+        scope.launch {
+            observer.isProjecting.collect { projecting ->
+                isAaProjecting.value = projecting
+                if (projecting) maybeAutoSelectSendspinForAa("projection_started")
+            }
+        }
+    }
+
+    /** Re-evaluate whenever inputs change (projection start, Sendspin activation, target loaded). */
+    private fun maybeAutoSelectSendspinForAa(reason: String) {
+        if (!isAaProjecting.value) return
+        val target = sendspinPlayerId ?: return
+        if (!sendspinActive) {
+            Log.d(TAG, "AA auto-route ($reason): Sendspin target known but not active yet")
+            return
+        }
+        val currentSelected = playerRepository.selectedPlayer.value?.playerId
+        if (currentSelected != target) {
+            Log.d(TAG, "AA auto-route ($reason): selecting Sendspin player $target (was $currentSelected)")
+            playerRepository.selectPlayer(target)
+        }
+    }
 
     private fun registerBtAudioDeviceCallback() {
         val am = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -1939,6 +1975,15 @@ class PlaybackService : MediaLibraryService() {
                 fetchQueueItems(queueId)
             }
         }
+        // Also refetch on queueId switch — QUEUE_ITEMS_UPDATED may not fire on selection change,
+        // and the AA host expects a populated queue immediately on bind.
+        scope.launch {
+            playerRepository.queueState
+                .map { it?.queueId }
+                .filterNotNull()
+                .distinctUntilChanged()
+                .collect { queueId -> fetchQueueItems(queueId) }
+        }
     }
 
     private fun fetchQueueItems(queueId: String) {
@@ -1946,12 +1991,14 @@ class PlaybackService : MediaLibraryService() {
             try {
                 val items = musicRepository.getQueueItems(queueId)
                 val entries = items.map { qi ->
+                    val art = qi.track?.imageUrl ?: qi.imageUrl
                     QueueEntry(
                         id = qi.queueItemId.toStableLongId(),
                         title = qi.track?.name ?: qi.name,
                         artist = qi.track?.artistNames ?: "",
                         album = qi.track?.albumName ?: "",
-                        durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong()
+                        durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
+                        artworkUri = art?.let { Uri.parse(it) },
                     )
                 }
                 withContext(Dispatchers.Main) {
@@ -2069,6 +2116,11 @@ class PlaybackService : MediaLibraryService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo
         ): MediaSession.ConnectionResult {
+            // Log-only for now: tightening to reject is a follow-up after observing real callers
+            // (Galaxy Watch, AAIdrive, etc. may use packages outside the documented AA/AAOS list).
+            if (!PackageValidator.isKnownCaller(this@PlaybackService, controller)) {
+                Log.w(TAG, "onConnect: unknown caller ${controller.packageName} (uid=${controller.uid})")
+            }
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
             val playerCommands = Player.Commands.Builder().addAllCommands().build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -2140,7 +2192,10 @@ class PlaybackService : MediaLibraryService() {
                         .build()
                 )
                 .build()
-            return Futures.immediateFuture(LibraryResult.ofItem(root, params))
+            val rootParams = LibraryParams.Builder()
+                .setExtras(AutoBrowseExtras.rootExtras())
+                .build()
+            return Futures.immediateFuture(LibraryResult.ofItem(root, rootParams))
         }
 
         override fun onGetChildren(
@@ -2156,6 +2211,7 @@ class PlaybackService : MediaLibraryService() {
                 val items = try {
                     when (parentId) {
                         "root" -> buildRootCategories()
+                        "more" -> buildMoreCategories()
                         "recently_played" -> loadAlbums(page, effectivePageSize, "last_played")
                         "artists" -> loadArtists(page, effectivePageSize)
                         "albums" -> loadAlbums(page, effectivePageSize)
@@ -2211,12 +2267,17 @@ class PlaybackService : MediaLibraryService() {
                     Log.e(TAG, "onGetSearchResult($query) failed", e)
                     SearchResult()
                 }
-                val allItems = result.artists.map { it.toBrowsableMediaItem() } +
-                    result.albums.map { it.toBrowsableMediaItem() } +
-                    result.tracks.map { it.toPlayableMediaItem() } +
-                    result.playlists.map { it.toBrowsableMediaItem() }
+                // Group results by type with header titles. Per doc §3.5, the GROUP_TITLE extra
+                // must appear on every contiguous sibling that shares the group; AA renders the
+                // header once at the top of the run.
+                val grouped = buildList {
+                    addAll(result.artists.map { it.toBrowsableMediaItem(groupTitle = "Artists") })
+                    addAll(result.albums.map { it.toBrowsableMediaItem(groupTitle = "Albums") })
+                    addAll(result.tracks.map { it.toPlayableMediaItem(groupTitle = "Tracks") })
+                    addAll(result.playlists.map { it.toBrowsableMediaItem(groupTitle = "Playlists") })
+                }
                 val effectivePageSize = if (pageSize > 0) pageSize else PAGE_SIZE_DEFAULT
-                val paged = allItems.drop(page * effectivePageSize).take(effectivePageSize)
+                val paged = grouped.drop(page * effectivePageSize).take(effectivePageSize)
                 LibraryResult.ofItemList(ImmutableList.copyOf(paged), params)
             }
         }
@@ -2236,7 +2297,18 @@ class PlaybackService : MediaLibraryService() {
             scope.launch(Dispatchers.IO) {
                 for (item in mediaItems) {
                     val mediaId = item.mediaId
+                    val searchQuery = item.requestMetadata.searchQuery?.trim()
                     when {
+                        // Voice search from Assistant: "Play X on MassDroid" arrives with searchQuery
+                        // set and an empty mediaId. Resolve to a real playable item via search.
+                        !searchQuery.isNullOrBlank() && mediaId.isEmpty() -> {
+                            handleVoiceSearch(queueId, searchQuery)
+                        }
+                        // Generic "Play some music" — empty query, treat as Smart Mix.
+                        searchQuery != null && mediaId.isEmpty() -> {
+                            Log.d(TAG, "onAddMediaItems: empty voice query -> Smart Mix")
+                            shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+                        }
                         mediaId == "smart_mix" -> {
                             Log.d(TAG, "onAddMediaItems: dispatching Smart Mix")
                             shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
@@ -2271,6 +2343,29 @@ class PlaybackService : MediaLibraryService() {
 
     // endregion
 
+    private suspend fun handleVoiceSearch(queueId: String, query: String) {
+        try {
+            Log.d(TAG, "Voice search: '$query'")
+            val results = musicRepository.search(query)
+            // Prefer playlist (curated experience) > album (full work) > track > artist top tracks
+            val targetUri = results.playlists.firstOrNull()?.uri
+                ?: results.albums.firstOrNull()?.uri
+                ?: results.tracks.firstOrNull()?.uri
+                ?: results.artists.firstOrNull()?.let { artist ->
+                    musicRepository.getArtistTracks(artist.itemId, artist.provider)
+                        .firstOrNull()?.uri
+                }
+            if (targetUri == null) {
+                Log.w(TAG, "Voice search: no playable result for '$query'")
+                return
+            }
+            playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+            musicRepository.playMedia(queueId, targetUri, option = "replace")
+        } catch (e: Exception) {
+            Log.e(TAG, "Voice search failed for '$query'", e)
+        }
+    }
+
     private fun resolveMediaIdToUri(mediaId: String): String? {
         // Format: "type|provider|itemId" -> "provider://type/itemId"
         val parts = mediaId.split("|")
@@ -2282,10 +2377,30 @@ class PlaybackService : MediaLibraryService() {
     // region Content tree builders
 
     private fun buildRootCategories(): List<MediaItem> = listOf(
-        browseFolder("recently_played", "Recently Played", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
-        browseFolder("artists", "Artists", MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS),
-        browseFolder("albums", "Albums", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
-        browseFolder("playlists", "Playlists", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
+        browseFolder(
+            "playlists", "Playlists",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            iconResId = net.asksakis.massdroidv2.auto.R.drawable.ic_tab_playlists,
+        ),
+        browseFolder(
+            "artists", "Artists",
+            MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
+            iconResId = net.asksakis.massdroidv2.auto.R.drawable.ic_tab_artists,
+        ),
+        browseFolder(
+            "albums", "Albums",
+            MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+            iconResId = net.asksakis.massdroidv2.auto.R.drawable.ic_tab_albums,
+        ),
+        browseFolder(
+            "more", "More",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            iconResId = net.asksakis.massdroidv2.auto.R.drawable.ic_tab_more,
+        ),
+    )
+
+    private fun buildMoreCategories(): List<MediaItem> = listOf(
+        browseFolder("recently_played", "Recent", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
         browseFolder("tracks", "Tracks", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
         browseFolder("genres", "Genres", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
         playableItem("smart_mix", "Smart Mix", MediaMetadata.MEDIA_TYPE_PLAYLIST),
@@ -2328,17 +2443,29 @@ class PlaybackService : MediaLibraryService() {
             .build()
     }
 
-    private fun browseFolder(mediaId: String, title: String, mediaType: Int): MediaItem {
-        return MediaItem.Builder()
-            .setMediaId(mediaId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setIsBrowsable(true)
-                    .setIsPlayable(false)
-                    .setMediaType(mediaType)
+    private fun browseFolder(
+        mediaId: String,
+        title: String,
+        mediaType: Int,
+        iconResId: Int? = null
+    ): MediaItem {
+        val builder = MediaMetadata.Builder()
+            .setTitle(title)
+            .setIsBrowsable(true)
+            .setIsPlayable(false)
+            .setMediaType(mediaType)
+        if (iconResId != null) {
+            builder.setArtworkUri(
+                Uri.Builder()
+                    .scheme("android.resource")
+                    .authority(packageName)
+                    .appendPath(iconResId.toString())
                     .build()
             )
+        }
+        return MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setMediaMetadata(builder.build())
             .build()
     }
 
@@ -2400,29 +2527,31 @@ class PlaybackService : MediaLibraryService() {
 
     // region Domain -> MediaItem converters
 
-    private fun Artist.toBrowsableMediaItem(): MediaItem = MediaItem.Builder()
+    private fun Artist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
         .setMediaId("artist|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(imageUrl?.let { Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(this@PlaybackService, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
+                .also { if (groupTitle != null) it.setExtras(AutoBrowseExtras.groupTitleExtras(groupTitle)) }
                 .build()
         )
         .build()
 
-    private fun Album.toBrowsableMediaItem(): MediaItem = MediaItem.Builder()
+    private fun Album.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
         .setMediaId("album|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(imageUrl?.let { Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(this@PlaybackService, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
+                .also { if (groupTitle != null) it.setExtras(AutoBrowseExtras.groupTitleExtras(groupTitle)) }
                 .build()
         )
         .setRequestMetadata(
@@ -2432,17 +2561,18 @@ class PlaybackService : MediaLibraryService() {
         )
         .build()
 
-    private fun Track.toPlayableMediaItem(): MediaItem = MediaItem.Builder()
+    private fun Track.toPlayableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
         .setMediaId("track|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
                 .setAlbumTitle(albumName.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(imageUrl?.let { Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(this@PlaybackService, name))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                .also { if (groupTitle != null) it.setExtras(AutoBrowseExtras.groupTitleExtras(groupTitle)) }
                 .build()
         )
         .setRequestMetadata(
@@ -2452,15 +2582,16 @@ class PlaybackService : MediaLibraryService() {
         )
         .build()
 
-    private fun Playlist.toBrowsableMediaItem(): MediaItem = MediaItem.Builder()
+    private fun Playlist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
         .setMediaId("playlist|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { Uri.parse(it) })
+                .setArtworkUri(imageUrl?.let { Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(this@PlaybackService, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
+                .also { if (groupTitle != null) it.setExtras(AutoBrowseExtras.groupTitleExtras(groupTitle)) }
                 .build()
         )
         .setRequestMetadata(
@@ -2502,7 +2633,8 @@ data class QueueEntry(
     val title: String,
     val artist: String,
     val album: String,
-    val durationMs: Long
+    val durationMs: Long,
+    val artworkUri: Uri? = null,
 )
 
 private fun String.toStableLongId(): Long {
@@ -2601,6 +2733,7 @@ class RemoteControlPlayer(
                         .setTitle(entry.title)
                         .setArtist(entry.artist.ifEmpty { null })
                         .setAlbumTitle(entry.album.ifEmpty { null })
+                        .setArtworkUri(entry.artworkUri)
                         .build()
                 }
                 val durMs = if (index == 0 && _durationMs > 0) _durationMs else entry.durationMs
