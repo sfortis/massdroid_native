@@ -613,13 +613,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
         hwBufferLatencyUs = minBuf.toLong() * 1_000_000L / bytesPerSecond
         Log.d(TAG, "AudioTrack buffer: ${bufferSize}B, output latency estimate: ${hwBufferLatencyUs / 1000}ms (minBuf=${minBuf}B)")
 
+        val attrsBuilder = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+        // Opt into automatic spatial rendering (Android 12+). On premium AAOS
+        // cars (Polestar 3 with Bowers & Wilkins, EX90, Hummer EV with AKG)
+        // the platform spatializer uses this hint to enable Dolby Atmos /
+        // height-channel decoding when the source content supports it. On
+        // phones and older devices the flag is a no-op, so it's safe always.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            attrsBuilder.setSpatializationBehavior(AudioAttributes.SPATIALIZATION_BEHAVIOR_AUTO)
+        }
         val createdAudioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
+            .setAudioAttributes(attrsBuilder.build())
             .setAudioFormat(
                 AudioFormat.Builder()
                     .setSampleRate(sampleRate)
