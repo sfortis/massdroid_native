@@ -115,9 +115,14 @@ fun MediaItemRow(
             }
         },
         leadingContent = {
+            // Bigger artwork on AAOS so a glance from the driver's seat is
+            // enough to recognise the item without leaning in. The phone
+            // value (48dp) is unchanged.
+            val artworkSize = carDp(phone = 48.dp, car = 80.dp)
+            val artworkIconSize = carDp(phone = 24.dp, car = 40.dp)
             Box(
                 modifier = Modifier
-                    .size(48.dp),
+                    .size(artworkSize),
                 contentAlignment = Alignment.Center
             ) {
                 MediaArtwork(
@@ -126,7 +131,7 @@ fun MediaItemRow(
                     fallbackIcon = resolvedFallbackIcon,
                     modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (isBlocked) 0.2f else 1f },
                     shape = MaterialTheme.shapes.small,
-                    iconSize = 24.dp,
+                    iconSize = artworkIconSize,
                     variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
                 )
                 if (showEqualizer) {

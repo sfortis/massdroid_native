@@ -171,6 +171,28 @@ class PlaybackService : MediaLibraryService() {
         observeProximityConfig()
         observeBluetoothState()
         observeRoomActivity()
+        autoConnectIfNeeded()
+    }
+
+    /**
+     * Trigger a WS connection from the service so MediaLibraryService browse
+     * calls have data even when the user enters via the AAOS Media Center
+     * (or any external MediaBrowser client) without ever opening MainActivity.
+     * Mirrors the autoConnect logic in DiscoverViewModel: noop if already
+     * connected, if the user explicitly disconnected, or if credentials are
+     * missing.
+     */
+    private fun autoConnectIfNeeded() {
+        scope.launch(Dispatchers.IO) {
+            wsClient.startupReady.first { it }
+            if (wsClient.connectionState.value !is ConnectionState.Disconnected) return@launch
+            if (wsClient.userDisconnected) return@launch
+            val url = settingsRepository.serverUrl.first()
+            val token = settingsRepository.authToken.first()
+            if (url.isBlank() || token.isBlank() || !url.contains("://")) return@launch
+            Log.d(TAG, "Service-triggered autoConnect to $url")
+            wsClient.connect(url, token)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

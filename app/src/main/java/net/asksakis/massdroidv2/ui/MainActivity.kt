@@ -78,8 +78,10 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.CompositionLocalProvider
 import net.asksakis.massdroidv2.ui.components.ExpandingPlayerSheet
+import net.asksakis.massdroidv2.ui.components.LocalIsCar
 import net.asksakis.massdroidv2.ui.components.LocalIsConnected
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
+import net.asksakis.massdroidv2.ui.components.isCarMode
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
 import javax.inject.Inject
@@ -394,6 +396,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkBatteryOptimization() {
+        // AAOS doesn't surface a per-app battery optimization toggle the same
+        // way phones do; the dialog dead-ends to a settings screen that does
+        // not exist on car. Skip the prompt entirely when running on a car.
+        if (packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_AUTOMOTIVE)) {
+            return
+        }
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
             showBatteryOptimizationDialog()
@@ -530,9 +538,11 @@ private fun MassDroidApp(
         0.dp
     }
 
+    val isCar = isCarMode()
     CompositionLocalProvider(
         LocalMiniPlayerPadding provides miniPlayerPadding,
-        LocalIsConnected provides isConnected
+        LocalIsConnected provides isConnected,
+        LocalIsCar provides isCar
     ) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLandscape) {
