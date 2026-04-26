@@ -22,9 +22,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.BitmapLoader
+import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -36,7 +39,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.future
+import android.os.Bundle
+import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.R
+import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
@@ -75,6 +81,13 @@ class PlaybackService : MediaLibraryService() {
         private const val PROXIMITY_CHANNEL_ID = "massdroid_proximity_v2"
         private const val PROXIMITY_NOTIFICATION_ID = 4
         private const val PROXIMITY_TRANSFER_ACTION = "net.asksakis.massdroidv2.PROXIMITY_TRANSFER"
+        // Custom session commands wired into the AAOS Media Center now-playing
+        // overflow/menu via setCustomLayout. Triggered from there, dispatched
+        // through ShortcutDispatcher (Smart Mix / Genre Radio) or directly
+        // (favorite toggle).
+        private const val CMD_SMART_MIX = "net.asksakis.massdroidv2.cmd.smart_mix"
+        private const val CMD_GENRE_RADIO = "net.asksakis.massdroidv2.cmd.genre_radio"
+        private const val CMD_TOGGLE_FAVORITE = "net.asksakis.massdroidv2.cmd.toggle_favorite"
         const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
         const val PROXIMITY_REEVALUATE_ACTION = "net.asksakis.massdroidv2.PROXIMITY_REEVALUATE"
         private const val BURST_SCAN_INTERVAL_MS = 4_000L
@@ -2084,6 +2097,33 @@ class PlaybackService : MediaLibraryService() {
         super.onDestroy()
     }
 
+    /**
+     * Builds the AAOS Media Center custom-layout buttons. Reads the current
+     * track's favourite flag so the heart icon reflects state. Re-call after
+     * favourite toggles or queue changes via `mediaLibrarySession?.setCustomLayout`.
+     */
+    @OptIn(UnstableApi::class)
+    private fun buildCustomLayout(): com.google.common.collect.ImmutableList<CommandButton> {
+        val track = playerRepository.queueState.value?.currentItem?.track
+        val isFav = track?.favorite == true
+        val smartMix = CommandButton.Builder()
+            .setDisplayName("Smart Mix")
+            .setSessionCommand(SessionCommand(CMD_SMART_MIX, Bundle.EMPTY))
+            .setIconResId(R.drawable.ic_aaos_smart_mix)
+            .build()
+        val genreRadio = CommandButton.Builder()
+            .setDisplayName("Genre Radio")
+            .setSessionCommand(SessionCommand(CMD_GENRE_RADIO, Bundle.EMPTY))
+            .setIconResId(R.drawable.ic_aaos_radio)
+            .build()
+        val favorite = CommandButton.Builder()
+            .setDisplayName(if (isFav) "Unfavorite" else "Favorite")
+            .setSessionCommand(SessionCommand(CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+            .setIconResId(if (isFav) R.drawable.ic_aaos_favorite else R.drawable.ic_aaos_favorite_outline)
+            .build()
+        return com.google.common.collect.ImmutableList.of(favorite, smartMix, genreRadio)
+    }
+
     // region Browse / Search callbacks
 
     private val libraryCallback = object : MediaLibrarySession.Callback {
@@ -2093,11 +2133,78 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo
         ): MediaSession.ConnectionResult {
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                .buildUpon()
+                .add(SessionCommand(CMD_SMART_MIX, Bundle.EMPTY))
+                .add(SessionCommand(CMD_GENRE_RADIO, Bundle.EMPTY))
+                .add(SessionCommand(CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+                .build()
             val playerCommands = Player.Commands.Builder().addAllCommands().build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
                 .setAvailablePlayerCommands(playerCommands)
+                .setCustomLayout(buildCustomLayout())
                 .build()
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle
+        ): ListenableFuture<SessionResult> {
+            return when (customCommand.customAction) {
+                CMD_SMART_MIX -> {
+                    Log.d(TAG, "onCustomCommand: Smart Mix")
+                    shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CMD_GENRE_RADIO -> {
+                    // Pick the user's top genre right now and start that radio.
+                    // The user can pick a different genre by browsing into the
+                    // Genre Radio category; this is the one-tap entry from the
+                    // now-playing custom command.
+                    scope.launch(Dispatchers.IO) {
+                        val genres = try {
+                            genreRepository.topGenres(days = 60, limit = 1)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onCustomCommand: topGenres failed: ${e.message}")
+                            emptyList()
+                        }
+                        val first = genres.firstOrNull()?.genre
+                        if (first != null) {
+                            Log.d(TAG, "onCustomCommand: Genre Radio start '$first'")
+                            shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(first))
+                        }
+                    }
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                CMD_TOGGLE_FAVORITE -> {
+                    val track = playerRepository.queueState.value?.currentItem?.track
+                    if (track == null) {
+                        Log.w(TAG, "onCustomCommand: toggle favorite with no current track")
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_INVALID_STATE))
+                    }
+                    val newFav = !track.favorite
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            musicRepository.setFavorite(
+                                uri = track.uri,
+                                mediaType = MediaType.TRACK,
+                                itemId = track.itemId,
+                                favorite = newFav
+                            )
+                            Log.d(TAG, "onCustomCommand: favorite -> $newFav for ${track.uri}")
+                            // Refresh the custom layout so the icon flips.
+                            withContext(Dispatchers.Main) { mediaLibrarySession?.setCustomLayout(buildCustomLayout()) }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onCustomCommand: setFavorite failed: ${e.message}")
+                        }
+                    }
+                    Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                else -> super.onCustomCommand(session, controller, customCommand, args)
+            }
         }
 
         @OptIn(UnstableApi::class)
@@ -2163,7 +2270,22 @@ class PlaybackService : MediaLibraryService() {
                         .build()
                 )
                 .build()
-            return Futures.immediateFuture(LibraryResult.ofItem(root, params))
+            // Tell the AAOS Media Center to render the root as a list (not a
+            // grid that may truncate to the first row of items, which is what
+            // it was doing for our 8 categories). Also advertise search
+            // support so the search button surfaces in the car UI. Constants
+            // are the legacy Android-Auto media browser hint strings; both
+            // AAOS and projected Auto consume them.
+            val rootExtras = Bundle().apply {
+                putBoolean("android.media.browse.SEARCH_SUPPORTED", true)
+                putBoolean("android.media.browse.CONTENT_STYLE_SUPPORTED", true)
+                putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1) // LIST
+                putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1) // LIST
+            }
+            val effectiveParams = LibraryParams.Builder()
+                .setExtras(rootExtras)
+                .build()
+            return Futures.immediateFuture(LibraryResult.ofItem(root, effectiveParams))
         }
 
         override fun onGetChildren(
@@ -2179,6 +2301,8 @@ class PlaybackService : MediaLibraryService() {
                 val items = try {
                     when (parentId) {
                         "root" -> buildRootCategories()
+                        "library" -> buildLibraryCategories()
+                        "smart_mix_root" -> buildSmartMixRootContent()
                         "recently_played" -> loadAlbums(page, effectivePageSize, "last_played")
                         "artists" -> loadArtists(page, effectivePageSize)
                         "albums" -> loadAlbums(page, effectivePageSize)
@@ -2304,15 +2428,34 @@ class PlaybackService : MediaLibraryService() {
 
     // region Content tree builders
 
+    // AAOS Media Center renders root items as tabs and silently truncates to
+    // the first 4 (the Polestar/AOSP car media template was designed around
+    // the standard car-music-app layout: 4 fixed tabs across the top). We
+    // therefore expose 4 root categories and group the rest underneath. Order
+    // matters: Recently Played first because it's the most common one-tap
+    // resume, then Library as the "everything" funnel, then the two
+    // generative sources up front because they're the differentiator vs the
+    // car's default Local Media Player.
     private fun buildRootCategories(): List<MediaItem> = listOf(
-        browseFolder("recently_played", "Recently Played", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
-        browseFolder("artists", "Artists", MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS),
-        browseFolder("albums", "Albums", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
-        browseFolder("playlists", "Playlists", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
-        browseFolder("tracks", "Tracks", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
-        browseFolder("genres", "Genres", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
-        playableItem("smart_mix", "Smart Mix", MediaMetadata.MEDIA_TYPE_PLAYLIST),
-        browseFolder("genre_radio", "Genre Radio", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
+        browseFolder("recently_played", "Recently Played", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS, R.drawable.ic_aaos_recently_played),
+        browseFolder("library", "Library", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED, R.drawable.ic_aaos_album),
+        browseFolder("smart_mix_root", "Smart Mix", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS, R.drawable.ic_aaos_smart_mix),
+        browseFolder("genre_radio", "Genre Radio", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS, R.drawable.ic_aaos_radio),
+    )
+
+    private fun buildSmartMixRootContent(): List<MediaItem> = listOf(
+        // One-shot playable that fires the SmartMix shortcut on tap. Wrapped
+        // in a browsable folder because AAOS Media Center filters out
+        // playable items at the root level (only browsables become tabs).
+        playableItem("smart_mix", "Build Smart Mix", MediaMetadata.MEDIA_TYPE_PLAYLIST, R.drawable.ic_aaos_smart_mix)
+    )
+
+    private fun buildLibraryCategories(): List<MediaItem> = listOf(
+        browseFolder("artists", "Artists", MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS, R.drawable.ic_aaos_artist),
+        browseFolder("albums", "Albums", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS, R.drawable.ic_aaos_album),
+        browseFolder("playlists", "Playlists", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS, R.drawable.ic_aaos_playlist),
+        browseFolder("tracks", "Tracks", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED, R.drawable.ic_aaos_track),
+        browseFolder("genres", "Genres", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED, R.drawable.ic_aaos_genre),
     )
 
     private suspend fun buildGenreList(): List<MediaItem> {
@@ -2337,32 +2480,53 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun playableItem(mediaId: String, title: String, mediaType: Int): MediaItem {
+    private fun playableItem(
+        mediaId: String,
+        title: String,
+        mediaType: Int,
+        @androidx.annotation.DrawableRes iconRes: Int? = null
+    ): MediaItem {
+        val md = MediaMetadata.Builder()
+            .setTitle(title)
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(mediaType)
+        iconRes?.let { md.setArtworkUri(resourceIconUri(it)) }
         return MediaItem.Builder()
             .setMediaId(mediaId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setIsBrowsable(false)
-                    .setIsPlayable(true)
-                    .setMediaType(mediaType)
-                    .build()
-            )
+            .setMediaMetadata(md.build())
             .build()
     }
 
-    private fun browseFolder(mediaId: String, title: String, mediaType: Int): MediaItem {
+    private fun browseFolder(
+        mediaId: String,
+        title: String,
+        mediaType: Int,
+        @androidx.annotation.DrawableRes iconRes: Int? = null
+    ): MediaItem {
+        val md = MediaMetadata.Builder()
+            .setTitle(title)
+            .setIsBrowsable(true)
+            .setIsPlayable(false)
+            .setMediaType(mediaType)
+        iconRes?.let { md.setArtworkUri(resourceIconUri(it)) }
         return MediaItem.Builder()
             .setMediaId(mediaId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setIsBrowsable(true)
-                    .setIsPlayable(false)
-                    .setMediaType(mediaType)
-                    .build()
-            )
+            .setMediaMetadata(md.build())
             .build()
+    }
+
+    /**
+     * Build an `android.resource://` URI for an in-app drawable so it can be
+     * used as a MediaItem artwork URI. The named form (`type/name`) is used
+     * because it survives R.* numeric id changes between builds and lets a
+     * cross-process consumer (the AAOS car media app) resolve the resource
+     * via ContentResolver without needing our R class on its classpath.
+     */
+    private fun resourceIconUri(@androidx.annotation.DrawableRes res: Int): Uri {
+        val type = resources.getResourceTypeName(res)
+        val name = resources.getResourceEntryName(res)
+        return Uri.parse("android.resource://$packageName/$type/$name")
     }
 
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
