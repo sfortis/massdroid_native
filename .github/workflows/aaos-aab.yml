@@ -1,0 +1,80 @@
+name: AAOS AAB (manual)
+
+# Builds and signs a release Android App Bundle for upload to the
+# Google Play Console internal testing track. Manual trigger only -
+# does NOT create a GitHub Release, does NOT bump version automatically,
+# does NOT touch the mobile release stream. The signed .aab is published
+# as a workflow artifact that you download from the run page.
+#
+# Before triggering: bump versionCode in app/build.gradle.kts (Play
+# Console rejects duplicate codes within a track).
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Short label for the build (shown in artifact name, free text)'
+        required: false
+        default: 'aaos-internal'
+
+permissions:
+  contents: read
+
+jobs:
+  build_aab:
+    name: Build signed AAB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: 'gradle'
+
+      - name: Run Detekt
+        run: ./gradlew detekt --stacktrace
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > ${{ github.workspace }}/release.jks
+
+      - name: Read versionName
+        id: version
+        run: |
+          VERSION_NAME=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -E 'versionCode\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+).*/\1/')
+          echo "name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "Building versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
+
+      - name: Build release AAB
+        run: ./gradlew app:bundleRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        env:
+          RELEASE_STORE_FILE: ${{ github.workspace }}/release.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Rename AAB
+        id: aab
+        run: |
+          SRC=$(find build-output/app/outputs/bundle/release -name "*.aab" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "No .aab produced under build-output/app/outputs/bundle/release"
+            exit 1
+          fi
+          DEST="build-output/massdroid-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}-${{ inputs.notes }}.aab"
+          mv "$SRC" "$DEST"
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$DEST" .aab)" >> "$GITHUB_OUTPUT"
+          ls -la "$DEST"
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.aab.outputs.name }}
+          path: ${{ steps.aab.outputs.path }}
+          retention-days: 30
+          if-no-files-found: error
