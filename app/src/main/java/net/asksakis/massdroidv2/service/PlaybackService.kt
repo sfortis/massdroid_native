@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.future
 import net.asksakis.massdroidv2.R
+import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
@@ -152,6 +153,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        AaMetrics.start()
         createConnectionNotificationChannel()
         remotePlayer = createRemotePlayer()
         createMediaSession()
@@ -2105,6 +2107,7 @@ class PlaybackService : MediaLibraryService() {
             release()
         }
         mediaLibrarySession = null
+        AaMetrics.stop()
         super.onDestroy()
     }
 
@@ -2698,25 +2701,31 @@ class RemoteControlPlayer(
         _volumeLevel = volumeLevel
         _isMuted = isMuted
         _isRemotePlayback = isRemotePlayback
+        AaMetrics.onUpdateState()
+        AaMetrics.onInvalidate()
         invalidateState()
     }
 
     fun updateVolume(volume: Int) {
         _volumeLevel = volume
+        AaMetrics.onInvalidate()
         invalidateState()
     }
 
     fun setArtwork(data: ByteArray) {
         _artworkData = data
+        AaMetrics.onInvalidate()
         invalidateState()
     }
 
     fun updateQueue(entries: List<QueueEntry>) {
         _queueEntries = entries
+        AaMetrics.onInvalidate()
         invalidateState()
     }
 
     override fun getState(): State {
+        AaMetrics.onPlaylistRebuild()
         val currentMetadataBuilder = MediaMetadata.Builder()
             .setTitle(_title)
             .setArtist(_artist)
@@ -2781,6 +2790,7 @@ class RemoteControlPlayer(
             )
         }
 
+        AaMetrics.onGetState(currentIndex = 0, playlistSize = playlist.size)
         return State.Builder()
             .setAvailableCommands(commandsBuilder.build())
             .setPlayWhenReady(_isPlaying, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
