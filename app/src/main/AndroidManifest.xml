@@ -74,5 +74,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Streams artwork bytes to AA host over content:// URIs. Wraps HTTPS artwork URLs so
+             AA can fetch via Binder through our OkHttpClient (mTLS-aware) instead of embedding
+             bitmap bytes in MediaMetadata. -->
+        <provider
+            android:name=".service.ArtworkContentProvider"
+            android:authorities="${applicationId}.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
     </application>
 </manifest>
