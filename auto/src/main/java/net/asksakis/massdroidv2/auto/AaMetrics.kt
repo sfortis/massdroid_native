@@ -75,6 +75,30 @@ object AaMetrics {
         }
     }
 
+    /**
+     * Per-call trace logs. Cheap when disabled because Log.isLoggable() short-circuits the string
+     * concatenation. Enable at runtime with `adb shell setprop log.tag.AaMetrics DEBUG`.
+     */
+    private fun traceEnabled() = Log.isLoggable(TAG, Log.DEBUG)
+
+    /** Trace: full updateState payload, fired by PlaybackService.observePlayerState. */
+    fun traceUpdateState(positionMs: Long, isPlaying: Boolean, title: String, queueId: String?) {
+        if (!traceEnabled()) return
+        Log.d(TAG, "trace updateState pos=$positionMs play=$isPlaying q=$queueId t=\"$title\"")
+    }
+
+    /** Trace: what RemoteControlPlayer.getState actually returns. */
+    fun traceGetState(currentIndex: Int, playlistSize: Int, contentPositionMs: Long, isPlaying: Boolean) {
+        if (!traceEnabled()) return
+        Log.d(TAG, "trace getState idx=$currentIndex size=$playlistSize pos=$contentPositionMs play=$isPlaying")
+    }
+
+    /** Trace: full queue rebuild from MA queue items. */
+    fun traceUpdateQueue(queueId: String?, size: Int) {
+        if (!traceEnabled()) return
+        Log.d(TAG, "trace updateQueue q=$queueId size=$size")
+    }
+
     private fun flush() {
         val us = updateStateCount.getAndSet(0)
         val inv = invalidateCount.getAndSet(0)

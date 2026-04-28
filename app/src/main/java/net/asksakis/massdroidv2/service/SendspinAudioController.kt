@@ -209,13 +209,7 @@ class SendspinAudioController(
     private var currentAlbum = ""
     private var currentDurationMs = 0L
     private var currentPositionMs = 0L
-    val currentDisplayedTitle: String get() = currentTitle
-    val currentDisplayedArtist: String get() = currentArtist
-    val currentDisplayedAlbum: String get() = currentAlbum
-    val currentDisplayedDurationMs: Long get() = currentDurationMs
-    val currentDisplayedPositionMs: Long get() = currentPositionMs
-    val currentDisplayedArtUrl: String? get() = currentArtUrl
-    var currentIsPlaying = false; private set
+    private var currentIsPlaying = false
     private var optimisticUntil = 0L
     var sendspinPlayerId: String? = null; private set
     private val collectorJobs = mutableListOf<Job>()

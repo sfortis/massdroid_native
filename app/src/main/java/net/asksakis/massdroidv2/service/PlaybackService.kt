@@ -5,23 +5,20 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.os.Build
-import android.view.KeyEvent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.view.KeyEvent
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
-import androidx.media3.common.DeviceInfo
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.session.BitmapLoader
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -30,6 +27,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -123,7 +121,9 @@ class PlaybackService : MediaLibraryService() {
     private var sendspinPlayerId: String? = null
     private var cachedSearchResults: SearchResult? = null
     private var cachedArtworkUrl: String? = null
+    private var cachedArtworkKey: String? = null
     @Volatile private var cachedArtworkData: ByteArray? = null
+    @Volatile private var lastPlaybackSnapshot: AutoPlaybackSnapshot = AutoPlaybackSnapshot.Empty
     private var optimisticVolume: Int? = null
     private var volumeOverrideUntil: Long = 0
     private var sendspinController: SendspinAudioController? = null
@@ -159,6 +159,7 @@ class PlaybackService : MediaLibraryService() {
         createMediaSession()
         loadSendspinPlayerId()
         observePlayerState()
+        observeAutoPosition()
         observeQueueItems()
         createSendspinController()
         createSleepTimer()
@@ -1825,7 +1826,11 @@ class PlaybackService : MediaLibraryService() {
                     scope.launch { playerRepository.previous(id) }
                 }
             },
+            onSeekToMediaItem = { mediaItemIndex ->
+                playQueueIndexFromAa(mediaItemIndex, reason = "seek_to_media_item")
+            },
             onSeek = { positionMs ->
+                remotePlayer?.publishPosition(positionMs)
                 if (shouldRoutToSendspin()) {
                     val id = sendspinPlayerId ?: return@RemoteControlPlayer
                     scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
@@ -1844,7 +1849,7 @@ class PlaybackService : MediaLibraryService() {
                 val newVol = (baseVol + VOLUME_STEP).coerceAtMost(RemoteControlPlayer.MAX_VOLUME)
                 optimisticVolume = newVol
                 volumeOverrideUntil = System.currentTimeMillis() + VOLUME_OVERRIDE_MS
-                remotePlayer?.updateVolume(newVol)
+                pushOptimisticVolume(newVol)
                 sendVolumeCommand(player.playerId, newVol)
             },
             onVolumeDown = {
@@ -1857,7 +1862,7 @@ class PlaybackService : MediaLibraryService() {
                 val newVol = (baseVol - VOLUME_STEP).coerceAtLeast(0)
                 optimisticVolume = newVol
                 volumeOverrideUntil = System.currentTimeMillis() + VOLUME_OVERRIDE_MS
-                remotePlayer?.updateVolume(newVol)
+                pushOptimisticVolume(newVol)
                 sendVolumeCommand(player.playerId, newVol)
             },
             onVolumeSet = { volume ->
@@ -1865,10 +1870,32 @@ class PlaybackService : MediaLibraryService() {
                 val clamped = volume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME)
                 optimisticVolume = clamped
                 volumeOverrideUntil = System.currentTimeMillis() + VOLUME_OVERRIDE_MS
-                remotePlayer?.updateVolume(clamped)
+                pushOptimisticVolume(clamped)
                 sendVolumeCommand(player.playerId, clamped)
             }
         )
+    }
+
+    private fun playQueueIndexFromAa(index: Int, reason: String) {
+        val queueState = playerRepository.queueState.value ?: return
+        if (index < 0) return
+        if (sendspinActive && playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId) {
+            sendspinManager.expectDiscontinuity(reason)
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                musicRepository.playQueueIndex(queueState.queueId, index)
+            } catch (e: Exception) {
+                Log.e(TAG, "AA playQueueIndex failed: queue=${queueState.queueId} index=$index", e)
+            }
+        }
+    }
+
+    private fun pushOptimisticVolume(newVolume: Int) {
+        val updated = lastPlaybackSnapshot.copy(volumeLevel = newVolume)
+        lastPlaybackSnapshot = updated
+        val pos = (playerRepository.elapsedTime.value * 1000).toLong()
+        remotePlayer?.updatePlayback(updated, pos)
     }
 
     private fun createMediaSession() {
@@ -1882,6 +1909,7 @@ class PlaybackService : MediaLibraryService() {
         mediaLibrarySession = MediaLibrarySession.Builder(this, remotePlayer!!, libraryCallback)
             .setSessionActivity(pendingIntent)
             .setBitmapLoader(SyncBitmapLoader())
+            .setPeriodicPositionUpdateEnabled(false)
             .build()
         Log.d(TAG, "MediaLibrarySession created")
     }
@@ -1889,13 +1917,20 @@ class PlaybackService : MediaLibraryService() {
     /** Observe selected player state for media notification. */
     private fun observePlayerState() {
         scope.launch {
+            // Keep playback snapshots structural. Position sync is handled separately without
+            // invalidating Media3 state; pushing elapsed here on every tick resets AA queue scroll.
+            val structuralQueue = playerRepository.queueState.distinctUntilChanged { a, b ->
+                a?.queueId == b?.queueId &&
+                    a?.shuffleEnabled == b?.shuffleEnabled &&
+                    a?.repeatMode == b?.repeatMode &&
+                    a?.currentIndex == b?.currentIndex &&
+                    a?.currentItem?.queueItemId == b?.currentItem?.queueItemId &&
+                    a?.currentItem?.track?.uri == b?.currentItem?.track?.uri
+            }
             combine(
                 playerRepository.selectedPlayer,
-                playerRepository.queueState,
-                playerRepository.elapsedTime
-                    .map { (it / 3).toLong() }
-                    .distinctUntilChanged()
-            ) { player, queue, _ ->
+                structuralQueue
+            ) { player, queue ->
                 player to queue
             }.collect { (player, queue) ->
                 val elapsed = playerRepository.elapsedTime.value
@@ -1907,29 +1942,22 @@ class PlaybackService : MediaLibraryService() {
                 val isSendspinPlayer = sendspinPlayerId != null &&
                     player.playerId == sendspinPlayerId
 
-                val sendspinMeta = if (isSendspinPlayer && sendspinActive) sendspinController else null
-
                 val currentTrack = queue?.currentItem?.track
-                val title = sendspinMeta?.currentDisplayedTitle?.takeIf { it.isNotBlank() }
-                    ?: currentTrack?.name
+                val trackUri = currentTrack?.uri ?: player.currentMedia?.uri
+                val title = currentTrack?.name
                     ?: player.currentMedia?.title
                     ?: ""
-                val artist = sendspinMeta?.currentDisplayedArtist?.takeIf { it.isNotBlank() }
-                    ?: currentTrack?.artistNames
+                val artist = currentTrack?.artistNames
                     ?: player.currentMedia?.artist
                     ?: ""
-                val album = sendspinMeta?.currentDisplayedAlbum?.takeIf { it.isNotBlank() }
-                    ?: currentTrack?.albumName
+                val album = currentTrack?.albumName
                     ?: player.currentMedia?.album
                     ?: ""
-                val duration = sendspinMeta?.currentDisplayedDurationMs?.takeIf { it > 0 }
-                    ?.div(1000.0)
-                    ?: currentTrack?.duration
+                val duration = currentTrack?.duration
                     ?: queue?.currentItem?.duration
                     ?: player.currentMedia?.duration
                     ?: 0.0
-                val imageUrl = sendspinMeta?.currentDisplayedArtUrl
-                    ?: currentTrack?.imageUrl
+                val imageUrl = currentTrack?.imageUrl
                     ?: queue?.currentItem?.imageUrl
                     ?: player.currentMedia?.imageUrl
 
@@ -1954,26 +1982,53 @@ class PlaybackService : MediaLibraryService() {
                     player.volumeLevel
                 }
 
-                remotePlayer?.updateState(
-                    isPlaying = sendspinMeta?.currentIsPlaying ?: (player.state == PlaybackState.PLAYING),
+                val isPlayingFlag = player.state == PlaybackState.PLAYING
+                val currentIndex = queue?.currentIndex ?: 0
+                val previousSnapshot = lastPlaybackSnapshot
+                val isTrackTransition = previousSnapshot.trackUri != null &&
+                    (previousSnapshot.trackUri != trackUri || previousSnapshot.currentIndex != currentIndex)
+                val positionMs = if (isTrackTransition) 0L else (elapsed * 1000).toLong()
+                val snapshot = AutoPlaybackSnapshot(
+                    isPlaying = isPlayingFlag,
+                    trackUri = trackUri,
                     title = title,
                     artist = artist,
                     album = album,
                     durationMs = (duration * 1000).toLong(),
-                    positionMs = sendspinMeta?.currentDisplayedPositionMs ?: (elapsed * 1000).toLong(),
+                    currentIndex = currentIndex,
                     artworkData = cachedArtworkData,
                     volumeLevel = effectiveVolume,
                     isMuted = player.volumeMuted,
-                    isRemotePlayback = !isSendspinPlayer
+                    isRemotePlayback = !isSendspinPlayer,
                 )
+                lastPlaybackSnapshot = snapshot
+                AaMetrics.traceUpdateState(
+                    positionMs = positionMs,
+                    isPlaying = isPlayingFlag,
+                    title = title,
+                    queueId = queue?.queueId
+                )
+                remotePlayer?.updatePlayback(snapshot, positionMs)
             }
         }
     }
 
-    /** Fetch full queue items when queue changes (for car display queue list). */
+    private fun observeAutoPosition() {
+        scope.launch {
+            playerRepository.elapsedTime.collect { elapsed ->
+                remotePlayer?.syncPosition((elapsed * 1000).toLong())
+            }
+        }
+    }
+
+    /**
+     * Fetch full queue items when queue changes. Both observers use [collectLatest] so a fresh
+     * queueId cancels any in-flight fetch — otherwise the older fetch could land after the user
+     * already switched players and overwrite the AA queue with stale entries.
+     */
     private fun observeQueueItems() {
         scope.launch {
-            playerRepository.queueItemsChanged.collect { queueId ->
+            playerRepository.queueItemsChanged.collectLatest { queueId ->
                 fetchQueueItems(queueId)
             }
         }
@@ -1984,45 +2039,57 @@ class PlaybackService : MediaLibraryService() {
                 .map { it?.queueId }
                 .filterNotNull()
                 .distinctUntilChanged()
-                .collect { queueId -> fetchQueueItems(queueId) }
+                .collectLatest { queueId -> fetchQueueItems(queueId) }
         }
     }
 
-    private fun fetchQueueItems(queueId: String) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val items = musicRepository.getQueueItems(queueId)
-                val entries = items.map { qi ->
-                    val art = qi.track?.imageUrl ?: qi.imageUrl
-                    QueueEntry(
-                        id = qi.queueItemId.toStableLongId(),
-                        title = qi.track?.name ?: qi.name,
-                        artist = qi.track?.artistNames ?: "",
-                        album = qi.track?.albumName ?: "",
-                        durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
-                        artworkUri = art?.let { Uri.parse(it) },
-                    )
-                }
-                withContext(Dispatchers.Main) {
-                    remotePlayer?.updateQueue(entries)
-                }
-                Log.d(TAG, "Queue updated: ${entries.size} items for $queueId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load queue items for $queueId", e)
+    private suspend fun fetchQueueItems(queueId: String) {
+        try {
+            val items = withContext(Dispatchers.IO) { musicRepository.getQueueItems(queueId) }
+            // Drop the response if the user switched players / queues while we were fetching.
+            if (queueId != playerRepository.queueState.value?.queueId) {
+                Log.d(TAG, "Dropping stale queue items for $queueId")
+                return
             }
+            val entries = items.map { qi ->
+                val art = qi.track?.imageUrl ?: qi.imageUrl
+                QueueEntry(
+                    id = qi.queueItemId.toStableLongId(),
+                    title = qi.track?.name ?: qi.name,
+                    artist = qi.track?.artistNames ?: "",
+                    album = qi.track?.albumName ?: "",
+                    durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
+                    artworkUri = art?.let { Uri.parse(it) },
+                )
+            }
+            val snapshot = AutoQueueSnapshot(queueId = queueId, entries = entries)
+            remotePlayer?.updateQueue(snapshot)
+            AaMetrics.traceUpdateQueue(queueId, entries.size)
+            Log.d(TAG, "Queue updated: ${entries.size} items for $queueId")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load queue items for $queueId", e)
         }
     }
 
     private fun updateArtwork(imageUrl: String?) {
-        if (imageUrl != null && imageUrl != cachedArtworkUrl) {
-            Log.d(TAG, "Artwork URL changed: $imageUrl")
+        val artworkKey = imageUrl?.toArtworkKey()
+        if (imageUrl != null && artworkKey != cachedArtworkKey) {
+            Log.d(TAG, "Artwork changed: key=$artworkKey url=$imageUrl")
             cachedArtworkUrl = imageUrl
+            cachedArtworkKey = artworkKey
             cachedArtworkData = null
             scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl) }
-        } else if (imageUrl == null && cachedArtworkUrl != null) {
-            Log.d(TAG, "Artwork URL cleared")
+        } else if (imageUrl == null && cachedArtworkKey != null) {
+            Log.d(TAG, "Artwork URL cleared, pushing snapshot without artwork")
             cachedArtworkUrl = null
+            cachedArtworkKey = null
             cachedArtworkData = null
+            val updated = lastPlaybackSnapshot.copy(artworkData = null)
+            lastPlaybackSnapshot = updated
+            val pos = (playerRepository.elapsedTime.value * 1000).toLong()
+            remotePlayer?.updatePlayback(updated, pos)
         }
     }
 
@@ -2039,19 +2106,26 @@ class PlaybackService : MediaLibraryService() {
             }
             if (rawBytes != null && rawBytes.isNotEmpty()) {
                 val resized = resizeArtwork(rawBytes)
+                val currentData = cachedArtworkData
+                if (currentData != null && resized.contentEquals(currentData)) {
+                    Log.d(TAG, "Artwork bytes unchanged, skipping snapshot push")
+                    return
+                }
                 if (url != cachedArtworkUrl) {
                     Log.d(TAG, "Ignoring stale resized artwork for $url (current=$cachedArtworkUrl)")
                     return
                 }
                 cachedArtworkData = resized
-                Log.d(TAG, "Artwork decoded+resized: ${resized.size} bytes, setting on player")
+                Log.d(TAG, "Artwork decoded+resized: ${resized.size} bytes, pushing snapshot")
                 scope.launch {
                     if (url != cachedArtworkUrl) {
-                        Log.d(TAG, "Skipping setArtwork for stale URL $url")
+                        Log.d(TAG, "Skipping artwork push for stale URL $url")
                         return@launch
                     }
-                    remotePlayer?.setArtwork(resized)
-                    Log.d(TAG, "Artwork setArtwork() called on Main thread")
+                    val updated = lastPlaybackSnapshot.copy(artworkData = resized)
+                    lastPlaybackSnapshot = updated
+                    val pos = (playerRepository.elapsedTime.value * 1000).toLong()
+                    remotePlayer?.updatePlayback(updated, pos)
                 }
             } else {
                 Log.w(TAG, "Artwork response empty for $url")
@@ -2059,6 +2133,27 @@ class PlaybackService : MediaLibraryService() {
         } catch (e: Exception) {
             Log.e(TAG, "Artwork download failed: $url", e)
         }
+    }
+
+    private fun String.toArtworkKey(): String {
+        val uri = runCatching { Uri.parse(this) }.getOrNull() ?: return this
+        if (uri.lastPathSegment == "imageproxy") {
+            uri.getQueryParameter("path")
+                ?.decodeRepeatedly()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+        }
+        return this
+    }
+
+    private fun String.decodeRepeatedly(maxPasses: Int = 3): String {
+        var value = this
+        repeat(maxPasses) {
+            val decoded = Uri.decode(value)
+            if (decoded == value) return value
+            value = decoded
+        }
+        return value
     }
 
     private fun resizeArtwork(rawBytes: ByteArray, maxSize: Int = 320): ByteArray {
@@ -2605,245 +2700,4 @@ class PlaybackService : MediaLibraryService() {
         .build()
 
     // endregion
-}
-
-/**
- * Synchronous BitmapLoader that decodes artwork immediately.
- * Avoids the async decode race in Media3's default CacheBitmapLoader
- * which uses reference equality on cloned byte arrays (cache always misses).
- */
-@OptIn(UnstableApi::class)
-private class SyncBitmapLoader : BitmapLoader {
-    override fun supportsMimeType(mimeType: String): Boolean = true
-
-    override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> {
-        return try {
-            val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
-            if (bitmap != null) Futures.immediateFuture(bitmap)
-            else Futures.immediateFailedFuture(IllegalArgumentException("Cannot decode bitmap"))
-        } catch (e: Exception) {
-            Futures.immediateFailedFuture(e)
-        }
-    }
-
-    override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> {
-        return Futures.immediateFailedFuture(UnsupportedOperationException("URI loading not supported"))
-    }
-}
-
-data class QueueEntry(
-    val id: Long,
-    val title: String,
-    val artist: String,
-    val album: String,
-    val durationMs: Long,
-    val artworkUri: Uri? = null,
-)
-
-private fun String.toStableLongId(): Long {
-    var hash = 1125899906842597L
-    for (char in this) {
-        hash = 31L * hash + char.code.toLong()
-    }
-    return hash
-}
-
-@OptIn(UnstableApi::class)
-class RemoteControlPlayer(
-    looper: Looper,
-    private val onPlay: () -> Unit,
-    private val onPause: () -> Unit,
-    private val onNext: () -> Unit,
-    private val onPrevious: () -> Unit,
-    private val onSeek: (Long) -> Unit,
-    private val onVolumeUp: () -> Unit = {},
-    private val onVolumeDown: () -> Unit = {},
-    private val onVolumeSet: (Int) -> Unit = {}
-) : SimpleBasePlayer(looper) {
-
-    private var _isPlaying = false
-    private var _title = ""
-    private var _artist = ""
-    private var _album = ""
-    private var _durationMs = 0L
-    private var _positionMs = 0L
-    private var _artworkData: ByteArray? = null
-    private var _queueEntries: List<QueueEntry> = emptyList()
-    private var _volumeLevel = 0
-    private var _isMuted = false
-    private var _isRemotePlayback = true
-
-    val currentTitle: String get() = _title
-    val currentArtist: String get() = _artist
-    val currentAlbum: String get() = _album
-    val currentDurationMs: Long get() = _durationMs
-    val currentPositionMs: Long get() = _positionMs
-
-    fun updateState(
-        isPlaying: Boolean,
-        title: String,
-        artist: String,
-        album: String,
-        durationMs: Long,
-        positionMs: Long,
-        artworkData: ByteArray? = null,
-        volumeLevel: Int = _volumeLevel,
-        isMuted: Boolean = _isMuted,
-        isRemotePlayback: Boolean = _isRemotePlayback
-    ) {
-        _isPlaying = isPlaying
-        _title = title
-        _artist = artist
-        _album = album
-        _durationMs = durationMs
-        _positionMs = positionMs
-        if (artworkData != null) _artworkData = artworkData
-        _volumeLevel = volumeLevel
-        _isMuted = isMuted
-        _isRemotePlayback = isRemotePlayback
-        AaMetrics.onUpdateState()
-        AaMetrics.onInvalidate()
-        invalidateState()
-    }
-
-    fun updateVolume(volume: Int) {
-        _volumeLevel = volume
-        AaMetrics.onInvalidate()
-        invalidateState()
-    }
-
-    fun setArtwork(data: ByteArray) {
-        _artworkData = data
-        AaMetrics.onInvalidate()
-        invalidateState()
-    }
-
-    fun updateQueue(entries: List<QueueEntry>) {
-        _queueEntries = entries
-        AaMetrics.onInvalidate()
-        invalidateState()
-    }
-
-    override fun getState(): State {
-        AaMetrics.onPlaylistRebuild()
-        val currentMetadataBuilder = MediaMetadata.Builder()
-            .setTitle(_title)
-            .setArtist(_artist)
-            .setAlbumTitle(_album)
-        _artworkData?.let {
-            currentMetadataBuilder.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-        }
-        val currentMetadata = currentMetadataBuilder.build()
-
-        val playlist = if (_queueEntries.isNotEmpty()) {
-            ImmutableList.copyOf(_queueEntries.mapIndexed { index, entry ->
-                val meta = if (index == 0) currentMetadata else {
-                    MediaMetadata.Builder()
-                        .setTitle(entry.title)
-                        .setArtist(entry.artist.ifEmpty { null })
-                        .setAlbumTitle(entry.album.ifEmpty { null })
-                        .setArtworkUri(entry.artworkUri)
-                        .build()
-                }
-                val durMs = if (index == 0 && _durationMs > 0) _durationMs else entry.durationMs
-                val item = MediaItem.Builder().setMediaMetadata(meta).build()
-                MediaItemData.Builder(entry.id)
-                    .setMediaItem(item)
-                    .setMediaMetadata(meta)
-                    .setDurationUs(if (durMs > 0) durMs * 1000 else C_TIME_UNSET)
-                    .build()
-            })
-        } else if (_title.isNotEmpty()) {
-            val item = MediaItem.Builder().setMediaMetadata(currentMetadata).build()
-            val single = MediaItemData.Builder(item.hashCode().toLong())
-                .setMediaItem(item)
-                .setMediaMetadata(currentMetadata)
-                .setDurationUs(if (_durationMs > 0) _durationMs * 1000 else C_TIME_UNSET)
-                .build()
-            ImmutableList.of(single)
-        } else {
-            ImmutableList.of()
-        }
-
-        val playbackType = if (_isRemotePlayback) {
-            DeviceInfo.PLAYBACK_TYPE_REMOTE
-        } else {
-            DeviceInfo.PLAYBACK_TYPE_LOCAL
-        }
-
-        val commandsBuilder = Player.Commands.Builder()
-            .addAll(
-                COMMAND_PLAY_PAUSE,
-                COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
-                COMMAND_GET_METADATA,
-                COMMAND_GET_CURRENT_MEDIA_ITEM,
-                COMMAND_GET_TIMELINE,
-                COMMAND_SET_MEDIA_ITEM
-            )
-        if (_isRemotePlayback) {
-            commandsBuilder.addAll(
-                COMMAND_GET_DEVICE_VOLUME,
-                COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS,
-                COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS
-            )
-        }
-
-        AaMetrics.onGetState(currentIndex = 0, playlistSize = playlist.size)
-        return State.Builder()
-            .setAvailableCommands(commandsBuilder.build())
-            .setPlayWhenReady(_isPlaying, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
-            .setPlaybackState(if (_title.isNotEmpty()) STATE_READY else STATE_IDLE)
-            .setContentPositionMs(if (_positionMs > 0) _positionMs else 0)
-            .setPlaylist(playlist)
-            .setCurrentMediaItemIndex(0)
-            .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(20).build())
-            .setDeviceVolume(_volumeLevel / VOLUME_SCALE)
-            .setIsDeviceMuted(_isMuted)
-            .build()
-    }
-
-    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        if (playWhenReady) onPlay() else onPause()
-        return Futures.immediateVoidFuture()
-    }
-
-    override fun handleSeek(
-        mediaItemIndex: Int,
-        positionMs: Long,
-        seekCommand: Int
-    ): ListenableFuture<*> {
-        when (seekCommand) {
-            COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> onNext()
-            COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> onPrevious()
-            else -> onSeek(positionMs)
-        }
-        return Futures.immediateVoidFuture()
-    }
-
-    override fun handleIncreaseDeviceVolume(flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleIncreaseDeviceVolume flags=$flags")
-        onVolumeUp()
-        return Futures.immediateVoidFuture()
-    }
-
-    override fun handleDecreaseDeviceVolume(flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleDecreaseDeviceVolume flags=$flags")
-        onVolumeDown()
-        return Futures.immediateVoidFuture()
-    }
-
-    override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
-        Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
-        val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
-        onVolumeSet(maVolume)
-        return Futures.immediateVoidFuture()
-    }
-
-    companion object {
-        private const val C_TIME_UNSET = Long.MIN_VALUE + 1
-        internal const val VOLUME_SCALE = 5
-        internal const val MAX_VOLUME = 100
-    }
 }
