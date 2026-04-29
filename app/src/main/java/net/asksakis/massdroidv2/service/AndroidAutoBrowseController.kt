@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.view.KeyEvent
 import android.util.Log
 import androidx.annotation.OptIn
@@ -13,6 +14,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -24,6 +27,7 @@ import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
+import net.asksakis.massdroidv2.domain.model.BrowseItem
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -42,6 +46,7 @@ class AndroidAutoBrowseController(
     private val activeQueueId: () -> String?,
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
+    private val onCustomCommand: (String) -> Boolean,
 ) {
     private var cachedSearchResults: SearchResult? = null
 
@@ -56,11 +61,27 @@ class AndroidAutoBrowseController(
                     Log.w(TAG, "onConnect: unknown caller ${controller.packageName} (uid=${controller.uid})")
                 }
                 val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                    .buildUpon()
+                    .add(AndroidAutoMediaCommands.ToggleFavorite)
+                    .add(AndroidAutoMediaCommands.ToggleShuffle)
+                    .build()
                 val playerCommands = Player.Commands.Builder().addAllCommands().build()
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(sessionCommands)
                     .setAvailablePlayerCommands(playerCommands)
+                    .setMediaButtonPreferences(AndroidAutoMediaCommands.buttons(isFavorite = false, shuffleEnabled = false))
                     .build()
+            }
+
+            override fun onCustomCommand(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                customCommand: SessionCommand,
+                args: Bundle
+            ): ListenableFuture<SessionResult> {
+                val handled = onCustomCommand(customCommand.customAction)
+                val result = if (handled) SessionResult.RESULT_SUCCESS else SessionResult.RESULT_ERROR_NOT_SUPPORTED
+                return Futures.immediateFuture(SessionResult(result))
             }
 
             @OptIn(UnstableApi::class)
@@ -210,7 +231,13 @@ class AndroidAutoBrowseController(
             "tracks" -> loadTracks(page, pageSize)
             "genres" -> buildGenreList()
             "genre_radio" -> buildGenreRadioList()
+            "browse" -> loadServerBrowse(null)
             else -> when {
+                parentId.startsWith("browse|") -> {
+                    val encoded = parentId.removePrefix("browse|")
+                    val decoded = java.net.URLDecoder.decode(encoded, "UTF-8")
+                    loadServerBrowse(decoded)
+                }
                 parentId.startsWith("genre|") -> loadGenreArtists(parentId.removePrefix("genre|"))
                 else -> loadSubItems(parentId, page, pageSize)
             }
@@ -273,29 +300,133 @@ class AndroidAutoBrowseController(
     }
 
     private fun buildRootCategories(): List<MediaItem> = listOf(
-        browseFolder("playlists", "Playlists", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS, net.asksakis.massdroidv2.auto.R.drawable.ic_tab_playlists),
-        browseFolder("artists", "Artists", MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS, net.asksakis.massdroidv2.auto.R.drawable.ic_tab_artists),
-        browseFolder("albums", "Albums", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS, net.asksakis.massdroidv2.auto.R.drawable.ic_tab_albums),
-        browseFolder("more", "More", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED, net.asksakis.massdroidv2.auto.R.drawable.ic_tab_more),
+        browseFolder(
+            "playlists",
+            "Playlists",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_playlists,
+            groupTitle = "Browse"
+        ),
+        browseFolder(
+            "albums",
+            "Albums",
+            MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_albums,
+            groupTitle = "Browse"
+        ),
+        browseFolder(
+            "artists",
+            "Artists",
+            MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_artists,
+            groupTitle = "Browse"
+        ),
+        browseFolder(
+            "more",
+            "More",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_more,
+            groupTitle = "Browse"
+        ),
     )
 
     private fun buildMoreCategories(): List<MediaItem> = listOf(
-        browseFolder("recently_played", "Recent", MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
-        browseFolder("tracks", "Tracks", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
-        browseFolder("genres", "Genres", MediaMetadata.MEDIA_TYPE_FOLDER_MIXED),
-        playableItem("smart_mix", "Smart Mix", MediaMetadata.MEDIA_TYPE_PLAYLIST),
-        browseFolder("genre_radio", "Genre Radio", MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
+        playableItem(
+            "smart_mix",
+            "Smart Mix",
+            MediaMetadata.MEDIA_TYPE_PLAYLIST,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+            listItem = true
+        ),
+        browseFolder(
+            "genre_radio",
+            "Genre Radio",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genre_radio,
+            listItem = true
+        ),
+        browseFolder(
+            "genres",
+            "Genres",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genres,
+            listItem = true
+        ),
+        browseFolder(
+            "browse",
+            "Browse",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
+            listItem = true
+        ),
     )
+
+    private suspend fun loadServerBrowse(path: String?): List<MediaItem> {
+        return runCatching { musicRepository.browse(path) }
+            .onFailure { Log.w(TAG, "Browse '${path ?: "/"}' failed: ${it.message}") }
+            .getOrDefault(emptyList())
+            .filter { it.name != ".." }
+            .map { it.toBrowseMediaItem() }
+    }
+
+    private fun BrowseItem.toBrowseMediaItem(): MediaItem {
+        val mediaIdValue = if (isFolder) {
+            val pathToken = path ?: uri
+            "browse|${java.net.URLEncoder.encode(pathToken, "UTF-8")}"
+        } else {
+            uri
+        }
+        val resolvedMediaType = when {
+            isFolder -> MediaMetadata.MEDIA_TYPE_FOLDER_MIXED
+            mediaType.equals("track", ignoreCase = true) -> MediaMetadata.MEDIA_TYPE_MUSIC
+            mediaType.equals("album", ignoreCase = true) -> MediaMetadata.MEDIA_TYPE_ALBUM
+            mediaType.equals("artist", ignoreCase = true) -> MediaMetadata.MEDIA_TYPE_ARTIST
+            mediaType.equals("playlist", ignoreCase = true) -> MediaMetadata.MEDIA_TYPE_PLAYLIST
+            mediaType.equals("radio", ignoreCase = true) -> MediaMetadata.MEDIA_TYPE_RADIO_STATION
+            else -> MediaMetadata.MEDIA_TYPE_MIXED
+        }
+        return MediaItem.Builder()
+            .setMediaId(mediaIdValue)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(name)
+                    .setArtworkUri(
+                        imageUrl?.let { android.net.Uri.parse(it) }
+                            ?: AutoBrowseExtras.placeholderArtworkUri(context, name)
+                    )
+                    .setIsBrowsable(isFolder)
+                    .setIsPlayable(!isFolder)
+                    .setMediaType(resolvedMediaType)
+                    .setExtras(AutoBrowseExtras.listItemExtras())
+                    .build()
+            )
+            .setRequestMetadata(
+                MediaItem.RequestMetadata.Builder()
+                    .setMediaUri(android.net.Uri.parse(uri))
+                    .build()
+            )
+            .build()
+    }
 
     private suspend fun buildGenreList(): List<MediaItem> {
         return genreRepository.libraryGenres().map { genre ->
-            browseFolder("genre|$genre", genre.replaceFirstChar { it.uppercase() }, MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
+            browseFolder(
+                "genre|$genre",
+                genre.replaceFirstChar { it.uppercase() },
+                MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
+                listItem = true
+            )
         }
     }
 
     private suspend fun loadGenreArtists(genre: String): List<MediaItem> {
         return genreRepository.libraryArtistsForGenre(genre).map { artist ->
-            browseFolder("artist|${artist.provider}|${artist.itemId}", artist.name, MediaMetadata.MEDIA_TYPE_ARTIST)
+            browseFolder(
+                "artist|${artist.provider}|${artist.itemId}",
+                artist.name,
+                MediaMetadata.MEDIA_TYPE_ARTIST,
+                listItem = true
+            )
         }
     }
 
@@ -304,22 +435,29 @@ class AndroidAutoBrowseController(
             playableItem(
                 "genre_radio|${genreScore.genre}",
                 genreScore.genre.replaceFirstChar { it.uppercase() },
-                MediaMetadata.MEDIA_TYPE_PLAYLIST
+                MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                listItem = true
             )
         }
     }
 
-    private fun playableItem(mediaId: String, title: String, mediaType: Int): MediaItem {
+    private fun playableItem(
+        mediaId: String,
+        title: String,
+        mediaType: Int,
+        iconResId: Int? = null,
+        listItem: Boolean = false
+    ): MediaItem {
+        val metadata = MediaMetadata.Builder()
+            .setTitle(title)
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(mediaType)
+        if (iconResId != null) metadata.setArtworkUri(iconArtworkUri(iconResId))
+        if (listItem) metadata.setExtras(AutoBrowseExtras.listItemExtras())
         return MediaItem.Builder()
             .setMediaId(mediaId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setIsBrowsable(false)
-                    .setIsPlayable(true)
-                    .setMediaType(mediaType)
-                    .build()
-            )
+            .setMediaMetadata(metadata.build())
             .build()
     }
 
@@ -327,7 +465,9 @@ class AndroidAutoBrowseController(
         mediaId: String,
         title: String,
         mediaType: Int,
-        iconResId: Int? = null
+        iconResId: Int? = null,
+        groupTitle: String? = null,
+        listItem: Boolean = false
     ): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
@@ -335,19 +475,24 @@ class AndroidAutoBrowseController(
             .setIsPlayable(false)
             .setMediaType(mediaType)
         if (iconResId != null) {
-            metadata.setArtworkUri(
-                android.net.Uri.Builder()
-                    .scheme("android.resource")
-                    .authority(context.packageName)
-                    .appendPath(iconResId.toString())
-                    .build()
-            )
+            metadata.setArtworkUri(iconArtworkUri(iconResId))
+        }
+        when {
+            groupTitle != null -> metadata.setExtras(AutoBrowseExtras.rootTileExtras(groupTitle))
+            listItem -> metadata.setExtras(AutoBrowseExtras.listItemExtras())
         }
         return MediaItem.Builder()
             .setMediaId(mediaId)
             .setMediaMetadata(metadata.build())
             .build()
     }
+
+    private fun iconArtworkUri(iconResId: Int): android.net.Uri =
+        android.net.Uri.Builder()
+            .scheme("android.resource")
+            .authority(context.packageName)
+            .appendPath(iconResId.toString())
+            .build()
 
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
         return musicRepository.getArtists(limit = pageSize, offset = page * pageSize, orderBy = "name")

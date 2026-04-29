@@ -26,9 +26,15 @@ data class PlaybackPosition(
     val position: Double
 )
 
+data class PlayerSelectionLock(
+    val playerId: String,
+    val reason: String
+)
+
 interface PlayerRepository {
     val players: StateFlow<List<Player>>
     val selectedPlayer: StateFlow<Player?>
+    val selectionLock: StateFlow<PlayerSelectionLock?>
     val queueState: StateFlow<QueueState?>
     val elapsedTime: StateFlow<Double>
     val playbackPosition: StateFlow<PlaybackPosition?>
@@ -54,6 +60,7 @@ interface PlayerRepository {
     fun requireSelectedPlayerId(): String?
     suspend fun refreshPlayers()
     fun selectPlayer(playerId: String)
+    fun setSelectionLock(lock: PlayerSelectionLock?)
 
     suspend fun play(playerId: String)
     suspend fun pause(playerId: String)

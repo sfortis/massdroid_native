@@ -41,6 +41,7 @@ class SendspinCoordinator(
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
     private val onActive: (reason: String) -> Unit,
+    private val onInactive: (reason: String) -> Unit,
     private val onWifiConnected: (reason: String) -> Unit,
 ) {
     companion object {
@@ -78,6 +79,7 @@ class SendspinCoordinator(
         controller?.destroy()
         controller = null
         isActive = false
+        onInactive("destroy")
     }
 
     fun shouldRouteToSendspin(): Boolean =
@@ -119,6 +121,7 @@ class SendspinCoordinator(
                 } else if (isActive) {
                     isActive = false
                     controller?.stop()
+                    onInactive("sendspin_disabled")
                 }
             }
         }

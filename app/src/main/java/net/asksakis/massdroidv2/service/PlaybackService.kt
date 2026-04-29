@@ -107,6 +107,7 @@ class PlaybackService : MediaLibraryService() {
             activeQueueId = { activePlayerId() ?: playerRepository.queueState.value?.queueId },
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
+            onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
         )
     }
 
@@ -128,6 +129,7 @@ class PlaybackService : MediaLibraryService() {
             onConnectionStateChanged = { updateConnectionNotification() },
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },
             onActive = { reason -> androidAutoController.onSendspinActive(reason) },
+            onInactive = { reason -> androidAutoController.onSendspinInactive(reason) },
             onWifiConnected = { reason -> proximityController.resetAwayMode(reason) },
         )
     }

@@ -13,6 +13,7 @@ import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
+import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -48,6 +49,9 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _selectedPlayer = MutableStateFlow<Player?>(null)
     override val selectedPlayer: StateFlow<Player?> = _selectedPlayer.asStateFlow()
+
+    private val _selectionLock = MutableStateFlow<PlayerSelectionLock?>(null)
+    override val selectionLock: StateFlow<PlayerSelectionLock?> = _selectionLock.asStateFlow()
 
     private val _queueState = MutableStateFlow<QueueState?>(null)
     override val queueState: StateFlow<QueueState?> = _queueState.asStateFlow()
@@ -995,16 +999,35 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override fun selectPlayer(playerId: String) {
-        selectedPlayerId = playerId
-        pendingRestoredPlayerId = if (pendingRestoredPlayerId == playerId) null else pendingRestoredPlayerId
-        val player = _players.value.find { it.playerId == playerId }
+        val lockedPlayerId = _selectionLock.value?.playerId
+        val effectivePlayerId = lockedPlayerId ?: playerId
+        if (lockedPlayerId != null && playerId != lockedPlayerId) {
+            Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
+        }
+        if (selectedPlayerId == effectivePlayerId) return
+
+        selectedPlayerId = effectivePlayerId
+        pendingRestoredPlayerId = if (pendingRestoredPlayerId == effectivePlayerId) null else pendingRestoredPlayerId
+        val player = _players.value.find { it.playerId == effectivePlayerId }
         _selectedPlayer.value = player
         isPlaying = player?.state == PlaybackState.PLAYING
         stopPositionTicker()
         scope.launch {
-            settingsRepository.setSelectedPlayerId(playerId)
-            refreshQueueForPlayerWithRetry(playerId)
-            scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
+            settingsRepository.setSelectedPlayerId(effectivePlayerId)
+            refreshQueueForPlayerWithRetry(effectivePlayerId)
+            scheduleBlockedQueueCleanup(effectivePlayerId, reason = "select_player", force = true)
+        }
+    }
+
+    override fun setSelectionLock(lock: PlayerSelectionLock?) {
+        val previous = _selectionLock.value
+        if (previous == lock) return
+        _selectionLock.value = lock
+        if (lock != null && selectedPlayerId != lock.playerId) {
+            Log.d(TAG, "Applying selection lock to ${lock.playerId} (${lock.reason})")
+            selectPlayer(lock.playerId)
+        } else if (lock == null && previous != null) {
+            Log.d(TAG, "Selection lock cleared (${previous.reason})")
         }
     }
 

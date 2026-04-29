@@ -24,9 +24,12 @@ import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
+import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.ui.MainActivity
 import okhttp3.Request
@@ -57,12 +60,13 @@ class AndroidAutoController(
     @Volatile private var lastPlaybackSnapshot: AutoPlaybackSnapshot = AutoPlaybackSnapshot.Empty
     private var optimisticVolume: Int? = null
     private var volumeOverrideUntil: Long = 0
+    private var lastFavoriteButtonState: Boolean? = null
+    private var lastShuffleButtonState: Boolean? = null
 
     fun start(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
         remotePlayer = createRemotePlayer()
         createMediaSession(libraryCallback)
         observeProjection()
-        observePlayerLock()
         observePlayback()
         observePosition()
         observeQueueItems()
@@ -79,11 +83,29 @@ class AndroidAutoController(
     }
 
     fun onSendspinTargetChanged(reason: String) {
-        maybeAutoSelectSendspin(reason)
+        updateSendspinSelectionLock(reason)
     }
 
     fun onSendspinActive(reason: String) {
-        maybeAutoSelectSendspin(reason)
+        updateSendspinSelectionLock(reason)
+    }
+
+    fun onSendspinInactive(reason: String) {
+        updateSendspinSelectionLock(reason)
+    }
+
+    fun handleCustomCommand(action: String): Boolean {
+        return when (action) {
+            AndroidAutoMediaCommands.ACTION_TOGGLE_FAVORITE -> {
+                toggleFavorite()
+                true
+            }
+            AndroidAutoMediaCommands.ACTION_TOGGLE_SHUFFLE -> {
+                toggleShuffle()
+                true
+            }
+            else -> false
+        }
     }
 
     private fun observeProjection() {
@@ -92,32 +114,22 @@ class AndroidAutoController(
         scope.launch {
             observer.isProjecting.collect { projecting ->
                 isAaProjecting.value = projecting
-                if (projecting) maybeAutoSelectSendspin("projection_started")
+                updateSendspinSelectionLock(if (projecting) "projection_started" else "projection_stopped")
             }
         }
     }
 
-    private fun observePlayerLock() {
-        scope.launch {
-            playerRepository.selectedPlayer.collect { selected ->
-                if (selected?.playerId != sendspinPlayerId()) {
-                    maybeAutoSelectSendspin("selected_player_changed")
-                }
+    private fun updateSendspinSelectionLock(reason: String) {
+        val target = sendspinPlayerId()
+        val shouldLock = isAaProjecting.value && isSendspinActive() && target != null
+        val currentLock = playerRepository.selectionLock.value
+        when {
+            shouldLock && currentLock?.playerId != target -> {
+                playerRepository.setSelectionLock(PlayerSelectionLock(target, "android_auto:$reason"))
             }
-        }
-    }
-
-    private fun maybeAutoSelectSendspin(reason: String) {
-        if (!isAaProjecting.value) return
-        val target = sendspinPlayerId() ?: return
-        if (!isSendspinActive()) {
-            Log.d(TAG, "AA auto-route ($reason): Sendspin target known but not active yet")
-            return
-        }
-        val currentSelected = playerRepository.selectedPlayer.value?.playerId
-        if (currentSelected != target) {
-            Log.d(TAG, "AA auto-route ($reason): selecting Sendspin player $target (was $currentSelected)")
-            playerRepository.selectPlayer(target)
+            !shouldLock && currentLock?.reason?.startsWith("android_auto:") == true -> {
+                playerRepository.setSelectionLock(null)
+            }
         }
     }
 
@@ -274,6 +286,10 @@ class AndroidAutoController(
                 updateArtwork(
                     currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
                 )
+                updateMediaButtons(
+                    isFavorite = currentTrack?.favorite == true,
+                    shuffleEnabled = queue?.shuffleEnabled == true
+                )
                 lastPlaybackSnapshot = snapshot
                 val positionMs = if (trackChanged) 0L else currentPositionMs(snapshot)
                 AaMetrics.traceUpdateState(
@@ -294,6 +310,57 @@ class AndroidAutoController(
             serverVolume
         } else {
             optimistic
+        }
+    }
+
+    private fun updateMediaButtons(isFavorite: Boolean, shuffleEnabled: Boolean) {
+        if (lastFavoriteButtonState == isFavorite && lastShuffleButtonState == shuffleEnabled) return
+        lastFavoriteButtonState = isFavorite
+        lastShuffleButtonState = shuffleEnabled
+        session?.setMediaButtonPreferences(AndroidAutoMediaCommands.buttons(isFavorite, shuffleEnabled))
+    }
+
+    private fun toggleFavorite() {
+        val track = playerRepository.queueState.value?.currentItem?.track ?: return
+        val newFavorite = !track.favorite
+        playerRepository.updateCurrentTrackFavorite(newFavorite)
+        updateMediaButtons(isFavorite = newFavorite, shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true)
+        scope.launch(Dispatchers.IO) {
+            try {
+                musicRepository.setFavorite(track.uri, MediaType.TRACK, track.itemId, newFavorite)
+            } catch (e: Exception) {
+                Log.w(TAG, "AA favorite toggle failed: ${e.message}")
+                rollbackFavoriteIfStillCurrent(track, previousFavorite = track.favorite)
+            }
+        }
+    }
+
+    private fun rollbackFavoriteIfStillCurrent(track: Track, previousFavorite: Boolean) {
+        if (playerRepository.queueState.value?.currentItem?.track?.uri != track.uri) return
+        playerRepository.updateCurrentTrackFavorite(previousFavorite)
+        updateMediaButtons(
+            isFavorite = previousFavorite,
+            shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true
+        )
+    }
+
+    private fun toggleShuffle() {
+        val queue = playerRepository.queueState.value ?: return
+        val enabled = !queue.shuffleEnabled
+        updateMediaButtons(
+            isFavorite = queue.currentItem?.track?.favorite == true,
+            shuffleEnabled = enabled
+        )
+        scope.launch(Dispatchers.IO) {
+            try {
+                musicRepository.shuffleQueue(queue.queueId, enabled)
+            } catch (e: Exception) {
+                Log.w(TAG, "AA shuffle toggle failed: ${e.message}")
+                updateMediaButtons(
+                    isFavorite = playerRepository.queueState.value?.currentItem?.track?.favorite == true,
+                    shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true
+                )
+            }
         }
     }
 

@@ -109,7 +109,7 @@ bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" detekt
 
 echo "=== Build ==="
 set -o pipefail
-if ! bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" assembleDebug 2>&1 | tee /dev/stderr > /dev/null; then
+if ! bash gradlew -PmassdroidBuildRoot="$BUILD_ROOT" assembleDebug --no-build-cache 2>&1 | tee /dev/stderr > /dev/null; then
   echo ""
   echo "=== Compilation errors ==="
   DAEMON_LOG=$(ls -t ~/.gradle/daemon/*/daemon-*.out.log 2>/dev/null | head -1)
@@ -150,9 +150,14 @@ else
   done
 fi
 
+PACKAGE_NAME="net.asksakis.massdroidv2.debug"
+
 for serial in "${TARGET_SERIALS[@]}"; do
   echo "-- $serial"
   "$ADB_BIN" -s "$serial" install -r "$APK"
+  echo "Relaunching $PACKAGE_NAME"
+  "$ADB_BIN" -s "$serial" shell am force-stop "$PACKAGE_NAME"
+  "$ADB_BIN" -s "$serial" shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1 > /dev/null 2>&1 || true
 done
 
 echo "=== Done ==="
