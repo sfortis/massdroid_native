@@ -230,9 +230,12 @@ class RemoteControlPlayer(
 
     private fun buildPlaylist(): ImmutableList<MediaItemData> {
         AaMetrics.onPlaylistRebuild()
+        // AA host renders the artist field as the subtitle line and ignores MediaMetadata.subtitle,
+        // so combine "Artist • Album" inside artist for the Now Playing line.
+        val currentArtistLine = artistLine(playback.artist, playback.album)
         val currentMetadata = MediaMetadata.Builder()
             .setTitle(playback.title)
-            .setArtist(playback.artist)
+            .setArtist(currentArtistLine)
             .setAlbumTitle(playback.album)
             .also { b ->
                 playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
@@ -246,7 +249,7 @@ class RemoteControlPlayer(
                 val meta = if (index == activeIdx) currentMetadata else {
                     MediaMetadata.Builder()
                         .setTitle(entry.title)
-                        .setArtist(entry.artist.ifEmpty { null })
+                        .setArtist(artistLine(entry.artist, entry.album))
                         .setAlbumTitle(entry.album.ifEmpty { null })
                         .setArtworkUri(entry.artworkUri)
                         .build()
@@ -304,6 +307,19 @@ class RemoteControlPlayer(
     private fun AutoPlaybackSnapshot.stableSingleItemId(): Long {
         val key = listOf(trackUri.orEmpty(), title, artist, album, durationMs.toString()).joinToString("|")
         return key.toStableLongId()
+    }
+
+    /**
+     * Compose the subtitle line shown by the AA host. The host renders MediaMetadata.artist as
+     * the second-line label and ignores MediaMetadata.subtitle, so we pack "Artist • Album"
+     * into artist itself. Returns null when both fields are empty so the line stays clean.
+     */
+    private fun artistLine(artist: String, album: String): String? {
+        val parts = listOfNotNull(
+            artist.takeIf { it.isNotBlank() },
+            album.takeIf { it.isNotBlank() }
+        )
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" • ")
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
