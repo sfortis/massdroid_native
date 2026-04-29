@@ -69,7 +69,9 @@ class AndroidAutoBrowseController(
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(sessionCommands)
                     .setAvailablePlayerCommands(playerCommands)
-                    .setMediaButtonPreferences(AndroidAutoMediaCommands.buttons(isFavorite = false, shuffleEnabled = false))
+                    .setMediaButtonPreferences(
+                        AndroidAutoMediaCommands.buttons(context, isFavorite = false, shuffleEnabled = false)
+                    )
                     .build()
             }
 

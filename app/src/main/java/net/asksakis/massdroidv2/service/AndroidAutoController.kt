@@ -317,7 +317,9 @@ class AndroidAutoController(
         if (lastFavoriteButtonState == isFavorite && lastShuffleButtonState == shuffleEnabled) return
         lastFavoriteButtonState = isFavorite
         lastShuffleButtonState = shuffleEnabled
-        session?.setMediaButtonPreferences(AndroidAutoMediaCommands.buttons(isFavorite, shuffleEnabled))
+        session?.setMediaButtonPreferences(
+            AndroidAutoMediaCommands.buttons(service, isFavorite, shuffleEnabled)
+        )
     }
 
     private fun toggleFavorite() {
