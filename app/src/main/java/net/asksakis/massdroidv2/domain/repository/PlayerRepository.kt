@@ -19,11 +19,19 @@ data class PlayerDiscontinuityCommand(
     }
 }
 
+data class PlaybackPosition(
+    val queueId: String?,
+    val queueItemId: String?,
+    val trackUri: String?,
+    val position: Double
+)
+
 interface PlayerRepository {
     val players: StateFlow<List<Player>>
     val selectedPlayer: StateFlow<Player?>
     val queueState: StateFlow<QueueState?>
     val elapsedTime: StateFlow<Double>
+    val playbackPosition: StateFlow<PlaybackPosition?>
 
     /** Emits immediately when a playback command is issued, before server round-trip. */
     val playbackIntent: SharedFlow<Boolean>

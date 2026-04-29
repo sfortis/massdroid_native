@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.DeviceInfo
@@ -66,6 +65,7 @@ fun String.toStableLongId(): Long {
  */
 data class AutoPlaybackSnapshot(
     val isPlaying: Boolean,
+    val queueItemId: String?,
     val trackUri: String?,
     val title: String,
     val artist: String,
@@ -81,6 +81,7 @@ data class AutoPlaybackSnapshot(
         if (this === other) return true
         if (other !is AutoPlaybackSnapshot) return false
         return isPlaying == other.isPlaying &&
+            queueItemId == other.queueItemId &&
             trackUri == other.trackUri &&
             title == other.title &&
             artist == other.artist &&
@@ -97,6 +98,7 @@ data class AutoPlaybackSnapshot(
 
     override fun hashCode(): Int {
         var r = isPlaying.hashCode()
+        r = 31 * r + (queueItemId?.hashCode() ?: 0)
         r = 31 * r + (trackUri?.hashCode() ?: 0)
         r = 31 * r + title.hashCode()
         r = 31 * r + artist.hashCode()
@@ -112,7 +114,7 @@ data class AutoPlaybackSnapshot(
 
     companion object {
         val Empty = AutoPlaybackSnapshot(
-            isPlaying = false, trackUri = null, title = "", artist = "", album = "",
+            isPlaying = false, queueItemId = null, trackUri = null, title = "", artist = "", album = "",
             durationMs = 0L, currentIndex = 0, artworkData = null,
             volumeLevel = 0, isMuted = false, isRemotePlayback = true,
         )
@@ -145,12 +147,10 @@ class RemoteControlPlayer(
     private var playback: AutoPlaybackSnapshot = AutoPlaybackSnapshot.Empty
     private var queue: AutoQueueSnapshot = AutoQueueSnapshot.Empty
     private var positionMs: Long = 0L
-    private var positionUpdatedAtMs: Long = SystemClock.elapsedRealtime()
     private var playlist: ImmutableList<MediaItemData> = ImmutableList.of()
 
     fun updatePlayback(snapshot: AutoPlaybackSnapshot, positionMs: Long) {
         this.positionMs = positionMs.coerceAtLeast(0L)
-        positionUpdatedAtMs = SystemClock.elapsedRealtime()
         if (snapshot == playback) return
         val rebuildPlaylist = snapshot.playlistContentDiffersFrom(playback)
         playback = snapshot
@@ -171,7 +171,6 @@ class RemoteControlPlayer(
     /** One-shot position publish for explicit seeks while periodic Media3 updates are disabled. */
     fun publishPosition(positionMs: Long) {
         this.positionMs = positionMs.coerceAtLeast(0L)
-        positionUpdatedAtMs = SystemClock.elapsedRealtime()
         AaMetrics.onInvalidate()
         invalidateState()
     }
@@ -179,12 +178,10 @@ class RemoteControlPlayer(
     /** Keep AA's internal clock aligned with MA elapsed without notifying controllers. */
     fun syncPosition(positionMs: Long) {
         this.positionMs = positionMs.coerceAtLeast(0L)
-        positionUpdatedAtMs = SystemClock.elapsedRealtime()
     }
 
     override fun getState(): State {
         val effectiveIndex = playback.currentIndex.coerceIn(0, (playlist.size - 1).coerceAtLeast(0))
-        val contentPositionMs = currentContentPositionMs()
         val playbackType = if (playback.isRemotePlayback) {
             DeviceInfo.PLAYBACK_TYPE_REMOTE
         } else {
@@ -215,26 +212,20 @@ class RemoteControlPlayer(
         AaMetrics.traceGetState(
             currentIndex = effectiveIndex,
             playlistSize = playlist.size,
-            contentPositionMs = contentPositionMs,
+            contentPositionMs = positionMs,
             isPlaying = playback.isPlaying
         )
         return State.Builder()
             .setAvailableCommands(commandsBuilder.build())
             .setPlayWhenReady(playback.isPlaying, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(if (playback.title.isNotEmpty()) STATE_READY else STATE_IDLE)
-            .setContentPositionMs(contentPositionMs)
+            .setContentPositionMs(positionMs)
             .setPlaylist(playlist)
             .setCurrentMediaItemIndex(effectiveIndex)
             .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(20).build())
             .setDeviceVolume(playback.volumeLevel / VOLUME_SCALE)
             .setIsDeviceMuted(playback.isMuted)
             .build()
-    }
-
-    private fun currentContentPositionMs(): Long {
-        if (!playback.isPlaying) return positionMs
-        val advanced = positionMs + (SystemClock.elapsedRealtime() - positionUpdatedAtMs)
-        return if (playback.durationMs > 0) advanced.coerceAtMost(playback.durationMs) else advanced
     }
 
     private fun buildPlaylist(): ImmutableList<MediaItemData> {
@@ -295,6 +286,7 @@ class RemoteControlPlayer(
 
     private fun AutoPlaybackSnapshot.playlistContentDiffersFrom(other: AutoPlaybackSnapshot): Boolean {
         return trackUri != other.trackUri ||
+            queueItemId != other.queueItemId ||
             title != other.title ||
             artist != other.artist ||
             album != other.album ||

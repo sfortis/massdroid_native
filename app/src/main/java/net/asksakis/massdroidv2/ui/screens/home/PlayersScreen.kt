@@ -76,6 +76,7 @@ fun PlayersScreen(
     val isInitializing by viewModel.isInitializing.collectAsStateWithLifecycle()
     val suppressConnectionPrompt by viewModel.suppressConnectionPrompt.collectAsStateWithLifecycle()
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle()
+    val isAaProjecting by viewModel.isAaProjecting.collectAsStateWithLifecycle()
     val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
@@ -115,7 +116,7 @@ fun PlayersScreen(
                 // the duplicate "test -> test" card the user reported.
                 val includeParent = parent?.type == PlayerType.PLAYER
                 val allMembers = buildList {
-                    if (includeParent && parent != null) add(parent)
+                    if (includeParent) add(parent)
                     addAll(childIds.mapNotNull { playerMap[it] })
                 }.sortedBy { it.displayName.lowercase() }
                 put(parentId, PlayerGroupInfo(
@@ -190,6 +191,9 @@ fun PlayersScreen(
                                 player = player,
                                 isSelected = player.playerId == selectedPlayer?.playerId,
                                 isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
+                                isAndroidAutoPlayer = isAaProjecting &&
+                                    sendspinClientId != null &&
+                                    player.playerId == sendspinClientId,
                                 isFollowMeSelected = proximityConfig.enabled &&
                                     currentDetectedRoom?.playerId == player.playerId,
                                 roomNames = playerRoomMap[player.playerId] ?: emptyList(),
@@ -385,6 +389,7 @@ private fun PlayerListItem(
     player: Player,
     isSelected: Boolean,
     isLocalPlayer: Boolean = false,
+    isAndroidAutoPlayer: Boolean = false,
     isFollowMeSelected: Boolean = false,
     roomNames: List<String> = emptyList(),
     groupInfo: PlayerGroupInfo = PlayerGroupInfo(),
@@ -471,6 +476,7 @@ private fun PlayerListItem(
                         PlayerNameWithBadge(
                             name = player.displayName,
                             isLocalPlayer = isLocalPlayer,
+                            isAndroidAutoPlayer = isAndroidAutoPlayer,
                             isFollowMePlayer = isFollowMeSelected,
                             fontWeight = FontWeight.Bold
                         )

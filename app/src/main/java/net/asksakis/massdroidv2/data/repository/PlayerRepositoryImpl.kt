@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -53,6 +54,9 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _elapsedTime = MutableStateFlow(0.0)
     override val elapsedTime: StateFlow<Double> = _elapsedTime.asStateFlow()
+
+    private val _playbackPosition = MutableStateFlow<PlaybackPosition?>(null)
+    override val playbackPosition: StateFlow<PlaybackPosition?> = _playbackPosition.asStateFlow()
 
     private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
@@ -156,7 +160,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         // Keep selectedPlayer and queueState for cached mini player display
                         pendingRestoredPlayerId = selectedPlayerId
                         _players.value = emptyList()
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         stopPositionTicker()
                         queueTracking.clear()
                         artistGenreCache.clear()
@@ -177,7 +181,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         // Clear stale queue snapshot immediately after reconnect so the UI
                         // falls back to fresh player media instead of showing pre-restart data.
                         _queueState.value = null
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         trackDuration = 0.0
                         favoriteOverride = null
                         favoriteOverrideUri = null
@@ -224,7 +228,7 @@ class PlayerRepositoryImpl @Inject constructor(
         _players.value = emptyList()
         _selectedPlayer.value = null
         _queueState.value = null
-        _elapsedTime.value = 0.0
+        resetPosition()
         queueTracking.clear()
         artistGenreCache.clear()
         libraryArtistUriCache.clear()
@@ -271,7 +275,7 @@ class PlayerRepositoryImpl @Inject constructor(
                             selectedPlayerId = null
                             _selectedPlayer.value = null
                             _queueState.value = null
-                            _elapsedTime.value = 0.0
+                            resetPosition()
                             trackDuration = 0.0
                             favoriteOverride = null
                             favoriteOverrideUri = null
@@ -317,7 +321,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         selectedPlayerId = null
                         _selectedPlayer.value = null
                         _queueState.value = null
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         trackDuration = 0.0
                         favoriteOverride = null
                         favoriteOverrideUri = null
@@ -334,10 +338,12 @@ class PlayerRepositoryImpl @Inject constructor(
                     trackPlayHistory(serverQueue)
 
                     if (serverQueue.queueId == effectiveQueueId()) {
+                        val previousState = _queueState.value
                         var domainState = preserveCurrentAudioFormat(
-                            previous = _queueState.value,
+                            previous = previousState,
                             incoming = serverQueue.toDomain(wsClient)
                         )
+                        val currentItemChanged = hasCurrentItemChanged(previousState, domainState)
                         // Apply favorite override if current track matches
                         val override = favoriteOverride
                         val overrideUri = favoriteOverrideUri
@@ -354,7 +360,10 @@ class PlayerRepositoryImpl @Inject constructor(
                         }
                         _queueState.value = domainState
                         trackDuration = serverQueue.currentItem?.duration ?: 0.0
-                        updatePosition(serverQueue.elapsedTime)
+                        updatePosition(
+                            serverElapsed = if (currentItemChanged) 0.0 else serverQueue.elapsedTime,
+                            startTicker = !currentItemChanged
+                        )
                     }
                 }
                 EventType.QUEUE_ITEMS_UPDATED -> {
@@ -852,11 +861,32 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun updatePosition(serverElapsed: Double) {
+    private fun updatePosition(serverElapsed: Double, startTicker: Boolean = true) {
         positionBaseTime = serverElapsed
         positionBaseTimestamp = System.currentTimeMillis()
-        _elapsedTime.value = serverElapsed
-        startPositionTicker()
+        publishPosition(serverElapsed)
+        if (startTicker) startPositionTicker() else stopPositionTicker()
+    }
+
+    private fun publishPosition(position: Double) {
+        _elapsedTime.value = position
+        _playbackPosition.value = currentPlaybackPosition(position)
+    }
+
+    private fun resetPosition() {
+        _elapsedTime.value = 0.0
+        _playbackPosition.value = null
+    }
+
+    private fun currentPlaybackPosition(position: Double): PlaybackPosition {
+        val queue = _queueState.value
+        val item = queue?.currentItem
+        return PlaybackPosition(
+            queueId = queue?.queueId,
+            queueItemId = item?.queueItemId,
+            trackUri = item?.track?.uri,
+            position = position
+        )
     }
 
     private fun preserveCurrentAudioFormat(
@@ -879,6 +909,25 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
+    private fun hasCurrentItemChanged(previous: QueueState?, incoming: QueueState): Boolean {
+        val previousItem = previous?.currentItem ?: return false
+        val nextItem = incoming.currentItem ?: return false
+
+        val previousQueueItemId = previousItem.queueItemId
+        val nextQueueItemId = nextItem.queueItemId
+        if (previousQueueItemId.isNotBlank() && nextQueueItemId.isNotBlank()) {
+            return previousQueueItemId != nextQueueItemId
+        }
+
+        val previousTrackUri = previousItem.track?.uri
+        val nextTrackUri = nextItem.track?.uri
+        if (!previousTrackUri.isNullOrBlank() && !nextTrackUri.isNullOrBlank()) {
+            return previousTrackUri != nextTrackUri
+        }
+
+        return false
+    }
+
     private fun startPositionTicker() {
         positionTickJob?.cancel()
         if (!isPlaying) return
@@ -886,7 +935,7 @@ class PlayerRepositoryImpl @Inject constructor(
             while (isActive) {
                 delay(500)
                 val elapsed = positionBaseTime + (System.currentTimeMillis() - positionBaseTimestamp) / 1000.0
-                _elapsedTime.value = if (trackDuration > 0) elapsed.coerceAtMost(trackDuration) else elapsed
+                publishPosition(if (trackDuration > 0) elapsed.coerceAtMost(trackDuration) else elapsed)
             }
         }
     }
@@ -937,7 +986,7 @@ class PlayerRepositoryImpl @Inject constructor(
         pendingRestoredPlayerId = null
         _selectedPlayer.value = null
         _queueState.value = null
-        _elapsedTime.value = 0.0
+        resetPosition()
         trackDuration = 0.0
         favoriteOverride = null
         favoriteOverrideUri = null
@@ -978,7 +1027,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 trackDuration = serverQueue.currentItem?.duration ?: 0.0
                 updatePosition(serverQueue.elapsedTime)
             } else {
-                _elapsedTime.value = 0.0
+                resetPosition()
                 trackDuration = 0.0
             }
         } catch (e: Exception) {

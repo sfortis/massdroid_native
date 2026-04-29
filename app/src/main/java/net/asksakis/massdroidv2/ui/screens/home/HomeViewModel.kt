@@ -1,9 +1,11 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -14,6 +16,7 @@ import net.asksakis.massdroidv2.data.repository.QueueDstmCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
+import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.domain.model.GroupProviderOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -26,6 +29,7 @@ private const val TAG = "HomeVM"
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @ApplicationContext context: Context,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val settingsRepository: SettingsRepository,
@@ -51,6 +55,9 @@ class HomeViewModel @Inject constructor(
     val sendspinSyncHistory = sendspinManager.syncHistory
     val proximityConfig = proximityConfigStore.config
     val currentDetectedRoom = roomDetector.currentRoom
+    val isAaProjecting: StateFlow<Boolean> = AaProjectionObserver(context)
+        .isProjecting
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _isInitializing = MutableStateFlow(true)
     val isInitializing: StateFlow<Boolean> = _isInitializing.asStateFlow()
