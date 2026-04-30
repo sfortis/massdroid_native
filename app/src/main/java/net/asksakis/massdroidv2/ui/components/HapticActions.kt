@@ -11,6 +11,7 @@ import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonElevation
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonColors
 import androidx.compose.material3.IconButtonDefaults
@@ -152,6 +153,25 @@ fun MdIconButton(
         onClick = rememberHapticOnClick(onClick),
         modifier = modifier,
         enabled = enabled,
+        colors = colors,
+        content = content
+    )
+}
+
+@Composable
+fun MdFilledTonalIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: Shape = IconButtonDefaults.filledShape,
+    colors: IconButtonColors = IconButtonDefaults.filledTonalIconButtonColors(),
+    content: @Composable () -> Unit
+) {
+    FilledTonalIconButton(
+        onClick = rememberHapticOnClick(onClick),
+        modifier = modifier,
+        enabled = enabled,
+        shape = shape,
         colors = colors,
         content = content
     )

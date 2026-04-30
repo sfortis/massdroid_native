@@ -163,15 +163,14 @@ fun MediaItemRow(
                         Spacer(modifier = Modifier.width(12.dp))
                     }
                     if (onPlayClick != null) {
-                        MdIconButton(
+                        MdFilledTonalIconButton(
                             onClick = onPlayClick,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Play",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
