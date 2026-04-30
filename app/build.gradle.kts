@@ -25,8 +25,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "2.10.0"
+        versionCode = 18
+        versionName = "2.20.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
