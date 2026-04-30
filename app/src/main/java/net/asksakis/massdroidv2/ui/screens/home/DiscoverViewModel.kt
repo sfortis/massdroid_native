@@ -117,6 +117,7 @@ private const val CONNECTION_PING_SAMPLES = 3
 private const val CONNECTION_PING_TIMEOUT_MS = 3_000L
 private const val CONNECTION_PING_INTERVAL_MS = 1_200L
 private const val CONNECTION_PING_HISTORY_LIMIT = 24
+private const val LOAD_COOLDOWN_MS = 30_000L
 
 data class ConnectionProbeState(
     val inProgress: Boolean = false,
@@ -178,7 +179,8 @@ class DiscoverViewModel @Inject constructor(
         playHistoryRepository = playHistoryRepository,
         genreRepository = genreRepository,
         recommendationEngine = recommendationEngine,
-        lastFmSimilarResolver = lastFmSimilarResolver
+        lastFmSimilarResolver = lastFmSimilarResolver,
+        lastFmGenreResolver = lastFmGenreResolver
     )
     private val _uiState = MutableStateFlow(DiscoverUiState())
     val sections: StateFlow<List<DiscoverSection>> = _uiState.map { it.sections }
@@ -202,6 +204,7 @@ class DiscoverViewModel @Inject constructor(
     private var cacheStale = true
     private var mediaEventJob: Job? = null
     private var fullLoadJob: Job? = null
+    private var lastSuccessfulLoadAt = 0L
     private var radioStartJob: Job? = null
     private var connectionProbeJob: Job? = null
     private var loadGeneration = 0L
@@ -983,6 +986,14 @@ class DiscoverViewModel @Inject constructor(
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
         }
+        if (!isManualRefresh && fullLoadJob?.isActive == true) {
+            Log.d(TAG, "loadFromServer: skipped (in flight)")
+            return
+        }
+        if (!isManualRefresh && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS) {
+            Log.d(TAG, "loadFromServer: skipped (cooldown)")
+            return
+        }
         val generation = ++loadGeneration
         fullLoadJob?.cancel()
         fullLoadJob = viewModelScope.launch {
@@ -1033,28 +1044,21 @@ class DiscoverViewModel @Inject constructor(
                 val genreItems = content.genreItems
                     .filter { it.name in genreArtists.keys }
 
-                val suggested = try {
-                    recommendationOrchestrator.buildSuggestedArtists(
-                        candidateArtists = smartFilteredArtists,
-                        excludedArtistUris = excludedArtistUris,
-                        artistSignalScores = smartArtistScoreMap,
-                        artistIdentity = { artist -> artist.canonicalKey() ?: artist.uri }
+                val discovery = try {
+                    recommendationOrchestrator.buildDiscovery(
+                        libraryArtists = merged,
+                        serverFolders = content.enrichedFolders,
+                        excludedArtistUris = excludedArtistUris
                     )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to build suggested artists", e)
-                    smartFilteredArtists.shuffled().take(10)
+                    Log.e(TAG, "Failed to build discovery", e)
+                    DiscoveryResult(emptyList(), emptyList())
                 }
-                Log.d(TAG, "Suggested artists: ${suggested.size}")
-
-                val discover = recommendationOrchestrator.loadDiscoverAlbums(
-                    candidateArtists = smartFilteredArtists,
-                    recommendationAlbums = content.recommendationAlbums,
-                    excludedArtistUris = excludedArtistUris,
-                    artistSignalScores = smartArtistScoreMap,
-                    albumIdentity = { album -> album.canonicalKey() ?: album.uri },
-                    artistIdentity = { artist -> artist.canonicalKey() ?: artist.uri },
-                    loadArtistAlbumsForIdentity = ::getArtistAlbumsForIdentity
-                )
+                val suggested = discovery.artists
+                val discover: List<Album>? = discovery.albums.ifEmpty { null }
+                Log.d(TAG, "Discovery artists: ${suggested.size}, albums: ${discovery.albums.size}")
 
                 val bllGenreScores = try {
                     genreRepository.scoredGenres(days = 90, limit = 20)
@@ -1081,6 +1085,7 @@ class DiscoverViewModel @Inject constructor(
                 Log.d(TAG, "Built ${_uiState.value.sections.size} sections")
 
                 cacheStale = false
+                lastSuccessfulLoadAt = System.currentTimeMillis()
                 discoverCache.save(
                     DiscoverCache.CacheData(
                         suggestedArtists = suggested,
