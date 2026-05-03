@@ -49,7 +49,7 @@ call :runGradle -PmassdroidBuildRoot="%BUILD_ROOT%" detekt
 if errorlevel 1 goto :fail
 
 echo === Build ===
-call :runGradle -PmassdroidBuildRoot="%BUILD_ROOT%" assembleDebug
+call :runGradle -PmassdroidBuildRoot="%BUILD_ROOT%" assembleDebug --no-build-cache
 if errorlevel 1 goto :fail
 
 if not exist "%APK_PATH%" (

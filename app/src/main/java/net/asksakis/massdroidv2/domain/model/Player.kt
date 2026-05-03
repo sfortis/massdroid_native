@@ -7,10 +7,17 @@ data class Player(
     val type: PlayerType = PlayerType.PLAYER,
     val available: Boolean = true,
     val state: PlaybackState = PlaybackState.IDLE,
+    val powered: Boolean = true,
     val volumeLevel: Int = 0,
+    /** Average volume of children for group players; null when no children support volume. */
+    val groupVolume: Int? = null,
     val volumeMuted: Boolean = false,
     val activeGroup: String? = null,
+    /** Player this one is currently synced to at protocol level, if any. */
+    val syncedTo: String? = null,
     val groupChilds: List<String> = emptyList(),
+    /** Permanent members set at group creation; cannot be removed via set_members. */
+    val staticGroupMembers: List<String> = emptyList(),
     val supportedFeatures: Set<String> = emptySet(),
     val canGroupWith: List<String> = emptyList(),
     val currentMedia: NowPlaying? = null,
@@ -28,7 +35,9 @@ data class PlayerConfig(
     val crossfadeMode: CrossfadeMode = CrossfadeMode.DISABLED,
     val volumeNormalization: Boolean = false,
     val sendspinFormat: String? = null,
-    val sendspinFormatOptions: List<FormatOption> = emptyList()
+    val sendspinFormatOptions: List<FormatOption> = emptyList(),
+    /** Server-side static delay in ms for remote sendspin players. Null when not applicable. */
+    val sendspinStaticDelayMs: Int? = null
 )
 
 enum class CrossfadeMode(val apiValue: String, val label: String) {

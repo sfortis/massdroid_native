@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
 import net.asksakis.massdroidv2.ui.screens.settings.ProximitySettingsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RoomSetupScreen
+import net.asksakis.massdroidv2.ui.screens.settings.SettingsCategory
 import net.asksakis.massdroidv2.ui.screens.settings.SettingsScreen
 
 object Routes {
@@ -26,9 +27,12 @@ object Routes {
     const val LIBRARY = "library"
     const val SEARCH = "search"
     const val NOW_PLAYING = "now_playing"
-    const val SETTINGS = "settings"
+    const val SETTINGS = "settings?category={category}"
     const val RECOMMENDATION_INSIGHTS = "recommendation_insights"
     const val ROOM_SETUP = "room_setup?roomId={roomId}"
+
+    fun settings(category: SettingsCategory? = null): String =
+        if (category != null) "settings?category=${category.name}" else "settings"
 
     fun roomSetup(roomId: String? = null) =
         if (roomId != null) "room_setup?roomId=${android.net.Uri.encode(roomId)}" else "room_setup"
@@ -67,14 +71,15 @@ fun MassDroidNavHost(
                         Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite)
                     )
                 },
-                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
+                onNavigateToSettings = { navController.navigate(Routes.settings()) },
+                onConfigureServer = { navController.navigate(Routes.settings(SettingsCategory.CONNECTION)) }
             )
         }
 
         composable(Routes.PLAYERS) {
             PlayersScreen(
                 onNavigateToNowPlaying = { navController.navigate(Routes.NOW_PLAYING) },
-                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onNavigateToSettings = { navController.navigate(Routes.settings()) },
                 onNavigateToRoomSetup = { roomId -> navController.navigate(Routes.roomSetup(roomId)) }
             )
         }
@@ -119,11 +124,24 @@ fun MassDroidNavHost(
             )
         }
 
-        composable(Routes.SETTINGS) {
+        composable(
+            route = Routes.SETTINGS,
+            arguments = listOf(
+                navArgument("category") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val initialCategory = backStackEntry.arguments
+                ?.getString("category")
+                ?.let { name -> runCatching { SettingsCategory.valueOf(name) }.getOrNull() }
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onOpenRecommendationInsights = { navController.navigate(Routes.RECOMMENDATION_INSIGHTS) },
-                onSetupRoom = { roomId -> navController.navigate(Routes.roomSetup(roomId)) }
+                onSetupRoom = { roomId -> navController.navigate(Routes.roomSetup(roomId)) },
+                initialCategory = initialCategory
             )
         }
 

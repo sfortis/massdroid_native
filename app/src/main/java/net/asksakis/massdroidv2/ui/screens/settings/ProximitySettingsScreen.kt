@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -303,7 +310,7 @@ fun ProximitySettingsScreen(
                     }
                     if (config.rooms.size >= 2) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        androidx.compose.material3.OutlinedButton(
+                        MdOutlinedButton(
                             onClick = {
                                 viewModel.clearTuning()
                                 showTuningWizard = true
@@ -340,7 +347,7 @@ fun ProximitySettingsScreen(
             title = { Text("Delete Room") },
             text = { Text("Delete \"${room.name}\"?") },
             confirmButton = {
-                TextButton(onClick = {
+                MdTextButton(onClick = {
                     viewModel.deleteRoom(room.id)
                     deleteTarget = null
                 }) {
@@ -348,7 +355,7 @@ fun ProximitySettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+                MdTextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
             }
         )
     }
@@ -471,19 +478,19 @@ fun ProximitySettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(
+                        MdTextButton(
                             onClick = { showTuningWizard = false; viewModel.clearTuning() },
                             enabled = !isScanning
                         ) { Text("Cancel") }
                         if (nextRoom != null) {
-                            TextButton(
+                            MdTextButton(
                                 onClick = {
                                     viewModel.collectRoomSnapshot(nextRoom.id, nextRoom.name) {}
                                 },
                                 enabled = !isScanning
                             ) { Text("Scan ${nextRoom.name}") }
                         } else {
-                            TextButton(onClick = {
+                            MdTextButton(onClick = {
                                 viewModel.applyTuning()
                                 showTuningWizard = false
                             }) { Text("Apply") }
@@ -534,7 +541,7 @@ fun ProximitySettingsScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissTuningResult() }) { Text("OK") }
+                MdTextButton(onClick = { viewModel.dismissTuningResult() }) { Text("OK") }
             }
         )
     }
@@ -655,11 +662,11 @@ private fun TimePickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSelect(pickerState.hour * 60 + pickerState.minute) }) {
+            MdTextButton(onClick = { onSelect(pickerState.hour * 60 + pickerState.minute) }) {
                 Text("OK")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { MdTextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -769,7 +776,7 @@ private fun RoomCard(
                     )
                 }
             }
-            IconButton(onClick = onDelete) {
+            MdIconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete",
                     tint = MaterialTheme.colorScheme.error)
             }
@@ -800,6 +807,6 @@ private fun UnavailableScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(24.dp))
-            TextButton(onClick = onBack) { Text("Go Back") }
+            MdTextButton(onClick = onBack) { Text("Go Back") }
     }
 }

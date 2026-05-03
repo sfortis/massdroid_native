@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -100,7 +107,7 @@ fun AddToPlaylistDialog(
                                     modifier = Modifier.weight(1f).focusRequester(focusRequester)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                IconButton(
+                                MdIconButton(
                                     onClick = {
                                         if (newPlaylistName.isNotBlank()) {
                                             onCreatePlaylist(newPlaylistName.trim())
@@ -139,7 +146,7 @@ fun AddToPlaylistDialog(
                         }
                         if (playlists.isEmpty() && !showCreateField) {
                             Text("No playlists available.")
-                            TextButton(onClick = onRetry) { Text("Reload") }
+                            MdTextButton(onClick = onRetry) { Text("Reload") }
                         } else {
                             LazyColumn(
                                 modifier = Modifier
@@ -208,7 +215,7 @@ fun AddToPlaylistDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            MdTextButton(onClick = onDismiss) {
                 Text("Close")
             }
         }

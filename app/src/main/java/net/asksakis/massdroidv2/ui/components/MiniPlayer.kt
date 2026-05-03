@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
@@ -61,7 +68,7 @@ fun MiniPlayer(
                     onDragEnd = {
                         val threshold = widthPx * 0.2f
                         if (dragAccumulator < -threshold && onSwipeLeft != null) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             scope.launch {
                                 slideOffset.animateTo(-widthPx, tween(150))
                                 onSwipeLeft()
@@ -69,7 +76,7 @@ fun MiniPlayer(
                                 slideOffset.animateTo(0f, tween(200))
                             }
                         } else if (dragAccumulator > threshold && onSwipeRight != null) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             scope.launch {
                                 slideOffset.animateTo(widthPx, tween(150))
                                 onSwipeRight()
@@ -88,7 +95,7 @@ fun MiniPlayer(
                 )
             }
             .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             },
         tonalElevation = 3.dp
@@ -147,9 +154,9 @@ fun MiniPlayer(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(end = 4.dp)
             ) {
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onPlayPause()
                     },
                     modifier = Modifier.size(48.dp)
@@ -161,9 +168,9 @@ fun MiniPlayer(
                     )
                 }
 
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onNext()
                     },
                     modifier = Modifier.size(44.dp)
@@ -175,9 +182,9 @@ fun MiniPlayer(
                     )
                 }
 
-                IconButton(
+                MdIconButton(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onQueue()
                     },
                     modifier = Modifier.size(44.dp)

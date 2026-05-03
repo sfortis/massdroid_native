@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -80,12 +87,12 @@ fun ArtistDetailScreen(
             TopAppBar(
                 title = { Text(artistName) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(
+                    MdIconButton(
                         onClick = {
                             val willBlock = !artistBlocked
                             viewModel.toggleArtistBlocked(artist?.uri, artistName)
@@ -114,7 +121,7 @@ fun ArtistDetailScreen(
                             }
                         )
                     }
-                    IconButton(onClick = { viewModel.toggleArtistFavorite() }) {
+                    MdIconButton(onClick = { viewModel.toggleArtistFavorite() }) {
                         Icon(
                             if (artist?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Toggle favorite",
@@ -483,7 +490,7 @@ private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
             style = MaterialTheme.typography.titleMedium
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(
+            MdTextButton(
                 onClick = { viewModel.playAllTracks() },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
@@ -491,7 +498,7 @@ private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Play All", style = MaterialTheme.typography.labelMedium)
             }
-            TextButton(
+            MdTextButton(
                 onClick = { showPlaySheet = true },
                 contentPadding = PaddingValues(horizontal = 8.dp)
             ) {

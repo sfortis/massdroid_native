@@ -56,4 +56,12 @@ class DiscoverCache @Inject constructor(
         val dayMs = 24 * 60 * 60 * 1000L
         return System.currentTimeMillis() - cached.lastRefreshed > dayMs
     }
+
+    suspend fun clear() = withContext(Dispatchers.IO) {
+        try {
+            if (file.exists()) file.delete()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to clear cache: ${e.message}")
+        }
+    }
 }

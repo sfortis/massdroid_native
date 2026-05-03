@@ -57,6 +57,7 @@ class SendspinAudioController(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
+    private val localVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge,
     private val onMetadataChanged: (SendspinMetadata) -> Unit,
     private val onStateChanged: (ready: Boolean, streaming: Boolean, playing: Boolean) -> Unit
 ) {
@@ -141,6 +142,10 @@ class SendspinAudioController(
             currentOutputRoute = newRoute
             val gen = ++routeChangeGeneration
             Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            if (oldRoute == "bt" && newRoute == "speaker") {
+                pauseForBtSpeakerFallback()
+                return
+            }
             // Resolve correction and notify engine atomically: set correction BEFORE
             // onOutputRouteChanged so the engine relocks with the correct value.
             // Generation guard: if another route change arrives before this coroutine
@@ -170,6 +175,16 @@ class SendspinAudioController(
                 }
             }
         }
+    }
+
+    private fun pauseForBtSpeakerFallback() {
+        val id = sendspinPlayerId ?: return
+        Log.d(TAG, "Bluetooth output disconnected, pausing Sendspin to avoid phone-speaker fallback")
+        currentIsPlaying = false
+        optimisticUntil = System.currentTimeMillis() + 1000
+        sendspinManager.pauseAudio()
+        notifyStateChanged()
+        scope.launch { playerRepository.pause(id) }
     }
 
     private suspend fun resolveAcousticCorrectionForRoute(route: String): Long {
@@ -208,13 +223,7 @@ class SendspinAudioController(
     private var currentAlbum = ""
     private var currentDurationMs = 0L
     private var currentPositionMs = 0L
-    val currentDisplayedTitle: String get() = currentTitle
-    val currentDisplayedArtist: String get() = currentArtist
-    val currentDisplayedAlbum: String get() = currentAlbum
-    val currentDisplayedDurationMs: Long get() = currentDurationMs
-    val currentDisplayedPositionMs: Long get() = currentPositionMs
-    val currentDisplayedArtUrl: String? get() = currentArtUrl
-    var currentIsPlaying = false; private set
+    private var currentIsPlaying = false
     private var optimisticUntil = 0L
     var sendspinPlayerId: String? = null; private set
     private val collectorJobs = mutableListOf<Job>()
@@ -258,6 +267,7 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
         }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+        localVolumeBridge.start(scope)
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")
             return
@@ -619,6 +629,7 @@ class SendspinAudioController(
         abandonAudioFocus()
         unregisterNoisyReceiver()
         releaseLocks()
+        localVolumeBridge.stop()
         sendspinManager.stop()
         currentIsPlaying = false
         isReady = false

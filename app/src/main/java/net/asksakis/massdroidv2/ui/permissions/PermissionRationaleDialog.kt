@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.permissions
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -78,10 +85,10 @@ fun PermissionRationaleDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    MdTextButton(onClick = onDismiss) {
                         Text(spec.dismissLabel)
                     }
-                    Button(onClick = onConfirm) {
+                    MdButton(onClick = onConfirm) {
                         Text(spec.confirmLabel)
                     }
                 }

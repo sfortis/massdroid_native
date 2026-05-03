@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.VolumeDown
@@ -29,9 +36,9 @@ fun VolumeSlider(
         modifier = modifier.fillMaxWidth().let { if (compact) it.height(36.dp) else it },
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(
+        MdIconButton(
             onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onMuteToggle()
             },
             modifier = if (compact) Modifier.size(32.dp) else Modifier,
@@ -54,7 +61,7 @@ fun VolumeSlider(
             value = sliderValue,
             onValueChange = { sliderValue = it },
             onValueChangeFinished = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onVolumeChange(sliderValue.toInt())
             },
             valueRange = 0f..100f,

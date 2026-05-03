@@ -11,7 +11,9 @@ import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
+import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -25,7 +27,8 @@ class PlayerRepositoryImpl @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmGenreResolver: LastFmGenreResolver
+    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val sessionEventBus: SessionEventBus
 ) : PlayerRepository {
 
     companion object {
@@ -47,11 +50,17 @@ class PlayerRepositoryImpl @Inject constructor(
     private val _selectedPlayer = MutableStateFlow<Player?>(null)
     override val selectedPlayer: StateFlow<Player?> = _selectedPlayer.asStateFlow()
 
+    private val _selectionLock = MutableStateFlow<PlayerSelectionLock?>(null)
+    override val selectionLock: StateFlow<PlayerSelectionLock?> = _selectionLock.asStateFlow()
+
     private val _queueState = MutableStateFlow<QueueState?>(null)
     override val queueState: StateFlow<QueueState?> = _queueState.asStateFlow()
 
     private val _elapsedTime = MutableStateFlow(0.0)
     override val elapsedTime: StateFlow<Double> = _elapsedTime.asStateFlow()
+
+    private val _playbackPosition = MutableStateFlow<PlaybackPosition?>(null)
+    override val playbackPosition: StateFlow<PlaybackPosition?> = _playbackPosition.asStateFlow()
 
     private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
@@ -72,6 +81,18 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     @Volatile private var selectedPlayerId: String? = null
+
+    /**
+     * When the selected player is a member of a group (activeGroup != null),
+     * the authoritative queue events arrive under the group's ID, not the
+     * member's. Resolve to whichever one the server is actually pushing
+     * updates for so Now Playing / mini-player keep updating in group mode.
+     */
+    private fun effectiveQueueId(): String? {
+        val id = selectedPlayerId ?: return null
+        val player = _players.value.find { it.playerId == id }
+        return player?.activeGroup?.takeIf { it.isNotEmpty() } ?: id
+    }
     @Volatile private var pendingRestoredPlayerId: String? = null
 
 
@@ -113,6 +134,9 @@ class PlayerRepositoryImpl @Inject constructor(
     init {
         scope.launch { observeEvents() }
         scope.launch {
+            sessionEventBus.resets.collect { resetForAccountSwitch() }
+        }
+        scope.launch {
             settingsRepository.smartListeningEnabled.collect { enabled ->
                 smartListeningEnabledSnapshot = enabled
             }
@@ -140,7 +164,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         // Keep selectedPlayer and queueState for cached mini player display
                         pendingRestoredPlayerId = selectedPlayerId
                         _players.value = emptyList()
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         stopPositionTicker()
                         queueTracking.clear()
                         artistGenreCache.clear()
@@ -161,7 +185,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         // Clear stale queue snapshot immediately after reconnect so the UI
                         // falls back to fresh player media instead of showing pre-restart data.
                         _queueState.value = null
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         trackDuration = 0.0
                         favoriteOverride = null
                         favoriteOverrideUri = null
@@ -186,6 +210,41 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Wipes all per-account state. The default disconnect path intentionally
+     * keeps the last selectedPlayer and queue snapshot around so the mini
+     * player remains visible during a flap; that is wrong when the account
+     * itself changes, because the cached entities belong to a different user.
+     */
+    private fun resetForAccountSwitch() {
+        Log.d(TAG, "Session reset: dropping cached player and queue state")
+        blockedQueueCleanupJob?.cancel()
+        blockedQueueCleanupJob = null
+        stopPositionTicker()
+        selectedPlayerId = null
+        pendingRestoredPlayerId = null
+        favoriteOverride = null
+        favoriteOverrideUri = null
+        trackDuration = 0.0
+        positionBaseTime = 0.0
+        positionBaseTimestamp = 0L
+        isPlaying = false
+        _players.value = emptyList()
+        _selectedPlayer.value = null
+        _queueState.value = null
+        resetPosition()
+        queueTracking.clear()
+        artistGenreCache.clear()
+        libraryArtistUriCache.clear()
+        manualSkipByQueue.clear()
+        queueReplacementByQueue.clear()
+        blockedAutoSkipByQueue.clear()
+        blockedQueueCleanupAtByQueue.clear()
+        queueFilterModeByQueue.clear()
+        volumeOverrideUntilMs.clear()
+        suppressedArtistUrisSnapshot = emptySet()
+    }
+
     private suspend fun observeEvents() {
         wsClient.events.collect { event ->
             when (event.event) {
@@ -198,11 +257,16 @@ class PlayerRepositoryImpl @Inject constructor(
                     if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
                         Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
                     }
-                    // During volume cooldown, preserve local optimistic volume
-                    if (System.currentTimeMillis() < volumeOverrideUntilMs) {
-                        val localVol = _players.value.firstOrNull { it.playerId == player.playerId }?.volumeLevel
-                        if (localVol != null) {
-                            player = player.copy(volumeLevel = localVol)
+                    // During volume cooldown for THIS specific player, preserve
+                    // local optimistic values. Other players' echoes still flow
+                    // through (needed when group volume fans out to children).
+                    if (volumeCooldownActive(player.playerId)) {
+                        val local = _players.value.firstOrNull { it.playerId == player.playerId }
+                        if (local != null) {
+                            player = player.copy(
+                                volumeLevel = local.volumeLevel,
+                                groupVolume = local.groupVolume ?: player.groupVolume
+                            )
                         }
                     }
                     _players.update { list ->
@@ -215,7 +279,7 @@ class PlayerRepositoryImpl @Inject constructor(
                             selectedPlayerId = null
                             _selectedPlayer.value = null
                             _queueState.value = null
-                            _elapsedTime.value = 0.0
+                            resetPosition()
                             trackDuration = 0.0
                             favoriteOverride = null
                             favoriteOverrideUri = null
@@ -261,7 +325,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         selectedPlayerId = null
                         _selectedPlayer.value = null
                         _queueState.value = null
-                        _elapsedTime.value = 0.0
+                        resetPosition()
                         trackDuration = 0.0
                         favoriteOverride = null
                         favoriteOverrideUri = null
@@ -277,11 +341,13 @@ class PlayerRepositoryImpl @Inject constructor(
                     // Play history: track all queues, not just selected
                     trackPlayHistory(serverQueue)
 
-                    if (serverQueue.queueId == selectedPlayerId) {
+                    if (serverQueue.queueId == effectiveQueueId()) {
+                        val previousState = _queueState.value
                         var domainState = preserveCurrentAudioFormat(
-                            previous = _queueState.value,
+                            previous = previousState,
                             incoming = serverQueue.toDomain(wsClient)
                         )
+                        val currentItemChanged = hasCurrentItemChanged(previousState, domainState)
                         // Apply favorite override if current track matches
                         val override = favoriteOverride
                         val overrideUri = favoriteOverrideUri
@@ -298,18 +364,21 @@ class PlayerRepositoryImpl @Inject constructor(
                         }
                         _queueState.value = domainState
                         trackDuration = serverQueue.currentItem?.duration ?: 0.0
-                        updatePosition(serverQueue.elapsedTime)
+                        updatePosition(
+                            serverElapsed = if (currentItemChanged) 0.0 else serverQueue.elapsedTime,
+                            startTicker = !currentItemChanged
+                        )
                     }
                 }
                 EventType.QUEUE_ITEMS_UPDATED -> {
                     val queueId = event.objectId ?: return@collect
-                    if (queueId == selectedPlayerId) {
+                    if (queueId == effectiveQueueId()) {
                         _queueItemsChanged.tryEmit(queueId)
                         scheduleBlockedQueueCleanup(queueId, reason = "queue_items_updated")
                     }
                 }
                 EventType.QUEUE_TIME_UPDATED -> {
-                    if (event.objectId != selectedPlayerId) return@collect
+                    if (event.objectId != effectiveQueueId()) return@collect
                     val elapsed = event.data?.jsonPrimitive?.doubleOrNull ?: return@collect
                     updatePosition(elapsed)
                 }
@@ -796,11 +865,32 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun updatePosition(serverElapsed: Double) {
+    private fun updatePosition(serverElapsed: Double, startTicker: Boolean = true) {
         positionBaseTime = serverElapsed
         positionBaseTimestamp = System.currentTimeMillis()
-        _elapsedTime.value = serverElapsed
-        startPositionTicker()
+        publishPosition(serverElapsed)
+        if (startTicker) startPositionTicker() else stopPositionTicker()
+    }
+
+    private fun publishPosition(position: Double) {
+        _elapsedTime.value = position
+        _playbackPosition.value = currentPlaybackPosition(position)
+    }
+
+    private fun resetPosition() {
+        _elapsedTime.value = 0.0
+        _playbackPosition.value = null
+    }
+
+    private fun currentPlaybackPosition(position: Double): PlaybackPosition {
+        val queue = _queueState.value
+        val item = queue?.currentItem
+        return PlaybackPosition(
+            queueId = queue?.queueId,
+            queueItemId = item?.queueItemId,
+            trackUri = item?.track?.uri,
+            position = position
+        )
     }
 
     private fun preserveCurrentAudioFormat(
@@ -823,6 +913,25 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
+    private fun hasCurrentItemChanged(previous: QueueState?, incoming: QueueState): Boolean {
+        val previousItem = previous?.currentItem ?: return false
+        val nextItem = incoming.currentItem ?: return false
+
+        val previousQueueItemId = previousItem.queueItemId
+        val nextQueueItemId = nextItem.queueItemId
+        if (previousQueueItemId.isNotBlank() && nextQueueItemId.isNotBlank()) {
+            return previousQueueItemId != nextQueueItemId
+        }
+
+        val previousTrackUri = previousItem.track?.uri
+        val nextTrackUri = nextItem.track?.uri
+        if (!previousTrackUri.isNullOrBlank() && !nextTrackUri.isNullOrBlank()) {
+            return previousTrackUri != nextTrackUri
+        }
+
+        return false
+    }
+
     private fun startPositionTicker() {
         positionTickJob?.cancel()
         if (!isPlaying) return
@@ -830,7 +939,7 @@ class PlayerRepositoryImpl @Inject constructor(
             while (isActive) {
                 delay(500)
                 val elapsed = positionBaseTime + (System.currentTimeMillis() - positionBaseTimestamp) / 1000.0
-                _elapsedTime.value = if (trackDuration > 0) elapsed.coerceAtMost(trackDuration) else elapsed
+                publishPosition(if (trackDuration > 0) elapsed.coerceAtMost(trackDuration) else elapsed)
             }
         }
     }
@@ -881,7 +990,7 @@ class PlayerRepositoryImpl @Inject constructor(
         pendingRestoredPlayerId = null
         _selectedPlayer.value = null
         _queueState.value = null
-        _elapsedTime.value = 0.0
+        resetPosition()
         trackDuration = 0.0
         favoriteOverride = null
         favoriteOverrideUri = null
@@ -890,16 +999,40 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override fun selectPlayer(playerId: String) {
-        selectedPlayerId = playerId
-        pendingRestoredPlayerId = if (pendingRestoredPlayerId == playerId) null else pendingRestoredPlayerId
-        val player = _players.value.find { it.playerId == playerId }
+        val lockedPlayerId = _selectionLock.value?.playerId
+        val effectivePlayerId = lockedPlayerId ?: playerId
+        if (lockedPlayerId != null && playerId != lockedPlayerId) {
+            Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
+        }
+        val player = _players.value.find { it.playerId == effectivePlayerId }
+        if (
+            selectedPlayerId == effectivePlayerId &&
+            _selectedPlayer.value?.playerId == effectivePlayerId
+        ) {
+            return
+        }
+
+        selectedPlayerId = effectivePlayerId
+        pendingRestoredPlayerId = if (pendingRestoredPlayerId == effectivePlayerId) null else pendingRestoredPlayerId
         _selectedPlayer.value = player
         isPlaying = player?.state == PlaybackState.PLAYING
         stopPositionTicker()
         scope.launch {
-            settingsRepository.setSelectedPlayerId(playerId)
-            refreshQueueForPlayerWithRetry(playerId)
-            scheduleBlockedQueueCleanup(playerId, reason = "select_player", force = true)
+            settingsRepository.setSelectedPlayerId(effectivePlayerId)
+            refreshQueueForPlayerWithRetry(effectivePlayerId)
+            scheduleBlockedQueueCleanup(effectivePlayerId, reason = "select_player", force = true)
+        }
+    }
+
+    override fun setSelectionLock(lock: PlayerSelectionLock?) {
+        val previous = _selectionLock.value
+        if (previous == lock) return
+        _selectionLock.value = lock
+        if (lock != null && selectedPlayerId != lock.playerId) {
+            Log.d(TAG, "Applying selection lock to ${lock.playerId} (${lock.reason})")
+            selectPlayer(lock.playerId)
+        } else if (lock == null && previous != null) {
+            Log.d(TAG, "Selection lock cleared (${previous.reason})")
         }
     }
 
@@ -922,7 +1055,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 trackDuration = serverQueue.currentItem?.duration ?: 0.0
                 updatePosition(serverQueue.elapsedTime)
             } else {
-                _elapsedTime.value = 0.0
+                resetPosition()
                 trackDuration = 0.0
             }
         } catch (e: Exception) {
@@ -999,20 +1132,38 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
-    @Volatile private var volumeOverrideUntilMs = 0L
+    // Per-player cooldowns so that an optimistic update on one player doesn't
+    // suppress server echoes for OTHER players. Group volume fans out to
+    // children — we need their echoes to arrive.
+    private val volumeOverrideUntilMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun volumeCooldownActive(playerId: String): Boolean =
+        System.currentTimeMillis() < (volumeOverrideUntilMs[playerId] ?: 0L)
 
     /**
      * Synchronous optimistic volume update + cooldown.
      * Call from the UI thread BEFORE launching the async WS command
      * to prevent PLAYER_UPDATED echoes from flickering the slider.
+     *
+     * For group-type players we also update [Player.groupVolume] so that the
+     * hardware rocker keeps incrementing from the new basis instead of the
+     * stale server average.
      */
     override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int) {
-        volumeOverrideUntilMs = System.currentTimeMillis() + 800
+        volumeOverrideUntilMs[playerId] = System.currentTimeMillis() + 800
         _players.update { list ->
-            list.map { if (it.playerId == playerId) it.copy(volumeLevel = volumeLevel) else it }
+            list.map {
+                if (it.playerId != playerId) return@map it
+                val patched = it.copy(volumeLevel = volumeLevel)
+                if (it.groupVolume != null) patched.copy(groupVolume = volumeLevel) else patched
+            }
         }
         if (_selectedPlayer.value?.playerId == playerId) {
-            _selectedPlayer.update { it?.copy(volumeLevel = volumeLevel) }
+            _selectedPlayer.update {
+                val s = it ?: return@update null
+                val patched = s.copy(volumeLevel = volumeLevel)
+                if (s.groupVolume != null) patched.copy(groupVolume = volumeLevel) else patched
+            }
         }
     }
 
@@ -1024,51 +1175,43 @@ class PlayerRepositoryImpl @Inject constructor(
         )
     }
 
-    // Group volume: ratio-based so proportions are preserved and min/max hit 0/100 for all
-    private val groupMemberRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
-    private var groupRatioParentId: String? = null
-
-    private fun ensureGroupRatios(parentId: String) {
-        val allPlayers = _players.value
-        val parent = allPlayers.find { it.playerId == parentId } ?: return
-        if (groupRatioParentId != parentId) {
-            groupMemberRatios.clear()
-            groupRatioParentId = parentId
-        }
-        val parentVol = parent.volumeLevel.coerceAtLeast(1)
-        for (childId in parent.groupChilds) {
-            if (childId != parentId && !groupMemberRatios.containsKey(childId)) {
-                val child = allPlayers.find { it.playerId == childId }
-                groupMemberRatios[childId] = (child?.volumeLevel ?: 0).toFloat() / parentVol
-            }
-        }
-    }
-
     override suspend fun setGroupVolume(parentId: String, volume: Int) {
-        val parent = _players.value.find { it.playerId == parentId } ?: return
-        ensureGroupRatios(parentId)
-        setVolume(parentId, volume)
-        for (childId in parent.groupChilds) {
-            if (childId != parentId) {
-                val ratio = groupMemberRatios[childId] ?: 1f
-                val memberVol = (volume * ratio).toInt().coerceIn(0, 100)
-                setVolume(childId, memberVol)
-            }
-        }
+        // Delegate to the server-side group-volume command. It handles the fan-out
+        // to members while preserving their current volume ratios, for both
+        // proper group players (type=GROUP) and ad-hoc sync leaders.
+        applyVolumeOptimistic(parentId, volume)
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_GROUP_VOLUME,
+            VolumeSetArgs(playerId = parentId, volumeLevel = volume)
+        )
     }
 
     override fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int) {
-        val parent = _players.value.find { it.playerId == parentId }
-        if (parent != null) {
-            val parentVol = parent.volumeLevel.coerceAtLeast(1)
-            groupMemberRatios[memberId] = volume.toFloat() / parentVol
-        }
+        // No-op: group volume ratios are now tracked server-side. Individual
+        // member volume changes go straight through setVolume() and the server
+        // preserves the new ratio on the next group-volume command.
     }
 
     override suspend fun toggleMute(playerId: String, muted: Boolean) {
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_MUTE,
             VolumeMuteArgs(playerId = playerId, muted = muted)
+        )
+    }
+
+    override suspend fun setPower(playerId: String, powered: Boolean) {
+        // Optimistic local flip so the switch in Player Settings reacts
+        // immediately; the authoritative value lands with the next
+        // PLAYER_UPDATED event.
+        _players.update { list ->
+            list.map { if (it.playerId == playerId) it.copy(powered = powered) else it }
+        }
+        if (_selectedPlayer.value?.playerId == playerId) {
+            _selectedPlayer.update { it?.copy(powered = powered) }
+        }
+        wsClient.sendCommand(
+            MaCommands.Players.CMD_POWER,
+            PowerArgs(playerId = playerId, powered = powered)
         )
     }
 
@@ -1123,6 +1266,11 @@ class PlayerRepositoryImpl @Inject constructor(
                 is JsonObject -> this["value"]?.jsonPrimitive?.booleanOrNull
                 else -> null
             }
+            fun JsonElement.configInt(): Int? = when (this) {
+                is JsonPrimitive -> intOrNull
+                is JsonObject -> this["value"]?.jsonPrimitive?.intOrNull
+                else -> null
+            }
 
             val configName = obj["name"]?.jsonPrimitive?.contentOrNull
                 ?: obj["default_name"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -1145,7 +1293,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 ),
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
                 sendspinFormat = formatEntry?.configValue(),
-                sendspinFormatOptions = formatOptions
+                sendspinFormatOptions = formatOptions,
+                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt()
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")
@@ -1204,10 +1353,26 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
     }
 
-    override suspend fun createGroupPlayer(name: String, memberIds: List<String>) {
+    override suspend fun getGroupCapableProviders(): List<GroupProviderOption> {
+        val result = wsClient.sendCommand(MaCommands.Providers.LIST) ?: return emptyList()
+        return try {
+            val instances = json.decodeFromJsonElement(
+                kotlinx.serialization.builtins.ListSerializer(ProviderInstance.serializer()),
+                result
+            )
+            instances
+                .filter { it.type == "player" && "create_group_player" in it.supportedFeatures }
+                .map { GroupProviderOption(instanceId = it.instanceId, domain = it.domain, name = it.name) }
+        } catch (e: Exception) {
+            Log.w(TAG, "getGroupCapableProviders parse failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    override suspend fun createGroupPlayer(provider: String, name: String, memberIds: List<String>) {
         wsClient.sendCommand(
             MaCommands.Players.CREATE_GROUP,
-            CreateGroupPlayerArgs(name = name, members = memberIds)
+            CreateGroupPlayerArgs(provider = provider, name = name, members = memberIds)
         )
     }
 
@@ -1215,6 +1380,21 @@ class PlayerRepositoryImpl @Inject constructor(
         wsClient.sendCommand(
             MaCommands.Players.CMD_SET_MEMBERS,
             SetMembersArgs(targetPlayer = targetPlayerId, playerIdsToAdd = addIds, playerIdsToRemove = removeIds)
+        )
+    }
+
+    override suspend fun ungroupPlayer(playerId: String) {
+        wsClient.sendCommand(
+            MaCommands.Players.UNGROUP,
+            UngroupArgs(playerId = playerId)
+        )
+    }
+
+    override suspend fun ungroupPlayers(playerIds: List<String>) {
+        if (playerIds.isEmpty()) return
+        wsClient.sendCommand(
+            MaCommands.Players.UNGROUP_MANY,
+            UngroupManyArgs(playerIds = playerIds)
         )
     }
 
@@ -1295,10 +1475,14 @@ fun ServerPlayer.toDomain(
         "paused" -> PlaybackState.PAUSED
         else -> PlaybackState.IDLE
     },
+    powered = powered,
     volumeLevel = volumeLevel,
+    groupVolume = groupVolume,
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
+    syncedTo = syncedTo,
     groupChilds = groupChilds,
+    staticGroupMembers = staticGroupMembers,
     supportedFeatures = supportedFeatures.toSet(),
     canGroupWith = canGroupWith,
     currentMedia = currentMedia?.let {

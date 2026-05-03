@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -106,6 +113,9 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
     @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
     @Inject lateinit var playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository
+    @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+    @Inject lateinit var oauthCallbackBus: net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+    @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 
     private val volumeStep = 5
     @Volatile private var cachedSsClientId: String? = null
@@ -142,6 +152,8 @@ class MainActivity : ComponentActivity() {
             requestNotificationPermission()
             requestFollowMePermissionsIfNeeded()
         }
+        // The activity may be (re)launched via the OAuth callback deep link.
+        handleOAuthCallback(intent)
         checkBatteryOptimization()
         handleShortcutIntent(intent)
 
@@ -223,6 +235,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShortcutIntent(intent)
+        handleOAuthCallback(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Detect OAuth abandonment: user pressed back/close in the browser tab
+        // without completing the sign-in. The repo handles the grace window.
+        maAuthRepository.handleAppResumed()
+    }
+
+    private fun handleOAuthCallback(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "musicassistant" || data.host != "auth") return
+        val code = data.getQueryParameter("code") ?: return
+        if (code.isBlank()) return
+        oauthCallbackBus.publish(code)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -247,23 +275,58 @@ class MainActivity : ComponentActivity() {
                             AudioManager.FLAG_SHOW_UI
                         )
                         val maVol = readPhoneVolumePercent()
+                        localSpeakerVolumeBridge.recordLocalPush(maVol)
                         lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
                         return true
                     }
                     return true
                 }
-                // Remote speaker: consume both DOWN and UP to prevent system volume change
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
-                    val newVol = (player.volumeLevel + delta).coerceIn(0, 100)
-                    // Optimistic update + cooldown synchronously to prevent PLAYER_UPDATED
-                    // echo from flickering the slider before the coroutine starts.
-                    playerRepository.applyVolumeOptimistic(player.playerId, newVol)
-                    lifecycleScope.launch {
-                        if (player.groupChilds.any { it != player.playerId }) {
-                            playerRepository.setGroupVolume(player.playerId, newVol)
+                    val isGroup = player.groupChilds.any { it != player.playerId }
+                    val localId = cachedSsClientId
+                    val localIsMember = localId != null &&
+                        isGroup &&
+                        player.groupChilds.any { it == localId }
+                    if (localIsMember && localId != null) {
+                        // Hardware keys drive ONLY the local speaker's own MA
+                        // volume (not the entire group). We change phone
+                        // STREAM_MUSIC first, read the resulting phone %, and
+                        // push exactly that value to MA so the server echo
+                        // confirms rather than competes.
+                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
+                        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                            AudioManager.ADJUST_RAISE
                         } else {
-                            playerRepository.setVolume(player.playerId, newVol)
+                            AudioManager.ADJUST_LOWER
+                        }
+                        audio.adjustStreamVolume(
+                            AudioManager.STREAM_MUSIC,
+                            direction,
+                            AudioManager.FLAG_SHOW_UI
+                        )
+                        val phonePct = readPhoneVolumePercent()
+                        localSpeakerVolumeBridge.recordLocalPush(phonePct)
+                        playerRepository.applyVolumeOptimistic(localId, phonePct)
+                        lifecycleScope.launch {
+                            playerRepository.setVolume(localId, phonePct)
+                        }
+                    } else {
+                        // Plain remote speaker / non-local group: adjust the
+                        // selected player's volume (or the group volume for a
+                        // group-type parent). The group fan-out is handled by
+                        // MA's cmd/group_volume.
+                        val basis = if (isGroup) player.groupVolume ?: player.volumeLevel
+                            else player.volumeLevel
+                        val newVol = (basis + delta).coerceIn(0, 100)
+                        playerRepository.applyVolumeOptimistic(player.playerId, newVol)
+                        lifecycleScope.launch {
+                            if (isGroup) {
+                                playerRepository.setGroupVolume(player.playerId, newVol)
+                            } else {
+                                playerRepository.setVolume(player.playerId, newVol)
+                            }
                         }
                     }
                 }
@@ -374,7 +437,7 @@ private fun UpdatePrompt(checker: net.asksakis.massdroidv2.data.update.AppUpdate
                 )
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(
+                MdTextButton(
                     onClick = {
                         isDownloading = true
                         scope.launch {
@@ -396,7 +459,7 @@ private fun UpdatePrompt(checker: net.asksakis.massdroidv2.data.update.AppUpdate
                 }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(
+                MdTextButton(
                     onClick = { checker.dismissPendingUpdate() },
                     enabled = !isDownloading
                 ) {
@@ -454,9 +517,18 @@ private fun MassDroidApp(
     val miniPlayerCollapsedHeight = 72.dp
     val miniPlayerMargin = 8.dp
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
-    val miniPlayerPadding = if (showMiniPlayer) miniPlayerCollapsedHeight + miniPlayerMargin else 0.dp
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val isConnected = miniPlayerUiState.connected
+    // Mirror the visibility predicate used by MiniPlayerContainer so any FAB or
+    // scrollable content that compensates for the mini player only does so when
+    // one is actually rendered. Otherwise (no player selected, etc.) the slot
+    // sits empty and content like the Smart Mix FAB ends up floating too high.
+    val hasActiveMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
+    val miniPlayerPadding = if (hasActiveMiniPlayer) {
+        miniPlayerCollapsedHeight + miniPlayerMargin
+    } else {
+        0.dp
+    }
 
     CompositionLocalProvider(
         LocalMiniPlayerPadding provides miniPlayerPadding,

@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import net.asksakis.massdroidv2.data.proximity.WifiMatchMode
 import androidx.compose.foundation.background
 import androidx.compose.material3.FilterChip
@@ -122,17 +129,17 @@ fun RoomSetupScreen(
             TopAppBar(
                 title = { Text(if (existingRoom != null) "Edit Room" else "New Room") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(
+                    MdIconButton(
                         onClick = {
                             val player = selectedPlayer
                             if (roomName.isBlank() || player == null) {
                                 scope.launch { snackbarHostState.showSnackbar("Fill in room name and select a player") }
-                                return@IconButton
+                                return@MdIconButton
                             }
                             viewModel.saveRoom(
                                 roomId = existingRoom?.id,
@@ -353,9 +360,9 @@ fun RoomSetupScreen(
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                androidx.compose.material3.OutlinedButton(
+                MdOutlinedButton(
                     onClick = {
-                        val id = existingRoom?.id ?: return@OutlinedButton
+                        val id = existingRoom?.id ?: return@MdOutlinedButton
                         viewModel.calibrateRoom(id) {}
                     },
                     enabled = !isCalibrating && !bleInspectionInProgress && existingRoom != null,
@@ -366,9 +373,9 @@ fun RoomSetupScreen(
                     Text(if (existingRoom?.fingerprints?.isNotEmpty() == true) "Recalibrate" else "Calibrate")
                 }
 
-                androidx.compose.material3.OutlinedButton(
+                MdOutlinedButton(
                     onClick = {
-                        val id = existingRoom?.id ?: return@OutlinedButton
+                        val id = existingRoom?.id ?: return@MdOutlinedButton
                         viewModel.inspectRoomBle(id)
                     },
                     enabled = !isCalibrating && !bleInspectionInProgress && existingRoom != null,
@@ -468,7 +475,7 @@ fun RoomSetupScreen(
                     title = { Text("BLE Inspection Failed") },
                     text = { Text(error) },
                     confirmButton = {
-                        TextButton(onClick = { viewModel.dismissBleInspectionError() }) { Text("OK") }
+                        MdTextButton(onClick = { viewModel.dismissBleInspectionError() }) { Text("OK") }
                     }
                 )
             }
@@ -500,7 +507,7 @@ fun RoomSetupScreen(
             title = { Text("Calibration Failed") },
             text = { Text(error) },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissCalibrationError() }) { Text("OK") }
+                MdTextButton(onClick = { viewModel.dismissCalibrationError() }) { Text("OK") }
             }
         )
     }
@@ -512,7 +519,7 @@ fun RoomSetupScreen(
             title = { Text("Calibration Result") },
             text = { Text(summary) },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissCalibrationSummary() }) { Text("OK") }
+                MdTextButton(onClick = { viewModel.dismissCalibrationSummary() }) { Text("OK") }
             }
         )
     }
@@ -570,7 +577,7 @@ private fun BleInspectionDialog(
                         }
                     }
                     Spacer(modifier = Modifier.width(16.dp))
-                    TextButton(onClick = onDismiss) { Text("Close") }
+                    MdTextButton(onClick = onDismiss) { Text("Close") }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -806,7 +813,7 @@ private fun PlaybackConfigSection(
                     )
                 }
                 if (playbackConfig.playlistUri != null) {
-                    IconButton(onClick = {
+                    MdIconButton(onClick = {
                         viewModel.updateRoomPlayback(roomId, playbackConfig.copy(playlistUri = null, playlistName = null))
                     }) {
                         Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp),
@@ -990,7 +997,7 @@ private fun PlaybackConfigSection(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showPlaylistPicker = false }) { Text("Cancel") }
+                MdTextButton(onClick = { showPlaylistPicker = false }) { Text("Cancel") }
             }
         )
     }

@@ -45,8 +45,72 @@ class SettingsViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val lastFmGenreResolver: LastFmGenreResolver,
     private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
-    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
+    private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 ) : ViewModel() {
+
+    val availableAuthProviders = maAuthRepository.availableProviders
+    val oauthInProgress = maAuthRepository.oauthInProgress
+    val oauthErrors = maAuthRepository.oauthErrors
+
+    /**
+     * Resolved identity of the currently authenticated user, or null when not
+     * signed in. Derived from the saved JWT (preferred) or falls back to the
+     * saved built-in username so the UI can still show "Signed in as X" even
+     * if the token couldn't be parsed.
+     */
+    val currentUser: StateFlow<net.asksakis.massdroidv2.domain.repository.CurrentUser?> =
+        kotlinx.coroutines.flow.combine(
+            settingsRepository.authToken,
+            settingsRepository.username
+        ) { token, username ->
+            net.asksakis.massdroidv2.data.websocket.MaTokenInfo.decode(token)
+                ?: username.takeIf { it.isNotBlank() }?.let {
+                    net.asksakis.massdroidv2.domain.repository.CurrentUser(
+                        username = it,
+                        authMethod = "Username & password"
+                    )
+                }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /**
+     * Triggered when the user's typed server URL stabilises. Refreshes the
+     * provider list so the UI can show "Sign in with Home Assistant" if the
+     * server advertises it.
+     */
+    fun probeAuthProviders(url: String) {
+        viewModelScope.launch {
+            maAuthRepository.probeProviders(normalizeUrl(url))
+        }
+    }
+
+    /**
+     * Returns the URL to open in a browser tab to begin the HA OAuth flow,
+     * or null on failure (errors are emitted to [oauthErrors]).
+     */
+    suspend fun startHomeAssistantOAuth(url: String): String? {
+        val normalized = normalizeUrl(url)
+        if (normalized.isBlank()) {
+            _loginError.value = "Enter a server URL"
+            return null
+        }
+        if (!isUrlValid(normalized)) {
+            _loginError.value = "Add http:// or https:// to the URL"
+            return null
+        }
+        viewModelScope.launch { settingsRepository.setServerUrl(normalized) }
+        return maAuthRepository.startHomeAssistantOAuth(normalized)
+    }
+
+    fun cancelOAuth() {
+        maAuthRepository.cancelOAuth()
+    }
+
+    fun signOut() {
+        viewModelScope.launch {
+            maAuthRepository.signOut()
+        }
+    }
 
     val enrichmentProgress = lastFmLibraryEnricher.progress
 
@@ -122,11 +186,16 @@ class SettingsViewModel @Inject constructor(
 
     // Token persistence is handled by MassDroidApp's connectionState observer
 
+    /**
+     * Light shaping for the URL: trim whitespace and strip a trailing slash.
+     * No silent scheme prepend — the UI surfaces a validation hint with
+     * suggestion chips so the user explicitly picks http:// or https://.
+     */
     private fun normalizeUrl(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.isBlank()) return trimmed
-        return if (!trimmed.contains("://")) "http://$trimmed" else trimmed
+        return raw.trim().trimEnd('/')
     }
+
+    private fun isUrlValid(url: String): Boolean = url.contains("://")
 
     fun login(url: String, username: String, password: String) {
         val u = normalizeUrl(url)
@@ -134,6 +203,10 @@ class SettingsViewModel @Inject constructor(
         val pass = password.trim()
         if (u.isBlank() || user.isBlank() || pass.isBlank()) {
             _loginError.value = "Fill in all fields"
+            return
+        }
+        if (!isUrlValid(u)) {
+            _loginError.value = "Add http:// or https:// to the URL"
             return
         }
         _loginError.value = null
@@ -157,6 +230,10 @@ class SettingsViewModel @Inject constructor(
             _loginError.value = "Enter a server URL"
             return
         }
+        if (!isUrlValid(connectUrl)) {
+            _loginError.value = "Add http:// or https:// to the URL"
+            return
+        }
         if (token.isBlank()) {
             _loginError.value = "No saved token. Login with credentials first."
             return
@@ -172,6 +249,10 @@ class SettingsViewModel @Inject constructor(
 
     fun clearLoginError() {
         _loginError.value = null
+    }
+
+    fun setLoginError(message: String) {
+        _loginError.value = message
     }
 
     fun clearUpdateMessage() {

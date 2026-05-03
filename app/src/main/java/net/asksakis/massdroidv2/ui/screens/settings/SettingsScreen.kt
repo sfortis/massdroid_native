@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
@@ -27,13 +34,16 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
@@ -60,13 +70,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextAlign
+import androidx.browser.customtabs.CustomTabsIntent
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -74,7 +90,40 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
-private enum class SettingsCategory { CONNECTION, RECOMMENDATIONS, PROXIMITY, ABOUT }
+enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, ABOUT }
+
+/**
+ * Matches text the user could plausibly be typing as a leading "http" / "https"
+ * scheme: any prefix of "https" optionally followed by ":", "/", or "//".
+ * Used so the scheme suggestion chips REPLACE a half-typed scheme rather than
+ * concatenate "https://" to "htt".
+ */
+private val PARTIAL_HTTP_SCHEME = Regex(
+    "^h(t(t(p(s?(:(/(/)?)?)?)?)?)?)?$",
+    RegexOption.IGNORE_CASE
+)
+
+/**
+ * Apply a scheme chip to the current URL field text. Three cases:
+ *  1. The text already has "://" somewhere: swap whatever was before it.
+ *  2. The text is itself a partial scheme (e.g. "h", "htt", "https:"): drop
+ *     it so the new scheme stands alone.
+ *  3. Anything else (host-looking text): prepend.
+ */
+private fun applyUrlScheme(scheme: String, current: String): String {
+    val trimmed = current.trim()
+    val sep = trimmed.indexOf("://")
+    if (sep >= 0) return scheme + trimmed.substring(sep + 3)
+    val host = if (PARTIAL_HTTP_SCHEME.matches(trimmed)) "" else trimmed
+    return scheme + host
+}
+
+private fun launchCustomTab(context: android.content.Context, url: String) {
+    val intent = CustomTabsIntent.Builder()
+        .setShowTitle(true)
+        .build()
+    intent.launchUrl(context, android.net.Uri.parse(url))
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,11 +131,14 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenRecommendationInsights: () -> Unit,
     onSetupRoom: (roomId: String?) -> Unit = {},
+    initialCategory: SettingsCategory? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var selectedCategoryName by rememberSaveable { mutableStateOf<String?>(null) }
+    // initialCategory only seeds the FIRST composition. Process death restores
+    // whatever the user had drilled into (rememberSaveable wins on recreation).
+    var selectedCategoryName by rememberSaveable { mutableStateOf(initialCategory?.name) }
     val selectedCategory = selectedCategoryName?.let { name -> SettingsCategory.entries.find { it.name == name } }
 
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
@@ -117,6 +169,7 @@ fun SettingsScreen(
                     Text(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
+                            SettingsCategory.PHONE_AS_SPEAKER -> "Phone as Speaker"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
                             SettingsCategory.ABOUT -> "About"
@@ -125,7 +178,7 @@ fun SettingsScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
+                    MdIconButton(onClick = {
                         if (selectedCategory != null) selectedCategoryName = null else onBack()
                     }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -143,6 +196,10 @@ fun SettingsScreen(
                     viewModel = viewModel,
                     modifier = Modifier.padding(paddingValues),
                     onSelect = { selectedCategoryName = it.name }
+                )
+                SettingsCategory.PHONE_AS_SPEAKER -> PhoneAsSpeakerScreen(
+                    viewModel = viewModel,
+                    modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.CONNECTION -> ConnectionScreen(
                     viewModel = viewModel,
@@ -182,11 +239,20 @@ private fun CategoryList(
 
         ListItem(
             headlineContent = { Text("Connection") },
-            supportingContent = { Text("Server setup, authentication, and streaming") },
+            supportingContent = { Text("Server URL, authentication, and certificates") },
             leadingContent = {
                 Icon(Icons.Default.Wifi, contentDescription = null)
             },
             modifier = Modifier.clickable { onSelect(SettingsCategory.CONNECTION) }
+        )
+        HorizontalDivider()
+        ListItem(
+            headlineContent = { Text("Phone as Speaker") },
+            supportingContent = { Text("Stream audio to this phone via Sendspin") },
+            leadingContent = {
+                Icon(Icons.Default.Speaker, contentDescription = null)
+            },
+            modifier = Modifier.clickable { onSelect(SettingsCategory.PHONE_AS_SPEAKER) }
         )
         HorizontalDivider()
         ListItem(
@@ -263,8 +329,42 @@ private fun ConnectionScreen(viewModel: SettingsViewModel, modifier: Modifier = 
         ConnectionStatusCard(connectionState = connectionState)
         ServerConnectionCard(viewModel = viewModel, connectionState = connectionState)
         ClientCertCard(viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val isConnected = connectionState is ConnectionState.Connected
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         if (isConnected) {
             SendspinCard(viewModel = viewModel)
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                )
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Connect to your Music Assistant server first to enable Phone as Speaker.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
@@ -373,7 +473,9 @@ private fun ServerConnectionCard(
     val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
     val savedPassword by viewModel.savedPassword.collectAsStateWithLifecycle()
 
-    var editUrl by remember(serverUrl) { mutableStateOf(serverUrl) }
+    var editUrl by remember(serverUrl) {
+        mutableStateOf(TextFieldValue(serverUrl, TextRange(serverUrl.length)))
+    }
     var username by remember(savedUsername) { mutableStateOf(savedUsername) }
     var password by remember(savedPassword) { mutableStateOf(savedPassword) }
     var showPassword by remember { mutableStateOf(false) }
@@ -383,12 +485,34 @@ private fun ServerConnectionCard(
     val isConnecting = connectionState is ConnectionState.Connecting
     val isRetryingConnection = isConnecting || (connectionState is ConnectionState.Error && reconnecting)
     val hasToken = authToken.isNotBlank()
+
+    // Auth providers exposed by the server (only HA OAuth is treated specially;
+    // the built-in credentials path always falls through).
+    val providers by viewModel.availableAuthProviders.collectAsStateWithLifecycle()
+    val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
+    val haProviderAvailable = providers.any { it.isHomeAssistant }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Probe the server's providers as the URL stabilises (debounced).
+    LaunchedEffect(editUrl.text, isConnected) {
+        if (isConnected) return@LaunchedEffect
+        if (editUrl.text.isBlank()) return@LaunchedEffect
+        kotlinx.coroutines.delay(400)
+        viewModel.probeAuthProviders(editUrl.text)
+    }
+    // Surface OAuth errors as login errors so the existing error row picks them up.
+    LaunchedEffect(Unit) {
+        viewModel.oauthErrors.collect { msg -> viewModel.setLoginError(msg) }
+    }
     val primaryConnectionButtonLabel = when {
         isConnected -> "Disconnect"
         isRetryingConnection -> "Abort"
         connectionState is ConnectionState.Error -> "Retry"
         else -> "Connect"
     }
+
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -399,118 +523,201 @@ private fun ServerConnectionCard(
         modifier = Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-
-    OutlinedTextField(
-        value = editUrl,
-        onValueChange = { editUrl = it },
-        label = { Text("Server URL") },
-        placeholder = { Text("https://ma.example.com") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        enabled = !isConnected
-    )
-
-    if (hasToken) {
-        Button(
-            onClick = {
-                if (isConnected || isRetryingConnection) {
-                    viewModel.disconnect()
-                } else {
-                    viewModel.connectWithToken(editUrl)
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(
-                if (isConnected || isRetryingConnection) Icons.Default.CloudOff
-                else Icons.Default.Cloud,
-                contentDescription = null
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(primaryConnectionButtonLabel)
-        }
-    }
-
-    if (!isConnected) {
-        HorizontalDivider()
-
-        if (hasToken) {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-        }
-
         Text(
-            text = "Music Assistant credentials",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "Server",
+            style = MaterialTheme.typography.titleSmall
         )
 
-        OutlinedTextField(
-            value = username,
-            onValueChange = {
-                username = it
-                viewModel.clearLoginError()
-            },
-            label = { Text("Username") },
-            singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-            modifier = Modifier.fillMaxWidth()
-                .semantics { contentType = ContentType.Username }
-        )
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = {
-                password = it
-                viewModel.clearLoginError()
-            },
-            label = { Text("Password") },
-            singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-            visualTransformation = if (showPassword) VisualTransformation.None
-                else PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                    Icon(
-                        if (showPassword) Icons.Default.VisibilityOff
-                        else Icons.Default.Visibility,
-                        contentDescription = "Toggle password"
+        if (isConnected) {
+            // Read-only URL display + signed-in identity + Sign out.
+            Text(
+                text = serverUrl,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Cloud,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = "Signed in as ${currentUser?.username ?: "unknown"}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    currentUser?.authMethod?.let {
+                        Text(
+                            text = "via $it",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            MdButton(
+                onClick = { viewModel.signOut() },
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                )
+            ) {
+                Icon(Icons.Default.Logout, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Sign out")
+            }
+            Text(
+                text = "Sign out wipes your saved sign-in for this server. " +
+                    "The server URL is kept so you can sign back in.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            // Disconnected (or connecting / error). Show editable URL and the
+            // sign-in options.
+            val urlMissingScheme = editUrl.text.isNotBlank() && !editUrl.text.contains("://")
+            OutlinedTextField(
+                value = editUrl,
+                onValueChange = { editUrl = it },
+                label = { Text("Server URL") },
+                placeholder = { Text("https://ma.example.com") },
+                singleLine = true,
+                isError = urlMissingScheme,
+                supportingText = if (urlMissingScheme) {
+                    { Text("Add http:// or https:// to the URL") }
+                } else null,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (urlMissingScheme) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.SuggestionChip(
+                        onClick = {
+                            val next = applyUrlScheme("http://", editUrl.text)
+                            editUrl = TextFieldValue(next, TextRange(next.length))
+                        },
+                        label = { Text("Use http://") }
+                    )
+                    androidx.compose.material3.SuggestionChip(
+                        onClick = {
+                            val next = applyUrlScheme("https://", editUrl.text)
+                            editUrl = TextFieldValue(next, TextRange(next.length))
+                        },
+                        label = { Text("Use https://") }
                     )
                 }
-            },
-            modifier = Modifier.fillMaxWidth()
-                .semantics { contentType = ContentType.Password }
-        )
+            }
 
-        val displayError = loginError
-            ?: (connectionState as? ConnectionState.Error)?.message
-        displayError?.let { error ->
-            Text(
-                text = error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-
-        Button(
-            onClick = { viewModel.login(editUrl, username, password) },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = connectionState !is ConnectionState.Connecting
-        ) {
-            if (connectionState is ConnectionState.Connecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp
+            if (haProviderAvailable) {
+                MdButton(
+                    onClick = {
+                        viewModel.clearLoginError()
+                        coroutineScope.launch {
+                            val authUrl = viewModel.startHomeAssistantOAuth(editUrl.text)
+                            if (authUrl != null) launchCustomTab(context, authUrl)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !oauthInProgress
+                ) {
+                    if (oauthInProgress) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Waiting for sign in...")
+                    } else {
+                        Icon(Icons.Default.Home, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sign in with Home Assistant")
+                    }
+                }
+                Text(
+                    text = "or use credentials",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Connecting...")
-            } else {
-                Icon(Icons.Default.Login, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Login")
+            }
+
+            OutlinedTextField(
+                value = username,
+                onValueChange = {
+                    username = it
+                    viewModel.clearLoginError()
+                },
+                label = { Text("Username") },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                modifier = Modifier.fillMaxWidth()
+                    .semantics { contentType = ContentType.Username }
+            )
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    viewModel.clearLoginError()
+                },
+                label = { Text("Password") },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                visualTransformation = if (showPassword) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    MdIconButton(onClick = { showPassword = !showPassword }) {
+                        Icon(
+                            if (showPassword) Icons.Default.VisibilityOff
+                            else Icons.Default.Visibility,
+                            contentDescription = "Toggle password"
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+                    .semantics { contentType = ContentType.Password }
+            )
+
+            val displayError = loginError
+                ?: (connectionState as? ConnectionState.Error)?.message
+            displayError?.let { error ->
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            MdButton(
+                onClick = {
+                    if (hasToken && username.isBlank() && password.isBlank()) {
+                        viewModel.connectWithToken(editUrl.text)
+                    } else {
+                        viewModel.login(editUrl.text, username, password)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = connectionState !is ConnectionState.Connecting
+            ) {
+                if (connectionState is ConnectionState.Connecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Connecting...")
+                } else {
+                    Icon(Icons.Default.Login, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sign in")
+                }
             }
         }
-    }
     }
     }
 }
@@ -540,8 +747,8 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     color = MaterialTheme.colorScheme.primary
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        val activity = context as? Activity ?: return@OutlinedButton
+                    MdOutlinedButton(onClick = {
+                        val activity = context as? Activity ?: return@MdOutlinedButton
                         KeyChain.choosePrivateKeyAlias(
                             activity,
                             { alias -> viewModel.onCertificateSelected(alias, context) },
@@ -550,7 +757,7 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     }) {
                         Text("Change")
                     }
-                    OutlinedButton(onClick = { viewModel.clearCertificate() }) {
+                    MdOutlinedButton(onClick = { viewModel.clearCertificate() }) {
                         Text("Remove")
                     }
                 }
@@ -560,8 +767,8 @@ private fun ClientCertCard(viewModel: SettingsViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                OutlinedButton(onClick = {
-                    val activity = context as? Activity ?: return@OutlinedButton
+                MdOutlinedButton(onClick = {
+                    val activity = context as? Activity ?: return@MdOutlinedButton
                     KeyChain.choosePrivateKeyAlias(
                         activity,
                         { alias -> viewModel.onCertificateSelected(alias, context) },
@@ -590,7 +797,7 @@ private fun SmartListeningCard(viewModel: SettingsViewModel) {
             headlineContent = { Text("Smart Listening") },
             supportingContent = { Text("Learns from skip/like/listen actions and improves recommendations.") },
             trailingContent = {
-                Switch(checked = smartListeningEnabled, onCheckedChange = { viewModel.toggleSmartListening(it) })
+                MdSwitch(checked = smartListeningEnabled, onCheckedChange = { viewModel.toggleSmartListening(it) })
             }
         )
     }
@@ -618,7 +825,7 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
                 }
             },
             trailingContent = {
-                Button(onClick = onOpen, enabled = smartListeningEnabled) {
+                MdButton(onClick = onOpen, enabled = smartListeningEnabled) {
                     Text("Open")
                 }
             }
@@ -670,14 +877,14 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                 trailingIcon = {
                     Row {
                         if (apiKeyInput.isNotBlank()) {
-                            IconButton(onClick = {
+                            MdIconButton(onClick = {
                                 apiKeyInput = ""
                                 viewModel.clearLastFmValidation()
                             }) {
                                 Icon(Icons.Filled.Close, contentDescription = "Clear")
                             }
                         }
-                        IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                        MdIconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
                             Icon(
                                 if (apiKeyVisible) Icons.Filled.VisibilityOff
                                 else Icons.Filled.Visibility,
@@ -713,7 +920,7 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                     )
                 }
             }
-            Button(
+            MdButton(
                 onClick = { viewModel.setLastFmApiKey(apiKeyInput) },
                 enabled = apiKeyInput.trim() != lastFmApiKey && !isValidating
             ) {
@@ -787,7 +994,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                 )
             },
             trailingContent = {
-                Switch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
+                MdSwitch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
             }
         )
     }
@@ -816,7 +1023,7 @@ private fun UpdatesCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Button(
+            MdButton(
                 onClick = onCheck,
                 enabled = !state.isChecking && !state.isDownloading,
                 modifier = Modifier.fillMaxWidth()
@@ -844,7 +1051,7 @@ private fun UpdatesCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Include beta updates", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = state.includeBetaUpdates, onCheckedChange = onToggleIncludeBeta)
+                MdSwitch(checked = state.includeBetaUpdates, onCheckedChange = onToggleIncludeBeta)
             }
             state.downloadProgress?.let { progress ->
                 if (state.isDownloading) {
@@ -891,12 +1098,12 @@ private fun UpdateAvailableDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm, enabled = !busy) {
+            MdButton(onClick = onConfirm, enabled = !busy) {
                 Text("Download & Install")
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss, enabled = !busy) {
+            MdOutlinedButton(onClick = onDismiss, enabled = !busy) {
                 Text("Later")
             }
         }

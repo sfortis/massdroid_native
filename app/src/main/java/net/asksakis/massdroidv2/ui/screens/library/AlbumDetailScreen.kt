@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -74,14 +81,21 @@ fun AlbumDetailScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                title = { Text(albumName) },
+                title = {
+                    Text(
+                        text = albumName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    MdIconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.toggleAlbumFavorite() }) {
+                    MdIconButton(onClick = { viewModel.toggleAlbumFavorite() }) {
                         Icon(
                             if (album?.favorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Toggle favorite",
@@ -89,7 +103,8 @@ fun AlbumDetailScreen(
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
+                },
+                expandedHeight = 48.dp
             )
         }
     ) { paddingValues ->
@@ -109,7 +124,12 @@ fun AlbumDetailScreen(
                         .weight(0.4f)
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState())
-                        .padding(16.dp),
+                        .padding(
+                            start = 16.dp,
+                            top = 16.dp,
+                            end = 16.dp,
+                            bottom = LocalMiniPlayerPadding.current + 16.dp
+                        ),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     AlbumHeader(
@@ -118,14 +138,25 @@ fun AlbumDetailScreen(
                         albumName = albumName,
                         tracks = tracks,
                         onArtistClick = onArtistClick,
-                        viewModel = viewModel
+                        viewModel = viewModel,
+                        showActions = false
                     )
                 }
                 LazyColumn(
                     modifier = Modifier
                         .weight(0.6f)
-                        .fillMaxHeight()
+                        .fillMaxHeight(),
+                    contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current + 24.dp)
                 ) {
+                    item(key = "album-actions") {
+                        AlbumPlayActions(
+                            viewModel = viewModel,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Start
+                        )
+                    }
                     itemsIndexed(tracks, key = { _, track -> track.uri }) { index, track ->
                         AlbumTrackItem(
                             track = track,
@@ -142,13 +173,13 @@ fun AlbumDetailScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().fadingEdges(),
-                contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
+                contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current + 24.dp)
             ) {
                 item {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(24.dp),
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         AlbumHeader(
@@ -157,7 +188,8 @@ fun AlbumDetailScreen(
                             albumName = albumName,
                             tracks = tracks,
                             onArtistClick = onArtistClick,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            showActions = true
                         )
                     }
                 }
@@ -242,14 +274,20 @@ private fun AlbumHeader(
     albumName: String,
     tracks: List<Track>,
     onArtistClick: ((Artist) -> Unit)?,
-    viewModel: AlbumDetailViewModel
+    viewModel: AlbumDetailViewModel,
+    showActions: Boolean
 ) {
     val imageUrl = album?.imageUrl ?: tracks.firstOrNull()?.imageUrl
+    val configuration = LocalConfiguration.current
 
     val artModifier = if (isLandscape) {
         Modifier.widthIn(max = 120.dp).aspectRatio(1f)
     } else {
-        Modifier.fillMaxWidth().padding(horizontal = 48.dp).aspectRatio(1f)
+        val artSize = (configuration.screenWidthDp.dp * 0.52f)
+            .coerceAtMost(configuration.screenHeightDp.dp * 0.24f)
+            .coerceAtMost(220.dp)
+            .coerceAtLeast(148.dp)
+        Modifier.size(artSize)
     }
 
     AsyncImage(
@@ -324,6 +362,11 @@ private fun AlbumHeader(
         )
     }
 
+    if (showActions) {
+        Spacer(modifier = Modifier.height(12.dp))
+        AlbumPlayActions(viewModel = viewModel)
+    }
+
     if (tracks.isNotEmpty()) {
         val totalSeconds = tracks.mapNotNull { it.duration }.sum()
         val durationText = if (totalSeconds > 0) {
@@ -341,11 +384,24 @@ private fun AlbumHeader(
         )
     }
 
-    Spacer(modifier = Modifier.height(16.dp))
+}
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AlbumPlayActions(
+    viewModel: AlbumDetailViewModel,
+    modifier: Modifier = Modifier,
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.Center
+) {
     var showPlaySheet by remember { mutableStateOf(false) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        TextButton(
+    val playSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = horizontalArrangement,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        MdTextButton(
             onClick = { viewModel.playAll() },
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
         ) {
@@ -353,7 +409,7 @@ private fun AlbumHeader(
             Spacer(modifier = Modifier.width(8.dp))
             Text("Play All")
         }
-        TextButton(
+        MdTextButton(
             onClick = { showPlaySheet = true },
             contentPadding = PaddingValues(horizontal = 8.dp)
         ) {
@@ -364,6 +420,7 @@ private fun AlbumHeader(
     if (showPlaySheet) {
         ModalBottomSheet(
             onDismissRequest = { showPlaySheet = false },
+            sheetState = playSheetState,
             containerColor = SheetDefaults.containerColor()
         ) {
             Column(modifier = Modifier.padding(bottom = 32.dp)) {
@@ -456,7 +513,7 @@ private fun AlbumTrackItem(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-                IconButton(
+                MdIconButton(
                     onClick = {
                         onAction(
                             ActionSheetItem(

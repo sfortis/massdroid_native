@@ -22,12 +22,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 private val PlayerBadgeColor = Color(0xFFEF5350)
+private val AndroidAutoBadgeColor = Color(0xFF2E7D32)
 private val PlayerBadgeShape = RoundedCornerShape(4.dp)
 
 @Composable
 fun PlayerNameWithBadge(
     name: String,
     isLocalPlayer: Boolean,
+    isAndroidAutoPlayer: Boolean = false,
     isFollowMePlayer: Boolean = false,
     modifier: Modifier = Modifier,
     fontWeight: FontWeight? = null
@@ -45,10 +47,20 @@ fun PlayerNameWithBadge(
         )
         if (isLocalPlayer) {
             Spacer(modifier = Modifier.width(8.dp))
-            PlayerBadgeChip {
+            PlayerBadgeChip(color = PlayerBadgeColor) {
                 Text(
                     text = "Local Player",
                     color = Color.Black,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+        if (isAndroidAutoPlayer) {
+            Spacer(modifier = Modifier.width(4.dp))
+            PlayerBadgeChip(color = AndroidAutoBadgeColor) {
+                Text(
+                    text = "AA",
+                    color = Color.White,
                     style = MaterialTheme.typography.labelSmall
                 )
             }
@@ -66,13 +78,14 @@ fun PlayerNameWithBadge(
 }
 
 @Composable
-private fun PlayerBadgeChip(
+fun PlayerBadgeChip(
+    color: Color = PlayerBadgeColor,
     content: @Composable () -> Unit
 ) {
     Box(
         modifier = Modifier
             .background(
-                color = PlayerBadgeColor,
+                color = color,
                 shape = PlayerBadgeShape
             )
             .padding(horizontal = 6.dp, vertical = 2.dp),

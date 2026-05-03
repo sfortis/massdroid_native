@@ -25,8 +25,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "2.10.0"
+        versionCode = 18
+        versionName = "2.20.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -145,13 +145,16 @@ dependencies {
     implementation("io.coil-kt:coil-svg:2.7.0")
     implementation("com.caverock:androidsvg-aar:1.4")
 
+    // Custom Tabs for OAuth flows (Home Assistant SSO)
+    implementation("androidx.browser:browser:1.8.0")
+
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")
 
     // Media3
-    implementation("androidx.media3:media3-session:1.6.0")
-    implementation("androidx.media3:media3-exoplayer:1.6.0")
-    implementation("androidx.media:media:1.7.0")
+    implementation("androidx.media3:media3-session:1.7.1")
+    implementation("androidx.media3:media3-exoplayer:1.7.1")
+    implementation("androidx.media:media:1.7.1")
 
     // DataStore for settings
     implementation("androidx.datastore:datastore-preferences:1.1.1")
@@ -170,6 +173,9 @@ dependencies {
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // Modules
+    implementation(project(":auto"))
 }
 
 kapt {

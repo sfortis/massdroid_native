@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.search
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
@@ -118,7 +125,7 @@ fun SearchScreen(
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     trailingIcon = {
                         if (query.isNotEmpty()) {
-                            IconButton(onClick = {
+                            MdIconButton(onClick = {
                                 viewModel.updateQuery("")
                                 focusRequester.requestFocus()
                             }, modifier = Modifier.size(24.dp)) {
@@ -168,7 +175,7 @@ fun SearchScreen(
                             )
                         }
                     }
-                    IconButton(onClick = { viewModel.toggleGridMode() }, modifier = Modifier.size(32.dp)) {
+                    MdIconButton(onClick = { viewModel.toggleGridMode() }, modifier = Modifier.size(32.dp)) {
                         @Suppress("DEPRECATION")
                         Icon(
                             if (gridMode) Icons.Default.ViewList else Icons.Default.GridView,
@@ -196,7 +203,7 @@ fun SearchScreen(
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
-                        IconButton(onClick = {
+                        MdIconButton(onClick = {
                             viewModel.updateQuery("")
                             focusRequester.requestFocus()
                         }) {
@@ -276,7 +283,7 @@ fun SearchScreen(
                     )
                 }
             }
-            IconButton(onClick = { viewModel.toggleGridMode() }) {
+            MdIconButton(onClick = { viewModel.toggleGridMode() }) {
                 @Suppress("DEPRECATION")
                 Icon(
                     if (gridMode) Icons.Default.ViewList else Icons.Default.GridView,

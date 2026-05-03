@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -180,7 +187,7 @@ fun LibraryScreen(
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.updateSearch("") }) {
+                            MdIconButton(onClick = { viewModel.updateSearch("") }) {
                                 Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
                             }
                         }
@@ -593,7 +600,7 @@ fun LibraryScreen(
             title = { Text("Delete Playlist") },
             text = { Text("Delete \"${target.title}\"?") },
             confirmButton = {
-                TextButton(onClick = {
+                MdTextButton(onClick = {
                     viewModel.removeFromLibrary(MediaType.PLAYLIST, target.itemId, target.uri)
                     deletePlaylistTarget = null
                 }) {
@@ -601,7 +608,7 @@ fun LibraryScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { deletePlaylistTarget = null }) { Text("Cancel") }
+                MdTextButton(onClick = { deletePlaylistTarget = null }) { Text("Cancel") }
             }
         )
     }
@@ -621,7 +628,7 @@ fun LibraryScreen(
                 )
             },
             confirmButton = {
-                TextButton(
+                MdTextButton(
                     onClick = {
                         if (playlistName.isNotBlank()) {
                             viewModel.createPlaylist(playlistName.trim())
@@ -632,7 +639,7 @@ fun LibraryScreen(
                 ) { Text("Create") }
             },
             dismissButton = {
-                TextButton(onClick = { showCreatePlaylistDialog = false }) { Text("Cancel") }
+                MdTextButton(onClick = { showCreatePlaylistDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -689,7 +696,7 @@ private fun LibraryCompactHeader(
             },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { onSearchChange("") }, modifier = Modifier.size(28.dp)) {
+                    MdIconButton(onClick = { onSearchChange("") }, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.Close, contentDescription = "Clear search", modifier = Modifier.size(16.dp))
                     }
                 }
@@ -1134,7 +1141,7 @@ private fun BrowseList(
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (item.isPlayable) {
-                                    IconButton(onClick = { onPlayClick(item) }) {
+                                    MdIconButton(onClick = { onPlayClick(item) }) {
                                         Icon(Icons.Default.PlayArrow, contentDescription = "Play")
                                     }
                                 }

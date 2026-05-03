@@ -15,6 +15,7 @@ import kotlinx.coroutines.supervisorScope
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
@@ -49,7 +50,8 @@ class LibraryViewModel @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val lastFmLibraryEnricher: LastFmLibraryEnricher,
-    val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
+    val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
+    private val sessionEventBus: SessionEventBus
 ) : ViewModel() {
 
     private val _artists = MutableStateFlow<List<Artist>>(emptyList())
@@ -203,6 +205,37 @@ class LibraryViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            sessionEventBus.resets.collect { resetForAccountSwitch() }
+        }
+    }
+
+    private fun resetForAccountSwitch() {
+        Log.d(TAG, "Session reset: dropping cached library lists")
+        searchJob?.cancel()
+        mediaEventJob?.cancel()
+        _searchQuery.value = ""
+        _artists.value = emptyList()
+        _albums.value = emptyList()
+        _tracks.value = emptyList()
+        _playlists.value = emptyList()
+        _radios.value = emptyList()
+        _editablePlaylists.value = emptyList()
+        _playlistContainsTrack.value = emptySet()
+        _browseItemsRaw.value = emptyList()
+        _browseItems.value = emptyList()
+        _browsePath.value = null
+        browsePathStack.clear()
+        _selectedProviders.value = emptySet()
+        hasMoreArtists = true
+        hasMoreAlbums = true
+        hasMoreTracks = true
+        hasMorePlaylists = true
+        hasMoreRadios = true
+        pendingReload = false
+        _isLoading.value = false
+        _isLoadingMore.value = false
+        _isRefreshing.value = false
     }
 
     fun refresh() {

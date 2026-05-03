@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -156,20 +163,19 @@ fun MediaItemRow(
                         Spacer(modifier = Modifier.width(12.dp))
                     }
                     if (onPlayClick != null) {
-                        IconButton(
+                        MdFilledTonalIconButton(
                             onClick = onPlayClick,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Play",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
                     if (onMoreClick != null) {
-                        IconButton(onClick = onMoreClick, modifier = Modifier.size(36.dp)) {
+                        MdIconButton(onClick = onMoreClick, modifier = Modifier.size(36.dp)) {
                             Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(20.dp))
                         }
                     }
@@ -179,9 +185,9 @@ fun MediaItemRow(
                 }
             }
         },
-        modifier = modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = onLongClick
+        modifier = modifier.hapticCombinedClickable(
+            onLongClick = onLongClick,
+            onClick = onClick
         )
     )
 }
@@ -213,9 +219,9 @@ fun MediaItemGrid(
     }
 
     Column(
-        modifier = modifier.combinedClickable(
-            onClick = onClick,
-            onLongClick = onLongClick
+        modifier = modifier.hapticCombinedClickable(
+            onLongClick = onLongClick,
+            onClick = onClick
         )
     ) {
         MediaArtwork(

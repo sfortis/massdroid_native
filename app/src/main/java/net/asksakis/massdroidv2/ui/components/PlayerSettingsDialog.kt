@@ -1,5 +1,12 @@
 package net.asksakis.massdroidv2.ui.components
 
+import net.asksakis.massdroidv2.ui.components.MdButton
+import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
+import net.asksakis.massdroidv2.ui.components.MdIconButton
+import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
+import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +55,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
@@ -93,15 +102,28 @@ fun PlayerSettingsDialog(
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
     onDismiss: () -> Unit
 ) {
-    var isLoading by remember { mutableStateOf(true) }
-    var name by remember { mutableStateOf(player.displayName) }
-    var crossfadeMode by remember { mutableStateOf(CrossfadeMode.DISABLED) }
-    var volumeNormalization by remember { mutableStateOf(false) }
-    var dontStopTheMusic by remember { mutableStateOf(initialDstmEnabled ?: false) }
-    var selectedFormatValue by remember { mutableStateOf<String?>(null) }
-    var formatOptions by remember { mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList()) }
-    var audioFormat by remember(initialAudioFormat) { mutableStateOf(initialAudioFormat) }
-    var staticDelayMs by remember(initialStaticDelayMs) { mutableIntStateOf(initialStaticDelayMs) }
+    // Key all remembered state on player.playerId so swapping the dialog
+    // target player (without dismissing first) clears everything instead of
+    // carrying over name/format/load-state from the previous player.
+    var isLoading by remember(player.playerId) { mutableStateOf(true) }
+    var name by remember(player.playerId) { mutableStateOf(player.displayName) }
+    var crossfadeMode by remember(player.playerId) { mutableStateOf(CrossfadeMode.DISABLED) }
+    var volumeNormalization by remember(player.playerId) { mutableStateOf(false) }
+    var dontStopTheMusic by remember(player.playerId, initialDstmEnabled) {
+        mutableStateOf(initialDstmEnabled ?: false)
+    }
+    var selectedFormatValue by remember(player.playerId) { mutableStateOf<String?>(null) }
+    var formatOptions by remember(player.playerId) {
+        mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList())
+    }
+    var audioFormat by remember(player.playerId, initialAudioFormat) { mutableStateOf(initialAudioFormat) }
+    var staticDelayMs by remember(player.playerId, initialStaticDelayMs) {
+        mutableIntStateOf(initialStaticDelayMs)
+    }
+    // Server-side support for sendspin_static_delay is decided by the sendspin
+    // player's role: only advertised roles expose this config entry. Pre-PR
+    // #3689 MA servers don't expose it at all, so the row stays hidden there.
+    var hasServerStaticDelay by remember(player.playerId) { mutableStateOf(false) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -111,9 +133,29 @@ fun PlayerSettingsDialog(
             volumeNormalization = loaded.volumeNormalization
             formatOptions = loaded.sendspinFormatOptions
             selectedFormatValue = loaded.sendspinFormat
+            if (!isLocalPlayer && loaded.sendspinStaticDelayMs != null) {
+                hasServerStaticDelay = true
+                staticDelayMs = loaded.sendspinStaticDelayMs
+            }
             Log.d("PlayerSettings", "Loaded: provider=${player.provider} format=${loaded.sendspinFormat} options=${loaded.sendspinFormatOptions.map { it.value }}")
         }
         isLoading = false
+    }
+
+    // Debounced server push for remote sendspin players. Triggered only when
+    // the server advertises the config key so we don't fire into v2.8.6
+    // servers that silently ignore the key.
+    if (hasServerStaticDelay) {
+        LaunchedEffect(player.playerId, isLoading) {
+            if (isLoading) return@LaunchedEffect
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            androidx.compose.runtime.snapshotFlow { staticDelayMs }
+                .drop(1)
+                .debounce(250L)
+                .collect { v ->
+                    onSave(player.playerId, mapOf("sendspin_static_delay" to v))
+                }
+        }
     }
 
     // BasicAlertDialog + custom layout so the action buttons don't eat the
@@ -138,20 +180,20 @@ fun PlayerSettingsDialog(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 6.dp
         ) {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
                 Text(
                     "Player Settings",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(bottom = 18.dp)
                 )
                 if (isLoading) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 24.dp),
+                            .padding(vertical = 20.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
                     }
                 } else {
                     Column(
@@ -201,20 +243,14 @@ fun PlayerSettingsDialog(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Don't stop the music")
-                                Text(
-                                    "Auto-fill queue when it runs out",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                            Text("Don't stop the music", modifier = Modifier.weight(1f))
                             Switch(
                                 checked = dontStopTheMusic,
                                 onCheckedChange = { dontStopTheMusic = it }
                             )
                         }
                     }
+
 
                     if (isSendspinPlayer && formatOptions.isNotEmpty()) {
                         val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
@@ -232,7 +268,7 @@ fun PlayerSettingsDialog(
                                     modifier = Modifier.fillMaxWidth().clickable { expanded = true }
                                 ) {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -280,17 +316,27 @@ fun PlayerSettingsDialog(
                         }
                     }
 
-                    if (isLocalPlayer) {
-                        SteppedValueRow(
-                            label = "Static delay",
-                            valueLabel = "${staticDelayMs}ms",
+                    if (isLocalPlayer || hasServerStaticDelay) {
+                        // Local: DataStore-backed (fast path, allows negative offsets because
+                        // our own engine applies them client-side).
+                        // Remote: server-backed, uses the upstream PR #3689 range (0..5000).
+                        val minValue = if (isLocalPlayer) -500 else 0
+                        val maxValue = if (isLocalPlayer) 500 else 5000
+                        StaticDelayCard(
+                            valueMs = staticDelayMs,
                             onDecrement = {
-                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
-                                onStaticDelayChanged?.invoke(staticDelayMs)
+                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(minValue)
+                                if (isLocalPlayer) onStaticDelayChanged?.invoke(staticDelayMs)
                             },
                             onIncrement = {
-                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
-                                onStaticDelayChanged?.invoke(staticDelayMs)
+                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(maxValue)
+                                if (isLocalPlayer) onStaticDelayChanged?.invoke(staticDelayMs)
+                            },
+                            onReset = {
+                                if (staticDelayMs != 0) {
+                                    staticDelayMs = 0
+                                    if (isLocalPlayer) onStaticDelayChanged?.invoke(0)
+                                }
                             }
                         )
                     }
@@ -317,11 +363,11 @@ fun PlayerSettingsDialog(
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (hasPhoneBaseline) {
-                                    TextButton(onClick = { onResetPhoneBaseline?.invoke() }) {
+                                    MdTextButton(onClick = { onResetPhoneBaseline?.invoke() }) {
                                         Text("Reset")
                                     }
                                 }
-                                TextButton(onClick = { showPhoneCalibrationDialog = true }) {
+                                MdTextButton(onClick = { showPhoneCalibrationDialog = true }) {
                                     Text(if (hasPhoneBaseline) "Recalibrate" else "Calibrate")
                                 }
                             }
@@ -366,11 +412,11 @@ fun PlayerSettingsDialog(
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (isBtRoute && acousticCorrectionMs > 0) {
-                                    TextButton(onClick = { onResetBtCalibration?.invoke() }) {
+                                    MdTextButton(onClick = { onResetBtCalibration?.invoke() }) {
                                         Text("Reset")
                                     }
                                 }
-                                TextButton(
+                                MdTextButton(
                                     enabled = isBtRoute,
                                     onClick = { showBtCalibrationDialog = true }
                                 ) {
@@ -407,8 +453,8 @@ fun PlayerSettingsDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
-                    TextButton(
+                    MdTextButton(onClick = onDismiss) { Text("Cancel") }
+                    MdTextButton(
                         onClick = {
                             val values = mutableMapOf<String, Any>(
                                 "smart_fades_mode" to crossfadeMode.apiValue,
@@ -441,6 +487,60 @@ fun PlayerSettingsDialog(
                         enabled = !isLoading
                     ) { Text("Save") }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaticDelayCard(
+    valueMs: Int,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit,
+    onReset: () -> Unit
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Static delay", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "${valueMs}ms",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            MdTextButton(
+                onClick = onReset,
+                enabled = valueMs != 0,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 6.dp, vertical = 0.dp
+                )
+            ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
+            RepeatingIconButton(
+                onClick = onDecrement,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Remove,
+                    contentDescription = "Decrease static delay",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            RepeatingIconButton(
+                onClick = onIncrement,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Increase static delay",
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }

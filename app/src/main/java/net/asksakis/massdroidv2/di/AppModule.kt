@@ -106,7 +106,30 @@ object AppModule {
     fun provideSendspinManager(
         client: SendspinClient,
         engine: SendspinSyncEngine,
-    ): SendspinManager = SendspinManager(client, engine)
+        sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus,
+    ): SendspinManager = SendspinManager(client, engine, sessionEventBus)
+
+    @Provides
+    @Singleton
+    fun provideMaAuthProbe(
+        okHttpClient: OkHttpClient,
+        json: Json
+    ): net.asksakis.massdroidv2.data.websocket.MaAuthProbe =
+        net.asksakis.massdroidv2.data.websocket.MaAuthProbe(okHttpClient, json)
+
+    @Provides
+    @Singleton
+    fun provideLocalSpeakerVolumeBridge(
+        @ApplicationContext ctx: Context,
+        sendspinManager: SendspinManager
+    ): net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        return net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge(
+            audioManager = am,
+            volumeEvents = sendspinManager.serverVolumeEvents,
+            muteEvents = sendspinManager.serverMuteEvents
+        )
+    }
 
     private val MIGRATION_4_5 = object : Migration(4, 5) {
         override fun migrate(database: SupportSQLiteDatabase) {
