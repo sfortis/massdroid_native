@@ -107,7 +107,10 @@ class SendspinCoordinator(
             settingsRepository.sendspinClientId.collect { id ->
                 val changed = playerId != id
                 playerId = id
-                if (changed && id != null) onTargetChanged("sendspin_id_loaded")
+                if (changed && id != null) {
+                    onTargetChanged("sendspin_id_loaded")
+                    autoSelectSendspinForBt("sendspin_id_loaded")
+                }
             }
         }
     }
@@ -144,6 +147,7 @@ class SendspinCoordinator(
         isActive = true
         controller?.start()
         onActive(reason)
+        autoSelectSendspinForBt(reason)
     }
 
     private fun observeAudioFormatPreference() {
@@ -263,20 +267,30 @@ class SendspinCoordinator(
         btAudioCallback = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
                 val btAdded = addedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-                val target = playerId
-                if (btAdded && isActive && target != null) {
-                    val currentSelected = playerRepository.selectedPlayer.value?.playerId
-                    if (currentSelected != target) {
-                        val deviceName = addedDevices.firstOrNull {
-                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                        }?.productName
-                        Log.d(TAG, "BT A2DP connected ($deviceName), auto-selecting Sendspin player")
-                        playerRepository.selectPlayer(target)
-                    }
+                if (btAdded) {
+                    val deviceName = addedDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                    }?.productName
+                    autoSelectSendspinForBt("bt_device_added", deviceName)
                 }
             }
         }
         audioManager.registerAudioDeviceCallback(btAudioCallback, null)
+        autoSelectSendspinForBt("bt_callback_registered")
+    }
+
+    private fun autoSelectSendspinForBt(reason: String, deviceName: CharSequence? = null) {
+        scope.launch {
+            if (!isBtA2dpActive()) return@launch
+            val target = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
+            val currentSelected = playerRepository.selectedPlayer.value?.playerId
+            if (currentSelected == target) return@launch
+            Log.d(
+                TAG,
+                "BT A2DP active${deviceName?.let { " ($it)" } ?: ""}, auto-selecting Sendspin player ($reason)"
+            )
+            playerRepository.selectPlayer(target)
+        }
     }
 
     private fun unregisterBtAudioDeviceCallback() {

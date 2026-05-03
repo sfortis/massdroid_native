@@ -798,24 +798,24 @@ private fun NowPlayingLandscape(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-
-            TrackInfoSection(
-                title = title,
-                artist = artist,
-                album = album,
-                currentTrack = currentTrack,
-                onNavigateToArtist = onNavigateToArtist,
-                onNavigateToAlbum = onNavigateToAlbum,
-                compact = true
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // Constrained controls block
+            // Keep metadata, seekbar, actions, and transport controls on the same
+            // visual centerline in landscape.
             Column(
                 modifier = Modifier.fillMaxWidth(0.94f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                TrackInfoSection(
+                    title = title,
+                    artist = artist,
+                    album = album,
+                    currentTrack = currentTrack,
+                    onNavigateToArtist = onNavigateToArtist,
+                    onNavigateToAlbum = onNavigateToAlbum,
+                    compact = true
+                )
+
+                Spacer(modifier = Modifier.height(28.dp))
+
                 SeekBar(
                     elapsed = elapsedTime,
                     duration = duration,
@@ -1839,7 +1839,7 @@ private fun TrackInfoSection(
             .fillMaxWidth()
             .basicMarquee(iterations = Int.MAX_VALUE, velocity = 60.dp)
     )
-    Spacer(modifier = Modifier.height(if (compact) 4.dp else 8.dp))
+    Spacer(modifier = Modifier.height(if (compact) 10.dp else 8.dp))
 
     if (compact && album.isNotBlank() && artist.isNotBlank()) {
         // Landscape: "Album · Artist" on one line, centered, with overflow protection

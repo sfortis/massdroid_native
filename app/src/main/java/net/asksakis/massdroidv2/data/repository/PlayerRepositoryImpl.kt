@@ -1004,11 +1004,16 @@ class PlayerRepositoryImpl @Inject constructor(
         if (lockedPlayerId != null && playerId != lockedPlayerId) {
             Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
         }
-        if (selectedPlayerId == effectivePlayerId) return
+        val player = _players.value.find { it.playerId == effectivePlayerId }
+        if (
+            selectedPlayerId == effectivePlayerId &&
+            _selectedPlayer.value?.playerId == effectivePlayerId
+        ) {
+            return
+        }
 
         selectedPlayerId = effectivePlayerId
         pendingRestoredPlayerId = if (pendingRestoredPlayerId == effectivePlayerId) null else pendingRestoredPlayerId
-        val player = _players.value.find { it.playerId == effectivePlayerId }
         _selectedPlayer.value = player
         isPlaying = player?.state == PlaybackState.PLAYING
         stopPositionTicker()

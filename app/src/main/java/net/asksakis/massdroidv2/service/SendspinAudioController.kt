@@ -142,6 +142,10 @@ class SendspinAudioController(
             currentOutputRoute = newRoute
             val gen = ++routeChangeGeneration
             Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
+            if (oldRoute == "bt" && newRoute == "speaker") {
+                pauseForBtSpeakerFallback()
+                return
+            }
             // Resolve correction and notify engine atomically: set correction BEFORE
             // onOutputRouteChanged so the engine relocks with the correct value.
             // Generation guard: if another route change arrives before this coroutine
@@ -171,6 +175,16 @@ class SendspinAudioController(
                 }
             }
         }
+    }
+
+    private fun pauseForBtSpeakerFallback() {
+        val id = sendspinPlayerId ?: return
+        Log.d(TAG, "Bluetooth output disconnected, pausing Sendspin to avoid phone-speaker fallback")
+        currentIsPlaying = false
+        optimisticUntil = System.currentTimeMillis() + 1000
+        sendspinManager.pauseAudio()
+        notifyStateChanged()
+        scope.launch { playerRepository.pause(id) }
     }
 
     private suspend fun resolveAcousticCorrectionForRoute(route: String): Long {
