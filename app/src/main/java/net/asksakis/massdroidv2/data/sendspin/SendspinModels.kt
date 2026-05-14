@@ -29,7 +29,14 @@ data class AudioFormatSpec(
 
 private val defaultFormats = listOf(
     AudioFormatSpec(codec = "opus", sampleRate = 48000, bitDepth = 16, channels = 2),
+    // FLAC variants for lossless hi-res paths. Both 48k and 96k are declared
+    // so the MA server's player config exposes them as selectable options
+    // (MA filters config options against the client-declared list). 96 kHz is
+    // what SMART-on-WiFi and explicit FLAC now request — server passes through
+    // hi-res sources bit-perfect and upsamples lower sources losslessly within
+    // the audible band.
     AudioFormatSpec(codec = "flac", sampleRate = 48000, bitDepth = 24, channels = 2),
+    AudioFormatSpec(codec = "flac", sampleRate = 96000, bitDepth = 24, channels = 2),
     AudioFormatSpec(codec = "pcm", sampleRate = 48000, bitDepth = 16, channels = 2)
 )
 

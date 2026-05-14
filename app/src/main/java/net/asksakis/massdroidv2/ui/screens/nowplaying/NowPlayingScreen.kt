@@ -1636,26 +1636,45 @@ private fun buildAudioQualityBadges(audioFormat: AudioFormatInfo?, outputCodec: 
         ?.uppercase()
         ?.takeIf { it.isNotBlank() && it != "?" }
 
-    val qualityLabel = when {
-        (audioFormat?.bitDepth ?: 0) >= 24 -> "HQ"
-        (audioFormat?.contentType ?: "").equals("flac", ignoreCase = true) -> "HQ"
-        (audioFormat?.bitRate ?: 0) >= 900_000 -> "HQ"
-        audioFormat != null -> "LQ"
-        else -> null
-    }
-
-    val parts = mutableListOf<String>()
-    if (qualityLabel != null) parts += qualityLabel
-    if (sourceCodec != null && outputCodec != null && sourceCodec != outputCodec) {
-        parts += "$sourceCodec \u2192 $outputCodec"
-    } else if (sourceCodec != null) {
-        parts += sourceCodec
-    } else if (outputCodec != null) {
-        parts += outputCodec
-    }
-
-    val badge = parts.joinToString(" \u2022 ").ifBlank { null }
+    // Show the source-side descriptor only. Sendspin's transport format is
+    // independent of the source (server upsamples / transcodes as needed) and
+    // belongs in the streaming status panel, not in the now-playing badge.
+    // Keeping the badge to one short token (e.g. "FLAC 96/24", "OPUS 48",
+    // "FLAC 44.1/16") prevents it from pushing the action icons off-screen.
+    val descriptor = compactCodecDescriptor(sourceCodec, audioFormat)
+    val badge = descriptor ?: outputCodec
     return listOfNotNull(badge)
+}
+
+/**
+ * Compose a compact "CODEC rate/bits" badge, e.g. "FLAC 96/24" or "OPUS 48".
+ * Drops the "k" suffix on sample rate to keep width small; bit-depth is shown
+ * only for lossless codecs where it carries audible information. Returns
+ * null when there's no codec to render.
+ */
+private fun compactCodecDescriptor(codec: String?, fmt: AudioFormatInfo?): String? {
+    codec ?: return null
+    val sampleRate = fmt?.sampleRate
+    if (sampleRate == null) return codec
+    val sampleStr = formatSampleRateCompact(sampleRate)
+    val isLossless = codec.equals("FLAC", ignoreCase = true) ||
+        codec.equals("ALAC", ignoreCase = true) ||
+        codec.equals("PCM", ignoreCase = true) ||
+        codec.startsWith("WAV", ignoreCase = true) ||
+        codec.startsWith("AIFF", ignoreCase = true) ||
+        codec.startsWith("DSD", ignoreCase = true)
+    val bitDepth = fmt.bitDepth
+    return if (isLossless && bitDepth != null && bitDepth > 0) {
+        "$codec $sampleStr/$bitDepth"
+    } else {
+        "$codec $sampleStr"
+    }
+}
+
+private fun formatSampleRateCompact(sampleRate: Int): String {
+    val khz = sampleRate / 1000.0
+    val whole = khz.toInt()
+    return if (whole.toDouble() == khz) "$whole" else "%.1f".format(java.util.Locale.US, khz)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
