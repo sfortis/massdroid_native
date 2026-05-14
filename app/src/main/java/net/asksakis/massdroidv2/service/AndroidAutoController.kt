@@ -13,6 +13,7 @@ import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -57,23 +58,38 @@ class AndroidAutoController(
     private var session: MediaLibraryService.MediaLibrarySession? = null
     private var remotePlayer: RemoteControlPlayer? = null
     private var aaProjectionObserver: AaProjectionObserver? = null
-    private val isAaProjecting = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val isAaProjecting = MutableStateFlow(false)
+
+    // Source-of-truth flows that feed the master combine. All side-channel
+    // updates (artwork download, queue fetch, AA-initiated volume tap) write
+    // into these instead of pushing to remotePlayer directly. The single
+    // master observer in observeAaState() consumes them coherently.
+    private val artworkData = MutableStateFlow<ByteArray?>(null)
+    private val queueSnapshot = MutableStateFlow(AutoQueueSnapshot.Empty)
+    /**
+     * AA-originated optimistic volume bump: (volume, expiresAtMs). The
+     * combine prefers this value over the server-reported volume until
+     * expiresAtMs has elapsed, so the AA slider doesn't snap back during the
+     * MA round-trip.
+     */
+    private val volumeOverride = MutableStateFlow<Pair<Int, Long>?>(null)
 
     private var cachedArtworkUrl: String? = null
     private var cachedArtworkKey: String? = null
-    @Volatile private var cachedArtworkData: ByteArray? = null
+    // The last AaCompleteState we applied, so the master observer can diff
+    // and dispatch only the channel that actually changed (playback / queue /
+    // media buttons). Mutated only inside the combine collector — single
+    // coroutine, no synchronization needed.
+    private var lastAaState: AaCompleteState? = null
     @Volatile private var lastPlaybackSnapshot: AutoPlaybackSnapshot = AutoPlaybackSnapshot.Empty
-    private var optimisticVolume: Int? = null
-    private var volumeOverrideUntil: Long = 0
-    private var lastFavoriteButtonState: Boolean? = null
-    private var lastShuffleButtonState: Boolean? = null
 
     fun start(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
         remotePlayer = createRemotePlayer()
         createMediaSession(libraryCallback)
         observeProjection()
-        observePlayback()
+        observeAaState()
         observePosition()
+        observeServerPositionUpdates()
         observeQueueItems()
         observeWsForBrowseInvalidation()
     }
@@ -232,19 +248,16 @@ class AndroidAutoController(
     }
 
     private fun currentVolumeBase(serverVolume: Int): Int {
-        return if (System.currentTimeMillis() < volumeOverrideUntil) {
-            optimisticVolume ?: serverVolume
-        } else {
-            serverVolume
-        }
+        val override = volumeOverride.value ?: return serverVolume
+        return if (System.currentTimeMillis() < override.second) override.first else serverVolume
     }
 
     private fun pushVolume(playerId: String, volume: Int) {
-        optimisticVolume = volume
-        volumeOverrideUntil = System.currentTimeMillis() + VOLUME_OVERRIDE_MS
-        val updated = lastPlaybackSnapshot.copy(volumeLevel = volume)
-        lastPlaybackSnapshot = updated
-        remotePlayer?.updatePlayback(updated, currentPositionMs(updated))
+        // Optimistic AA-side update: bump the override flow so the master
+        // combine emits with the new value and AA sees its volume slider
+        // settle immediately. The actual MA echo arrives via PLAYER_UPDATED
+        // and overwrites the override once it expires.
+        volumeOverride.value = volume to (System.currentTimeMillis() + VOLUME_OVERRIDE_MS)
         sendVolumeCommand(playerId, volume)
     }
 
@@ -280,7 +293,29 @@ class AndroidAutoController(
         Log.d(TAG, "MediaLibrarySession created")
     }
 
-    private fun observePlayback() {
+    /**
+     * Single source-of-truth observer for the AA host state. Combines every
+     * input that affects what AA sees (selected player, queue structure,
+     * Sendspin engine transitions, artwork, queue items list, optimistic
+     * volume) into one coherent AaCompleteState. The collector diffs against
+     * the previously applied state and dispatches only the channel that
+     * actually changed: updatePlayback / updateQueue / setMediaButtonPreferences.
+     *
+     * Why a single observer: each side-channel push path used to produce its
+     * own AA invalidate. On a track change three independent observers all
+     * fired within ~100ms, triggering three gearhead state re-queries with
+     * partially-stale snapshots and occasionally racing against artwork that
+     * arrived asynchronously. Funnelling everything through one combine makes
+     * artwork updates ride the same coroutine as state updates, naturally
+     * coalesces simultaneous changes via distinctUntilChanged, and keeps
+     * lastAaState consistent under a single mutator.
+     *
+     * Position is intentionally not part of this state — it changes at 2 Hz
+     * via the local ticker and needs a different push policy (silent sync for
+     * the ticker, invalidate for server-confirmed updates). It rides its own
+     * dedicated observers below.
+     */
+    private fun observeAaState() {
         scope.launch {
             val structuralQueue = playerRepository.queueState.distinctUntilChanged { a, b ->
                 a?.queueId == b?.queueId &&
@@ -290,140 +325,163 @@ class AndroidAutoController(
                     a?.currentItem?.queueItemId == b?.currentItem?.queueItemId &&
                     a?.currentItem?.track?.uri == b?.currentItem?.track?.uri
             }
-            // Include Sendspin engine state in the combine so the AA snapshot
-            // re-emits whenever transport/sync flips (e.g. SYNCING during a
-            // seek/track-change, ERROR during a network blip). That drives
-            // STATE_BUFFERING in RemoteControlPlayer.getState() and stops AA
-            // from advancing the progress bar against silence.
             combine(
                 playerRepository.selectedPlayer,
                 structuralQueue,
                 sendspinManager.connectionState,
-                sendspinManager.syncState
-            ) { player, queue, ssConn, ssSync ->
-                AutoStateInputs(player, queue, ssConn, ssSync)
-            }.collect { inputs ->
-                val player = inputs.player ?: return@collect
-                val queue = inputs.queue
-                if (player.state != PlaybackState.PLAYING) onPlaybackStopped("playback-stopped")
-
-                val currentTrack = queue?.currentItem?.track
-                val trackUri = currentTrack?.uri ?: player.currentMedia?.uri
-                val currentIndex = queue?.currentIndex ?: 0
-                val isSendspinSelected = player.playerId == sendspinPlayerId()
-                // For Sendspin: audio is actually flowing when the engine is
-                // STREAMING and the sync state is producing audio (either
-                // synchronized or coasting on holdover buffer). SYNCING,
-                // SYNC_ERROR_REBUFFERING, IDLE — no audible output.
-                // For remote MA players: we have no engine-level signal; trust
-                // the server's reported PLAYING state.
-                val audioFlowing = if (isSendspinSelected) {
-                    inputs.ssConn == SendspinState.STREAMING &&
-                        (inputs.ssSync == SyncState.SYNCHRONIZED ||
-                            inputs.ssSync == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
-                } else {
-                    player.state == PlaybackState.PLAYING
-                }
-                val snapshot = AutoPlaybackSnapshot(
-                    isPlaying = player.state == PlaybackState.PLAYING,
-                    audioFlowing = audioFlowing,
-                    queueItemId = queue?.currentItem?.queueItemId,
-                    trackUri = trackUri,
-                    title = currentTrack?.name ?: player.currentMedia?.title ?: "",
-                    artist = currentTrack?.artistNames ?: player.currentMedia?.artist ?: "",
-                    album = currentTrack?.albumName ?: player.currentMedia?.album ?: "",
-                    durationMs = ((currentTrack?.duration
-                        ?: queue?.currentItem?.duration
-                        ?: player.currentMedia?.duration
-                        ?: 0.0) * 1000).toLong(),
-                    currentIndex = currentIndex,
-                    artworkData = cachedArtworkData,
-                    volumeLevel = effectiveVolume(player.volumeLevel),
-                    isMuted = player.volumeMuted,
-                    isRemotePlayback = !isSendspinSelected,
+                sendspinManager.syncState,
+                artworkData,
+                queueSnapshot,
+                volumeOverride,
+            ) { values: Array<*> ->
+                @Suppress("UNCHECKED_CAST")
+                buildAaState(
+                    player = values[0] as net.asksakis.massdroidv2.domain.model.Player?,
+                    queue = values[1] as net.asksakis.massdroidv2.domain.model.QueueState?,
+                    ssConn = values[2] as SendspinState,
+                    ssSync = values[3] as SyncState,
+                    artwork = values[4] as ByteArray?,
+                    queueEntries = values[5] as AutoQueueSnapshot,
+                    volumeOv = values[6] as Pair<Int, Long>?,
                 )
-                val previous = lastPlaybackSnapshot
-                val trackChanged = previous.trackUri != null &&
-                    (previous.trackUri != snapshot.trackUri || previous.currentIndex != snapshot.currentIndex)
-                updateArtwork(
-                    currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
-                )
-                updateMediaButtons(
-                    isFavorite = currentTrack?.favorite == true,
-                    shuffleEnabled = queue?.shuffleEnabled == true
-                )
-                lastPlaybackSnapshot = snapshot
-                val positionMs = if (trackChanged) 0L else currentPositionMs(snapshot)
-                AaMetrics.traceUpdateState(
-                    positionMs = positionMs,
-                    isPlaying = snapshot.isPlaying,
-                    title = snapshot.title,
-                    queueId = queue?.queueId
-                )
-                remotePlayer?.updatePlayback(snapshot, positionMs)
             }
+                .filterNotNull()
+                .distinctUntilChanged()
+                .collect { newState ->
+                    if (!newState.playback.isPlaying) onPlaybackStopped("playback-stopped")
+                    // Side-effect: start an artwork download when the source
+                    // image URL changes. This writes back into artworkData,
+                    // which re-enters the combine.
+                    updateArtwork(newState.imageUrl)
+                    applyAaState(lastAaState, newState)
+                    lastAaState = newState
+                    lastPlaybackSnapshot = newState.playback
+                }
         }
     }
 
-    private fun effectiveVolume(serverVolume: Int): Int {
-        val optimistic = optimisticVolume ?: return serverVolume
-        return if (System.currentTimeMillis() > volumeOverrideUntil) {
-            optimisticVolume = null
-            serverVolume
+    private fun buildAaState(
+        player: net.asksakis.massdroidv2.domain.model.Player?,
+        queue: net.asksakis.massdroidv2.domain.model.QueueState?,
+        ssConn: SendspinState,
+        ssSync: SyncState,
+        artwork: ByteArray?,
+        queueEntries: AutoQueueSnapshot,
+        volumeOv: Pair<Int, Long>?,
+    ): AaCompleteState? {
+        player ?: return null
+        val currentTrack = queue?.currentItem?.track
+        val trackUri = currentTrack?.uri ?: player.currentMedia?.uri
+        val currentIndex = queue?.currentIndex ?: 0
+        val isSendspinSelected = player.playerId == sendspinPlayerId()
+        // Audio actually flowing: for Sendspin we have engine-level truth
+        // (STREAMING + (SYNCHRONIZED || HOLDOVER)); for remote MA players we
+        // trust the server-reported PLAYING state. STATE_BUFFERING in
+        // RemoteControlPlayer.getState() reads this to pause the AA bar
+        // during seeks / track-changes / sync transitions / network blips.
+        val audioFlowing = if (isSendspinSelected) {
+            ssConn == SendspinState.STREAMING &&
+                (ssSync == SyncState.SYNCHRONIZED ||
+                    ssSync == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
         } else {
-            optimistic
+            player.state == PlaybackState.PLAYING
+        }
+        val volumeLevel = effectiveVolume(player.volumeLevel, volumeOv)
+        val playback = AutoPlaybackSnapshot(
+            isPlaying = player.state == PlaybackState.PLAYING,
+            audioFlowing = audioFlowing,
+            queueItemId = queue?.currentItem?.queueItemId,
+            trackUri = trackUri,
+            title = currentTrack?.name ?: player.currentMedia?.title ?: "",
+            artist = currentTrack?.artistNames ?: player.currentMedia?.artist ?: "",
+            album = currentTrack?.albumName ?: player.currentMedia?.album ?: "",
+            durationMs = ((currentTrack?.duration
+                ?: queue?.currentItem?.duration
+                ?: player.currentMedia?.duration
+                ?: 0.0) * 1000).toLong(),
+            currentIndex = currentIndex,
+            artworkData = artwork,
+            volumeLevel = volumeLevel,
+            isMuted = player.volumeMuted,
+            isRemotePlayback = !isSendspinSelected,
+        )
+        return AaCompleteState(
+            playback = playback,
+            queue = queueEntries,
+            isFavorite = currentTrack?.favorite == true,
+            shuffleEnabled = queue?.shuffleEnabled == true,
+            imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl,
+        )
+    }
+
+    private fun applyAaState(prev: AaCompleteState?, new: AaCompleteState) {
+        val rp = remotePlayer ?: return
+        val playbackChanged = prev?.playback != new.playback
+        val trackChanged = prev?.playback?.trackUri != null &&
+            (prev.playback.trackUri != new.playback.trackUri ||
+                prev.playback.currentIndex != new.playback.currentIndex)
+        if (playbackChanged) {
+            val positionMs = if (trackChanged) 0L else currentPositionMs(new.playback)
+            AaMetrics.traceUpdateState(
+                positionMs = positionMs,
+                isPlaying = new.playback.isPlaying,
+                title = new.playback.title,
+                queueId = new.queue.queueId,
+            )
+            rp.updatePlayback(new.playback, positionMs)
+        }
+        if (prev?.queue != new.queue) {
+            rp.updateQueue(new.queue)
+        }
+        if (prev?.isFavorite != new.isFavorite || prev?.shuffleEnabled != new.shuffleEnabled) {
+            session?.setMediaButtonPreferences(
+                AndroidAutoMediaCommands.buttons(service, new.isFavorite, new.shuffleEnabled)
+            )
         }
     }
 
-    private fun updateMediaButtons(isFavorite: Boolean, shuffleEnabled: Boolean) {
-        if (lastFavoriteButtonState == isFavorite && lastShuffleButtonState == shuffleEnabled) return
-        lastFavoriteButtonState = isFavorite
-        lastShuffleButtonState = shuffleEnabled
-        session?.setMediaButtonPreferences(
-            AndroidAutoMediaCommands.buttons(service, isFavorite, shuffleEnabled)
-        )
+    private fun effectiveVolume(serverVolume: Int, override: Pair<Int, Long>?): Int {
+        if (override == null) return serverVolume
+        if (System.currentTimeMillis() > override.second) {
+            // Override expired — let it auto-clear so the next combine emission
+            // settles back to the server-reported value cleanly.
+            volumeOverride.value = null
+            return serverVolume
+        }
+        return override.first
     }
 
     private fun toggleFavorite() {
         val track = playerRepository.queueState.value?.currentItem?.track ?: return
         val newFavorite = !track.favorite
+        // Optimistic state push: update the source-of-truth favorite flag in
+        // the repository — the master combine reads queueState.currentItem
+        // and re-emits AaCompleteState with the new favorite, which flips the
+        // media buttons via applyAaState. No direct session push from here.
         playerRepository.updateCurrentTrackFavorite(newFavorite)
-        updateMediaButtons(isFavorite = newFavorite, shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true)
         scope.launch(Dispatchers.IO) {
             try {
                 musicRepository.setFavorite(track.uri, MediaType.TRACK, track.itemId, newFavorite)
             } catch (e: Exception) {
                 Log.w(TAG, "AA favorite toggle failed: ${e.message}")
-                rollbackFavoriteIfStillCurrent(track, previousFavorite = track.favorite)
+                if (playerRepository.queueState.value?.currentItem?.track?.uri == track.uri) {
+                    playerRepository.updateCurrentTrackFavorite(track.favorite)
+                }
             }
         }
-    }
-
-    private fun rollbackFavoriteIfStillCurrent(track: Track, previousFavorite: Boolean) {
-        if (playerRepository.queueState.value?.currentItem?.track?.uri != track.uri) return
-        playerRepository.updateCurrentTrackFavorite(previousFavorite)
-        updateMediaButtons(
-            isFavorite = previousFavorite,
-            shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true
-        )
     }
 
     private fun toggleShuffle() {
         val queue = playerRepository.queueState.value ?: return
         val enabled = !queue.shuffleEnabled
-        updateMediaButtons(
-            isFavorite = queue.currentItem?.track?.favorite == true,
-            shuffleEnabled = enabled
-        )
+        // Optimistic shuffle: master combine watches structuralQueue (which
+        // includes shuffleEnabled). MA echo via QUEUE_UPDATED arrives shortly
+        // and confirms / corrects. No direct session push here.
         scope.launch(Dispatchers.IO) {
             try {
                 musicRepository.shuffleQueue(queue.queueId, enabled)
             } catch (e: Exception) {
                 Log.w(TAG, "AA shuffle toggle failed: ${e.message}")
-                updateMediaButtons(
-                    isFavorite = playerRepository.queueState.value?.currentItem?.track?.favorite == true,
-                    shuffleEnabled = playerRepository.queueState.value?.shuffleEnabled == true
-                )
             }
         }
     }
@@ -432,14 +490,31 @@ class AndroidAutoController(
         scope.launch {
             playerRepository.playbackPosition.collect { position ->
                 if (position == null || !position.matches(lastPlaybackSnapshot)) return@collect
-                // Silent sync only. With STATE_BUFFERING reported from
-                // RemoteControlPlayer.getState() when audio is not actually
-                // flowing, AA's progress-bar interpolation pauses during
-                // seeks / track changes / sync transitions on its own. The
-                // next observePlayback emission (driven by the Sendspin
-                // syncState/connectionState combine) invalidates and AA picks
-                // up the new contentPosition together with the new state.
+                // Silent sync for every emission. This includes the 500ms local
+                // interpolation ticker — we don't invalidate on these because
+                // gearhead reacts to frequent invalidates by rebuilding the
+                // queue (the original #20 regression). AA does its own 1x
+                // interpolation; we just keep our internal positionMs aligned
+                // so the next invalidate (from observeServerPositionUpdates or
+                // observePlayback) carries the freshest value.
                 remotePlayer?.syncPosition((position.position * 1000).toLong())
+            }
+        }
+    }
+
+    /**
+     * Push AA invalidate on every server-confirmed position event
+     * (QUEUE_TIME_UPDATED). These arrive only when MA actually broadcasts new
+     * truth — seek, track-end clamp, normal forward progress (every 1-2s) —
+     * not on the local 500ms interpolation ticker. That keeps the AA host's
+     * progress bar synced to ground truth without flooding it with invalidates
+     * that would re-trigger gearhead's queue rebuild.
+     */
+    private fun observeServerPositionUpdates() {
+        scope.launch {
+            playerRepository.serverPositionUpdates.collect { position ->
+                if (!position.matches(lastPlaybackSnapshot)) return@collect
+                remotePlayer?.publishPosition((position.position * 1000).toLong())
             }
         }
     }
@@ -495,7 +570,10 @@ class AndroidAutoController(
                     artworkUri = art?.let { Uri.parse(it) },
                 )
             }
-            remotePlayer?.updateQueue(AutoQueueSnapshot(queueId = queueId, entries = entries))
+            // Feed the queue snapshot into the master combine. applyAaState
+            // diffs and calls remotePlayer.updateQueue only if the queue
+            // actually changed structurally.
+            queueSnapshot.value = AutoQueueSnapshot(queueId = queueId, entries = entries)
             AaMetrics.traceUpdateQueue(queueId, entries.size)
             Log.d(TAG, "Queue updated: ${entries.size} items for $queueId")
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -510,13 +588,12 @@ class AndroidAutoController(
         if (imageUrl != null && artworkKey != cachedArtworkKey) {
             cachedArtworkUrl = imageUrl
             cachedArtworkKey = artworkKey
-            cachedArtworkData = null
+            artworkData.value = null
             scope.launch(Dispatchers.IO) { downloadArtwork(imageUrl) }
         } else if (imageUrl == null && cachedArtworkKey != null) {
             cachedArtworkUrl = null
             cachedArtworkKey = null
-            cachedArtworkData = null
-            pushArtwork(null)
+            artworkData.value = null
         }
     }
 
@@ -528,22 +605,16 @@ class AndroidAutoController(
             }
             if (url != cachedArtworkUrl || rawBytes == null || rawBytes.isEmpty()) return
             val resized = resizeArtwork(rawBytes)
-            val currentData = cachedArtworkData
+            val currentData = artworkData.value
             if (currentData != null && resized.contentEquals(currentData)) return
             if (url != cachedArtworkUrl) return
-            cachedArtworkData = resized
-            scope.launch {
-                if (url == cachedArtworkUrl) pushArtwork(resized)
-            }
+            // Feed artwork into the master combine. It re-emits with the new
+            // bytes in AutoPlaybackSnapshot, applyAaState detects the change
+            // (only the artwork differs) and calls updatePlayback once.
+            artworkData.value = resized
         } catch (e: Exception) {
             Log.e(TAG, "Artwork download failed: $url", e)
         }
-    }
-
-    private fun pushArtwork(data: ByteArray?) {
-        val updated = lastPlaybackSnapshot.copy(artworkData = data)
-        lastPlaybackSnapshot = updated
-        remotePlayer?.updatePlayback(updated, currentPositionMs(updated))
     }
 
     private fun String.toArtworkKey(): String {
@@ -593,11 +664,17 @@ class AndroidAutoController(
         private const val VOLUME_OVERRIDE_MS = 15_000L
     }
 
-    /** Holds the four flows combined into a single AA snapshot emission. */
-    private data class AutoStateInputs(
-        val player: net.asksakis.massdroidv2.domain.model.Player?,
-        val queue: net.asksakis.massdroidv2.domain.model.QueueState?,
-        val ssConn: SendspinState,
-        val ssSync: SyncState,
+    /**
+     * The complete AA host state, computed coherently from all input flows
+     * in observeAaState(). applyAaState() diffs successive emissions and
+     * dispatches only the channel that actually changed.
+     */
+    private data class AaCompleteState(
+        val playback: AutoPlaybackSnapshot,
+        val queue: AutoQueueSnapshot,
+        val isFavorite: Boolean,
+        val shuffleEnabled: Boolean,
+        /** Source image URL for the current track; used by updateArtwork(). */
+        val imageUrl: String?,
     )
 }

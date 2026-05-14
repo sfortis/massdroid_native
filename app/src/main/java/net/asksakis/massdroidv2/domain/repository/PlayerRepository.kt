@@ -39,6 +39,16 @@ interface PlayerRepository {
     val elapsedTime: StateFlow<Double>
     val playbackPosition: StateFlow<PlaybackPosition?>
 
+    /**
+     * Emits the same PlaybackPosition that lands in [playbackPosition], but only
+     * for **server-confirmed** events (QUEUE_TIME_UPDATED) — not for the local
+     * 500ms interpolation ticker. Subscribers that need to know "the server just
+     * told us the true position" (e.g. AndroidAutoController, to push an
+     * invalidate to the AA host) should observe this flow instead of polling
+     * the StateFlow.
+     */
+    val serverPositionUpdates: SharedFlow<PlaybackPosition>
+
     /** Emits immediately when a playback command is issued, before server round-trip. */
     val playbackIntent: SharedFlow<Boolean>
 

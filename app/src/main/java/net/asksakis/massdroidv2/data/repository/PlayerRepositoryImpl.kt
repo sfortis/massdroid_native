@@ -62,6 +62,9 @@ class PlayerRepositoryImpl @Inject constructor(
     private val _playbackPosition = MutableStateFlow<PlaybackPosition?>(null)
     override val playbackPosition: StateFlow<PlaybackPosition?> = _playbackPosition.asStateFlow()
 
+    private val _serverPositionUpdates = MutableSharedFlow<PlaybackPosition>(extraBufferCapacity = 4)
+    override val serverPositionUpdates: SharedFlow<PlaybackPosition> = _serverPositionUpdates.asSharedFlow()
+
     private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
 
@@ -875,6 +878,12 @@ class PlayerRepositoryImpl @Inject constructor(
         positionBaseTime = serverElapsed
         positionBaseTimestamp = System.currentTimeMillis()
         publishPosition(serverElapsed)
+        // Emit a server-confirmed position event distinct from the 500ms
+        // interpolation ticker. AndroidAutoController subscribes to this to
+        // invalidate the AA host's state on every authoritative update,
+        // without the ticker (which only re-derives an interpolated value)
+        // spamming AA with re-queries that risk the gearhead queue rebuild.
+        _playbackPosition.value?.let { _serverPositionUpdates.tryEmit(it) }
         if (startTicker) startPositionTicker() else stopPositionTicker()
     }
 
