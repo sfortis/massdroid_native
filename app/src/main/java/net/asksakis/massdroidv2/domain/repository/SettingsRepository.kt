@@ -25,6 +25,16 @@ interface SettingsRepository {
     val sendspinAudioFormat: Flow<String>
     val sendspinStaticDelayMs: Flow<Int>
     val sendspinClockOffsetUs: Flow<Long>
+    /**
+     * Whether Sendspin player volume should be bridged to the phone's
+     * STREAM_MUSIC. ON (default): hardware volume keys, in-app slider, AA host
+     * volume, and the MA-side player volume all converge on a single gain
+     * stage. OFF: STREAM_MUSIC stays independent — useful in cars where the
+     * head unit attenuates further and the user wants phone STREAM_MUSIC at
+     * 100% for full-fidelity BT transport while still controlling the
+     * Sendspin player volume server-side.
+     */
+    val sendspinSyncSystemVolume: Flow<Boolean>
     val acousticPhoneBaselineUs: Flow<Long>
     val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>>
 
@@ -47,6 +57,7 @@ interface SettingsRepository {
     suspend fun setSendspinAudioFormat(format: String)
     suspend fun setSendspinStaticDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
+    suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
     suspend fun setAcousticPhoneBaselineUs(baselineUs: Long)
     suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration)
     suspend fun removeAcousticRouteCalibration(routeKey: String)

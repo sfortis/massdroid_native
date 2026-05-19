@@ -65,6 +65,27 @@ class PlayerRepositoryImpl @Inject constructor(
     private val _serverPositionUpdates = MutableSharedFlow<PlaybackPosition>(extraBufferCapacity = 4)
     override val serverPositionUpdates: SharedFlow<PlaybackPosition> = _serverPositionUpdates.asSharedFlow()
 
+    private val _volumeOsd = MutableStateFlow<PlayerRepository.VolumeOsdState?>(null)
+    override val volumeOsd: StateFlow<PlayerRepository.VolumeOsdState?> = _volumeOsd.asStateFlow()
+    private var volumeOsdHideJob: Job? = null
+    private val volumeOsdTokenCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val volumeOsdHideMs = 2500L
+
+    override fun showVolumeOsd(playerName: String, volume: Int, isGroup: Boolean, isMuted: Boolean) {
+        _volumeOsd.value = PlayerRepository.VolumeOsdState(
+            playerName = playerName,
+            volume = volume.coerceIn(0, 100),
+            isGroup = isGroup,
+            isMuted = isMuted,
+            token = volumeOsdTokenCounter.incrementAndGet(),
+        )
+        volumeOsdHideJob?.cancel()
+        volumeOsdHideJob = scope.launch {
+            delay(volumeOsdHideMs)
+            _volumeOsd.value = null
+        }
+    }
+
     private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
 

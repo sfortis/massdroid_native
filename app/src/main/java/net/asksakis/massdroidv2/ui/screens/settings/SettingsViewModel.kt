@@ -133,6 +133,13 @@ class SettingsViewModel @Inject constructor(
     val sendspinState = sendspinManager.connectionState
     val sendspinEnabled = settingsRepository.sendspinEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val sendspinSyncSystemVolume = settingsRepository.sendspinSyncSystemVolume
+
+    fun setSendspinSyncSystemVolume(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinSyncSystemVolume(enabled)
+        }
+    }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val includeBetaUpdates = settingsRepository.includeBetaUpdates

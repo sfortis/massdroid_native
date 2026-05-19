@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
     @Inject lateinit var proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
     @Inject lateinit var playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository
-    @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+    @Inject lateinit var sendspinVolumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
     @Inject lateinit var oauthCallbackBus: net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
     @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 
@@ -207,6 +207,13 @@ class MainActivity : ComponentActivity() {
                 MassDroidTheme(darkTheme = darkTheme) {
                     MassDroidApp()
                     UpdatePrompt(appUpdateChecker)
+                    // Top-level transient OSD for remote-player volume changes.
+                    // The system already overlays its own bar for STREAM_MUSIC
+                    // (local Sendspin path), but remote players have no OS
+                    // surface, so this fills the visual-feedback gap.
+                    net.asksakis.massdroidv2.ui.components.VolumeOsdOverlay(
+                        flow = playerRepository.volumeOsd
+                    )
                     if (showNotificationPermissionDialog) {
                         PermissionRationaleDialog(
                             spec = AppPermissionRationales.notifications,
@@ -260,7 +267,11 @@ class MainActivity : ComponentActivity() {
             if (player != null) {
                 val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
                 if (isLocal) {
-                    // Local speaker: let system handle HW volume, then mirror to MA
+                    // Local Sendspin player: let the system handle the
+                    // STREAM_MUSIC adjustment (with the FLAG_SHOW_UI overlay),
+                    // then hand the resulting percent to the coordinator so it
+                    // decides whether to mirror the change to MA based on the
+                    // sync setting.
                     if (event.action == KeyEvent.ACTION_DOWN) {
                         hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -274,9 +285,7 @@ class MainActivity : ComponentActivity() {
                             direction,
                             AudioManager.FLAG_SHOW_UI
                         )
-                        val maVol = readPhoneVolumePercent()
-                        localSpeakerVolumeBridge.recordLocalPush(maVol)
-                        lifecycleScope.launch { playerRepository.setVolume(player.playerId, maVol) }
+                        sendspinVolumeCoordinator.onHardwareVolumeKeyMirrored(readPhoneVolumePercent())
                         return true
                     }
                     return true
@@ -289,11 +298,9 @@ class MainActivity : ComponentActivity() {
                         isGroup &&
                         player.groupChilds.any { it == localId }
                     if (localIsMember && localId != null) {
-                        // Hardware keys drive ONLY the local speaker's own MA
-                        // volume (not the entire group). We change phone
-                        // STREAM_MUSIC first, read the resulting phone %, and
-                        // push exactly that value to MA so the server echo
-                        // confirms rather than competes.
+                        // Hardware keys drive only the local Sendspin's own MA
+                        // volume (not the entire group). System handles
+                        // STREAM_MUSIC; coordinator handles the MA mirror.
                         hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
@@ -306,12 +313,7 @@ class MainActivity : ComponentActivity() {
                             direction,
                             AudioManager.FLAG_SHOW_UI
                         )
-                        val phonePct = readPhoneVolumePercent()
-                        localSpeakerVolumeBridge.recordLocalPush(phonePct)
-                        playerRepository.applyVolumeOptimistic(localId, phonePct)
-                        lifecycleScope.launch {
-                            playerRepository.setVolume(localId, phonePct)
-                        }
+                        sendspinVolumeCoordinator.onHardwareVolumeKeyMirrored(readPhoneVolumePercent())
                     } else {
                         // Plain remote speaker / non-local group: adjust the
                         // selected player's volume (or the group volume for a
@@ -321,11 +323,31 @@ class MainActivity : ComponentActivity() {
                             else player.volumeLevel
                         val newVol = (basis + delta).coerceIn(0, 100)
                         playerRepository.applyVolumeOptimistic(player.playerId, newVol)
+                        // Show the in-app volume overlay — the system volume
+                        // bar covers STREAM_MUSIC only; remote players have no
+                        // OS-level surface, so without this the user has no
+                        // visual feedback for the level change.
+                        playerRepository.showVolumeOsd(
+                            playerName = player.displayName,
+                            volume = newVol,
+                            isGroup = isGroup,
+                            isMuted = player.volumeMuted,
+                        )
                         lifecycleScope.launch {
-                            if (isGroup) {
-                                playerRepository.setGroupVolume(player.playerId, newVol)
-                            } else {
-                                playerRepository.setVolume(player.playerId, newVol)
+                            try {
+                                if (isGroup) {
+                                    playerRepository.setGroupVolume(player.playerId, newVol)
+                                } else {
+                                    playerRepository.setVolume(player.playerId, newVol)
+                                }
+                            } catch (e: Exception) {
+                                // MA server may time out (~10 s) when the
+                                // remote player is unreachable, surfacing as
+                                // MaApiException. Without this guard the
+                                // exception escapes lifecycleScope and kills
+                                // the process — a slow speaker should not
+                                // crash the app.
+                                Log.w("MainActivity", "remote volume push failed: ${e.message}")
                             }
                         }
                     }

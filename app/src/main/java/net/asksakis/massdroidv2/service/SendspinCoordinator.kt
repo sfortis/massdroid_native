@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
@@ -39,7 +39,7 @@ class SendspinCoordinator(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
-    private val localVolumeBridge: LocalSpeakerVolumeBridge,
+    private val volumeCoordinator: SendspinVolumeCoordinator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
@@ -66,6 +66,7 @@ class SendspinCoordinator(
 
     fun start() {
         createController()
+        volumeCoordinator.start(scope)
         observePlayerId()
         observeEnabled()
         observeConnectionState()
@@ -79,6 +80,7 @@ class SendspinCoordinator(
         unregisterBtAudioDeviceCallback()
         unregisterPhoneVolumeObserver()
         unregisterNetworkCallback()
+        volumeCoordinator.stop()
         controller?.destroy()
         controller = null
         isActive = false
@@ -99,7 +101,7 @@ class SendspinCoordinator(
             settingsRepository = settingsRepository,
             playerRepository = playerRepository,
             wsClient = wsClient,
-            localVolumeBridge = localVolumeBridge,
+            volumeCoordinator = volumeCoordinator,
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> onConnectionStateChanged() }
         )
@@ -268,33 +270,14 @@ class SendspinCoordinator(
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
-                val sendspinPlayerId = playerId ?: return
                 if (!isActive) return
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                 val cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                 val percent = if (max > 0) ((cur * 100f / max) + 0.5f).toInt() else 0
-                // Local STREAM_MUSIC is the canonical gain stage. Mark the push so
-                // the LocalSpeakerVolumeBridge suppresses the MA echo that will
-                // arrive shortly via PLAYER_UPDATED, and update the in-app slider
-                // optimistically so the UI doesn't lag behind the BT knob.
-                localVolumeBridge.recordLocalPush(percent)
-                playerRepository.applyVolumeOptimistic(sendspinPlayerId, percent)
-                // Fire-and-forget: don't block on the MA ack. The user perceives
-                // volume on STREAM_MUSIC which has already changed; MA only needs
-                // to mirror it for group fan-out and server-side state. Rapid
-                // turns of the BT knob may emit many updates per second; serial
-                // awaiting of acks would queue them and degrade responsiveness.
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        wsClient.sendCommand(
-                            MaCommands.Players.CMD_VOLUME_SET,
-                            VolumeSetArgs(playerId = sendspinPlayerId, volumeLevel = percent),
-                            awaitResponse = false
-                        )
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Volume push to MA failed: ${e.message}")
-                    }
-                }
+                // The coordinator owns the sync-switch policy and the MA push.
+                // We just report "STREAM_MUSIC observed at X%" and let it
+                // decide what to do.
+                volumeCoordinator.onPhoneStreamVolumeChanged(percent)
             }
         }
         volumeObserver = observer

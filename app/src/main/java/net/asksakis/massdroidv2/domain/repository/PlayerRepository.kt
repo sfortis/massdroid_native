@@ -61,6 +61,32 @@ interface PlayerRepository {
     /** Emits explicit discontinuities like next/previous/seek so buffered local playback can reset policy. */
     val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand>
 
+    /**
+     * Transient on-screen volume display. The phone's system volume bar covers
+     * STREAM_MUSIC adjustments for local playback, but remote MA players have
+     * no system surface — when the user adjusts their volume via hardware keys
+     * or AA controls, the app shows its own overlay populated from this flow.
+     * The repository auto-clears the value ~2.5 s after the latest update so
+     * the overlay fades out by itself.
+     */
+    val volumeOsd: StateFlow<VolumeOsdState?>
+
+    /** Show or refresh the volume overlay. Resets the auto-hide timer. */
+    fun showVolumeOsd(playerName: String, volume: Int, isGroup: Boolean = false, isMuted: Boolean = false)
+
+    data class VolumeOsdState(
+        val playerName: String,
+        val volume: Int,
+        val isGroup: Boolean,
+        val isMuted: Boolean,
+        /**
+         * Monotonically increasing token. The UI reads this to retrigger the
+         * fade-in animation when rapid key presses arrive (otherwise
+         * AnimatedVisibility would stay visible without a new "enter" cue).
+         */
+        val token: Long,
+    )
+
     enum class QueueFilterMode {
         NORMAL,
         SMART_GENERATED,

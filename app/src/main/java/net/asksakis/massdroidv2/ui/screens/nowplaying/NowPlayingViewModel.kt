@@ -100,6 +100,7 @@ class NowPlayingViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator,
     val sleepTimerBridge: SleepTimerBridge,
     private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
@@ -541,11 +542,24 @@ class NowPlayingViewModel @Inject constructor(
 
     fun setVolume(level: Int) {
         val player = selectedPlayer.value ?: return
-        viewModelScope.launch {
-            try {
-                playerRepository.setVolume(player.playerId, level)
-            } catch (e: Exception) {
-                Log.w(TAG, "setVolume failed: ${e.message}")
+        // Sendspin slider: route through the volume coordinator so the push
+        // is recorded as a local intent and the resulting MA echo is
+        // suppressed within the echo window. This protects against the
+        // race where a hardware key press lands between the slider's WS
+        // send and the server echo: without the recordLocalPush() that
+        // onUiSliderChanged() performs, the slider's stale echo could
+        // overwrite the hardware key's STREAM_MUSIC setting once the
+        // 1.5 s window expires. For non-Sendspin remote players the
+        // coordinator does not apply and we go through the repo directly.
+        if (cachedSendspinClientId != null && player.playerId == cachedSendspinClientId) {
+            volumeCoordinator.onUiSliderChanged(level)
+        } else {
+            viewModelScope.launch {
+                try {
+                    playerRepository.setVolume(player.playerId, level)
+                } catch (e: Exception) {
+                    Log.w(TAG, "setVolume failed: ${e.message}")
+                }
             }
         }
     }

@@ -967,6 +967,7 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
 private fun SendspinCard(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
+    val syncSystemVolume by viewModel.sendspinSyncSystemVolume.collectAsStateWithLifecycle(initialValue = true)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -997,6 +998,31 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                 MdSwitch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
             }
         )
+
+        // Sub-setting (sendspin gated). Decouples MA player volume from
+        // STREAM_MUSIC, useful in cars where the head unit attenuates
+        // further and STREAM_MUSIC should stay at 100% for full-fidelity BT
+        // codec transport.
+        if (sendspinEnabled) {
+            ListItem(
+                headlineContent = { Text("Sync system volume on Bluetooth") },
+                supportingContent = {
+                    Text(
+                        "When on Bluetooth, tie phone volume keys and slider to " +
+                            "the Sendspin player. Turn off in the car — the head " +
+                            "unit handles attenuation and the phone stream stays " +
+                            "at full level for best codec fidelity. Phone speaker, " +
+                            "wired, and USB always sync regardless of this setting."
+                    )
+                },
+                trailingContent = {
+                    MdSwitch(
+                        checked = syncSystemVolume,
+                        onCheckedChange = { viewModel.setSendspinSyncSystemVolume(it) }
+                    )
+                }
+            )
+        }
     }
 }
 
