@@ -21,6 +21,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import kotlin.random.Random
 
 enum class SendspinState {
     DISCONNECTED,
@@ -37,16 +38,41 @@ sealed class SendspinMessage {
     data class Binary(val data: ByteArray) : SendspinMessage()
 }
 
+/**
+ * Sendspin WebSocket client. Owns the full transport lifecycle:
+ *
+ *  - Single state machine: start -> CONNECTING -> AUTHENTICATING -> (protocol
+ *    states driven by the manager via updateState) -> READY (SYNCING/STREAMING).
+ *  - One reconnect path: any transport loss (close OR failure) routes through
+ *    [onTransportLost] which schedules an exponentially-backed-off retry up to
+ *    [BACKOFF_MAX_MS]. Reconnects keep firing as long as [shouldRun] is true.
+ *  - Credentials are pulled from [credentialsProvider] on every attempt, so a
+ *    stale or rotated token is always replaced with a fresh one before we open
+ *    a socket.
+ *  - [SendspinState.ERROR] is terminal. It is reached only when (a) the
+ *    server returns auth_error, (b) the manager pushes ERROR for a protocol
+ *    failure, or (c) the credentials provider can't supply credentials for
+ *    [MAX_PROVIDER_FAILURES] consecutive attempts. Terminal ERROR clears
+ *    [shouldRun], so an external orchestrator must call [refresh] or
+ *    stop/start to resume.
+ */
 class SendspinClient(
     private val httpClientProvider: () -> OkHttpClient,
     private val json: Json
 ) {
     companion object {
         private const val TAG = "SendspinClient"
-        private const val MAX_RECONNECT_ATTEMPTS = 10
-        private val BACKOFF_MS = longArrayOf(1000, 2000, 3000, 5000, 10000)
+        // Exponential schedule capped at 60s. Indexed by attempt count.
+        private val BACKOFF_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000)
+        private const val BACKOFF_MAX_MS = 60_000L
+        private const val JITTER_FRACTION = 0.30
         private const val BINARY_FRAME_BUFFER_CAPACITY = 2048
+        // If the provider keeps returning null/blank credentials, we give up
+        // and move to ERROR so the orchestrator can take corrective action.
+        private const val MAX_PROVIDER_FAILURES = 8
     }
+
+    data class Credentials(val serverUrl: String, val token: String)
 
     private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -67,57 +93,162 @@ class SendspinClient(
     val messages: SharedFlow<SendspinMessage> = _messages.asSharedFlow()
 
     private var errorMessage: String? = null
-    private var shouldReconnect = false
-    private var reconnectAttempt = 0
-    @Volatile
-    private var connectionGeneration = 0
+    @Volatile private var shouldRun = false
+    @Volatile private var attempt = 0
+    @Volatile private var providerFailures = 0
+    @Volatile private var connectionGeneration = 0
     private var droppedBinaryFrames = 0
+    private var clientIdInternal: String = ""
+    private var credentialsProvider: (suspend () -> Credentials?)? = null
 
-    // Saved for reconnect
-    private var savedUrl: String? = null
-    private var savedToken: String? = null
-    private var savedClientId: String? = null
-
+    /**
+     * Begin the lifecycle. If already running, this just refreshes the
+     * credentials provider and triggers an immediate retry (useful when the
+     * caller knows credentials have rotated).
+     */
     @Synchronized
-    fun connect(serverUrl: String, token: String, clientId: String) {
-        shouldReconnect = false
-        cancelReconnect()
-        webSocket?.close(1000, null)
-        webSocket = null
-        savedUrl = serverUrl
-        savedToken = token
-        savedClientId = clientId
-        shouldReconnect = true
-        reconnectAttempt = 0
-        doConnectInternal(serverUrl, token, clientId)
+    fun start(clientId: String, credentialsProvider: suspend () -> Credentials?) {
+        this.clientIdInternal = clientId
+        this.credentialsProvider = credentialsProvider
+        if (shouldRun) {
+            Log.d(TAG, "start: already running, kicking immediate retry with fresh provider")
+            cancelReconnect()
+            attempt = 0
+            providerFailures = 0
+            scheduleConnect(delayMs = 0L)
+            return
+        }
+        shouldRun = true
+        attempt = 0
+        providerFailures = 0
+        scheduleConnect(delayMs = 0L)
     }
 
-    private fun doConnect(serverUrl: String, token: String, clientId: String) {
-        synchronized(this) {
-            doConnectInternal(serverUrl, token, clientId)
+    /**
+     * Trigger an immediate fresh reconnect using the current credentials
+     * provider. No-op if not running. Called by the orchestrator when MA
+     * has reconnected and Sendspin should re-handshake.
+     */
+    @Synchronized
+    fun refresh() {
+        if (!shouldRun) {
+            Log.d(TAG, "refresh ignored: lifecycle not running")
+            return
+        }
+        Log.d(TAG, "refresh: forcing reconnect")
+        cancelReconnect()
+        closeSocket(1000, "Refresh")
+        attempt = 0
+        providerFailures = 0
+        scheduleConnect(delayMs = 0L)
+    }
+
+    @Synchronized
+    fun stop() {
+        shouldRun = false
+        cancelReconnect()
+        val ws = webSocket
+        if (ws != null) {
+            try {
+                sendGoodbye()
+            } catch (_: Throwable) {
+                // ignored: socket may already be in failed state
+            }
+            ws.close(1000, "Client disconnect")
+        }
+        webSocket = null
+        _state.value = SendspinState.DISCONNECTED
+        attempt = 0
+        providerFailures = 0
+        credentialsProvider = null
+    }
+
+    /**
+     * Backwards-compatible alias for [stop]. Kept so existing call sites in
+     * the manager keep working.
+     */
+    fun disconnect() = stop()
+
+    private fun cancelReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
+    private fun closeSocket(code: Int, reason: String?) {
+        val ws = webSocket
+        webSocket = null
+        ws?.close(code, reason)
+    }
+
+    @Synchronized
+    private fun scheduleConnect(delayMs: Long) {
+        if (!shouldRun) return
+        cancelReconnect()
+        if (delayMs <= 0L) {
+            Log.d(TAG, "Connecting immediately (attempt=$attempt)")
+            launchConnect()
+        } else {
+            Log.d(TAG, "Reconnect scheduled in ${delayMs}ms (attempt=$attempt)")
+            reconnectJob = scope.launch {
+                delay(delayMs)
+                if (shouldRun) launchConnect()
+            }
         }
     }
 
-    private fun doConnectInternal(serverUrl: String, token: String, clientId: String) {
-        val gen = ++connectionGeneration
-        webSocket?.close(1000, null)
-        webSocket = null
+    private fun launchConnect() {
+        scope.launch {
+            val provider = credentialsProvider
+            if (provider == null) {
+                Log.w(TAG, "No credentials provider; abandoning lifecycle")
+                synchronized(this@SendspinClient) {
+                    shouldRun = false
+                    _state.value = SendspinState.ERROR
+                }
+                return@launch
+            }
+            val creds = try {
+                provider()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Credentials provider threw: ${t.message}")
+                null
+            }
+            if (creds == null || creds.serverUrl.isBlank() || creds.token.isBlank()) {
+                providerFailures++
+                if (providerFailures >= MAX_PROVIDER_FAILURES) {
+                    Log.w(TAG, "Credentials unavailable after $providerFailures attempts; moving to ERROR")
+                    synchronized(this@SendspinClient) {
+                        shouldRun = false
+                        _state.value = SendspinState.ERROR
+                    }
+                    return@launch
+                }
+                Log.d(TAG, "Credentials unavailable, will retry (providerFailures=$providerFailures)")
+                scheduleConnect(nextBackoffMs())
+                return@launch
+            }
+            providerFailures = 0
+            openWebSocket(creds)
+        }
+    }
+
+    private fun openWebSocket(creds: Credentials) {
+        val gen = synchronized(this) { ++connectionGeneration }
+        closeSocket(1000, null)
 
         _state.value = SendspinState.CONNECTING
         errorMessage = null
 
-        val wsUrl = buildSendspinUrl(serverUrl)
-        Log.d(TAG, "Connecting to $wsUrl (gen=$gen)")
+        val wsUrl = buildSendspinUrl(creds.serverUrl)
+        Log.d(TAG, "Connecting to $wsUrl (gen=$gen, attempt=$attempt)")
 
         val request = Request.Builder().url(wsUrl).build()
         webSocket = httpClientProvider().newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (gen != connectionGeneration) return
-                reconnectAttempt = 0
                 droppedBinaryFrames = 0
                 _state.value = SendspinState.AUTHENTICATING
-                // Proxy mode: first message must be auth
-                val auth = SendspinAuthMessage(token = token, clientId = clientId)
+                val auth = SendspinAuthMessage(token = creds.token, clientId = clientIdInternal)
                 val msg = json.encodeToString(auth)
                 Log.d(TAG, "Sendspin WebSocket opened, sending auth")
                 webSocket.send(msg)
@@ -156,25 +287,49 @@ class SendspinClient(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (gen != connectionGeneration) return
                 Log.d(TAG, "Sendspin closed: $code $reason")
-                this@SendspinClient.webSocket = null
-                _state.value = SendspinState.DISCONNECTED
-                scheduleReconnect()
+                onTransportLost("closed: $code $reason")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (gen != connectionGeneration) return
                 Log.e(TAG, "Sendspin failure: ${t.message}")
-                this@SendspinClient.webSocket = null
                 errorMessage = t.message
-                _state.value = SendspinState.ERROR
-                // Don't auto-reconnect on network errors; SendspinAudioController
-                // will restart with a fresh token after MA WebSocket reconnects
+                onTransportLost("failure: ${t.message}")
             }
         })
     }
 
+    /**
+     * Single transport-loss handler. Used by both [WebSocketListener.onClosed]
+     * and [WebSocketListener.onFailure] so reconnect logic lives in exactly
+     * one place.
+     */
+    private fun onTransportLost(reason: String) {
+        synchronized(this) {
+            webSocket = null
+            // Don't clobber a terminal ERROR pushed by the manager (auth_error).
+            if (_state.value != SendspinState.ERROR) {
+                _state.value = SendspinState.DISCONNECTED
+            }
+            if (!shouldRun) {
+                Log.d(TAG, "Transport lost while stopped, no reconnect: $reason")
+                return
+            }
+            val delayMs = nextBackoffMs()
+            Log.d(TAG, "Transport lost ($reason), reconnecting in ${delayMs}ms")
+            scheduleConnect(delayMs)
+        }
+    }
+
+    private fun nextBackoffMs(): Long {
+        val idx = attempt.coerceAtMost(BACKOFF_MS.size - 1)
+        val base = BACKOFF_MS[idx]
+        attempt++
+        val jitter = (base * JITTER_FRACTION * Random.nextDouble()).toLong()
+        return (base + jitter).coerceAtMost(BACKOFF_MAX_MS + (BACKOFF_MAX_MS * JITTER_FRACTION).toLong())
+    }
+
     private fun buildSendspinUrl(serverUrl: String): String {
-        // Proxy mode: same host/port as MA server, path /sendspin
         val base = serverUrl.trimEnd('/')
             .replace("http://", "ws://")
             .replace("https://", "wss://")
@@ -227,52 +382,37 @@ class SendspinClient(
         webSocket?.send(msg)
     }
 
+    /**
+     * Protocol-state update from the manager. Two side effects:
+     *
+     *  - Successful protocol states ([SendspinState.SYNCING], [SendspinState.STREAMING])
+     *    reset the backoff counter so a later transient drop starts at the
+     *    short end of the schedule, not at the cap.
+     *  - [SendspinState.ERROR] is terminal: it stops the lifecycle. The
+     *    manager pushes this only for protocol-level fatal errors (auth_error).
+     */
     fun updateState(newState: SendspinState) {
-        _state.value = newState
+        synchronized(this) {
+            _state.value = newState
+            when (newState) {
+                SendspinState.SYNCING, SendspinState.STREAMING -> {
+                    if (attempt != 0) {
+                        Log.d(TAG, "Connection healthy, resetting backoff (was attempt=$attempt)")
+                        attempt = 0
+                    }
+                    providerFailures = 0
+                }
+                SendspinState.ERROR -> {
+                    Log.w(TAG, "Terminal ERROR pushed by manager, stopping lifecycle")
+                    shouldRun = false
+                    cancelReconnect()
+                }
+                else -> {}
+            }
+        }
     }
 
     fun getErrorMessage(): String? = errorMessage
-
-    private fun scheduleReconnect() {
-        if (!shouldReconnect) return
-        val url = savedUrl ?: return
-        val token = savedToken ?: return
-        val clientId = savedClientId ?: return
-
-        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Max reconnect attempts reached")
-            _state.value = SendspinState.ERROR
-            shouldReconnect = false
-            return
-        }
-
-        val delay = BACKOFF_MS[reconnectAttempt.coerceAtMost(BACKOFF_MS.size - 1)]
-        reconnectAttempt++
-        Log.d(TAG, "Reconnecting in ${delay}ms (attempt $reconnectAttempt/$MAX_RECONNECT_ATTEMPTS)")
-
-        reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            delay(delay)
-            if (shouldReconnect) doConnect(url, token, clientId)
-        }
-    }
-
-    private fun cancelReconnect() {
-        reconnectJob?.cancel()
-        reconnectJob = null
-    }
-
-    @Synchronized
-    fun disconnect() {
-        shouldReconnect = false
-        cancelReconnect()
-        if (webSocket != null) {
-            sendGoodbye()
-        }
-        webSocket?.close(1000, "Client disconnect")
-        webSocket = null
-        _state.value = SendspinState.DISCONNECTED
-    }
 
     fun isConnected(): Boolean = webSocket != null
 }

@@ -87,8 +87,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
 enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, ABOUT }
 
@@ -412,6 +414,65 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
             onCheck = { viewModel.checkForUpdates(force = true) },
             onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
         )
+        if (BuildConfig.DEBUG) {
+            DiagnosticsCard()
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticsCard() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf<String?>(null) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "Diagnostics",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                "Bundle the rotating logcat files into a ZIP and share via your preferred app. Helps reproduce field issues like #43.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            status?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            MdFilledTonalButton(
+                onClick = {
+                    scope.launch {
+                        val intent = PersistentLogcatWriter.buildShareIntent(context)
+                        if (intent == null) {
+                            status = "No logs available yet."
+                            return@launch
+                        }
+                        status = null
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent.createChooser(intent, "Share MassDroid logs")
+                            )
+                        }.onFailure { status = "Share failed: ${it.message}" }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Share logs")
+            }
+        }
     }
 }
 
