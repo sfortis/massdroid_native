@@ -342,6 +342,10 @@ class MainActivity : ComponentActivity() {
                                     playerRepository.setVolume(player.playerId, newVol)
                                 }
                             } catch (e: Exception) {
+                                // CancellationException must propagate so the
+                                // scope can unwind on activity destroy without
+                                // being logged as a failure.
+                                if (e is kotlinx.coroutines.CancellationException) throw e
                                 // MA server may time out (~10 s) when the
                                 // remote player is unreachable, surfacing as
                                 // MaApiException. Without this guard the

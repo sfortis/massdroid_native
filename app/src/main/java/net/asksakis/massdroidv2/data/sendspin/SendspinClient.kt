@@ -225,6 +225,12 @@ class SendspinClient(
         val creds = try {
             provider()
         } catch (t: Throwable) {
+            // CancellationException must propagate so the caller (scope or
+            // explicit stop()) can unwind cleanly. Swallowing it would cause
+            // a stop-mid-connect to be charged against providerFailures and,
+            // after MAX_PROVIDER_FAILURES cancellations, the lifecycle would
+            // move to terminal ERROR for no real reason.
+            if (t is kotlinx.coroutines.CancellationException) throw t
             Log.w(TAG, "Credentials provider threw: ${t.message}")
             null
         }
