@@ -13,6 +13,12 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.0-7F52FF?logo=kotlin&logoColor=white)
 [![Downloads](https://img.shields.io/github/downloads/sfortis/massdroid_native/total?logo=github)](https://github.com/sfortis/massdroid_native/releases)
 
+<br/>
+
+<a href="https://apps.obtainium.imranr.dev/redirect.html?r=obtainium://add/https://github.com/sfortis/massdroid_native">
+  <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="58" />
+</a>
+
 _This app is an unofficial third-party client and is not affiliated with the Music Assistant project._
 
 </div>
@@ -138,11 +144,7 @@ When Sendspin is enabled, the phone registers as a Music Assistant player. Audio
 
 ### Stable release
 
-Download the latest signed APK from [GitHub Releases](https://github.com/sfortis/massdroid_native/releases/latest), or add MassDroid to [Obtainium](https://github.com/ImranR98/Obtainium) for automatic updates:
-
-<a href="https://apps.obtainium.imranr.dev/redirect.html?r=obtainium://add/https://github.com/sfortis/massdroid_native">
-  <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="58" />
-</a>
+Download the latest signed APK from [GitHub Releases](https://github.com/sfortis/massdroid_native/releases/latest), or use the Obtainium badge at the top of this page for automatic updates.
 
 ### Dev build (latest features, may be unstable)
 
