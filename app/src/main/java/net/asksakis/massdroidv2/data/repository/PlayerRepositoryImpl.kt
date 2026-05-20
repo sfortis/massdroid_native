@@ -1233,9 +1233,16 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     private fun currentTrackDurationFor(playerId: String): Double {
-        val fromQueue = _queueState.value
-            ?.takeIf { it.queueId == playerId }
-            ?.currentItem?.duration
+        // Trust the active queue first regardless of whether the playerId
+        // matches its queueId. In a Sendspin group setup the queue belongs
+        // to the group leader while the slider seeks against the child
+        // playerId, so a strict `queueId == playerId` check would miss the
+        // duration and `_players[child].currentMedia.duration` is often
+        // 0 for non-leader children — leaving the clamp to coerce every
+        // seek to 0. The repository only tracks one active queue at a
+        // time, so the queue's currentItem.duration is the right source
+        // for both solo and grouped Sendspin.
+        val fromQueue = _queueState.value?.currentItem?.duration
         if (fromQueue != null && fromQueue > 0.0) return fromQueue
         return _players.value.find { it.playerId == playerId }
             ?.currentMedia?.duration
