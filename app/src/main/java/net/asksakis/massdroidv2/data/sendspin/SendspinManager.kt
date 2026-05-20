@@ -521,8 +521,18 @@ class SendspinManager(
     }
 
     private fun currentSyncStatePayloadValue(): String {
+        // Per Sendspin protocol (see sendspin-js StateManager): "synchronized"
+        // is the default healthy state — it means "client is ready". "error"
+        // signals an actual sync failure that the server should react to.
+        // SyncState.IDLE in our engine means "transport up, no active stream
+        // yet" (e.g. between tracks after stream/end). Reporting that as
+        // "error" makes the server believe the client is broken and close
+        // the WebSocket; the reconnect then opens a fresh socket which again
+        // starts in IDLE and reports "error", producing a Disconnected/Connected
+        // flap after every track end. Map IDLE → "synchronized" to match the
+        // reference client's semantics.
         return when (_syncState.value) {
-            SyncState.IDLE -> "error"
+            SyncState.IDLE -> "synchronized"
             SyncState.SYNCHRONIZED -> "synchronized"
             SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
             SyncState.SYNC_ERROR_REBUFFERING -> "error"

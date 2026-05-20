@@ -414,9 +414,7 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
             onCheck = { viewModel.checkForUpdates(force = true) },
             onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
         )
-        if (BuildConfig.DEBUG) {
-            DiagnosticsCard()
-        }
+        DiagnosticsCard()
     }
 }
 
