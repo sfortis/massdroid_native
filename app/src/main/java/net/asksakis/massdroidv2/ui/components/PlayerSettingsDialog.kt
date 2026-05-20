@@ -165,7 +165,11 @@ fun PlayerSettingsDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier
             .widthIn(min = 320.dp, max = 480.dp)
-            .heightIn(max = 560.dp)
+            // Bumped from 560 → 720 so calibration rows at the bottom of the
+            // scrollable content aren't clipped on phones with ~800-900 dp
+            // available height. Adaptive devices (tablets, foldables) cap at
+            // 720 still — generous but not full-screen.
+            .heightIn(max = 720.dp)
             .windowInsetsPadding(
                 WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(
                     WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
@@ -199,7 +203,15 @@ fun PlayerSettingsDialog(
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier
-                            .weight(1f, fill = false)
+                            // weight(1f) (fill = true, default): claim all the
+                            // remaining vertical space inside the dialog so the
+                            // verticalScroll has a bounded viewport. With the
+                            // earlier fill = false, the column took only its
+                            // measured (intrinsic) height — fine until content
+                            // exceeded that — and the bottom Cancel/Save row
+                            // could push it up so the last items got clipped
+                            // without engaging the scroll.
+                            .weight(1f)
                             .verticalScroll(rememberScrollState())
                     ) {
                     OutlinedTextField(

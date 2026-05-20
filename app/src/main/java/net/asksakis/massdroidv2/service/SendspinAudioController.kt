@@ -57,7 +57,7 @@ class SendspinAudioController(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
-    private val localVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge,
+    private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     private val onMetadataChanged: (SendspinMetadata) -> Unit,
     private val onStateChanged: (ready: Boolean, streaming: Boolean, playing: Boolean) -> Unit
 ) {
@@ -267,7 +267,9 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
         }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
-        localVolumeBridge.start(scope)
+        // Note: volumeCoordinator is started once by SendspinCoordinator with
+        // its longer-lived scope; this controller's per-start lifecycle would
+        // re-arm it across restarts and lose the syncEnabled observer.
         if (collectorJobs.isNotEmpty()) {
             Log.d(TAG, "start() ignored: already running")
             return
@@ -336,22 +338,15 @@ class SendspinAudioController(
                     Log.d(TAG, "Sendspin dropped while streaming")
                 }
 
-                // Auto-recover Sendspin if it fails while MA WS is still connected
+                // ERROR transitions: flush the audio engine so the next ready
+                // state starts from a clean baseline. The transport itself
+                // recovers via SendspinClient's internal backoff (single
+                // reconnect path); we do NOT schedule a controller-side
+                // restart here — that was the source of issue #43's "trying
+                // to enable" loop where the controller's 2s recovery raced
+                // with the client's own scheduler.
                 if (state == SendspinState.ERROR && !wasError) {
                     sendspinManager.onTransportFailure()
-                }
-
-                if (state == SendspinState.ERROR &&
-                    wsClient.connectionState.value is ConnectionState.Connected
-                ) {
-                    autoRecoveryJob?.cancel()
-                    autoRecoveryJob = scope.launch {
-                        delay(2000)
-                        if (sendspinManager.connectionState.value == SendspinState.ERROR) {
-                            Log.d(TAG, "Sendspin ERROR while MA connected, auto-recovering")
-                            ensureSendspinConnected()
-                        }
-                    }
                 }
 
                 val outsideOptimistic = System.currentTimeMillis() >= optimisticUntil
@@ -546,9 +541,8 @@ class SendspinAudioController(
         // Collector 4: Read settings and start sendspin
         collectorJobs += scope.launch {
             val url = settingsRepository.serverUrl.first()
-            val token = wsClient.authToken ?: settingsRepository.authToken.first()
-            if (url.isBlank() || token.isBlank()) {
-                Log.e(TAG, "No server URL or token, cannot start sendspin")
+            if (url.isBlank()) {
+                Log.e(TAG, "No server URL, cannot start sendspin")
                 return@launch
             }
 
@@ -561,13 +555,15 @@ class SendspinAudioController(
             sendspinPlayerId = clientId
             val ssState = sendspinManager.connectionState.value
             if (ssState == SendspinState.DISCONNECTED || ssState == SendspinState.ERROR) {
-                // Init sendspin volume from phone volume so server doesn't reset to 100%
-                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                val phonePercent = if (maxVol > 0) (curVol * 100 / maxVol) else 50
-                sendspinManager.setVolume(phonePercent)
-                sendspinManager.start(url, token, clientId, "MassDroid")
-                Log.d(TAG, "Sendspin started, playerId=$clientId")
+                // Seed the Sendspin player volume so the server doesn't reset
+                // to 100% on connect. The coordinator picks the right source:
+                // sync ON → derive from STREAM_MUSIC; sync OFF → use the
+                // last-known MA volume (STREAM_MUSIC may be pinned at 100%
+                // for car BT and we don't want that echoed into MA).
+                val seedVolume = volumeCoordinator.seedStartupVolume()
+                sendspinManager.setVolume(seedVolume)
+                sendspinManager.start(clientId, "MassDroid", buildCredentialsProvider())
+                Log.d(TAG, "Sendspin started, playerId=$clientId seedVol=$seedVolume")
             } else {
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")
             }
@@ -589,28 +585,55 @@ class SendspinAudioController(
             }
         }
 
-        // Collector 6: Restart Sendspin WebSocket when MA reconnects
+        // Collector 6: Refresh Sendspin transport when MA reconnects, and
+        // auto-resume playback if the user wanted to play. The auto-resume
+        // gate is `currentIsPlaying` (set false by the noisy receiver on BT
+        // disconnect and by handlePause, true on handlePlay or while server
+        // reports PLAYING). This honours the BT-disconnect-pause contract:
+        // when the user leaves the car, music does not silently come back on
+        // the phone speaker; it stays paused until they explicitly play.
+        //
+        // The manager.refresh() call is a graceful reconnect through the
+        // client's single state machine — no stop+start race with the
+        // client's own backoff scheduler.
         collectorJobs += scope.launch {
             var connectedBefore = false
             wsClient.connectionState.collect { state ->
                 val isConnected = state is ConnectionState.Connected
                 if (isConnected && connectedBefore) {
-                    val url = settingsRepository.serverUrl.first()
-                    val token = wsClient.authToken ?: settingsRepository.authToken.first()
-                    var clientId = settingsRepository.sendspinClientId.first()
-                    if (clientId == null) {
-                        clientId = UUID.randomUUID().toString()
-                        settingsRepository.setSendspinClientId(clientId)
-                    }
-
-                    // Always force-restart Sendspin after MA reconnect.
-                    // After server reboot, the existing Sendspin WS may be connected
-                    // (SYNCING/STREAMING) but the server no longer recognizes the player.
                     val currentSsState = sendspinManager.connectionState.value
-                    Log.d(TAG, "MA reconnected, sendspin is $currentSsState, force-restarting")
-                    if (url.isNotBlank() && token.isNotBlank()) {
-                        sendspinManager.stop()
-                        sendspinManager.start(url, token, clientId, "MassDroid")
+                    val wantToResume = currentIsPlaying
+                    Log.d(
+                        TAG,
+                        "MA reconnected, sendspin is $currentSsState, refreshing (wantToResume=$wantToResume)"
+                    )
+                    sendspinManager.refresh()
+                    if (wantToResume) {
+                        // After the force-restart MA does not auto-resume the
+                        // stream (the brief WS outage leaves it expecting a
+                        // play command from the client). Wait until the new
+                        // Sendspin session is at least SYNCING (server has
+                        // acknowledged us) and send play. The currentIsPlaying
+                        // check above is the canonical intent gate: BT
+                        // disconnect / user pause already cleared it, so we
+                        // never resume against the user's wish.
+                        launch {
+                            val ready = withTimeoutOrNull(15_000) {
+                                sendspinManager.connectionState
+                                    .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+                            }
+                            if (ready == null) {
+                                Log.w(TAG, "Auto-resume aborted: Sendspin not ready within 15s")
+                                return@launch
+                            }
+                            val id = sendspinPlayerId ?: return@launch
+                            Log.d(TAG, "Auto-resuming play after MA reconnect")
+                            try {
+                                playerRepository.play(id)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Auto-resume play failed: ${e.message}")
+                            }
+                        }
                     }
                 }
                 if (isConnected) connectedBefore = true
@@ -629,7 +652,7 @@ class SendspinAudioController(
         abandonAudioFocus()
         unregisterNoisyReceiver()
         releaseLocks()
-        localVolumeBridge.stop()
+        // volumeCoordinator outlives this controller — stopped by SendspinCoordinator.
         sendspinManager.stop()
         currentIsPlaying = false
         isReady = false
@@ -733,11 +756,21 @@ class SendspinAudioController(
             .setOnAudioFocusChangeListener { focusChange ->
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
-                        Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady")
+                        Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady currentIsPlaying=$currentIsPlaying")
                         hasAudioFocus = true
+                        // Always undo a prior duck. Resume is gated on the canonical
+                        // playback intent (currentIsPlaying): noisy/route-loss and
+                        // permanent-loss paths set it to false, so the route-change
+                        // focus-shuffle that follows a BT disconnect will not silently
+                        // hand audio off to the phone speaker. Transient losses (phone
+                        // call, nav prompt) leave the intent true and resume normally.
+                        sendspinManager.restoreVolume()
+                        if (!currentIsPlaying) {
+                            Log.d(TAG, "Focus gained but intent is paused, staying paused")
+                            return@setOnAudioFocusChangeListener
+                        }
                         if (isStreaming) {
                             sendspinManager.resumeAudio()
-                            sendspinManager.restoreVolume()
                         } else if (isReady) {
                             // After phone call: server may have stopped streaming.
                             // Resume by sending play command.
@@ -750,8 +783,11 @@ class SendspinAudioController(
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.d(TAG, "Audio focus lost permanently")
-                
                         hasAudioFocus = false
+                        // Align intent with the permanent loss: another app has taken
+                        // over, the user is no longer "trying to play". Without this,
+                        // a later AUDIOFOCUS_GAIN would resume against the user's wish.
+                        currentIsPlaying = false
                         if (isStreaming) {
                             val id = sendspinPlayerId
                             if (id != null) {
@@ -759,6 +795,7 @@ class SendspinAudioController(
                             }
                         }
                         sendspinManager.pauseAudio()
+                        notifyStateChanged()
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         Log.d(TAG, "Audio focus lost transiently")
@@ -864,6 +901,32 @@ class SendspinAudioController(
 
     // region Sendspin connection helpers
 
+    /**
+     * Credentials lookup used by the SendspinClient on every (re)connect
+     * attempt. Pulls the live MA WebSocket token if present, falling back to
+     * the persisted token so the very first attempt after a process restart
+     * also has something to send.
+     */
+    private fun buildCredentialsProvider(): suspend () -> net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? = {
+        val url = settingsRepository.serverUrl.first()
+        val token = wsClient.authToken ?: settingsRepository.authToken.first()
+        if (url.isBlank() || token.isBlank()) {
+            null
+        } else {
+            net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials(url, token)
+        }
+    }
+
+    /**
+     * Ensure Sendspin is in a playable state. Three cases:
+     *
+     *  1. Already SYNCING/STREAMING -> immediate true.
+     *  2. Mid-connect (CONNECTING/AUTHENTICATING/HANDSHAKING) -> wait for
+     *     SYNCING/STREAMING with a timeout.
+     *  3. DISCONNECTED/ERROR -> apply preferred network format, then nudge
+     *     the client to retry now via refresh(). The client's own backoff
+     *     scheduler owns the reconnect loop; we just kick it.
+     */
     private suspend fun ensureSendspinConnected(): Boolean {
         reconnectJob?.let { existing ->
             if (existing.isActive) {
@@ -878,52 +941,20 @@ class SendspinAudioController(
 
         if (state != SendspinState.DISCONNECTED && state != SendspinState.ERROR) {
             Log.d(TAG, "Sendspin is $state, waiting for ready")
-            return withTimeoutOrNull(10000) {
-                sendspinManager.connectionState
-                    .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-            } != null
+            return waitForReady(timeoutMs = 10_000)
         }
 
-        val url = settingsRepository.serverUrl.first()
-        val token = wsClient.authToken ?: settingsRepository.authToken.first()
         val clientId = sendspinPlayerId ?: return false
-        if (url.isBlank() || token.isBlank()) return false
 
         val job = scope.async {
-            val beforeFormatState = sendspinManager.connectionState.value
-            if (beforeFormatState == SendspinState.SYNCING || beforeFormatState == SendspinState.STREAMING) {
-                Log.d(TAG, "Sendspin became $beforeFormatState before reconnect, skipping restart")
-                return@async true
-            }
-            if (beforeFormatState != SendspinState.DISCONNECTED && beforeFormatState != SendspinState.ERROR) {
-                Log.d(TAG, "Sendspin became $beforeFormatState before reconnect, waiting for ready")
-                return@async withTimeoutOrNull(10000) {
-                    sendspinManager.connectionState
-                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                } != null
-            }
-
             applyPreferredFormatForCurrentNetwork(clientId)
             val latestState = sendspinManager.connectionState.value
             if (latestState == SendspinState.SYNCING || latestState == SendspinState.STREAMING) {
-                Log.d(TAG, "Sendspin became $latestState after format apply, skipping restart")
                 return@async true
             }
-            if (latestState != SendspinState.DISCONNECTED && latestState != SendspinState.ERROR) {
-                Log.d(TAG, "Sendspin became $latestState after format apply, waiting for ready")
-                return@async withTimeoutOrNull(10000) {
-                    sendspinManager.connectionState
-                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                } != null
-            }
-
-            Log.d(TAG, "Restarting sendspin for playback (was $state, latest=$latestState)")
-            sendspinManager.start(url, token, clientId, "MassDroid")
-
-            withTimeoutOrNull(10000) {
-                sendspinManager.connectionState
-                    .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-            } != null
+            Log.d(TAG, "Nudging sendspin reconnect (was $state, latest=$latestState)")
+            sendspinManager.refresh()
+            waitForReady(timeoutMs = 10_000)
         }
         reconnectJob = job
         return try {
@@ -932,6 +963,12 @@ class SendspinAudioController(
             if (reconnectJob === job) reconnectJob = null
         }
     }
+
+    private suspend fun waitForReady(timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) {
+            sendspinManager.connectionState
+                .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+        } != null
 
     // endregion
 

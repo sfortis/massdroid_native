@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
+import net.asksakis.massdroidv2.BuildConfig
 
 @HiltAndroidApp
 class MassDroidApp : Application(), ImageLoaderFactory {
@@ -43,6 +44,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // Start the persistent logcat-to-file writer first so we capture
+        // everything that follows. Debug builds only; release-side this
+        // would require READ_LOGS and a different policy.
+        if (BuildConfig.DEBUG) {
+            net.asksakis.massdroidv2.util.PersistentLogcatWriter.start(this)
+        }
         // Load saved mTLS certificate and credentials at startup
         appScope.launch {
             val alias = settingsRepository.clientCertAlias.first()

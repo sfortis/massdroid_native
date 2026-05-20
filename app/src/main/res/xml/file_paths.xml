@@ -3,4 +3,10 @@
     <cache-path
         name="update_cache"
         path="." />
+    <cache-path
+        name="shared_logs"
+        path="shared_logs/" />
+    <external-files-path
+        name="app_logs"
+        path="logs/" />
 </paths>

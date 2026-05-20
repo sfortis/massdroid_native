@@ -44,11 +44,12 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- **Android Auto support:** drive with MassDroid in the car. Four root tabs (Playlists, Albums, Artists, More) with Smart Mix, Genre Radio, Genres, and a full server browse tree. Voice search via Google Assistant ("Play X on MassDroid"), tap any queue row to jump, favourite and shuffle toolbar buttons, and a stable queue list that no longer snaps to the top while you scroll. Auto-routes through Sendspin so audio comes out of the car speakers regardless of which player you had selected before driving.
-- **Home Assistant OAuth login:** sign in to Music Assistant through your Home Assistant account instead of saving username/password. Connection settings rewritten with a cleaner URL flow and validation.
-- **Smart Mix overhaul:** per-artist cap fix, track-level genre filter, recency penalties on recently-played artists, Last.fm-driven discovery for adjacent artists, and genre cycling so the mix doesn't sit on a single style.
-- **Group Players management:** create, edit and delete player groups directly from the app, with server-driven volume bridging and MA-compliant static behaviour.
-- **Polish & fixes:** haptic feedback across the UI (Md* button system, consistent long-press), mini-player FAB sits at the right height when no player is selected, per-account state is fully wiped on sign-out, deep-link onboarding flow, and Connection URL validation prevents typos that used to silently fail.
+- **Phone-as-speaker reliability fix:** the "Sendspin player keeps switching to Error" loop is gone. Reconnects are quick, automatic and don't fight each other anymore.
+- **Smoother seek and skip:** scrubbing the slider feels responsive again, dragging to the very end no longer skips to the next track, and the progress bar stays in sync right after a skip.
+- **Volume keys behave properly:** one press = one volume command. The Bluetooth sync toggle stays out of the way when your car already controls the volume.
+- **Remote volume on-screen indicator:** pressing the volume keys while a remote speaker is selected now shows a sliding overlay with the player name and level, so you actually see what changed.
+- **Built-in log sharing:** Settings → About → Share logs bundles recent debug logs into a ZIP you can send through any share target. Helps reporting bugs without needing ADB.
+- **Other polish:** crash fix on volume keys for slow remote speakers, no more accidental phone-speaker resume after disconnecting Bluetooth, and a few smaller stability tweaks around playback.
 
 ## Screenshots
 

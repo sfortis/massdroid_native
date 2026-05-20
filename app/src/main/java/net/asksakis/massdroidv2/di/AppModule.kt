@@ -119,15 +119,21 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideLocalSpeakerVolumeBridge(
+    fun provideSendspinVolumeCoordinator(
         @ApplicationContext ctx: Context,
-        sendspinManager: SendspinManager
-    ): net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge {
+        sendspinManager: SendspinManager,
+        settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
+        playerRepository: net.asksakis.massdroidv2.domain.repository.PlayerRepository,
+    ): net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator {
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-        return net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge(
+        return net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator(
             audioManager = am,
-            volumeEvents = sendspinManager.serverVolumeEvents,
-            muteEvents = sendspinManager.serverMuteEvents
+            serverVolumeEvents = sendspinManager.serverVolumeEvents,
+            serverMuteEvents = sendspinManager.serverMuteEvents,
+            syncEnabledFlow = settingsRepository.sendspinSyncSystemVolume,
+            sendspinClientIdFlow = settingsRepository.sendspinClientId,
+            playerRepository = playerRepository,
+            currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
         )
     }
 

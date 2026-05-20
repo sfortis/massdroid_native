@@ -65,6 +65,7 @@ fun String.toStableLongId(): Long {
  */
 data class AutoPlaybackSnapshot(
     val isPlaying: Boolean,
+    val audioFlowing: Boolean,
     val queueItemId: String?,
     val trackUri: String?,
     val title: String,
@@ -81,6 +82,7 @@ data class AutoPlaybackSnapshot(
         if (this === other) return true
         if (other !is AutoPlaybackSnapshot) return false
         return isPlaying == other.isPlaying &&
+            audioFlowing == other.audioFlowing &&
             queueItemId == other.queueItemId &&
             trackUri == other.trackUri &&
             title == other.title &&
@@ -98,6 +100,7 @@ data class AutoPlaybackSnapshot(
 
     override fun hashCode(): Int {
         var r = isPlaying.hashCode()
+        r = 31 * r + audioFlowing.hashCode()
         r = 31 * r + (queueItemId?.hashCode() ?: 0)
         r = 31 * r + (trackUri?.hashCode() ?: 0)
         r = 31 * r + title.hashCode()
@@ -114,7 +117,8 @@ data class AutoPlaybackSnapshot(
 
     companion object {
         val Empty = AutoPlaybackSnapshot(
-            isPlaying = false, queueItemId = null, trackUri = null, title = "", artist = "", album = "",
+            isPlaying = false, audioFlowing = false, queueItemId = null, trackUri = null,
+            title = "", artist = "", album = "",
             durationMs = 0L, currentIndex = 0, artworkData = null,
             volumeLevel = 0, isMuted = false, isRemotePlayback = true,
         )
@@ -215,10 +219,27 @@ class RemoteControlPlayer(
             contentPositionMs = positionMs,
             isPlaying = playback.isPlaying
         )
+        // State semantics for AA:
+        //   IDLE     = nothing to play (no title yet).
+        //   BUFFERING = user wants play but audio isn't actually flowing. The AA
+        //              host stops the 1x interpolation of the progress bar and
+        //              renders a loading indicator. playWhenReady stays true so
+        //              the play/pause toggle still reads as "playing".
+        //   READY    = nominal playing or paused state. AA interpolates the
+        //              position at 1x while playWhenReady is true.
+        //
+        // This lets seek transitions, track changes, Sendspin re-syncs, and
+        // brief network blips all show as a momentary "loading" instead of
+        // letting the AA bar march forward against silence.
+        val effectiveState = when {
+            playback.title.isEmpty() -> STATE_IDLE
+            playback.isPlaying && !playback.audioFlowing -> STATE_BUFFERING
+            else -> STATE_READY
+        }
         return State.Builder()
             .setAvailableCommands(commandsBuilder.build())
             .setPlayWhenReady(playback.isPlaying, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
-            .setPlaybackState(if (playback.title.isNotEmpty()) STATE_READY else STATE_IDLE)
+            .setPlaybackState(effectiveState)
             .setContentPositionMs(positionMs)
             .setPlaylist(playlist)
             .setCurrentMediaItemIndex(effectiveIndex)

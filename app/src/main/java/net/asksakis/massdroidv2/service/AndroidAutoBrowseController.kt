@@ -50,6 +50,20 @@ class AndroidAutoBrowseController(
 ) {
     private var cachedSearchResults: SearchResult? = null
 
+    // Tracks parentIds the AA host has ever queried or subscribed to during this
+    // session. Used by AndroidAutoController to broadcast notifyChildrenChanged
+    // on WS reconnect, so AA invalidates any empty results cached during a cold
+    // start race (WS not yet connected when AA first browsed). Thread-safe: the
+    // Media3 host may call onGetChildren/onSubscribe from arbitrary threads.
+    private val knownParentIds: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Snapshot of parentIds the AA host has queried/subscribed to so far. */
+    fun trackedParentIds(): Set<String> = knownParentIds.toSet()
+
+    /** Clear tracked subscriptions on session stop. */
+    fun clearTrackedParentIds() = knownParentIds.clear()
+
     val callback: MediaLibraryService.MediaLibrarySession.Callback =
         object : MediaLibraryService.MediaLibrarySession.Callback {
 
@@ -148,6 +162,7 @@ class AndroidAutoBrowseController(
                 pageSize: Int,
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+                knownParentIds.add(parentId)
                 val effectivePageSize = if (pageSize > 0) pageSize else PAGE_SIZE_DEFAULT
                 return scope.future(Dispatchers.IO) {
                     val items = try {
@@ -158,6 +173,16 @@ class AndroidAutoBrowseController(
                     }
                     LibraryResult.ofItemList(ImmutableList.copyOf(items), params)
                 }
+            }
+
+            override fun onSubscribe(
+                session: MediaLibraryService.MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                parentId: String,
+                params: MediaLibraryService.LibraryParams?
+            ): ListenableFuture<LibraryResult<Void>> {
+                knownParentIds.add(parentId)
+                return Futures.immediateFuture(LibraryResult.ofVoid())
             }
 
             override fun onSearch(

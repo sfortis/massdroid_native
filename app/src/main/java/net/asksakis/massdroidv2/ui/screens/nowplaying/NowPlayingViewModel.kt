@@ -15,9 +15,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -40,6 +43,11 @@ import javax.inject.Inject
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
+// Coalesce rapid scrub events. Long enough to merge a flick + adjust,
+// short enough that a deliberate single-tap on the slider still feels
+// instant. Values below ~120 ms let HW key repeat through; values above
+// ~500 ms make the seek feel laggy on first contact.
+private const val SEEK_DEBOUNCE_MS = 250L
 
 data class CachedTrackDisplay(
     val title: String,
@@ -99,6 +107,7 @@ class NowPlayingViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
+    private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     val acousticCalibrator: net.asksakis.massdroidv2.data.sendspin.NativeAcousticCalibrator,
     val sleepTimerBridge: SleepTimerBridge,
     private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
@@ -196,6 +205,21 @@ class NowPlayingViewModel @Inject constructor(
     private var lyricsLoadJob: Job? = null
     private var inFlightLyricsUri: String? = null
 
+    /**
+     * Hot stream of slider release positions. Coalesced with
+     * [SEEK_DEBOUNCE_MS] before the actual WS RPC is sent, so a rapid
+     * scrub (multiple finishes within the window) only produces one
+     * outbound command and one discontinuity emit. Using a Flow here
+     * instead of cancelling a `Job` per call avoids leaving an in-flight
+     * `playerRepository.seek` half-executed — the previous cancel pattern
+     * could fire the discontinuity (audio flush) but cancel the WS RPC,
+     * so the engine saw "seek occurred" while the server never moved.
+     */
+    private val seekRequests = MutableSharedFlow<Double>(
+        extraBufferCapacity = 8,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+
     private val currentLyricsTrackFlow: StateFlow<Track?> =
         combine(
             queueState.map { it?.currentItem?.track },
@@ -250,6 +274,7 @@ class NowPlayingViewModel @Inject constructor(
     var cachedSendspinAudioFormat = "SMART"; private set
     private var cachedSendspinStaticDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
+    private var lastLoggedSendspinStatusKey: String? = null
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
     val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> = _cachedTrackDisplay.asStateFlow()
     private val _adjacentArtwork = MutableStateFlow(AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null))
@@ -263,6 +288,7 @@ class NowPlayingViewModel @Inject constructor(
     val optimisticElapsed: StateFlow<Double?> = _optimisticElapsed.asStateFlow()
 
     init {
+        startSeekDebouncer()
         viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
@@ -376,14 +402,28 @@ class NowPlayingViewModel @Inject constructor(
         }
         // Don't clear cache on disconnect/error: keep showing last track info
         // until a new track replaces it (via queueState or serverMetadata collectors)
-        // Flow-based sendspin status: only samples buffer when active, distinctUntilChanged
+        // Flow-based sendspin status: combines state flows with a 1Hz ticker so that
+        // dynamic metrics (buffer, latency, clock error, DAC drift) refresh in the UI
+        // while none of the state sources are changing. Without the ticker, the
+        // combine only emits on connection/sync/codec/network/id transitions, and
+        // the buffer reading stays frozen at whatever it was at the last transition
+        // — visible after WiFi↔mobile handover where the snapshot caught a drained
+        // buffer that has since refilled. distinctUntilChanged downstream still
+        // deduplicates ticks where nothing actually changed.
+        val sendspinUiTicker = flow {
+            while (true) {
+                emit(Unit)
+                delay(1_000)
+            }
+        }
         viewModelScope.launch {
             combine(
                 sendspinManager.connectionState,
                 sendspinManager.syncState,
                 sendspinManager.streamCodec,
                 sendspinManager.networkMode,
-                sendspinClientId
+                sendspinClientId,
+                sendspinUiTicker
             ) { values: Array<*> ->
                 val conn = values[0] as SendspinState
                 val sync = values[1] as SyncState
@@ -392,6 +432,7 @@ class NowPlayingViewModel @Inject constructor(
                 val clientId = values[4] as String?
                 if (clientId == null) {
                     lastSendspinStatusLogAtMs = 0L
+                    lastLoggedSendspinStatusKey = null
                     return@combine null
                 }
                 SendspinStatusUi(
@@ -488,15 +529,37 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Seek with rapid-scrub coalescing.
+     *
+     * Each call emits into [seekRequests], which a single long-lived
+     * collector debounces by [SEEK_DEBOUNCE_MS] before sending the RPC.
+     * A rapid scrub (multiple slider releases or lyric taps within the
+     * window) yields one RPC and one discontinuity emit. Using a Flow
+     * here, instead of cancelling a Job per call, removes the race where
+     * the previous coroutine had already fired `_discontinuityCommands`
+     * (audio flush) but got cancelled before sending the WS RPC — that
+     * left the engine in "seek pending" while the server never moved.
+     */
     fun seek(position: Double) {
-        val player = selectedPlayer.value ?: return
+        seekRequests.tryEmit(position)
+    }
+
+    @OptIn(FlowPreview::class)
+    private fun startSeekDebouncer() {
         viewModelScope.launch {
-            try {
-                playerRepository.seek(player.playerId, position)
-            } catch (e: Exception) {
-                Log.w(TAG, "seek failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
-            }
+            seekRequests
+                .debounce(SEEK_DEBOUNCE_MS)
+                .collect { position ->
+                    val player = selectedPlayer.value ?: return@collect
+                    try {
+                        playerRepository.seek(player.playerId, position)
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        Log.w(TAG, "seek failed: ${e.message}")
+                        _error.tryEmit("Not connected to server")
+                    }
+                }
         }
     }
 
@@ -524,11 +587,24 @@ class NowPlayingViewModel @Inject constructor(
 
     fun setVolume(level: Int) {
         val player = selectedPlayer.value ?: return
-        viewModelScope.launch {
-            try {
-                playerRepository.setVolume(player.playerId, level)
-            } catch (e: Exception) {
-                Log.w(TAG, "setVolume failed: ${e.message}")
+        // Sendspin slider: route through the volume coordinator so the push
+        // is recorded as a local intent and the resulting MA echo is
+        // suppressed within the echo window. This protects against the
+        // race where a hardware key press lands between the slider's WS
+        // send and the server echo: without the recordLocalPush() that
+        // onUiSliderChanged() performs, the slider's stale echo could
+        // overwrite the hardware key's STREAM_MUSIC setting once the
+        // 1.5 s window expires. For non-Sendspin remote players the
+        // coordinator does not apply and we go through the repo directly.
+        if (cachedSendspinClientId != null && player.playerId == cachedSendspinClientId) {
+            volumeCoordinator.onUiSliderChanged(level)
+        } else {
+            viewModelScope.launch {
+                try {
+                    playerRepository.setVolume(player.playerId, level)
+                } catch (e: Exception) {
+                    Log.w(TAG, "setVolume failed: ${e.message}")
+                }
             }
         }
     }
@@ -962,9 +1038,20 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     private fun maybeLogSendspinUiStatus(status: SendspinStatusUi) {
+        // Log on transitions of state-shaped fields (connection, sync, codec,
+        // mode, correction, syncMuted) immediately; otherwise heartbeat once
+        // every 30s. Before the 1Hz UI ticker existed, this was a 1s rate
+        // limit that almost never tripped during steady state. With the ticker
+        // calling this on every emit, the rate limit alone produced a log per
+        // second — useless noise. Keying on state fields keeps useful
+        // transitions verbose while idle playback stays quiet.
+        val key = "${status.connectionState}|${status.syncState}|${status.codec ?: ""}|" +
+            "${status.configuredFormat}|${status.correctionMode ?: ""}|${status.syncMuted}"
         val now = System.currentTimeMillis()
-        if (now - lastSendspinStatusLogAtMs < 1000L) return
+        val stateChanged = key != lastLoggedSendspinStatusKey
+        if (!stateChanged && now - lastSendspinStatusLogAtMs < 30_000L) return
         lastSendspinStatusLogAtMs = now
+        lastLoggedSendspinStatusKey = key
         Log.d(
             SENDSPIN_UI_DBG,
             "transport=${status.connectionState} playback=${status.syncState} codec=${status.codec ?: "unknown"} " +

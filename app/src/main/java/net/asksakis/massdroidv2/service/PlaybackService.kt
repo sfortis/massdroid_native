@@ -43,7 +43,7 @@ class PlaybackService : MediaLibraryService() {
 
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var sendspinManager: SendspinManager
-    @Inject lateinit var localSpeakerVolumeBridge: net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+    @Inject lateinit var sendspinVolumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
     @Inject lateinit var sleepTimerBridge: SleepTimerBridge
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
@@ -92,6 +92,7 @@ class PlaybackService : MediaLibraryService() {
             activePlayerId = { activePlayerId() },
             sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
             onPlaybackStopped = { reason -> proximityController.cancelNoRoomStopTimer(reason) },
+            trackedBrowsePaths = { androidAutoBrowseController.trackedParentIds() },
         )
         androidAutoController.start(androidAutoBrowseController.callback)
     }
@@ -124,7 +125,7 @@ class PlaybackService : MediaLibraryService() {
             settingsRepository = settingsRepository,
             playerRepository = playerRepository,
             wsClient = wsClient,
-            localVolumeBridge = localSpeakerVolumeBridge,
+            volumeCoordinator = sendspinVolumeCoordinator,
             shortcutDispatcher = shortcutDispatcher,
             onConnectionStateChanged = { updateConnectionNotification() },
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },
@@ -168,7 +169,10 @@ class PlaybackService : MediaLibraryService() {
                 for ((id, origVol) in originals) {
                     val targetVol = (origVol * fraction).toInt()
                     if (id == sendspinCoordinator.playerId) {
-                        sendspinManager.setVolume(targetVol)
+                        // Sendspin path: route through the coordinator so the
+                        // single-source-of-truth sync logic applies (no direct
+                        // STREAM_MUSIC writes; MA push only).
+                        sendspinVolumeCoordinator.onSleepTimerFade(id, targetVol)
                     } else {
                         scope.launch {
                             try { playerRepository.setVolume(id, targetVol) } catch (_: Exception) {}
@@ -294,6 +298,7 @@ class PlaybackService : MediaLibraryService() {
         val manager = getSystemService(NotificationManager::class.java)
         manager?.cancel(CONN_NOTIFICATION_ID)
         androidAutoController.stop()
+        androidAutoBrowseController.clearTrackedParentIds()
         scope.cancel()
         AaMetrics.stop()
         super.onDestroy()

@@ -72,6 +72,13 @@ data class ServerQueue(
     @SerialName("shuffle_enabled") val shuffleEnabled: Boolean = false,
     @SerialName("repeat_mode") val repeatMode: String = "off",
     @SerialName("elapsed_time") val elapsedTime: Double = 0.0,
+    // Server-side UTC timestamp (seconds since epoch, fractional) of the
+    // moment the `elapsed_time` field above was captured. This is what the
+    // official MA frontend reads when interpolating positions on screen, so
+    // skipping it leaves us computing `now - System.currentTimeMillis()`
+    // (which is always ~0) and effectively pretending every elapsed reading
+    // is "right now" — that's how stale events look like spikes in our UI.
+    @SerialName("elapsed_time_last_updated") val elapsedTimeLastUpdated: Double? = null,
     @SerialName("current_item") val currentItem: ServerQueueItem? = null,
     @SerialName("current_index") val currentIndex: Int = 0,
     @SerialName("dont_stop_the_music_enabled") val dontStopTheMusicEnabled: Boolean = false

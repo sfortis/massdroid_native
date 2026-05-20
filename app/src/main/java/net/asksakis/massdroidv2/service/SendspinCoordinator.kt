@@ -19,10 +19,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.data.sendspin.LocalSpeakerVolumeBridge
+import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
+import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -36,7 +39,7 @@ class SendspinCoordinator(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
-    private val localVolumeBridge: LocalSpeakerVolumeBridge,
+    private val volumeCoordinator: SendspinVolumeCoordinator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
@@ -63,6 +66,7 @@ class SendspinCoordinator(
 
     fun start() {
         createController()
+        volumeCoordinator.start(scope)
         observePlayerId()
         observeEnabled()
         observeConnectionState()
@@ -76,6 +80,7 @@ class SendspinCoordinator(
         unregisterBtAudioDeviceCallback()
         unregisterPhoneVolumeObserver()
         unregisterNetworkCallback()
+        volumeCoordinator.stop()
         controller?.destroy()
         controller = null
         isActive = false
@@ -96,7 +101,7 @@ class SendspinCoordinator(
             settingsRepository = settingsRepository,
             playerRepository = playerRepository,
             wsClient = wsClient,
-            localVolumeBridge = localVolumeBridge,
+            volumeCoordinator = volumeCoordinator,
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> onConnectionStateChanged() }
         )
@@ -153,6 +158,11 @@ class SendspinCoordinator(
     private fun observeAudioFormatPreference() {
         val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
         val wifiState = MutableStateFlow(isOnWifi(connectivityManager))
+        // Tracks the initial transport — the first onCapabilitiesChanged is the
+        // baseline (already-active network at registration), not a transition,
+        // so we skip handover handling for it. Subsequent toggles trigger the
+        // WS + connection-pool reset path.
+        var lastWifiSeen: Boolean? = null
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -161,6 +171,16 @@ class SendspinCoordinator(
                     Log.d(TAG, "Network changed: ${if (wifi) "WiFi" else "Mobile"}")
                     if (wifi) onWifiConnected("wifi-connected")
                 }
+                // Force fast WS reconnect + OkHttp pool eviction on transport
+                // flip. Without this, the dead WiFi socket keeps the WS alive
+                // for ~30-60s until the ping interval times out, and Coil keeps
+                // pulling stale connections from the pool (visible as missing
+                // album art after the switch).
+                if (lastWifiSeen != null && lastWifiSeen != wifi) {
+                    Log.d(TAG, "Transport flipped (wifi=$lastWifiSeen → $wifi), nudging WS + pool")
+                    wsClient.handleTransportChange()
+                }
+                lastWifiSeen = wifi
                 wifiState.value = wifi
                 sendspinManager.setCellularHint(!wifi)
             }
@@ -250,12 +270,14 @@ class SendspinCoordinator(
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
-                val sendspinPlayerId = playerId ?: return
                 if (!isActive) return
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                 val cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
                 val percent = if (max > 0) ((cur * 100f / max) + 0.5f).toInt() else 0
-                scope.launch { playerRepository.setVolume(sendspinPlayerId, percent) }
+                // The coordinator owns the sync-switch policy and the MA push.
+                // We just report "STREAM_MUSIC observed at X%" and let it
+                // decide what to do.
+                volumeCoordinator.onPhoneStreamVolumeChanged(percent)
             }
         }
         volumeObserver = observer

@@ -40,6 +40,14 @@ class PlayerRepositoryImpl @Inject constructor(
         private const val HISTORY_ARTIST_LOOKUP_LIMIT = 3
         private const val RECONNECT_QUEUE_REFRESH_ATTEMPTS = 3
         private const val RECONNECT_QUEUE_REFRESH_DELAY_MS = 450L
+        // Distance from the track end below which we still consider a seek
+        // "into the track" rather than "to the end". 1.0 s is plenty:
+        // playback always stops short of the very last sample anyway, and
+        // float-rounding in the slider range can push values by ~0.2 s. MA
+        // treats positions at/past duration as end-of-track and advances to
+        // the next item instead of issuing a Sendspin stream/clear, so this
+        // margin is what keeps the current track playing on a seek-to-end.
+        private const val SEEK_END_MARGIN_S = 1.0
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -61,6 +69,30 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _playbackPosition = MutableStateFlow<PlaybackPosition?>(null)
     override val playbackPosition: StateFlow<PlaybackPosition?> = _playbackPosition.asStateFlow()
+
+    private val _serverPositionUpdates = MutableSharedFlow<PlaybackPosition>(extraBufferCapacity = 4)
+    override val serverPositionUpdates: SharedFlow<PlaybackPosition> = _serverPositionUpdates.asSharedFlow()
+
+    private val _volumeOsd = MutableStateFlow<PlayerRepository.VolumeOsdState?>(null)
+    override val volumeOsd: StateFlow<PlayerRepository.VolumeOsdState?> = _volumeOsd.asStateFlow()
+    private var volumeOsdHideJob: Job? = null
+    private val volumeOsdTokenCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val volumeOsdHideMs = 2500L
+
+    override fun showVolumeOsd(playerName: String, volume: Int, isGroup: Boolean, isMuted: Boolean) {
+        _volumeOsd.value = PlayerRepository.VolumeOsdState(
+            playerName = playerName,
+            volume = volume.coerceIn(0, 100),
+            isGroup = isGroup,
+            isMuted = isMuted,
+            token = volumeOsdTokenCounter.incrementAndGet(),
+        )
+        volumeOsdHideJob?.cancel()
+        volumeOsdHideJob = scope.launch {
+            delay(volumeOsdHideMs)
+            _volumeOsd.value = null
+        }
+    }
 
     private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
@@ -160,8 +192,14 @@ class PlayerRepositoryImpl @Inject constructor(
         scope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
-                    is ConnectionState.Disconnected, is ConnectionState.Connecting -> {
-                        // Keep selectedPlayer and queueState for cached mini player display
+                    is ConnectionState.Disconnected,
+                    is ConnectionState.Connecting,
+                    is ConnectionState.Error -> {
+                        // Error covers the network-handover path: handleTransportChange()
+                        // cancels the WS which fires onFailure → Error state. Without
+                        // this branch, the position ticker keeps interpolating during
+                        // the reconnect window and creates a visible "jump back" when
+                        // the next QUEUE_TIME_UPDATED rebaselines after reconnect.
                         pendingRestoredPlayerId = selectedPlayerId
                         _players.value = emptyList()
                         resetPosition()
@@ -364,8 +402,22 @@ class PlayerRepositoryImpl @Inject constructor(
                         }
                         _queueState.value = domainState
                         trackDuration = serverQueue.currentItem?.duration ?: 0.0
+                        val resolved = if (currentItemChanged) 0.0 else serverQueue.elapsedTime
+                        // Translate the server-side capture timestamp into a
+                        // local-monotonic value via the WS round-trip clock.
+                        // Falls back to "now" when the server omits the field.
+                        val capturedAtMs = serverQueue.elapsedTimeLastUpdated
+                            ?.let { wsClient.serverWallSecondsToLocalMs(it) }
+                            ?: System.currentTimeMillis()
+                        Log.d(
+                            "PosDbg",
+                            "QUEUE_UPDATED ${serverQueue.queueId} itemChanged=$currentItemChanged " +
+                                "serverElapsed=${serverQueue.elapsedTime} last_updated=${serverQueue.elapsedTimeLastUpdated} " +
+                                "-> resolved=$resolved capturedAt=$capturedAtMs (prev=${_elapsedTime.value}) duration=$trackDuration"
+                        )
                         updatePosition(
-                            serverElapsed = if (currentItemChanged) 0.0 else serverQueue.elapsedTime,
+                            serverElapsed = resolved,
+                            serverElapsedAtMs = if (currentItemChanged) System.currentTimeMillis() else capturedAtMs,
                             startTicker = !currentItemChanged
                         )
                     }
@@ -380,6 +432,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 EventType.QUEUE_TIME_UPDATED -> {
                     if (event.objectId != effectiveQueueId()) return@collect
                     val elapsed = event.data?.jsonPrimitive?.doubleOrNull ?: return@collect
+                    Log.d("PosDbg", "QUEUE_TIME_UPDATED ${event.objectId} elapsed=$elapsed (prev=${_elapsedTime.value})")
                     updatePosition(elapsed)
                 }
             }
@@ -865,10 +918,37 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun updatePosition(serverElapsed: Double, startTicker: Boolean = true) {
+    /**
+     * Update the local position model from a server event.
+     *
+     * @param serverElapsed the elapsed_time the server reports (seconds).
+     * @param serverElapsedAtMs the local-monotonic timestamp (ms since boot
+     *   epoch) corresponding to when `serverElapsed` was actually taken on
+     *   the server. Pass [System.currentTimeMillis] for events that don't
+     *   carry a server timestamp (QUEUE_TIME_UPDATED). For QUEUE_UPDATED
+     *   the caller should translate `elapsed_time_last_updated` into local
+     *   time and pass it here so stale events interpolate correctly instead
+     *   of jumping the ticker.
+     */
+    private fun updatePosition(
+        serverElapsed: Double,
+        serverElapsedAtMs: Long = System.currentTimeMillis(),
+        startTicker: Boolean = true,
+    ) {
         positionBaseTime = serverElapsed
-        positionBaseTimestamp = System.currentTimeMillis()
-        publishPosition(serverElapsed)
+        positionBaseTimestamp = serverElapsedAtMs
+        val interpolated = if (positionBaseTimestamp <= 0L) {
+            serverElapsed
+        } else {
+            (serverElapsed + (System.currentTimeMillis() - positionBaseTimestamp) / 1000.0).coerceAtLeast(0.0)
+        }
+        publishPosition(interpolated)
+        // Emit a server-confirmed position event distinct from the 500ms
+        // interpolation ticker. AndroidAutoController subscribes to this to
+        // invalidate the AA host's state on every authoritative update,
+        // without the ticker (which only re-derives an interpolated value)
+        // spamming AA with re-queries that risk the gearhead queue rebuild.
+        _playbackPosition.value?.let { _serverPositionUpdates.tryEmit(it) }
         if (startTicker) startPositionTicker() else stopPositionTicker()
     }
 
@@ -934,7 +1014,11 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private fun startPositionTicker() {
         positionTickJob?.cancel()
-        if (!isPlaying) return
+        if (!isPlaying) {
+            Log.d("PosDbg", "ticker skip start (not playing)")
+            return
+        }
+        Log.d("PosDbg", "ticker start base=$positionBaseTime")
         positionTickJob = scope.launch {
             while (isActive) {
                 delay(500)
@@ -945,6 +1029,7 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     private fun stopPositionTicker() {
+        if (positionTickJob != null) Log.d("PosDbg", "ticker stop")
         positionTickJob?.cancel()
         positionTickJob = null
     }
@@ -1124,12 +1209,44 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun seek(playerId: String, position: Double) {
-        Log.d("sendspindbg", "WS>>> seek($playerId, ${position}s)")
+        // Clamp to [0, duration - SEEK_END_MARGIN_S]. The MA server treats a
+        // position at or past the track end as "end of track" and advances to
+        // the next item instead of issuing a stream/clear — exactly what the
+        // Sendspin spec defines for a seek operation. Sliders use a floating
+        // point range capped at `duration.toFloat()`, which loses precision
+        // (e.g. duration 314.0 sec → slider max 314.0f → reported as
+        // 314.1953125 in the WS payload), so clamping in the float UI layer
+        // alone is unreliable. Doing it here protects every caller (now-
+        // playing slider, lyrics jump, AA, MediaSession, voice commands).
+        val durationSec = currentTrackDurationFor(playerId)
+        val maxAllowed = if (durationSec > 0.0) (durationSec - SEEK_END_MARGIN_S).coerceAtLeast(0.0) else position
+        val clamped = position.coerceIn(0.0, maxAllowed)
+        if (clamped != position) {
+            Log.d("sendspindbg", "seek clamp: $position → $clamped (duration=$durationSec)")
+        }
+        Log.d("sendspindbg", "WS>>> seek($playerId, ${clamped}s)")
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.SEEK))
         sendPlayerCommandWithRetry(
             MaCommands.Players.CMD_SEEK,
-            SeekArgs(playerId = playerId, position = position)
+            SeekArgs(playerId = playerId, position = clamped)
         )
+    }
+
+    private fun currentTrackDurationFor(playerId: String): Double {
+        // Trust the active queue first regardless of whether the playerId
+        // matches its queueId. In a Sendspin group setup the queue belongs
+        // to the group leader while the slider seeks against the child
+        // playerId, so a strict `queueId == playerId` check would miss the
+        // duration and `_players[child].currentMedia.duration` is often
+        // 0 for non-leader children — leaving the clamp to coerce every
+        // seek to 0. The repository only tracks one active queue at a
+        // time, so the queue's currentItem.duration is the right source
+        // for both solo and grouped Sendspin.
+        val fromQueue = _queueState.value?.currentItem?.duration
+        if (fromQueue != null && fromQueue > 0.0) return fromQueue
+        return _players.value.find { it.playerId == playerId }
+            ?.currentMedia?.duration
+            ?: 0.0
     }
 
     // Per-player cooldowns so that an optimistic update on one player doesn't

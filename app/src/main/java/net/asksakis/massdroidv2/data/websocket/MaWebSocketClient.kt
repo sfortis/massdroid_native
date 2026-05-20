@@ -58,6 +58,42 @@ class MaWebSocketClient(
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<JsonElement?>>()
     private val partialResults = ConcurrentHashMap<String, MutableList<JsonElement>>()
 
+    /**
+     * Rolling 1-second counter of outbound WS commands. Logs a summary
+     * whenever the rate exceeds 5/sec so spam from the volume / playback
+     * paths is immediately visible in logcat. Survives across reconnects.
+     */
+    private val commandRateTracker = CommandRateTracker()
+
+    private class CommandRateTracker {
+        private val windowMs = 1_000L
+        private val warnThreshold = 5
+        private val timestamps = ArrayDeque<Long>()
+        private val perCommand = HashMap<String, Int>()
+
+        @Synchronized
+        fun tick(command: String) {
+            val now = System.currentTimeMillis()
+            timestamps.addLast(now)
+            perCommand.merge(command, 1) { a, b -> a + b }
+            while (timestamps.isNotEmpty() && now - timestamps.first() > windowMs) {
+                timestamps.removeFirst()
+            }
+            val size = timestamps.size
+            if (size >= warnThreshold) {
+                val summary = perCommand.entries
+                    .sortedByDescending { it.value }
+                    .take(4)
+                    .joinToString(", ") { "${it.key}=${it.value}" }
+                Log.w("WSOut", "Burst: ${size}/s — $summary")
+            }
+            // Reset per-command counts roughly every window so it stays
+            // representative; small inaccuracy at the edges is fine for
+            // diagnostic logging.
+            if (timestamps.size <= 1) perCommand.clear()
+        }
+    }
+
     var serverInfo: ServerInfo? = null
         private set
     var authToken: String? = null
@@ -78,6 +114,24 @@ class MaWebSocketClient(
         if (username.isNotBlank() && password.isNotBlank()) {
             savedCredentials = username to password
         }
+    }
+
+    /**
+     * Convert a server-supplied UTC timestamp (seconds since epoch, fractional)
+     * into a local-monotonic value compatible with [System.currentTimeMillis].
+     *
+     * MA's `elapsed_time_last_updated` is a wall-clock value reported by the
+     * server. If the client's clock is close to the server's (NTP-synced
+     * devices), the simple `* 1000` conversion is accurate enough for our
+     * interpolation needs (we only care about the delta vs. "now"). When the
+     * resulting value would land in the future relative to the current local
+     * clock, we clamp to "now" — that's the same defensive behaviour the MA
+     * frontend's [computeElapsedTime] uses to avoid negative deltas.
+     */
+    fun serverWallSecondsToLocalMs(serverWallSeconds: Double): Long {
+        val candidate = (serverWallSeconds * 1000.0).toLong()
+        val now = System.currentTimeMillis()
+        return if (candidate > now) now else candidate
     }
 
     fun configureMtls(privateKey: PrivateKey, certChain: Array<X509Certificate>) {
@@ -258,6 +312,27 @@ class MaWebSocketClient(
         webSocket = null
         _connectionState.value = ConnectionState.Disconnected
         failAllPending("Disconnected")
+    }
+
+    /**
+     * Called when the device's active network transport changes (WiFi ↔ cellular,
+     * roaming, captive portal exit, etc.). Evicts the OkHttp connection pool so
+     * subsequent image (Coil) and HTTP API requests pick up fresh connections on
+     * the new route — without this, the pool hands out idle keep-alive entries
+     * bound to the previous transport's dead local IP, visible as missing cover
+     * art after a network change.
+     *
+     * Deliberately does NOT cancel the live MA WebSocket. SendspinAudioController
+     * force-restarts Sendspin on every MA reconnect (see Collector 6) to recover
+     * from server reboots, which cuts audio playback. We rely on OkHttp's
+     * pingInterval to detect actually-dead sockets while letting connections
+     * that survive transport migration keep streaming seamlessly. evictAll()
+     * does not affect active WebSocket streams — only idle pool entries are
+     * closed.
+     */
+    fun handleTransportChange() {
+        Log.d(TAG, "Transport change: evicting connection pool")
+        okHttpClient.connectionPool.evictAll()
     }
 
     private fun scheduleReconnect() {
@@ -465,6 +540,11 @@ class MaWebSocketClient(
                 if (args != null) put("args", args)
             }
 
+            // Per-command outbound trace. Tagged separately so it can be
+            // grepped under "WSOut" regardless of which subsystem fired it.
+            // args summary capped at 120 chars to keep the line scannable.
+            Log.d("WSOut", "→ $command args=${args?.toString()?.take(120)}")
+            commandRateTracker.tick(command)
             val ws = webSocket
             if (ws == null || !ws.send(msg.toString())) {
                 pendingRequests.remove(messageId)
