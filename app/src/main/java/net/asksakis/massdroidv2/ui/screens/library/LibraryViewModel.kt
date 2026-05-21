@@ -25,7 +25,6 @@ import net.asksakis.massdroidv2.data.lastfm.LastFmArtistInfoResolver
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
 import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
-import net.asksakis.massdroidv2.data.util.mapMaThrottled
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -1094,31 +1093,20 @@ class ArtistDetailViewModel @Inject constructor(
             val resolveTtl = 7 * 86_400_000L
             val sourceGenres = lastFmGenreResolver.resolve(artistName).toSet()
 
-            // Partition first so cache hits return synchronously and only
-            // the uncached entries pay the throttled MA round-trip.
-            val (cachedHits, uncached) = similar.partition { sim ->
+            val resolved = similar.mapNotNull { sim ->
                 val cachedRow = cached.firstOrNull { it.similarArtist == sim.name }
                 val resolvedAt = cachedRow?.resolvedAt
-                resolvedAt != null && now - resolvedAt < resolveTtl
-            }
-            val cachedResolved = cachedHits.mapNotNull { sim ->
-                val cachedRow = cached.first { it.similarArtist == sim.name }
-                cachedRow.resolvedUri?.let { uri ->
-                    Artist(
-                        itemId = cachedRow.resolvedItemId.orEmpty(),
-                        provider = cachedRow.resolvedProvider.orEmpty(),
-                        name = cachedRow.resolvedName.orEmpty(),
-                        uri = uri,
-                        imageUrl = cachedRow.resolvedImageUrl
-                    )
+                if (resolvedAt != null && now - resolvedAt < resolveTtl) {
+                    return@mapNotNull cachedRow.resolvedUri?.let { uri ->
+                        Artist(
+                            itemId = cachedRow.resolvedItemId.orEmpty(),
+                            provider = cachedRow.resolvedProvider.orEmpty(),
+                            name = cachedRow.resolvedName.orEmpty(),
+                            uri = uri,
+                            imageUrl = cachedRow.resolvedImageUrl
+                        )
+                    }
                 }
-            }
-            // Sequentialize the uncached resolutions with a small gap so
-            // the MA server can interleave latency-sensitive commands
-            // (seek/play/pause/Sendspin streaming). Without this, opening
-            // an artist screen would queue up to ~40 search + getArtist
-            // RPCs back-to-back and stall the WS pipeline for 5-10 s.
-            val freshResolved = uncached.mapMaThrottled { sim ->
                 val searchResult = musicRepository.search(sim.name, listOf(MediaType.ARTIST), limit = 5)
                 val candidates = searchResult.artists.filter { it.name.equals(sim.name, ignoreCase = true) }
                 val matched = if (candidates.isEmpty()) {
@@ -1144,8 +1132,8 @@ class ArtistDetailViewModel @Inject constructor(
                     resolvedAt = now
                 )
                 matched
-            }.filterNotNull()
-            _similarArtists.value = cachedResolved + freshResolved
+            }
+            _similarArtists.value = resolved
         } catch (e: Exception) {
             Log.w(TAG, "Load similar artists failed: ${e.message}")
         }

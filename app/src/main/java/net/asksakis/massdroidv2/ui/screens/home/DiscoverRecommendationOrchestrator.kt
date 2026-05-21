@@ -7,7 +7,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
-import net.asksakis.massdroidv2.data.util.mapMaThrottled
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
@@ -153,15 +152,9 @@ class DiscoverRecommendationOrchestrator(
             .sortedByDescending { it.compositeScore() }
             .take(DISCOVERY_RESOLVE_BUDGET)
 
-        // Each resolveLastFmCandidate runs `music/search` + `music/artists/get`,
-        // so a parallel awaitAll() over 20-30 candidates fires 40-60
-        // back-to-back MA RPCs and starves seek/play commands on the
-        // same socket. Sequentialize with a small gap; total wall time
-        // is a couple of seconds either way for a cold pool because the
-        // server is the bottleneck anyway.
-        val resolved = toResolve.mapMaThrottled { candidate ->
-            candidate to resolveLastFmCandidate(candidate.name)
-        }
+        val resolved = toResolve.map { candidate ->
+            async { candidate to resolveLastFmCandidate(candidate.name) }
+        }.awaitAll()
 
         val filtered = resolved
             .mapNotNull { (candidate, artist) -> if (artist != null) candidate to artist else null }
