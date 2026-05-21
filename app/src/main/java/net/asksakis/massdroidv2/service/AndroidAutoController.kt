@@ -13,16 +13,13 @@ import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.auto.AaMetrics
@@ -541,60 +538,41 @@ class AndroidAutoController(
     }
 
     /**
-     * Two upstream signals can ask for a queue refresh:
-     *   - [PlayerRepository.queueItemsChanged]: server-emitted QUEUE_ITEMS_UPDATED
-     *   - [PlayerRepository.queueState] queueId changes: queue switch (player change, restore)
-     *
-     * On cold-start both fire within milliseconds of each other for the
-     * same queueId, which previously caused two parallel
-     * player_queues/items RPCs. Merging into a single debounced stream
-     * collapses that burst into one fetch without losing either trigger.
-     * The 150 ms window is below the AA queue render budget so users do
-     * not perceive the delay.
+     * Subscribe to the canonical queue-items snapshot owned by
+     * `QueueItemsCoordinator` (exposed through
+     * `PlayerRepository.queueItems`). The coordinator already debounces
+     * the two upstream signals (`queueItemsChanged` and
+     * `queueState.queueId`) and runs a single mutex-guarded
+     * `player_queues/items` RPC per change, so AA just consumes that
+     * shared result instead of issuing its own RPC.
      */
-    @OptIn(FlowPreview::class)
     private fun observeQueueItems() {
         scope.launch {
-            merge(
-                playerRepository.queueItemsChanged,
-                playerRepository.queueState
-                    .map { it?.queueId }
-                    .filterNotNull()
-                    .distinctUntilChanged()
-            )
-                .debounce(QUEUE_ITEMS_FETCH_DEBOUNCE_MS)
-                .collectLatest { queueId -> fetchQueueItems(queueId) }
-        }
-    }
-
-    private suspend fun fetchQueueItems(queueId: String) {
-        try {
-            val items = withContext(Dispatchers.IO) { musicRepository.getQueueItems(queueId) }
-            if (queueId != playerRepository.queueState.value?.queueId) {
-                Log.d(TAG, "Dropping stale queue items for $queueId")
-                return
-            }
-            val entries = items.map { qi ->
-                val art = qi.track?.imageUrl ?: qi.imageUrl
-                QueueEntry(
-                    id = qi.queueItemId.toStableLongId(),
-                    title = qi.track?.name ?: qi.name,
-                    artist = qi.track?.artistNames ?: "",
-                    album = qi.track?.albumName ?: "",
-                    durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
-                    artworkUri = art?.let { Uri.parse(it) },
-                )
-            }
-            // Feed the queue snapshot into the master combine. applyAaState
-            // diffs and calls remotePlayer.updateQueue only if the queue
-            // actually changed structurally.
-            queueSnapshot.value = AutoQueueSnapshot(queueId = queueId, entries = entries)
-            AaMetrics.traceUpdateQueue(queueId, entries.size)
-            Log.d(TAG, "Queue updated: ${entries.size} items for $queueId")
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load queue items for $queueId", e)
+            playerRepository.queueItems
+                .filterNotNull()
+                .collectLatest { snapshot ->
+                    if (snapshot.queueId != playerRepository.queueState.value?.queueId) {
+                        Log.d(TAG, "Dropping stale queue items for ${snapshot.queueId}")
+                        return@collectLatest
+                    }
+                    val entries = snapshot.items.map { qi ->
+                        val art = qi.track?.imageUrl ?: qi.imageUrl
+                        QueueEntry(
+                            id = qi.queueItemId.toStableLongId(),
+                            title = qi.track?.name ?: qi.name,
+                            artist = qi.track?.artistNames ?: "",
+                            album = qi.track?.albumName ?: "",
+                            durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
+                            artworkUri = art?.let { Uri.parse(it) },
+                        )
+                    }
+                    // Feed the queue snapshot into the master combine.
+                    // applyAaState diffs and calls remotePlayer.updateQueue
+                    // only if the queue actually changed structurally.
+                    queueSnapshot.value = AutoQueueSnapshot(queueId = snapshot.queueId, entries = entries)
+                    AaMetrics.traceUpdateQueue(snapshot.queueId, entries.size)
+                    Log.d(TAG, "Queue updated: ${entries.size} items for ${snapshot.queueId}")
+                }
         }
     }
 
@@ -677,7 +655,6 @@ class AndroidAutoController(
         private const val TAG = "AndroidAutoController"
         private const val VOLUME_STEP = RemoteControlPlayer.VOLUME_SCALE
         private const val VOLUME_OVERRIDE_MS = 15_000L
-        private const val QUEUE_ITEMS_FETCH_DEBOUNCE_MS = 150L
     }
 
     /**

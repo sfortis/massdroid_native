@@ -70,6 +70,14 @@ interface PlayerRepository {
      */
     val queueItems: StateFlow<QueueItemsSnapshot?>
 
+    /**
+     * Force an immediate refresh of [queueItems] for [queueId],
+     * bypassing the debounce. Used by error-recovery paths in the UI
+     * (e.g. a failed queue move that needs an authoritative re-sync).
+     * Concurrent callers share the in-flight RPC.
+     */
+    suspend fun refreshQueueItems(queueId: String)
+
     /** Emits explicit discontinuities like next/previous/seek so buffered local playback can reset policy. */
     val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand>
 

@@ -49,49 +49,61 @@ class QueueViewModel @Inject constructor(
         get() = playerRepository.selectedPlayer.value?.playerId
     private val queueId: String?
         get() = selectedPlayerId
-    private var queueLoadGeneration = 0L
 
     init {
+        // Clear the local list whenever the selected player changes so
+        // the screen briefly shows the loading state instead of the
+        // previous player's queue while the coordinator catches up.
         viewModelScope.launch {
             playerRepository.selectedPlayer
                 .map { it?.playerId }
                 .distinctUntilChanged()
                 .collect {
                     _queueItems.value = emptyList()
-                    loadQueue()
+                    _isLoading.value = true
                 }
         }
+        // Source the queue list from the canonical snapshot in
+        // PlayerRepository (driven by QueueItemsCoordinator). The
+        // optimistic move/remove helpers below still mutate
+        // _queueItems directly, but the authoritative refresh comes
+        // through here on every QUEUE_ITEMS_UPDATED / queue switch
+        // without a per-screen RPC.
         viewModelScope.launch {
-            playerRepository.queueItemsChanged.collect { changedQueueId ->
-                if (changedQueueId == queueId) loadQueue()
+            playerRepository.queueItems.collect { snapshot ->
+                val currentQueueId = queueId
+                if (snapshot == null || currentQueueId == null) {
+                    if (currentQueueId == null) {
+                        _queueItems.value = emptyList()
+                        _isLoading.value = false
+                    }
+                    return@collect
+                }
+                if (snapshot.queueId != currentQueueId) return@collect
+                val oldIds = _queueItems.value.map { it.queueItemId }
+                val newIds = snapshot.items.map { it.queueItemId }
+                if (oldIds != newIds) {
+                    _queueItems.value = snapshot.items
+                }
+                _isLoading.value = false
             }
         }
     }
 
+    /**
+     * Re-pull the queue snapshot from the coordinator. Used by recovery
+     * paths (failed move, playNext) where the local optimistic state
+     * may have drifted from the server. The coordinator runs at most
+     * one in-flight fetch, so multiple recovery callers in quick
+     * succession still produce a single RPC.
+     */
     private fun loadQueue() {
-        val id = queueId ?: run {
-            _queueItems.value = emptyList()
-            _isLoading.value = false
-            return
-        }
-        val generation = ++queueLoadGeneration
-        val isInitialLoad = _queueItems.value.isEmpty()
+        val id = queueId ?: return
         viewModelScope.launch {
-            if (isInitialLoad) _isLoading.value = true
             try {
-                val items = musicRepository.getQueueItems(id)
-                if (generation != queueLoadGeneration || queueId != id) return@launch
-                val oldIds = _queueItems.value.map { it.queueItemId }
-                val newIds = items.map { it.queueItemId }
-                if (oldIds != newIds) {
-                    _queueItems.value = items
-                }
+                playerRepository.refreshQueueItems(id)
             } catch (e: Exception) {
-                Log.w(TAG, "loadQueue failed: ${e.message}")
-            } finally {
-                if (generation == queueLoadGeneration && isInitialLoad) {
-                    _isLoading.value = false
-                }
+                Log.w(TAG, "loadQueue refresh failed: ${e.message}")
             }
         }
     }

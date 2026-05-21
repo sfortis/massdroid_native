@@ -168,6 +168,10 @@ class PlayerRepositoryImpl @Inject constructor(
 
     override val queueItems: StateFlow<QueueItemsSnapshot?> get() = queueItemsCoordinator.queueItems
 
+    override suspend fun refreshQueueItems(queueId: String) {
+        queueItemsCoordinator.refresh(queueId)
+    }
+
     init {
         // Wire the coordinator to our flows so it can run the single
         // debounced fetcher for every consumer that needs queue items.
@@ -1114,9 +1118,16 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
         }
         val player = _players.value.find { it.playerId == effectivePlayerId }
+        // refreshPlayers() can populate _selectedPlayer.value during a
+        // restore-from-settings sequence before selectPlayer runs.
+        // Skip the body only when we already have a queue snapshot for
+        // this player; otherwise we must still fan out to
+        // refreshQueueForPlayerWithRetry so the queue state isn't
+        // stuck at null forever.
         if (
             selectedPlayerId == effectivePlayerId &&
-            _selectedPlayer.value?.playerId == effectivePlayerId
+            _selectedPlayer.value?.playerId == effectivePlayerId &&
+            _queueState.value?.queueId == effectivePlayerId
         ) {
             return
         }

@@ -49,6 +49,19 @@ private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
 // ~500 ms make the seek feel laggy on first contact.
 private const val SEEK_DEBOUNCE_MS = 250L
 
+/**
+ * Compact projection of [QueueState] used as a `distinctUntilChanged`
+ * key when computing adjacent artwork. Three fields are enough: the
+ * queue identity, the cursor inside it, and the current queue-item id
+ * (so a play_index that lands on the same numeric index but a
+ * different item still re-emits).
+ */
+private data class AdjacentPosition(
+    val queueId: String?,
+    val currentIndex: Int?,
+    val currentItemId: String?,
+)
+
 data class CachedTrackDisplay(
     val title: String,
     val artist: String,
@@ -370,28 +383,47 @@ class NowPlayingViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            queueState
-                .map { qs -> Triple(qs?.queueId, qs?.currentIndex, qs?.currentItem?.queueItemId) }
-                .distinctUntilChanged()
-                .collectLatest { (queueId, currentIndex, currentItemId) ->
-                    if (queueId == null || currentItemId == null) {
-                        _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
-                        return@collectLatest
-                    }
-                    val offset = (currentIndex ?: 0).coerceAtLeast(0) - 1
-                    val safeOffset = offset.coerceAtLeast(0)
-                    val items = try {
-                        musicRepository.getQueueItems(queueId, limit = 3, offset = safeOffset)
-                    } catch (_: Exception) {
-                        _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
-                        return@collectLatest
-                    }
-                    _adjacentArtwork.value = resolveAdjacentArtwork(
-                        items = items,
-                        safeOffset = safeOffset,
-                        currentIndex = currentIndex ?: 0
+            // Adjacent artwork (previous/next) is sourced from the
+            // canonical queue snapshot maintained by
+            // QueueItemsCoordinator instead of a dedicated
+            // limit=3/offset=N RPC per track change. We combine with
+            // queueState so we always render against the current item's
+            // position. When the snapshot's queueId hasn't caught up to
+            // queueState yet we surface a null adjacent pair; the next
+            // snapshot emission will fill it in.
+            val positionFlow = queueState
+                .map { qs ->
+                    AdjacentPosition(
+                        queueId = qs?.queueId,
+                        currentIndex = qs?.currentIndex,
+                        currentItemId = qs?.currentItem?.queueItemId,
                     )
                 }
+                .distinctUntilChanged()
+            combine(positionFlow, playerRepository.queueItems) { position, snapshot ->
+                position to snapshot
+            }.collectLatest { (position, snapshot) ->
+                if (position.queueId == null ||
+                    position.currentItemId == null ||
+                    snapshot == null ||
+                    snapshot.queueId != position.queueId
+                ) {
+                    _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
+                    return@collectLatest
+                }
+                val idx = (position.currentIndex ?: 0).coerceAtLeast(0)
+                val window = listOfNotNull(
+                    snapshot.items.getOrNull(idx - 1),
+                    snapshot.items.getOrNull(idx),
+                    snapshot.items.getOrNull(idx + 1),
+                )
+                val safeOffset = (idx - 1).coerceAtLeast(0)
+                _adjacentArtwork.value = resolveAdjacentArtwork(
+                    items = window,
+                    safeOffset = safeOffset,
+                    currentIndex = idx,
+                )
+            }
         }
         // Cache track display for holdover (MA WS may disconnect while Sendspin still plays)
         viewModelScope.launch {

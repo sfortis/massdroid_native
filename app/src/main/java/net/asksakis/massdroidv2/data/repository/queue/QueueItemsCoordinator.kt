@@ -126,6 +126,20 @@ class QueueItemsCoordinator @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fetchSnapshot(queueId: String, reason: String) {
         fetchMutex.withLock {
+            // Coalesce within the dedup window: if we already have a
+            // fresh snapshot for the same queueId from a recent fetch
+            // (e.g. the blocked-cleanup path called refresh(), and now
+            // the debounced merge trigger lands for the same queueId
+            // change), skip the second RPC. The first fetch's data is
+            // still authoritative for this window.
+            val now = System.currentTimeMillis()
+            val current = _queueItems.value
+            if (current != null && current.queueId == queueId &&
+                now - current.fetchedAt < DEDUP_WINDOW_MS
+            ) {
+                Log.d(TAG, "Snapshot fetch skipped (dedup): $queueId, reason=$reason")
+                return@withLock
+            }
             try {
                 val items = musicRepository.get()
                     .getQueueItems(queueId, limit = FETCH_LIMIT, offset = 0)
@@ -148,5 +162,13 @@ class QueueItemsCoordinator @Inject constructor(
         private const val TAG = "QueueItemsCoord"
         private const val DEBOUNCE_MS = 200L
         private const val FETCH_LIMIT = 500
+        /**
+         * Two trigger paths can land on the same `queueId` within
+         * milliseconds of each other (forced refresh from
+         * blocked-cleanup + the debounced merge trigger). Skip the
+         * second fetch when the snapshot we just stored is still this
+         * fresh: server emits a new event for any real change anyway.
+         */
+        private const val DEDUP_WINDOW_MS = 500L
     }
 }
