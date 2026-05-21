@@ -78,13 +78,20 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.AudioQualityBadges
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.DetailStatusLine
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.HoldRepeatIconButton
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SmallStatusLine
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.StatusLine
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.formatAudioDescriptor
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.formatOutputDescriptor
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.service.SleepTimerBridge
 import net.asksakis.massdroidv2.ui.components.SleepTimerSheet
@@ -857,91 +864,6 @@ private fun NowPlayingLandscape(
     }
 }
 
-/**
- * Quality tier classification matching the MA web UI (`QualityDetailsBtn.vue`).
- * Order: HR (Hi-Res) > HQ (Lossless CD) > SQ (lossy, ≥256 kbps) > LQ.
- */
-private enum class AudioQualityTier(val label: String) {
-    LQ("LQ"),
-    SQ("SQ"),
-    HQ("HQ"),
-    HR("HR"),
-}
-
-private fun isLosslessCodec(codec: String?): Boolean {
-    if (codec.isNullOrBlank()) return false
-    val c = codec.uppercase()
-    return c == "FLAC" || c == "ALAC" || c == "WAV" || c == "AIFF" ||
-        c == "PCM" || c.startsWith("DSF") || c == "WAVPACK" || c == "TAK" ||
-        c.startsWith("DSD")
-}
-
-private fun audioQualityTier(audioFormat: AudioFormatInfo?): AudioQualityTier? {
-    val ct = audioFormat?.contentType ?: return null
-    val sampleRate = audioFormat.sampleRate ?: 0
-    val bitDepth = audioFormat.bitDepth ?: 0
-    val bitRate = audioFormat.bitRate ?: 0
-    if (sampleRate > 48_000 || bitDepth > 16) return AudioQualityTier.HR
-    if (isLosslessCodec(ct)) return AudioQualityTier.HQ
-    if (bitRate >= 256) return AudioQualityTier.SQ
-    return AudioQualityTier.LQ
-}
-
-@Composable
-private fun qualityTierColor(tier: AudioQualityTier): Color = when (tier) {
-    // Mirrors the visual hierarchy of the web UI without copying its exact
-    // palette — Material 3 tokens give a consistent feel with the rest of
-    // the app while still being immediately recognisable.
-    AudioQualityTier.LQ -> MaterialTheme.colorScheme.error
-    AudioQualityTier.SQ -> MaterialTheme.colorScheme.tertiary
-    AudioQualityTier.HQ -> Color(0xFF4CAF50) // green for "lossless CD"
-    AudioQualityTier.HR -> Color(0xFF9C27B0) // purple for "hi-res"
-}
-
-@Composable
-private fun AudioQualityBadges(
-    audioFormat: AudioFormatInfo?,
-    isSendspinPlayer: Boolean = false,
-    compact: Boolean = false,
-    onClick: (() -> Unit)? = null
-) {
-    val tier = remember(audioFormat) { audioQualityTier(audioFormat) }
-    val fallbackLabel = if (tier == null && isSendspinPlayer) "Sendspin" else null
-    if (tier == null && fallbackLabel == null) return
-
-    Row(
-        modifier = if (onClick != null) Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() } else Modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
-            tonalElevation = 0.dp
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = if (compact) 5.dp else 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (tier != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(if (compact) 6.dp else 8.dp)
-                            .clip(CircleShape)
-                            .background(qualityTierColor(tier))
-                    )
-                }
-                Text(
-                    text = tier?.label ?: fallbackLabel!!,
-                    style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-        }
-    }
-}
-
 @Composable
 private fun QualityActionRow(
     audioFormat: AudioFormatInfo?,
@@ -1198,82 +1120,6 @@ private fun SendspinStatusSheet(
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
-    }
-}
-
-@Composable
-private fun KeepScreenOn() {
-    val view = LocalView.current
-    DisposableEffect(view) {
-        val previous = view.keepScreenOn
-        view.keepScreenOn = true
-        onDispose {
-            view.keepScreenOn = previous
-        }
-    }
-}
-
-@Composable
-private fun StatusLine(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
-
-@Composable
-private fun SmallStatusLine(
-    label: String,
-    value: String,
-    style: androidx.compose.ui.text.TextStyle,
-    labelColor: androidx.compose.ui.graphics.Color,
-    valueColor: androidx.compose.ui.graphics.Color
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, style = style, color = labelColor)
-        Text(value, style = style, color = valueColor)
-    }
-}
-
-@Composable
-private fun DetailStatusLine(
-    label: String,
-    value: String,
-    detail: String,
-    style: androidx.compose.ui.text.TextStyle,
-    labelColor: androidx.compose.ui.graphics.Color,
-    valueColor: androidx.compose.ui.graphics.Color
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(label, style = style, color = labelColor)
-            Text(value, style = style, color = valueColor)
-        }
-        Text(
-            text = detail,
-            style = MaterialTheme.typography.labelSmall,
-            color = labelColor,
-            textAlign = TextAlign.End,
-            modifier = Modifier.fillMaxWidth()
-        )
     }
 }
 
@@ -1639,42 +1485,6 @@ private fun LyricsTimingAdjuster(
     }
 }
 
-@Composable
-private fun HoldRepeatIconButton(
-    icon: ImageVector,
-    contentDescription: String,
-    tint: Color,
-    onStep: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .size(30.dp)
-            .pointerInput(onStep) {
-                detectTapGestures(
-                    onPress = {
-                        onStep()
-                        val releasedEarly = withTimeoutOrNull(420) { tryAwaitRelease() } == true
-                        if (releasedEarly) return@detectTapGestures
-                        while (true) {
-                            onStep()
-                            val released = withTimeoutOrNull(220) { tryAwaitRelease() } == true
-                            if (released) break
-                        }
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(16.dp)
-        )
-    }
-}
-
 private fun formatLyricsOffset(offsetMs: Int): String {
     val seconds = offsetMs / 1000f
     return String.format(
@@ -1684,40 +1494,6 @@ private fun formatLyricsOffset(offsetMs: Int): String {
     )
 }
 
-
-private fun formatSampleRateCompact(sampleRate: Int): String {
-    val khz = sampleRate / 1000.0
-    val whole = khz.toInt()
-    return if (whole.toDouble() == khz) "$whole" else "%.1f".format(java.util.Locale.US, khz)
-}
-
-/**
- * Format the queue's source audio format as a short "CODEC khz/bits"
- * descriptor for the Streaming Status sheet. Returns null when codec is
- * unknown so the sheet can show "Unknown".
- */
-private fun formatAudioDescriptor(format: AudioFormatInfo?): String? {
-    format ?: return null
-    val codec = format.contentType?.replace('_', ' ')?.uppercase()?.takeIf { it.isNotBlank() && it != "?" } ?: return null
-    val sampleRate = format.sampleRate ?: return codec
-    val sampleStr = formatSampleRateCompact(sampleRate)
-    val bitDepth = format.bitDepth
-    val showBits = isLosslessCodec(codec) && bitDepth != null && bitDepth > 0
-    return if (showBits) "$codec $sampleStr/$bitDepth" else "$codec $sampleStr"
-}
-
-/**
- * Format the Sendspin transport-side output as "CODEC khz[/bits]".
- * `outputBitDepth=0` means the codec does not carry an explicit bit depth
- * (Opus, MP3), in which case it's omitted.
- */
-private fun formatOutputDescriptor(status: SendspinStatusUi): String? {
-    val codec = status.codec?.uppercase()?.takeIf { it.isNotBlank() } ?: return null
-    if (status.outputSampleRate <= 0) return codec
-    val sampleStr = formatSampleRateCompact(status.outputSampleRate)
-    return if (status.outputBitDepth > 0) "$codec $sampleStr/${status.outputBitDepth}"
-    else "$codec $sampleStr"
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
