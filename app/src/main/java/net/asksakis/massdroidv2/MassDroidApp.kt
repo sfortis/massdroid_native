@@ -42,6 +42,22 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * Deferred Last.fm library sync. Held so we can cancel a previously
+     * scheduled sync if the connection drops/reconnects before the delay
+     * elapses, instead of stacking parallel launches across flaps.
+     */
+    private var lastFmSyncJob: Job? = null
+
+    /**
+     * How long we wait after WS Connected before paginating the entire
+     * library through music/artists/library_items. 5 s is long enough to
+     * clear the cold-start RPC burst (auth, providers, players, queue,
+     * blocked-queue cleanup) without making the user wait noticeably
+     * longer for genre data in Discover / Library.
+     */
+    private val lastFmSyncStartupDelayMs = 5_000L
+
     override fun onCreate() {
         super.onCreate()
         // Start the persistent logcat-to-file writer first so we capture
@@ -112,7 +128,17 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             Log.d("MassDroidApp", "Token saved to DataStore")
                         }
                         providerManifestCache.fetchManifests(wsClient, json)
-                        lastFmLibraryEnricher.enrichAllUnenriched()
+                        // Defer the library enrichment past the cold-start RPC burst
+                        // (auth, providers, players, queue refresh, blocked-queue
+                        // cleanup) so we don't pile a paginated music/artists/library_items
+                        // sweep on top of the server while it is still answering the
+                        // critical-path queries. Cancel any previously scheduled sync
+                        // so flap reconnects don't stack parallel launches.
+                        lastFmSyncJob?.cancel()
+                        lastFmSyncJob = appScope.launch {
+                            delay(lastFmSyncStartupDelayMs)
+                            lastFmLibraryEnricher.enrichAllUnenriched()
+                        }
                     }
                     is ConnectionState.Error -> {
                         // If token was rejected (cleared by WS client), clear from DataStore too
@@ -120,6 +146,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             settingsRepository.setAuthToken("")
                             Log.d("MassDroidApp", "Invalid token cleared from DataStore")
                         }
+                        lastFmSyncJob?.cancel()
+                        lastFmSyncJob = null
+                    }
+                    is ConnectionState.Disconnected -> {
+                        lastFmSyncJob?.cancel()
+                        lastFmSyncJob = null
                     }
                     else -> {}
                 }
