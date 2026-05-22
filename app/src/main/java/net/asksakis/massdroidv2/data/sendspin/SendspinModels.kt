@@ -1,12 +1,56 @@
 package net.asksakis.massdroidv2.data.sendspin
 
 import android.util.Log
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+
+/**
+ * Sendspin protocol fields like `track_duration` and `track_progress`
+ * are documented as integer milliseconds, but the upstream Music
+ * Assistant `sendspin` provider multiplies a sometimes-float
+ * `current_media.duration` by 1000 without an int cast, so the
+ * resulting JSON can be either `123456` or `123456.0`. The reference
+ * `sendspin-js` client survives this because JavaScript collapses
+ * both into the same `number` type; Kotlin's strict `Long` serializer
+ * rejects the float literal, which used to drop the entire
+ * `server/state` payload and trigger reconnect loops on tracks whose
+ * duration carries sub-second precision (e.g. local files via ffprobe
+ * or Subsonic-style providers).
+ *
+ * This serializer accepts both shapes and coerces to `Long`. Trailing
+ * decimal fractions are truncated toward zero, which matches the
+ * existing UI math (everything is integer ms anyway).
+ */
+private object FlexibleLongSerializer : KSerializer<Long?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("FlexibleLong", PrimitiveKind.LONG)
+
+    override fun serialize(encoder: Encoder, value: Long?) {
+        if (value != null) encoder.encodeLong(value)
+    }
+
+    override fun deserialize(decoder: Decoder): Long? {
+        val jsonDecoder = decoder as? JsonDecoder ?: return decoder.decodeLong()
+        val element = jsonDecoder.decodeJsonElement()
+        if (element !is JsonPrimitive) return null
+        if (element.isString) return element.content.toLongOrNull()
+        return element.longOrNull ?: element.doubleOrNull?.toLong()
+    }
+}
 
 // Auth (proxy mode)
 
@@ -140,8 +184,12 @@ data class ServerCommandPayload(
 
 @Serializable
 data class MetadataProgressPayload(
-    @SerialName("track_progress") val trackProgress: Long? = null,
-    @SerialName("track_duration") val trackDuration: Long? = null,
+    @SerialName("track_progress")
+    @Serializable(with = FlexibleLongSerializer::class)
+    val trackProgress: Long? = null,
+    @SerialName("track_duration")
+    @Serializable(with = FlexibleLongSerializer::class)
+    val trackDuration: Long? = null,
     @SerialName("playback_speed") val playbackSpeed: Int? = null
 )
 
