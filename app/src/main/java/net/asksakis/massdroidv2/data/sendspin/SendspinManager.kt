@@ -531,12 +531,7 @@ class SendspinManager(
         }
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
-            val stateStr = when (state) {
-                SyncState.IDLE -> "error"
-                SyncState.SYNCHRONIZED -> "synchronized"
-                SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
-                SyncState.SYNC_ERROR_REBUFFERING -> "error"
-            }
+            val stateStr = mapEngineStateToProtocolState(state)
             if (stateStr != lastSentSyncState) {
                 lastSentSyncState = stateStr
                 lastCallbackSentAtMs = System.currentTimeMillis()
@@ -546,23 +541,41 @@ class SendspinManager(
         }
     }
 
-    private fun currentSyncStatePayloadValue(): String {
-        // Per Sendspin protocol (see sendspin-js StateManager): "synchronized"
-        // is the default healthy state — it means "client is ready". "error"
-        // signals an actual sync failure that the server should react to.
-        // SyncState.IDLE in our engine means "transport up, no active stream
-        // yet" (e.g. between tracks after stream/end). Reporting that as
-        // "error" makes the server believe the client is broken and close
-        // the WebSocket; the reconnect then opens a fresh socket which again
-        // starts in IDLE and reports "error", producing a Disconnected/Connected
-        // flap after every track end. Map IDLE → "synchronized" to match the
-        // reference client's semantics.
-        return when (_syncState.value) {
-            SyncState.IDLE -> "synchronized"
-            SyncState.SYNCHRONIZED -> "synchronized"
-            SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
-            SyncState.SYNC_ERROR_REBUFFERING -> "error"
-        }
+    private fun currentSyncStatePayloadValue(): String =
+        mapEngineStateToProtocolState(_syncState.value)
+
+    /**
+     * Translate our internal [SyncState] enum to the wire-level
+     * `client/state` field defined by the Sendspin protocol.
+     *
+     * Per spec (`src/spec.md`) and the reference sendspin-js client
+     * (`src/core/core.ts:handleStreamClear`), the only legal values
+     * are `'synchronized'`, `'error'`, and `'external_source'`. The
+     * `'error'` state is documented to signal **unrecoverable**
+     * problems (buffer underrun the client cannot keep up with, clock
+     * sync failure, etc.) — not transient buffer flushes.
+     *
+     * Our engine flips to `SYNC_ERROR_REBUFFERING` on every user-initiated
+     * seek as part of the discontinuity flush, *with the buffer still
+     * full*. Reporting that as `'error'` made the MA server take the
+     * heavyweight `stream/end + stream/start NEW_STREAM` path instead
+     * of the lightweight `stream/clear` it would use for an in-sync
+     * client; on a 3rd back-to-back seek that pushed wall latency from
+     * ~400 ms to ~7 s as the server's stream pipeline queued up.
+     *
+     * `IDLE` (no active stream yet, e.g. between tracks after
+     * stream/end) also used to map to `'error'` and caused a
+     * Disconnected/Connected flap after every track end. Both map to
+     * `'synchronized'` now, matching reference-client behaviour. If we
+     * ever need to express true underrun, we'll add an explicit
+     * `SyncState` variant for it instead of overloading the existing
+     * recovery state.
+     */
+    private fun mapEngineStateToProtocolState(state: SyncState): String = when (state) {
+        SyncState.IDLE -> "synchronized"
+        SyncState.SYNCHRONIZED -> "synchronized"
+        SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
+        SyncState.SYNC_ERROR_REBUFFERING -> "synchronized"
     }
 
     fun stop() {
