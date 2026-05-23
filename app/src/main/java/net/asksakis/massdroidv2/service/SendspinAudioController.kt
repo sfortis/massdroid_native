@@ -602,10 +602,22 @@ class SendspinAudioController(
                 val isConnected = state is ConnectionState.Connected
                 if (isConnected && connectedBefore) {
                     val currentSsState = sendspinManager.connectionState.value
-                    val wantToResume = currentIsPlaying
+                    // Auto-resume must check the *currently* selected player too,
+                    // not just `currentIsPlaying`. The intent gate is per-player
+                    // (only mutated from Sendspin's own state collectors), so it
+                    // can stay true after the user switched the selected player
+                    // away from Sendspin to a remote one — leading to a wrong-
+                    // player auto-play when the WS reconnects (user reported:
+                    // came home with JBL Authentics selected, but the phone
+                    // speaker started playing on its own).
+                    val sendspinIsSelected =
+                        playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId
+                    val wantToResume = currentIsPlaying && sendspinIsSelected
                     Log.d(
                         TAG,
-                        "MA reconnected, sendspin is $currentSsState, refreshing (wantToResume=$wantToResume)"
+                        "MA reconnected, sendspin is $currentSsState, refreshing " +
+                            "(wantToResume=$wantToResume, currentIsPlaying=$currentIsPlaying, " +
+                            "sendspinIsSelected=$sendspinIsSelected)"
                     )
                     sendspinManager.refresh()
                     if (wantToResume) {
