@@ -318,7 +318,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
     private fun targetLocalPlayUs(serverTimestampUs: Long): Long {
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
             ?: serverTimestampUs
-        return localUs + (staticDelayMs.toLong() * 1000L) - latencyModel.totalCompensationUs()
+        // static_delay_ms is SUBTRACTED, per the Sendspin spec ("clients
+        // subtract their static_delay_ms from server timestamps before
+        // scheduling playback") and the sendspin-js reference scheduler
+        // (scheduleTime = playbackTime - syncDelaySec). It compensates for
+        // delay beyond the audio port (external speaker/amp), so a larger
+        // delay schedules audio EARLIER. We previously added it, which moved
+        // playback the wrong way and put us 2x out of sync against compliant
+        // clients in a group (issue #45). Default 0 makes this a no-op.
+        return localUs - (staticDelayMs.toLong() * 1000L) - latencyModel.totalCompensationUs()
     }
 
     /**
@@ -334,7 +342,8 @@ class SendspinSyncEngine : SendspinAudioEngine {
         } else {
             0L
         }
-        return localUs + (staticDelayMs.toLong() * 1000L) - latencyCompensation
+        // Subtract static_delay_ms, same spec semantics as targetLocalPlayUs.
+        return localUs - (staticDelayMs.toLong() * 1000L) - latencyCompensation
     }
 
     private fun acousticExtraUs(): Long = latencyModel.acousticExtraUs()
@@ -931,11 +940,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
      */
     override fun shiftAnchorForDelayChange(deltaMs: Int) {
         if (anchorLocalUs == 0L) return
-        anchorLocalUs += deltaMs.toLong() * 1000L
+        // Mirror the sign of targetLocalPlayUs: static_delay is subtracted, so a
+        // positive delay delta shifts the play target (and thus the anchor)
+        // EARLIER, not later. Keeps a live delay change consistent with the
+        // spec-compliant scheduling sign.
+        anchorLocalUs -= deltaMs.toLong() * 1000L
         smoothedSyncErrorMs = 0.0
         pendingSampleCorrection = 0
         pendingSampleCount = 1
-        Log.d(TAG, "Anchor shifted by ${deltaMs}ms for delay change")
+        Log.d(TAG, "Anchor shifted by ${-deltaMs}ms for delay change")
     }
 
     private fun resetSyncState() {

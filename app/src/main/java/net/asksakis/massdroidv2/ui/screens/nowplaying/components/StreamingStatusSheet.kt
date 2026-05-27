@@ -179,11 +179,13 @@ internal fun SendspinStatusSheet(
                 label = "Static delay",
                 valueLabel = "${staticDelayMs}ms",
                 onDecrement = {
-                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(-500)
+                    // Spec range 0-5000ms, negatives unsupported. Hold-to-repeat
+                    // covers larger values; realistic offsets are small.
+                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
                     onStaticDelayChanged(staticDelayMs)
                 },
                 onIncrement = {
-                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(500)
+                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(5000)
                     onStaticDelayChanged(staticDelayMs)
                 },
                 labelStyle = MaterialTheme.typography.labelMedium

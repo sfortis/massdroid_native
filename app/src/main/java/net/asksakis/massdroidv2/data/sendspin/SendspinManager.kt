@@ -453,7 +453,9 @@ class SendspinManager(
     }
 
     fun setStaticDelayMs(delayMs: Int) {
-        val clamped = delayMs.coerceIn(-500, 5000)
+        // Spec range is 0-5000ms; negative values are explicitly unsupported
+        // ("should never be required for any compliant implementation").
+        val clamped = delayMs.coerceIn(0, 5000)
         val oldDelay = audio.staticDelayMs
         if (clamped == oldDelay) return
         audio.staticDelayMs = clamped
