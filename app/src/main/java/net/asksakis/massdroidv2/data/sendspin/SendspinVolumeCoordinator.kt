@@ -55,25 +55,57 @@ class SendspinVolumeCoordinator(
 ) {
     companion object {
         private const val TAG = "SsVolCoord"
-        private const val ECHO_WINDOW_MS = 1_500L
+        // Upper bound for how long we keep waiting for the server to echo a
+        // value we pushed. Sized well above real-world WS round-trips: in-car
+        // cellular while moving measured 1.7-2.1s, which exceeded the old
+        // fixed 1.5s suppression window and bounced STREAM_MUSIC when the late
+        // echo was misread as a fresh server change. Pending entries clear the
+        // instant their matching echo arrives, so this only bounds a push
+        // whose echo never comes back (e.g. the server coalesced it).
+        private const val ECHO_EXPIRY_MS = 6_000L
+        private const val MAX_PENDING_ECHOES = 16
+        // Window during which STREAM_MUSIC observer fires are NOT pushed to MA
+        // because they're route-switching artifacts, not user volume changes.
+        // Android stores STREAM_MUSIC per output route; a BT connect/disconnect
+        // flaps bt->speaker->bt over ~3-4s (each flap fires the observer with
+        // the *other* route's stored level). Measured car connects produce the
+        // last spurious push ~4s after the first route event, and the window is
+        // re-armed on every route change, so 3s past the final flap covers it.
+        private const val ROUTE_TRANSITION_SUPPRESS_MS = 3_000L
     }
+
+    private data class PendingEcho(val pct: Int, val atMs: Long)
 
     private var jobs: MutableList<Job> = mutableListOf()
     private var scope: CoroutineScope? = null
 
     @Volatile private var syncEnabled: Boolean = true
     @Volatile private var awaitingBaseline: Boolean = true
-    @Volatile private var lastLocalPushAtMs: Long = 0L
     @Volatile private var lastKnownMaVolume: Int = 100
     @Volatile private var cachedSendspinPlayerId: String? = null
+    @Volatile private var suppressPushUntilMs: Long = 0L
+
+    /**
+     * Volume values we pushed to MA and still expect the server to echo back.
+     * Echo suppression is value-based, not purely time-based: the old fixed
+     * 1.5s window was shorter than the in-car WS round-trip (1.7-2.1s), so a
+     * user's own volume change leaked back through `onServerVolumeEvent` after
+     * the window closed and yanked STREAM_MUSIC back down. Matching the echoed
+     * value against what we pushed tolerates arbitrary echo latency, and the
+     * multiset shape handles rapid multi-step ramps (53→60→73) where the
+     * server echoes each intermediate step out of phase. Guarded by its own
+     * monitor because pushes come from the observer/UI threads while echoes
+     * arrive on the coordinator's coroutine.
+     */
+    private val pendingEchoes = ArrayDeque<PendingEcho>()
     /**
      * The last STREAM_MUSIC value we know about — either from a write we
      * performed ourselves or from an observer notification. Used to ignore
      * `Settings.System` ContentObserver fires that don't actually change
      * STREAM_MUSIC (the observer subscribes to the whole system-settings URI,
      * so any unrelated system change wakes it up). Without this filter the
-     * spurious wakeups would each call recordLocalPush() and open the echo
-     * window, causing legitimate server volume events to be suppressed and
+     * spurious wakeups would each record a pending echo and bounce an unrelated
+     * value to MA, causing legitimate server volume events to be suppressed and
      * leaving STREAM_MUSIC out of sync with the MA player.
      */
     @Volatile private var lastKnownStreamMusicPct: Int = -1
@@ -179,11 +211,33 @@ class SendspinVolumeCoordinator(
             Log.d(TAG, "stream_music $previous%→$newPct% (sync OFF, no MA push)")
             return
         }
+        // During a route transition (BT connect/disconnect flap) STREAM_MUSIC
+        // reflects the route's own stored level, not a user action. Pushing it
+        // would overwrite the Sendspin player volume with the phone-speaker
+        // baseline on every car reconnect. The actual playback gain is
+        // STREAM_MUSIC itself, so skipping the MA mirror here is purely
+        // cosmetic until the next genuine user change reconciles it.
+        if (System.currentTimeMillis() < suppressPushUntilMs) {
+            Log.d(TAG, "stream_music $previous%→$newPct% (route transition, no MA push)")
+            return
+        }
         val id = cachedSendspinPlayerId ?: return
         Log.d(TAG, "stream_music $previous%→$newPct% → push MA")
-        recordLocalPush()
+        recordLocalPush(newPct)
         playerRepository.applyVolumeOptimistic(id, newPct)
         launchPushToServer(id, newPct, reason = "phone_observer")
+    }
+
+    /**
+     * The audio output route is changing (BT connect/disconnect, device
+     * switch). Opens a short window during which STREAM_MUSIC observer fires
+     * are treated as route-switching artifacts and not mirrored to MA. Called
+     * by [SendspinAudioController] from its route-change detector and noisy
+     * receiver; re-arming on each flap event keeps the whole transient covered.
+     */
+    fun onOutputRouteChanging() {
+        suppressPushUntilMs = System.currentTimeMillis() + ROUTE_TRANSITION_SUPPRESS_MS
+        Log.d(TAG, "route transition: suppressing STREAM_MUSIC->MA pushes for ${ROUTE_TRANSITION_SUPPRESS_MS}ms")
     }
 
     /**
@@ -199,7 +253,7 @@ class SendspinVolumeCoordinator(
         launchPushToServer(id, bounded, reason = "ui_slider")
         if (!effectiveSyncEnabled()) return
         writeStreamMusic(bounded)
-        recordLocalPush()
+        recordLocalPush(bounded)
     }
 
     /**
@@ -237,9 +291,8 @@ class SendspinVolumeCoordinator(
     private fun onServerVolumeEvent(pct: Int) {
         val bounded = pct.coerceIn(0, 100)
         lastKnownMaVolume = bounded
-        val sinceLocal = System.currentTimeMillis() - lastLocalPushAtMs
         if (!effectiveSyncEnabled()) {
-            Log.d(TAG, "server vol $bounded% (sync OFF, sinceLocal=${sinceLocal}ms)")
+            Log.d(TAG, "server vol $bounded% (sync OFF)")
             return
         }
         if (awaitingBaseline) {
@@ -247,11 +300,11 @@ class SendspinVolumeCoordinator(
             Log.d(TAG, "server baseline $bounded% (no STREAM_MUSIC change)")
             return
         }
-        if (sinceLocal < ECHO_WINDOW_MS) {
-            Log.d(TAG, "echo-suppress server vol $bounded% (sinceLocal=${sinceLocal}ms)")
+        if (consumePendingEcho(bounded)) {
+            Log.d(TAG, "echo-suppress server vol $bounded% (matched pending push)")
             return
         }
-        Log.d(TAG, "apply server vol $bounded% → STREAM_MUSIC (sinceLocal=${sinceLocal}ms)")
+        Log.d(TAG, "apply server vol $bounded% → STREAM_MUSIC")
         writeStreamMusic(bounded)
     }
 
@@ -288,8 +341,45 @@ class SendspinVolumeCoordinator(
         return if (max > 0) ((cur * 100f / max) + 0.5f).toInt() else 0
     }
 
-    private fun recordLocalPush() {
-        lastLocalPushAtMs = System.currentTimeMillis()
+    /**
+     * Remember a value we just pushed to MA so its eventual server echo is
+     * recognised and suppressed. Drops entries older than [ECHO_EXPIRY_MS]
+     * and caps the queue so a burst of un-echoed pushes can't grow unbounded.
+     */
+    private fun recordLocalPush(pct: Int) {
+        val now = System.currentTimeMillis()
+        synchronized(pendingEchoes) {
+            pendingEchoes.addLast(PendingEcho(pct, now))
+            while (pendingEchoes.isNotEmpty() && now - pendingEchoes.first().atMs > ECHO_EXPIRY_MS) {
+                pendingEchoes.removeFirst()
+            }
+            while (pendingEchoes.size > MAX_PENDING_ECHOES) {
+                pendingEchoes.removeFirst()
+            }
+        }
+    }
+
+    /**
+     * If [pct] matches a still-pending value we pushed, consume that entry and
+     * return true (it's our own echo, suppress it). A non-matching value is a
+     * genuine server-originated change and must be applied. Expired entries are
+     * purged first so a stale push that never echoed can't shadow a real change.
+     */
+    private fun consumePendingEcho(pct: Int): Boolean {
+        val now = System.currentTimeMillis()
+        synchronized(pendingEchoes) {
+            while (pendingEchoes.isNotEmpty() && now - pendingEchoes.first().atMs > ECHO_EXPIRY_MS) {
+                pendingEchoes.removeFirst()
+            }
+            val iterator = pendingEchoes.iterator()
+            while (iterator.hasNext()) {
+                if (iterator.next().pct == pct) {
+                    iterator.remove()
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun launchPushToServer(playerId: String, pct: Int, reason: String) {

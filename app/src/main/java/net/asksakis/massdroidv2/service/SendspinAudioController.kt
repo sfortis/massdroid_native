@@ -87,6 +87,10 @@ class SendspinAudioController(
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 Log.d(TAG, "Audio becoming noisy (headset unplugged), pausing")
                 val id = sendspinPlayerId ?: return
+                // The connect-time bt->speaker flap fires this too; arm the
+                // volume-push suppression so the transient STREAM_MUSIC swing
+                // isn't mirrored to the MA player volume.
+                volumeCoordinator.onOutputRouteChanging()
                 _userIntent.value = false
                 sendspinManager.pauseAudio()
                 scope.launch { playerRepository.pause(id) }
@@ -139,6 +143,12 @@ class SendspinAudioController(
         if (routeChanged) {
             val oldRoute = currentOutputRoute
             currentOutputRoute = newRoute
+            // Tell the volume coordinator a route transition is underway so it
+            // stops mirroring STREAM_MUSIC to MA during the bt->speaker->bt
+            // connect flap. Android serves a different per-route STREAM_MUSIC
+            // level on each flap; without this the Sendspin player volume gets
+            // overwritten with the phone-speaker baseline on every car connect.
+            volumeCoordinator.onOutputRouteChanging()
             val gen = ++routeChangeGeneration
             Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
             if (oldRoute == "bt" && newRoute == "speaker") {
@@ -162,6 +172,7 @@ class SendspinAudioController(
             // Use route-key state, not correction value: valid uncalibrated routes can be 0ms.
             val routeKey = resolveBtRouteKey()
             if (routeKey != currentBtRouteKey) {
+                volumeCoordinator.onOutputRouteChanging()
                 val gen = ++routeChangeGeneration
                 Log.d(TAG, "BT device change: $currentBtRouteKey -> $routeKey (gen=$gen)")
                 scope.launch {
