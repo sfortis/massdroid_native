@@ -65,6 +65,16 @@ class SendspinVolumeCoordinator(
         // flaps bt->speaker->bt over ~3-4s (each flap fires the observer with
         // the *other* route's stored level). Re-armed on every route change.
         private const val ROUTE_TRANSITION_SUPPRESS_MS = 3_000L
+        // After we write STREAM_MUSIC ourselves (mirroring a server/slider value),
+        // ignore observer fires for this long. The index-equality check below is
+        // the primary self-write filter, but some devices (Samsung) settle the
+        // volume curve asynchronously and fire the observer one or more times
+        // with an index that differs from the one we set — which would be misread
+        // as a user change and pushed back to MA, amplifying into a volume_set
+        // flood/oscillation in group mode. This window makes the self-write
+        // filter robust to that. Short enough that a genuine user change right
+        // after is only missed once (the next change reconciles).
+        private const val SELF_WRITE_SETTLE_MS = 500L
         // Upper bound on how long we wait for the server to echo a value we
         // pushed. Sized above real-world WS round-trips (in-car cellular ~2s).
         private const val ECHO_EXPIRY_MS = 6_000L
@@ -107,6 +117,9 @@ class SendspinVolumeCoordinator(
      * percent value-matching. -1 = not yet known.
      */
     @Volatile private var lastKnownStreamIndex: Int = -1
+    // Set when we write STREAM_MUSIC ourselves; observer fires before this are
+    // our own write settling (see SELF_WRITE_SETTLE_MS), not user changes.
+    @Volatile private var selfWriteUntilMs: Long = 0L
 
     /**
      * The user-facing sync toggle only applies on Bluetooth. On any other route
@@ -183,6 +196,12 @@ class SendspinVolumeCoordinator(
         val index = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         if (index == lastKnownStreamIndex) {
             return  // our own write, or an unrelated Settings.System wake
+        }
+        if (System.currentTimeMillis() < selfWriteUntilMs) {
+            // Our own STREAM_MUSIC write is still settling (device fired the
+            // observer with a curve-adjusted index). Adopt it, do NOT push back.
+            lastKnownStreamIndex = index
+            return
         }
         lastKnownStreamIndex = index
         val pct = ((index * 100f / max) + 0.5f).toInt()
@@ -300,6 +319,9 @@ class SendspinVolumeCoordinator(
         // Stamp BEFORE the write (and even on a no-op) so the observer fire the
         // setStreamVolume below triggers is recognised as our own and ignored.
         lastKnownStreamIndex = targetIndex
+        // Arm the settle window so any curve-adjusted observer fire (Samsung) is
+        // also treated as our own write, not a user change.
+        selfWriteUntilMs = System.currentTimeMillis() + SELF_WRITE_SETTLE_MS
         val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         if (current == targetIndex) return
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
