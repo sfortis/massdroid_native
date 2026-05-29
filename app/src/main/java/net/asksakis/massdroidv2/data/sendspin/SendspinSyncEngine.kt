@@ -219,6 +219,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // One-shot guard: the closed-loop DAC anchor re-seat runs once per session
     // (reset on stream boundaries via resetSyncState).
     @Volatile private var dacAnchorReseated = false
+    // Feed-forward cache (in-memory, per route). The cold-start/pipeline offset
+    // is near-constant per device/route (e.g. ~-64ms), so once the closed-loop
+    // re-seat learns the correction, we pre-apply it to the NEXT startup's
+    // play target — the audio then starts ~synced and the closed-loop only
+    // trims the small residual (and catches the occasional outlier). Persists
+    // across pause/play; reset on route change (different device = different
+    // offset). Cleared on app restart (in-memory) → re-learned once.
+    @Volatile private var cachedStartupShiftUs = 0L
     private var lastSyncLogMs = 0L
     @Volatile var resyncCount = 0; private set
     private var playbackStartedAtMs = 0L             // wall clock when playback started
@@ -1193,11 +1201,18 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 && dacValidator.divergenceSameSignCount >= DAC_RESEAT_SIGN_COUNT
                 && kotlin.math.abs(smoothedDacAbsMs) > DAC_RESEAT_THRESHOLD_MS
             ) {
-                anchorLocalUs -= (smoothedDacAbsMs * 1000.0).toLong()
+                val reseatShiftUs = -(smoothedDacAbsMs * 1000.0).toLong()
+                anchorLocalUs += reseatShiftUs
                 smoothedSyncErrorMs = 0.0
                 dacAnchorReseated = true
+                // Learn for feed-forward: accumulate the correction this session
+                // needed beyond what was already fed forward. Next startup on this
+                // route pre-applies the total so the audio starts ~synced. Clamp
+                // to a sane range so a glitched measurement can't poison it.
+                cachedStartupShiftUs = (cachedStartupShiftUs + reseatShiftUs).coerceIn(-500_000L, 500_000L)
                 Log.d(TAG, "DAC anchor re-seat (closed-loop): injected ${"%.1f".format(smoothedDacAbsMs)}ms " +
-                    "real offset into the anchor; correction loop will converge true output to 0")
+                    "real offset into the anchor; correction loop will converge true output to 0; " +
+                    "cachedStartupShift=${cachedStartupShiftUs / 1000}ms")
             }
         }
 
@@ -1576,7 +1591,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
                                 }
                                 if (startupConfigureGeneration != configureGeneration) continue
                                 firstFrame = frameQueue.peek() ?: continue
-                                val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs)
+                                // Feed-forward the learned per-route cold-start shift so the
+                                // first frame is scheduled at the already-corrected time; the
+                                // audio starts ~synced and the closed-loop only trims the
+                                // residual. Non-acoustic (phone/wired) only — BT uses acoustic.
+                                val startupShiftUs = if (routeAcousticExtraUs == 0L) cachedStartupShiftUs else 0L
+                                val targetUs = targetLocalPlayUs(firstFrame.serverTimestampUs) + startupShiftUs
                                 val leadMs = (targetUs - nowLocalUs()) / 1000L
                                 val waitUs = (targetUs - nowLocalUs()).coerceIn(0, 2_000_000)
                                 val waitMs = waitUs / 1000L
@@ -2083,6 +2103,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         latencyModel.onRouteChanged()
         clockPreciseForCorrections = false
         applyPlaybackRate(1.0f)
+        // New device = different cold-start offset: drop the feed-forward cache
+        // so the new route re-learns its own startup shift from scratch.
+        cachedStartupShiftUs = 0L
         // Route change: audio content unchanged, only output device changed.
         // Flush AudioTrack (new hardware pipeline) but KEEP frame queue intact.
         // Queue head is at current playback position; flushing it would cause server
