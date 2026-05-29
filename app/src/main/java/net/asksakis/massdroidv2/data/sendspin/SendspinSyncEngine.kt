@@ -270,9 +270,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // high the DAC is NOT trustworthy, so the closed loop falls back to the
     // (clean) anchor and the feed-forward does not learn the bogus value.
     @Volatile private var dacDriftMagMs = 0.0
-    // One-shot guard: the closed-loop DAC anchor re-seat runs once per session
-    // (reset on stream boundaries via resetSyncState).
-    @Volatile private var dacAnchorReseated = false
+    // One-shot guard: the per-stream feed-forward learn runs once per stream
+    // (reset on stream boundaries via resetSyncState). (Formerly the DAC anchor
+    // re-seat, which was replaced by closed-loop correction + feed-forward learn.)
+    @Volatile private var ffLearnedThisStream = false
     // Learned per-route feed-forward (microseconds). The cold-start/pipeline
     // offset is near-constant per device/route (~-60ms), so once the re-seat
     // measures it we ADD this shift to BOTH the startup play target AND the
@@ -1075,7 +1076,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         anchorLocalEquivalentUs = 0L
         smoothedDacAbsMs = 0.0
         hasDacAbs = false
-        dacAnchorReseated = false
+        ffLearnedThisStream = false
         // Start "unstable" so the closed loop must re-prove DAC stability after
         // every boundary (seek/track change) before it trusts the ground truth.
         dacDriftMagMs = DAC_UNSTABLE_DRIFT_MS
@@ -1270,7 +1271,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             // so a one-shot anchor shift is unnecessary and was the cause of the
             // stuck residual — it drove the anchor to 0 while the real DAC stayed
             // at e.g. -12ms with nothing left to close the gap.
-            if (!dacAnchorReseated
+            if (!ffLearnedThisStream
                 && anchorLocalUs != 0L
                 && !isBtLikeOutput()
                 && dacStable
@@ -1279,7 +1280,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 && dacValidator.matureCount <= FF_LEARN_MAX_MATURE
                 && kotlin.math.abs(smoothedDacAbsMs) > DAC_RESEAT_THRESHOLD_MS
             ) {
-                dacAnchorReseated = true
+                ffLearnedThisStream = true
                 val learnShiftUs = -(smoothedDacAbsMs * 1000.0).toLong()
                 // Adaptive damping: full capture on the very first learn (reach the
                 // cold-start in one track), moderate while settling, then heavy
@@ -1490,23 +1491,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
         return out
     }
 
-    private fun applySampleCorrection(pcm: ByteArray): ByteArray {
-        // Primary timing corrector: smooth software resampling at the requested
-        // speed ratio (set by applyPlaybackRate when the hardware rate is rejected).
-        if (softwareResampleRate != 1.0) return resamplePcm(pcm, softwareResampleRate)
-        val direction = pendingSampleCorrection
-        if (direction == 0) return pcm
-        val bytesPerSample = activeChannels * 2
-        val totalSamples = pcm.size / bytesPerSample
-        // Need headroom: at least 4x the correction count
-        val count = pendingSampleCount.coerceAtMost(totalSamples / 4)
-        if (count <= 0) return pcm
-        return if (direction > 0) {
-            removeSamples(pcm, bytesPerSample, count)
-        } else {
-            insertSamples(pcm, bytesPerSample, count)
-        }
-    }
+    /**
+     * Apply the active timing correction to a decoded PCM frame. On outputs that
+     * accept the hardware playback rate this is a no-op (the AudioTrack does the
+     * stretch); on rate-rejected outputs softwareResampleRate != 1.0 and we
+     * resample the PCM here. Returns pcm unchanged when no correction is active.
+     */
+    private fun applyTimingCorrection(pcm: ByteArray): ByteArray =
+        if (softwareResampleRate != 1.0) resamplePcm(pcm, softwareResampleRate) else pcm
 
     /** Read one 16-bit sample for a given channel at sample index. */
     private fun readSample16(pcm: ByteArray, sampleIdx: Int, channel: Int, channels: Int): Short {
@@ -1524,63 +1516,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
     /** Interpolate between two samples (0.0 = a, 1.0 = b). */
     private fun lerp16(a: Short, b: Short, t: Float): Short =
         (a + ((b - a) * t)).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-
-    private fun removeSamples(pcm: ByteArray, bytesPerSample: Int, count: Int): ByteArray {
-        if (pcm.size < bytesPerSample * (count + 4)) return pcm
-        val out = ByteArray(pcm.size - bytesPerSample * count)
-        val totalSamples = pcm.size / bytesPerSample
-        val step = totalSamples / (count + 1)
-        var srcPos = 0
-        var dstPos = 0
-        var removed = 0
-        for (i in 0 until totalSamples) {
-            if (removed < count && i == step * (removed + 1)) {
-                // Instead of hard skip, crossfade: blend previous output with next source sample
-                if (dstPos >= bytesPerSample && srcPos + bytesPerSample < pcm.size) {
-                    for (ch in 0 until activeChannels) {
-                        val prev = readSample16(out, (dstPos / bytesPerSample) - 1, ch, activeChannels)
-                        val next = readSample16(pcm, i + 1, ch, activeChannels)
-                        val blended = lerp16(prev, next, 0.5f)
-                        writeSample16(out, dstPos - bytesPerSample + ch * 2, blended)
-                    }
-                }
-                srcPos += bytesPerSample
-                removed++
-            } else {
-                System.arraycopy(pcm, srcPos, out, dstPos, bytesPerSample)
-                srcPos += bytesPerSample
-                dstPos += bytesPerSample
-            }
-        }
-        return out
-    }
-
-    private fun insertSamples(pcm: ByteArray, bytesPerSample: Int, count: Int): ByteArray {
-        if (pcm.size < bytesPerSample * 2) return pcm
-        val out = ByteArray(pcm.size + bytesPerSample * count)
-        val totalSamples = pcm.size / bytesPerSample
-        val step = totalSamples / (count + 1)
-        var srcPos = 0
-        var dstPos = 0
-        var inserted = 0
-        for (i in 0 until totalSamples) {
-            System.arraycopy(pcm, srcPos, out, dstPos, bytesPerSample)
-            srcPos += bytesPerSample
-            dstPos += bytesPerSample
-            if (inserted < count && i == step * (inserted + 1)) {
-                // Interpolate between current and next sample instead of raw duplicate
-                for (ch in 0 until activeChannels) {
-                    val curr = readSample16(pcm, i, ch, activeChannels)
-                    val next = if (i + 1 < totalSamples) readSample16(pcm, i + 1, ch, activeChannels) else curr
-                    val interp = lerp16(curr, next, 0.5f)
-                    writeSample16(out, dstPos + ch * 2, interp)
-                }
-                dstPos += bytesPerSample
-                inserted++
-            }
-        }
-        return out
-    }
 
     /**
      * Measure actual output pipeline latency via AudioTrack.getTimestamp().
@@ -1886,14 +1821,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (activeCodec == "pcm") {
             if (generation != playbackGeneration || track !== audioTrack || !playbackActive || !playbackStarted) return false
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
-            val finalPcm = if (isSyncMode) applySampleCorrection(pcm) else pcm
+            val finalPcm = if (isSyncMode) applyTimingCorrection(pcm) else pcm
             track.write(finalPcm, 0, finalPcm.size)
             applyFadeInStep(track)
             val framesWritten = finalPcm.size / (activeChannels * 2)
             // Track written-end timestamp (not frame-start) so DAC expected position
             // aligns with what was actually written. Without this, measureDriftUs()
             // sees a systematic ~20ms offset (one frame duration).
-            // NOTE: framesWritten includes inserted/removed samples from applySampleCorrection().
+            // NOTE: framesWritten reflects the RESAMPLED length from applyTimingCorrection().
             // This is intentional: the DAC timeline should match the corrected stream actually
             // written to AudioTrack, not the source stream. DAC drift validates the corrected
             // output, so embedding the correction in the expected timeline avoids the DAC signal
@@ -1970,7 +1905,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     pcmToWrite.isEmpty() -> continue
                     else -> {
                         if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive || !playbackStarted) break
-                        val finalPcm = if (isSyncMode) applySampleCorrection(pcmToWrite) else pcmToWrite
+                        val finalPcm = if (isSyncMode) applyTimingCorrection(pcmToWrite) else pcmToWrite
                         track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
                         applyFadeInStep(track)
                         val fwCodec = finalPcm.size / (activeChannels * 2)
