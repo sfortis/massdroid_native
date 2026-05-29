@@ -71,7 +71,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // (about a semitone), reached only for large one-shot offsets such as
         // the cold-start DAC re-seat (~60ms), and de-escalates as error shrinks.
         private const val SYNC_RATE_GAIN = 0.0015   // per ms of error
-        private const val SYNC_RATE_MAX = 0.06f      // 6% max speed change
+        private const val SYNC_RATE_MAX = 0.06f      // 6% max speed change (hardware: pitch-preserved)
+        // Software resampling is NOT pitch-preserving (linear interpolation), so a
+        // 6% ratio is an audible ~semitone bend. Cap the software path much tighter
+        // (~2%) so the pitch shift stays subtle/inaudible; convergence is a bit
+        // slower for large offsets but smooth and clean.
+        private const val SOFTWARE_RESAMPLE_MAX = 0.02
         // EMA for the DAC ground-truth absolute error WHEN it is the closed-loop
         // correction signal. Faster than the divergence EMA (0.15): the
         // correction loop must see the real offset with low lag or it cannot
@@ -110,14 +115,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // (the exact symptom). 3ms lets the real bias be captured and pre-applied
         // to the next stream so track 2+ start already aligned (instant lock).
         private const val DAC_RESEAT_THRESHOLD_MS = 3.0
-        private const val DAC_RESEAT_SIGN_COUNT = 4      // stable divergence sign before learning the feed-forward
         // Feed-forward must learn the COLD-START offset only, never a mid-stream
         // residual. Once the DAC has matured this many samples we are past the
         // cold-start window and into steady state, where the closed loop (not the
         // startup feed-forward) owns the small residual — learning there would let
         // noise/drift creep into the feed-forward and slowly desync it.
         private const val FF_LEARN_MAX_MATURE = 20
-        private const val FEEDFORWARD_LEARN_ALPHA = 0.5  // damped feed-forward learning (settle to mean, not chase noise)
+        private const val FEEDFORWARD_LEARN_ALPHA = 0.7   // while settling toward the mean cold-start
+        private const val FEEDFORWARD_SETTLED_ALPHA = 0.2 // once settled: heavy damp, average out per-track variance
+        private const val FF_LEARN_SETTLE_COUNT = 3       // learns before switching to the settled alpha
         // DAC stability gate for the closed loop. dacDriftMagMs is an EMA of the
         // per-sample |drift|. In steady state it sits near 0 (isolated spikes
         // decay); after a seek the baseline aliases and it stays ~15-20ms. Below
@@ -278,6 +284,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // the delay). Persists across pause/play; reset on route change; learned
     // only on non-acoustic (phone/wired) routes.
     @Volatile private var routeStartupFeedForwardUs = 0L
+    // Number of feed-forward learns on the current route. Drives adaptive learn
+    // damping: capture the cold-start fast on the first learns, then damp hard so
+    // the feed-forward settles at the MEAN cold-start instead of chasing the
+    // per-track variance (the AudioTrack flush/refill cold-start is ~constant in
+    // the mean but varies ±25ms per track). Reset on route change.
+    @Volatile private var ffLearnCount = 0
     private var lastSyncLogMs = 0L
     @Volatile var resyncCount = 0; private set
     private var playbackStartedAtMs = 0L             // wall clock when playback started
@@ -1067,6 +1079,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Start "unstable" so the closed loop must re-prove DAC stability after
         // every boundary (seek/track change) before it trusts the ground truth.
         dacDriftMagMs = DAC_UNSTABLE_DRIFT_MS
+        // Drop software-resample carry so a fresh stream does not splice old audio,
+        // and reset the rate to neutral (currentPlaybackRate too, so the next
+        // applyPlaybackRate is not deduped against a stale pre-boundary rate).
+        resampleHasPrev = false
+        resamplePhase = 0.0
+        softwareResampleRate = 1.0
+        currentPlaybackRate = 1.0f
         latencyModel.resetForBoundary()
     }
 
@@ -1258,17 +1277,25 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 && clockPreciseForCorrections
                 && syncState == SyncState.SYNCHRONIZED
                 && dacValidator.matureCount <= FF_LEARN_MAX_MATURE
-                && dacValidator.divergenceSameSignCount >= DAC_RESEAT_SIGN_COUNT
                 && kotlin.math.abs(smoothedDacAbsMs) > DAC_RESEAT_THRESHOLD_MS
             ) {
                 dacAnchorReseated = true
                 val learnShiftUs = -(smoothedDacAbsMs * 1000.0).toLong()
-                val learnAlpha = if (routeStartupFeedForwardUs == 0L) 1.0 else FEEDFORWARD_LEARN_ALPHA
+                // Adaptive damping: full capture on the very first learn (reach the
+                // cold-start in one track), moderate while settling, then heavy
+                // damping so a single track's variance barely moves the learned
+                // mean (stops the feed-forward oscillating ±10ms around the mean).
+                val learnAlpha = when {
+                    routeStartupFeedForwardUs == 0L -> 1.0
+                    ffLearnCount < FF_LEARN_SETTLE_COUNT -> FEEDFORWARD_LEARN_ALPHA
+                    else -> FEEDFORWARD_SETTLED_ALPHA
+                }
+                ffLearnCount++
                 routeStartupFeedForwardUs =
                     (routeStartupFeedForwardUs + (learnShiftUs * learnAlpha).toLong())
                         .coerceIn(-500_000L, 500_000L)
                 Log.d(TAG, "Closed-loop feedForward learned=${routeStartupFeedForwardUs / 1000}ms " +
-                    "from cold-start ${"%.1f".format(smoothedDacAbsMs)}ms")
+                    "from cold-start ${"%.1f".format(smoothedDacAbsMs)}ms (learn #$ffLearnCount a=$learnAlpha)")
             }
         }
 
@@ -1343,22 +1370,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // continuous law) — converges via playback speed like the web client.
         // rate = clamp(|error|*GAIN, MAX); exponential decay, no fixed-rate tail.
         // Sign: absoluteSyncMs>0 = audio late -> speed up (1+r) to catch up;
-        // <0 = audio early -> slow down (1-r) to fall back. Matches the re-seat
-        // semantics (negative injected error -> slow down -> delays -> converges).
-        if (absTotal > SYNC_DEADBAND_MS && rateCorrectionSupported) {
+        // <0 = audio early -> slow down (1-r) to fall back. applyPlaybackRate
+        // uses the hardware time-stretch when available, else SOFTWARE resampling
+        // (for low-latency fast tracks that reject PlaybackParams) — both smooth,
+        // so there is no crude sample-drop tier any more.
+        if (absTotal > SYNC_DEADBAND_MS) {
             val rateAdjust = (absTotal * SYNC_RATE_GAIN).toFloat().coerceAtMost(SYNC_RATE_MAX)
             val targetRate = if (absoluteSyncMs > 0) 1.0f + rateAdjust else 1.0f - rateAdjust
             applyPlaybackRate(targetRate)
             pendingSampleCorrection = 0
             pendingSampleCount = 1
-        }
-        // Tier 2: Sample correction fallback for devices that reject PlaybackParams
-        // rate changes (some Samsung/OEM paths). Only reached when rate is
-        // unsupported; the proportional rate above is the primary path.
-        else if (absTotal > SYNC_DEADBAND_MS) {
-            applyPlaybackRate(1.0f)
-            pendingSampleCorrection = if (absoluteSyncMs > 0) 1 else -1
-            pendingSampleCount = sampleCountForError(absTotal)
         }
         // Tier 1: Deadband
         else {
@@ -1373,65 +1394,106 @@ class SendspinSyncEngine : SendspinAudioEngine {
 
     private fun applyPlaybackRate(rate: Float) {
         if (rate == currentPlaybackRate) return
-        if (!rateCorrectionSupported && rate != 1.0f) return
-        val prev = currentPlaybackRate
         currentPlaybackRate = rate
-        val track = audioTrack ?: return
-        try {
-            track.playbackParams = android.media.PlaybackParams()
-                .setAudioFallbackMode(android.media.PlaybackParams.AUDIO_FALLBACK_MODE_DEFAULT)
-                .setSpeed(rate)
-                .setPitch(1.0f)
-        } catch (e: Exception) {
-            if (rateCorrectionSupported) {
+        if (rateCorrectionSupported) {
+            val track = audioTrack ?: return
+            try {
+                track.playbackParams = android.media.PlaybackParams()
+                    .setAudioFallbackMode(android.media.PlaybackParams.AUDIO_FALLBACK_MODE_DEFAULT)
+                    .setSpeed(rate)
+                    .setPitch(1.0f)
+                softwareResampleRate = 1.0  // hardware handles the speed; no software resample
+                return
+            } catch (e: Exception) {
                 // Confirmed via AOSP: a fast track (granted PERFORMANCE_MODE_LOW_LATENCY)
                 // rejects setPlaybackRate() with INVALID_OPERATION -> JNI throws
                 // "arguments out of range" even for valid mild speeds (e.g. 0.94).
                 // The fast-mixer path bypasses the Sonic timestretch stage. We keep
-                // low latency and fall back to sample insert/drop drift correction.
-                Log.w(TAG, "Rate correction unsupported on this output (low-latency fast track): " +
-                    "speed=$rate perf=${track.performanceMode}; using sample correction. ${e.message}")
+                // low latency and fall back to SOFTWARE resampling (smooth, like the
+                // web client) for the speed correction.
+                Log.w(TAG, "Hardware rate rejected on low-latency fast track (speed=$rate " +
+                    "perf=${track.performanceMode}); switching to software resampling. ${e.message}")
+                rateCorrectionSupported = false
             }
-            rateCorrectionSupported = false
-            currentPlaybackRate = 1.0f
         }
+        // Software resampling path: apply the speed ratio by resampling the PCM in
+        // the write path. Clamp tighter than hardware — linear resampling shifts
+        // pitch, so keep the bend subtle (±SOFTWARE_RESAMPLE_MAX).
+        softwareResampleRate = rate.toDouble()
+            .coerceIn(1.0 - SOFTWARE_RESAMPLE_MAX, 1.0 + SOFTWARE_RESAMPLE_MAX)
     }
 
 
-    // ── Sample correction for steady-state convergence ──
+    // ── Timing correction (software resampling + crude sample fallback) ──
 
     @Volatile private var pendingSampleCorrection = 0  // +1 = remove samples, -1 = insert samples, 0 = none
-    @Volatile private var pendingSampleCount = 1       // how many samples to correct per frame
+    @Volatile private var pendingSampleCount = 1       // how many samples to correct per frame (crude fallback)
+
+    // Software resampling state. softwareResampleRate != 1.0 when the hardware
+    // playback rate is unavailable (low-latency fast track) and we apply the
+    // speed correction by resampling the PCM ourselves. resamplePhase + the
+    // one-sample carry give continuity across frame boundaries (no per-frame
+    // discontinuity buzz). Reset on stream boundaries so no stale carry clicks.
+    @Volatile private var softwareResampleRate = 1.0
+    private var resamplePhase = 0.0
+    private val resamplePrev = ShortArray(2)
+    private var resampleHasPrev = false
 
     /**
-     * Scale sample correction count with error magnitude.
-     * At 48kHz, 1 sample/frame ≈ 0.02ms correction per 20ms frame.
-     * 5ms error  -> 1 sample  -> converges in ~5s
-     * 10ms error -> 2 samples -> converges in ~5s
-     * 20ms error -> 4 samples -> converges in ~5s
-     * 50ms error -> 8 samples -> converges in ~6s
-     * Cap at 8 to keep artifacts inaudible (8 samples = 0.17ms gap in 960-sample frame).
+     * Linear-interpolate the PCM to apply a playback-speed ratio in software.
+     * rate>1 = faster (shorter output, slight pitch up), rate<1 = slower. At the
+     * ±6% ratios used for sync the pitch shift is inaudible. Smooth (no dropped
+     * whole samples), so it does not destabilise the closed loop the way crude
+     * sample insert/drop did. Carries the last input sample + fractional phase
+     * across calls for click-free continuity. framesWritten downstream uses the
+     * resampled length, so the DAC timeline stays consistent.
      */
-    private fun sampleCountForError(absErrorMs: Double): Int {
-        // More aggressive while muted (artifacts inaudible); conservative when audible
-        return if (syncMuted) {
-            when {
-                absErrorMs < 15.0  -> 4
-                absErrorMs < 50.0  -> 16
-                absErrorMs < 200.0 -> 32
-                else               -> 48  // ~1ms/frame at 48kHz, converge 300ms in ~6s
-            }
-        } else {
-            when {
-                absErrorMs < 8.0  -> 1
-                absErrorMs < 15.0 -> 2
-                absErrorMs < 30.0 -> 4
-                else              -> 8
-            }
+    private fun resamplePcm(pcm: ByteArray, rate: Double): ByteArray {
+        val ch = activeChannels
+        if (ch <= 0 || rate <= 0.0) return pcm
+        val bytesPerFrame = ch * 2
+        val inFrames = pcm.size / bytesPerFrame
+        if (inFrames < 1) return pcm
+        if (!resampleHasPrev) {
+            for (c in 0 until ch) resamplePrev[c] = readSample16(pcm, 0, c, ch)
+            resampleHasPrev = true
+            resamplePhase = 0.0
         }
+        // Virtual stream V: V[0] = carried prev sample, V[k] = pcm[k-1] for k>=1.
+        // Emit interpolated frames at cursor, cursor+rate, ... while V[i+1] exists.
+        val maxOutFrames = ((inFrames - resamplePhase) / rate).toInt() + 2
+        val outShorts = ShortArray(maxOutFrames * ch)
+        var outFrames = 0
+        var cursor = resamplePhase
+        while (true) {
+            val i = kotlin.math.floor(cursor).toInt()
+            if (i > inFrames - 1) break
+            val base = outFrames * ch
+            if (base + ch > outShorts.size) break
+            val frac = (cursor - i).toFloat()
+            for (c in 0 until ch) {
+                val left = if (i == 0) resamplePrev[c] else readSample16(pcm, i - 1, c, ch)
+                val right = readSample16(pcm, i, c, ch)
+                outShorts[base + c] = lerp16(left, right, frac)
+            }
+            outFrames++
+            cursor += rate
+        }
+        for (c in 0 until ch) resamplePrev[c] = readSample16(pcm, inFrames - 1, c, ch)
+        resamplePhase = (cursor - inFrames).coerceAtLeast(0.0)
+        val out = ByteArray(outFrames * bytesPerFrame)
+        var p = 0
+        for (k in 0 until outFrames * ch) {
+            writeSample16(out, p, outShorts[k])
+            p += 2
+        }
+        return out
     }
 
     private fun applySampleCorrection(pcm: ByteArray): ByteArray {
+        // Primary timing corrector: smooth software resampling at the requested
+        // speed ratio (set by applyPlaybackRate when the hardware rate is rejected).
+        if (softwareResampleRate != 1.0) return resamplePcm(pcm, softwareResampleRate)
         val direction = pendingSampleCorrection
         if (direction == 0) return pcm
         val bytesPerSample = activeChannels * 2
@@ -2198,6 +2260,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // New device = different cold-start/pipeline offset: drop the learned
         // feed-forward so the new route re-learns its own from scratch.
         routeStartupFeedForwardUs = 0L
+        ffLearnCount = 0
         // Route change: audio content unchanged, only output device changed.
         // Flush AudioTrack (new hardware pipeline) but KEEP frame queue intact.
         // Queue head is at current playback position; flushing it would cause server
