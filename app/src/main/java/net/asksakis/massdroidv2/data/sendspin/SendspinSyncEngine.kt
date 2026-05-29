@@ -1089,13 +1089,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // Start "unstable" so the closed loop must re-prove DAC stability after
         // every boundary (seek/track change) before it trusts the ground truth.
         dacDriftMagMs = DAC_UNSTABLE_DRIFT_MS
-        // Drop software-resample carry so a fresh stream does not splice old audio,
-        // and reset the rate to neutral (currentPlaybackRate too, so the next
-        // applyPlaybackRate is not deduped against a stale pre-boundary rate).
-        resampleHasPrev = false
-        resamplePhase = 0.0
-        softwareResampleRate = 1.0
-        currentPlaybackRate = 1.0f
+        // Drop software-resample carry + neutralise the rate so a fresh stream does
+        // not splice old audio and the next applyPlaybackRate is not deduped.
+        resetResamplerState()
         latencyModel.resetForBoundary()
     }
 
@@ -1445,9 +1441,22 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // one-sample carry give continuity across frame boundaries (no per-frame
     // discontinuity buzz). Reset on stream boundaries so no stale carry clicks.
     @Volatile private var softwareResampleRate = 1.0
-    private var resamplePhase = 0.0
-    private val resamplePrev = ShortArray(2)
-    private var resampleHasPrev = false
+    // Volatile: written by the playback thread (resamplePcm) and reset from the WS
+    // thread on boundaries; volatile avoids a torn read of the carry mid-resample.
+    @Volatile private var resamplePhase = 0.0
+    private val resamplePrev = ShortArray(2)  // re-seeded whenever resampleHasPrev=false
+    @Volatile private var resampleHasPrev = false
+
+    /** Reset timing-correction rate state so a fresh stream/route does not splice
+     *  old audio or resume from a stale carry sample, and the next rate change is
+     *  not deduped against a stale currentPlaybackRate. Call on every timing
+     *  boundary. */
+    private fun resetResamplerState() {
+        softwareResampleRate = 1.0
+        resamplePhase = 0.0
+        resampleHasPrev = false
+        currentPlaybackRate = 1.0f
+    }
 
     /**
      * Linear-interpolate the PCM to apply a playback-speed ratio in software.
@@ -2205,6 +2214,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // feed-forward so the new route re-learns its own from scratch.
         routeStartupFeedForwardUs = 0L
         ffLearnCount = 0
+        // New hardware pipeline = stale resampler carry; clear it so the first
+        // resampled frame on the new route does not splice the old route's sample.
+        resetResamplerState()
         // Route change: audio content unchanged, only output device changed.
         // Flush AudioTrack (new hardware pipeline) but KEEP frame queue intact.
         // Queue head is at current playback position; flushing it would cause server
@@ -2257,6 +2269,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             dacValidator.resetTimeline(audioTrack)
         }
         // Keep frameQueue intact, keep measuredOutputLatencyUs (it's now correct)
+        resetResamplerState()  // flushed AudioTrack = stale resampler carry
         presentationTimeUs = 0L
         anchorServerTimestampUs = 0L
         anchorLocalUs = 0L
