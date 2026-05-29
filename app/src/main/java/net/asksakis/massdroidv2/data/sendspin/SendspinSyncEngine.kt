@@ -71,12 +71,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val CLOCK_PRECISION_TIMEOUT_MS = 10_000L
         private const val CLOCK_PRECISION_THRESHOLD_US = 15_000  // Int to match errorUs()
 
-        // DAC divergence validator: diagnostic only. The EMA + maturity feed the
-        // Sync log so we can watch DAC-vs-anchor disagreement; the signal is NOT
-        // used for correction (anchor is the correction signal).
+        // DAC ground-truth absolute error: the closed-loop signal (getTimestamp)
+        // for what the speaker actually outputs. EMA-smoothed; feeds the Sync log
+        // and the one-shot anchor re-seat that corrects the open-loop anchor's
+        // blindness to cold-start/pipeline latency.
         private const val DAC_DIVERGENCE_EMA_ALPHA = 0.15
         private const val DAC_DIVERGENCE_MATURITY = 20  // min DAC absolute samples before trusting
         private const val DAC_WARMUP_MS = 1_000L
+        // One-shot closed-loop anchor re-seat (phone/wired only for now).
+        private const val DAC_RESEAT_THRESHOLD_MS = 8.0  // only re-seat if real offset exceeds the sample-correction deadband
+        private const val DAC_RESEAT_SIGN_COUNT = 10     // require a stable divergence sign before trusting the re-seat
         private const val BT_LIKE_OUTPUT_LATENCY_US = 50_000L
         private const val BT_LIKE_ACOUSTIC_LATENCY_US = 100_000L
         private const val FADE_IN_STEPS = 15  // ~300ms at 20ms/frame
@@ -209,6 +213,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // until the DAC signal matures. (For BT this reflects up to the BT handoff.)
     @Volatile private var smoothedDacAbsMs = 0.0
     @Volatile private var hasDacAbs = false
+    // One-shot guard: the closed-loop DAC anchor re-seat runs once per session
+    // (reset on stream boundaries via resetSyncState).
+    @Volatile private var dacAnchorReseated = false
     private var lastSyncLogMs = 0L
     @Volatile var resyncCount = 0; private set
     private var playbackStartedAtMs = 0L             // wall clock when playback started
@@ -988,6 +995,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         anchorLocalEquivalentUs = 0L
         smoothedDacAbsMs = 0.0
         hasDacAbs = false
+        dacAnchorReseated = false
         latencyModel.resetForBoundary()
     }
 
@@ -1160,6 +1168,33 @@ class SendspinSyncEngine : SendspinAudioEngine {
             } else {
                 dacValidator.divergenceSameSignCount = if (sign != 0) 1 else 0
                 dacValidator.divergenceLastSign = sign
+            }
+
+            // Closed-loop one-shot anchor re-seat. The open-loop anchor is blind
+            // to the cold-start/pipeline offset (reads ~0 while the DAC ground
+            // truth is e.g. -62ms, varying per session). Once the DAC signal is
+            // mature and its sign is stable, shift the anchor by the smoothed DAC
+            // absolute error so the existing correction loop drives the REAL
+            // output to 0. anchorLocalUs -= dacAbs*1000 injects dacAbs into
+            // computeSyncErrorMs (d(error)/d(anchorLocalUs) = -1), so the loop
+            // then corrects the previously-invisible offset. Negative dacAbs
+            // (playing early) -> loop slows -> delays -> dacAbs converges to 0.
+            // Phone/wired only for now (routeAcousticExtraUs==0): there the DAC
+            // is the full output truth. BT (acoustic beyond the handoff) is a
+            // separate follow-up.
+            if (!dacAnchorReseated
+                && anchorLocalUs != 0L
+                && routeAcousticExtraUs == 0L
+                && clockPreciseForCorrections
+                && syncState == SyncState.SYNCHRONIZED
+                && dacValidator.divergenceSameSignCount >= DAC_RESEAT_SIGN_COUNT
+                && kotlin.math.abs(smoothedDacAbsMs) > DAC_RESEAT_THRESHOLD_MS
+            ) {
+                anchorLocalUs -= (smoothedDacAbsMs * 1000.0).toLong()
+                smoothedSyncErrorMs = 0.0
+                dacAnchorReseated = true
+                Log.d(TAG, "DAC anchor re-seat (closed-loop): injected ${"%.1f".format(smoothedDacAbsMs)}ms " +
+                    "real offset into the anchor; correction loop will converge true output to 0")
             }
         }
 
