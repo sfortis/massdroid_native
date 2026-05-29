@@ -86,6 +86,10 @@ internal fun SendspinStatusSheet(
     val syncLockLabel = when {
         status.syncState != SyncState.SYNCHRONIZED -> stateLabel
         status.syncMuted -> "Aligning (muted)"
+        // Until the closed-loop DAC ground truth matures, the sync error is the
+        // blind-anchor fallback (~0). Don't claim "Locked" before we actually
+        // know the real offset — show "Measuring".
+        !status.syncTruthAvailable -> "Measuring"
         syncAbsMs < 5f -> "Locked (${formatMs(status.absoluteSyncMs)})"
         syncAbsMs < 20f -> "Correcting (${formatMs(status.absoluteSyncMs)})"
         else -> "Converging (${formatMs(status.absoluteSyncMs)})"

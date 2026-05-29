@@ -77,6 +77,10 @@ data class SendspinStatusUi(
     val dacSyncErrorMs: Float = 0f,
     val absoluteSyncMs: Float = 0f,
     val syncMuted: Boolean = false,
+    // False until the closed-loop DAC ground truth matures; while false the
+    // displayed sync error is the blind-anchor fallback, so the UI shows
+    // "Measuring" instead of a misleading "Locked".
+    val syncTruthAvailable: Boolean = false,
     val audioRoute: String = "",
     // True when the active AudioTrack output is routed to a Bluetooth sink.
     // Drives the streaming-status sheet's latency label: BT routes show
@@ -421,6 +425,7 @@ class NowPlayingViewModel @Inject constructor(
                     dacSyncErrorMs = sendspinManager.dacSyncErrorMs(),
                     absoluteSyncMs = sendspinManager.absoluteSyncMs(),
                     syncMuted = sendspinManager.isSyncMuted(),
+                    syncTruthAvailable = sendspinManager.hasSyncTruth(),
                     isBtRoute = acoustic.isBtRoute(),
                     clockSamples = sendspinManager.clockSampleCount(),
                     clockErrorUs = sendspinManager.clockErrorUs(),

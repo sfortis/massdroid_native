@@ -531,6 +531,13 @@ class SendspinManager(
         // before the DAC matures.
         return e.dacGroundTruthErrorMs() ?: (e.startupOffsetMs + e.smoothedSyncErrorMs).toFloat()
     }
+    /**
+     * Whether the closed-loop DAC ground truth is available yet. Until it is,
+     * absoluteSyncMs() falls back to the blind anchor (~0), which would mislead
+     * the status into showing "Locked" before we actually know the real offset.
+     * The UI shows "Measuring" while this is false.
+     */
+    fun hasSyncTruth(): Boolean = (engine as? SendspinSyncEngine)?.dacGroundTruthErrorMs() != null
     fun isSyncMuted(): Boolean = (engine as? SendspinSyncEngine)?.syncMuted ?: false
     fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
     fun clockErrorUs(): Long = clockSynchronizer.errorUs()
