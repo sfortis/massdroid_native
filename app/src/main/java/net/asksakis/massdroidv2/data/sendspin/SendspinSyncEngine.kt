@@ -377,8 +377,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         anchorLocalEquivalentUs = 0L
         smoothedSyncErrorMs = 0.0
         startupOffsetMs = 0.0
-        pendingSampleCorrection = 0
-        pendingSampleCount = 1
         lateDropCount = 0L
         enqueueLateDropGraceUntilUs = 0L
         resyncCount = 0
@@ -604,8 +602,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 anchorLocalUs = 0L
                 anchorLocalEquivalentUs = 0L
                 smoothedSyncErrorMs = 0.0
-                pendingSampleCorrection = 0
-                pendingSampleCount = 1
                 latencyModel.resetForBoundary()
                 holdoverEndTimestampUs = 0L
                 pendingAudioTrackFlush = false
@@ -629,8 +625,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 anchorLocalEquivalentUs = 0L
                 smoothedSyncErrorMs = 0.0
                 startupOffsetMs = 0.0
-                pendingSampleCorrection = 0
-                pendingSampleCount = 1
                 resyncCount = 0
                 lastResyncAtMs = 0L
                 // Reset DAC timeline: stream/clear invalidated the previous write history.
@@ -689,7 +683,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
             anchorLocalEquivalentUs = 0L
             smoothedSyncErrorMs = 0.0
             startupOffsetMs = 0.0
-            pendingSampleCorrection = 0
             applyPlaybackRate(1.0f)
 
             if (isNewStream) {
@@ -1067,8 +1060,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // convention surfaced to the user.
         anchorLocalUs += deltaMs.toLong() * 1000L
         smoothedSyncErrorMs = 0.0
-        pendingSampleCorrection = 0
-        pendingSampleCount = 1
         Log.d(TAG, "Anchor shifted by ${deltaMs}ms for sync delay change")
     }
 
@@ -1076,8 +1067,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         smoothedSyncErrorMs = 0.0
         startupOffsetMs = 0.0
         resyncCount = 0
-        pendingSampleCorrection = 0
-        pendingSampleCount = 1
         playbackStartedAtMs = 0L
         clockWaitStartMs = 0L
         anchorServerTimestampUs = 0L
@@ -1366,7 +1355,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
             resyncCount++
             lastResyncAtMs = now
             applyPlaybackRate(1.0f)
-            pendingSampleCorrection = 0
             Log.d(TAG, "Sync RESYNC: abs=${"%.1f".format(absoluteSyncMs)}ms (#$resyncCount)")
             flushForRebuffer()
             return
@@ -1384,14 +1372,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
             val rateAdjust = (absTotal * SYNC_RATE_GAIN).toFloat().coerceAtMost(SYNC_RATE_MAX)
             val targetRate = if (absoluteSyncMs > 0) 1.0f + rateAdjust else 1.0f - rateAdjust
             applyPlaybackRate(targetRate)
-            pendingSampleCorrection = 0
-            pendingSampleCount = 1
         }
         // Tier 1: Deadband
         else {
             applyPlaybackRate(1.0f)
-            pendingSampleCorrection = 0
-            pendingSampleCount = 1
         }
 
     }
@@ -1430,10 +1414,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
 
-    // ── Timing correction (software resampling + crude sample fallback) ──
-
-    @Volatile private var pendingSampleCorrection = 0  // +1 = remove samples, -1 = insert samples, 0 = none
-    @Volatile private var pendingSampleCount = 1       // how many samples to correct per frame (crude fallback)
+    // ── Timing correction (hardware playback rate or software resampling) ──
 
     // Software resampling state. softwareResampleRate != 1.0 when the hardware
     // playback rate is unavailable (low-latency fast track) and we apply the
@@ -1555,8 +1536,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 if (shiftUs != null) {
                     anchorLocalUs -= shiftUs
                     smoothedSyncErrorMs = 0.0
-                    pendingSampleCorrection = 0
-                    pendingSampleCount = 1
                 }
             }
         }
@@ -2241,8 +2220,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
             anchorLocalEquivalentUs = 0L
             smoothedSyncErrorMs = 0.0
             startupOffsetMs = 0.0
-            pendingSampleCorrection = 0
-            pendingSampleCount = 1
             resyncCount = 0
             lastResyncAtMs = 0L
             dacValidator.clearCalibrations()  // old route's DAC-to-system-time mapping is invalid
@@ -2276,8 +2253,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         anchorLocalEquivalentUs = 0L
         smoothedSyncErrorMs = 0.0
         startupOffsetMs = 0.0
-        pendingSampleCorrection = 0
-        pendingSampleCount = 1
         resyncCount = 0
         lastResyncAtMs = 0L
         dacValidator.clearCalibrations()
