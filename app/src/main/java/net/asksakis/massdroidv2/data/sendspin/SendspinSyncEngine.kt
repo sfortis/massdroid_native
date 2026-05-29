@@ -1146,6 +1146,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
             Log.d(TAG, "Sync: error=${"%.1f".format(smoothedSyncErrorMs)}ms " +
                 "outLat=${measuredOutputLatencyUs / 1000}ms " +
                 "raw=${"%.1f".format(rawErrorMs)}ms anchor=${"%.1f".format(anchorErrorMs)}ms " +
+                // dacAbs = closed-loop DAC ground-truth absolute error (Phase 1
+                // validation: compare against anchor to decide whether the DAC
+                // signal is trustworthy enough to become the correction signal).
+                "dacAbs=${dacAbsMs?.let { "%.1f".format(it) } ?: "n/a"}ms " +
                 "dacDrift=${dacDriftUs?.let { it / 1000 } ?: "n/a"} " +
                 "dacDiv=${"%.1f".format(dacValidator.divergenceEma)}ms(${dacValidator.divergenceSameSignCount}) " +
                 "resyncs=$resyncCount filterErr=${sync.errorUs()}us")
