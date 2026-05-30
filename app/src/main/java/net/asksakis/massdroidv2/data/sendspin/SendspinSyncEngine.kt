@@ -91,6 +91,15 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // (±20ms+) that would otherwise trigger a spurious correction; sustained
         // drift still converges because consecutive steps each pass within it.
         private const val DAC_OUTLIER_CLAMP_MS = 6.0
+        // Before the DAC has locked once on a fresh stream, the error is legitimately
+        // ramping (cold-start convergence). The steady-state outlier clamp would blind
+        // the loop to that ramp (smoothed lags ~1ms/step while the real error runs to
+        // tens of ms), so the loop under-corrects, the error grows unchecked, then
+        // overshoots -> a slow ~10s audible oscillation. During convergence we instead
+        // track the real error with a fast unclamped EMA so the proportional loop sees
+        // it and converges monotonically; the spike clamp re-engages once locked.
+        private const val DAC_CONVERGE_EMA_ALPHA = 0.5
+        private const val DAC_LOCK_THRESHOLD_MS = 3.0
 
         // Direct mode thresholds
         private const val DIRECT_STARTUP_MS_OPUS = 300L
@@ -269,6 +278,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     // until the DAC signal matures. (For BT this reflects up to the BT handoff.)
     @Volatile private var smoothedDacAbsMs = 0.0
     @Volatile private var hasDacAbs = false
+    // False until the DAC error first converges near zero on this stream; gates the
+    // outlier clamp (off during the cold-start ramp, on for steady-state spike rejection).
+    @Volatile private var dacEverLocked = false
     // Smoothed magnitude of the per-sample DAC drift. After a seek the DAC
     // frame baseline aliases by ~one frame and the absolute error oscillates
     // ±20ms every sample (a measurement artifact, not real). When this stays
@@ -1088,6 +1100,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
         anchorLocalEquivalentUs = 0L
         smoothedDacAbsMs = 0.0
         hasDacAbs = false
+        dacEverLocked = false
         ffLearnedThisStream = false
         // Start "unstable" so the closed loop must re-prove DAC stability after
         // every boundary (seek/track change) before it trusts the ground truth.
@@ -1267,12 +1280,22 @@ class SendspinSyncEngine : SendspinAudioEngine {
             // genuine cold-start offset is captured in full.
             smoothedDacAbsMs = if (!hasDacAbs) {
                 dacAbsMs
+            } else if (!dacEverLocked) {
+                // Cold-start convergence: track the real error with a fast unclamped EMA
+                // so the proportional loop sees the genuine ramp and corrects it
+                // monotonically (no clamp-induced blindness -> overshoot -> oscillation).
+                smoothedDacAbsMs + DAC_CONVERGE_EMA_ALPHA * (dacAbsMs - smoothedDacAbsMs)
             } else {
+                // Steady state: clamp isolated getTimestamp spikes; sustained drift still
+                // converges because consecutive in-clamp steps each pass through.
                 val delta = (dacAbsMs - smoothedDacAbsMs)
                     .coerceIn(-DAC_OUTLIER_CLAMP_MS, DAC_OUTLIER_CLAMP_MS)
                 smoothedDacAbsMs + DAC_ABS_EMA_ALPHA * delta
             }
             hasDacAbs = true
+            if (!dacEverLocked && kotlin.math.abs(smoothedDacAbsMs) < DAC_LOCK_THRESHOLD_MS) {
+                dacEverLocked = true
+            }
             val sign = if (dacValidator.divergenceEma > 1.0) 1 else if (dacValidator.divergenceEma < -1.0) -1 else 0
             if (sign != 0 && sign == dacValidator.divergenceLastSign) {
                 dacValidator.divergenceSameSignCount++
