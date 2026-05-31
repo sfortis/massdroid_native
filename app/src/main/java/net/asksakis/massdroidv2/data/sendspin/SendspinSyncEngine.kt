@@ -1901,9 +1901,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
             if (generation != playbackGeneration || track !== audioTrack || !playbackActive || !playbackStarted) return false
             val pcm = if (activeBitDepth == 24) convertPcm24To16(encodedData) else encodedData
             val finalPcm = if (isSyncMode) applyTimingCorrection(pcm) else pcm
-            track.write(finalPcm, 0, finalPcm.size)
+            val written = track.write(finalPcm, 0, finalPcm.size)
             applyFadeInStep(track)
-            val framesWritten = finalPcm.size / (activeChannels * 2)
+            // write() returns the bytes ACTUALLY written; a blocking write interrupted by a
+            // concurrent pause()/flush() (flushForRebuffer) returns short or a negative error.
+            // Count only what was really written so the following resetTimeline does not start
+            // the new relock with phantom frames that skew the DAC expected position.
+            val framesWritten = written.coerceAtLeast(0) / (activeChannels * 2)
             // Track written-end timestamp (not frame-start) so DAC expected position
             // aligns with what was actually written. Without this, measureDriftUs()
             // sees a systematic ~20ms offset (one frame duration).
@@ -1912,8 +1916,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
             // written to AudioTrack, not the source stream. DAC drift validates the corrected
             // output, so embedding the correction in the expected timeline avoids the DAC signal
             // "chasing" the same correction the anchor loop is applying.
-            val writeDurationUs = framesWritten.toLong() * 1_000_000L / activeSampleRate.toLong()
-            dacValidator.onFrameWritten(frame.serverTimestampUs + writeDurationUs, framesWritten.toLong())
+            if (framesWritten > 0) {
+                val writeDurationUs = framesWritten.toLong() * 1_000_000L / activeSampleRate.toLong()
+                dacValidator.onFrameWritten(frame.serverTimestampUs + writeDurationUs, framesWritten.toLong())
+            }
             handleLatencyMeasurement(track)
             if (isSyncMode) {
                 dacValidator.collectCalibration(track)
@@ -1985,14 +1991,20 @@ class SendspinSyncEngine : SendspinAudioEngine {
                     else -> {
                         if (generation != playbackGeneration || track !== audioTrack || mc !== codec || !playbackActive || !playbackStarted) break
                         val finalPcm = if (isSyncMode) applyTimingCorrection(pcmToWrite) else pcmToWrite
-                        track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
+                        val written = track.write(finalPcm, 0, finalPcm.size) // blocks when AudioTrack full = pacing
                         applyFadeInStep(track)
-                        val fwCodec = finalPcm.size / (activeChannels * 2)
+                        // Count only the bytes actually written: a blocking write interrupted by a
+                        // concurrent pause()/flush() returns short/negative, and counting the full
+                        // buffer would inject phantom frames that skew the DAC expected position
+                        // after the following resetTimeline.
+                        val fwCodec = written.coerceAtLeast(0) / (activeChannels * 2)
                         framesWrittenThisCall += fwCodec
-                        // Written-end timestamp: see PCM path comment about sample correction embedding
-                        val endTsUs = frame.serverTimestampUs +
-                            (framesWrittenThisCall * 1_000_000L / activeSampleRate.toLong())
-                        dacValidator.onFrameWritten(endTsUs, fwCodec.toLong())
+                        if (fwCodec > 0) {
+                            // Written-end timestamp: see PCM path comment about sample correction embedding
+                            val endTsUs = frame.serverTimestampUs +
+                                (framesWrittenThisCall * 1_000_000L / activeSampleRate.toLong())
+                            dacValidator.onFrameWritten(endTsUs, fwCodec.toLong())
+                        }
                         handleLatencyMeasurement(track)
                         if (isSyncMode) {
                             dacValidator.collectCalibration(track)
