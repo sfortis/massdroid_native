@@ -337,6 +337,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
     /** Advance one fade-in step after a track.write(). No-op when fade is not active. */
     private fun applyFadeInStep(track: AudioTrack) {
         if (fadeInRemaining <= 0) return
+        // A hard mute (sync relock / group join / user mute) takes precedence over an
+        // in-flight fade left over from a previous stream: abort the fade rather than
+        // leak audio at non-zero volume before sync has converged.
+        if (isMuted || syncMuted) {
+            fadeInRemaining = 0
+            return
+        }
         fadeInStep++
         track.setVolume(currentVolume * fadeInStep.toFloat() / FADE_IN_STEPS)
         fadeInRemaining--

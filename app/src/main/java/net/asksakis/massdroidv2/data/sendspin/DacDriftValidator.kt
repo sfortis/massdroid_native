@@ -51,6 +51,11 @@ class DacDriftValidator(private val tag: String = "AudioStream") {
         private set
     // Raw samples collected to derive the epoch baseline (median, so a transient clock-storm
     // outlier such as a multi-second raw error can't poison the calibration).
+    // Guarded by [epochLock]: added/medianed on the playback thread (measureDriftUs) and
+    // cleared on the WS/main thread (resetForNewTrack); the release join is bounded (1s), so
+    // the two can briefly overlap and an unsynchronized ArrayList would risk a torn read /
+    // IndexOutOfBounds during sorted()[size/2].
+    private val epochLock = Any()
     private val epochSamples = ArrayList<Long>(EPOCH_CALIBRATION_SAMPLES)
 
     private companion object {
@@ -157,11 +162,15 @@ class DacDriftValidator(private val tag: String = "AudioStream") {
         if (epochBaselineUs == Long.MIN_VALUE &&
             kotlin.math.abs(rawErrorUs) < EPOCH_CALIBRATION_SANITY_US
         ) {
-            epochSamples.add(rawErrorUs)
-            if (epochSamples.size >= EPOCH_CALIBRATION_SAMPLES) {
-                epochBaselineUs = epochSamples.sorted()[epochSamples.size / 2]
-                Log.d(tag, "DacSync: epoch baseline=${epochBaselineUs / 1000}ms " +
-                    "(device bias removed, median of n=${epochSamples.size})")
+            synchronized(epochLock) {
+                if (epochBaselineUs == Long.MIN_VALUE) {
+                    epochSamples.add(rawErrorUs)
+                    if (epochSamples.size >= EPOCH_CALIBRATION_SAMPLES) {
+                        epochBaselineUs = epochSamples.sorted()[epochSamples.size / 2]
+                        Log.d(tag, "DacSync: epoch baseline=${epochBaselineUs / 1000}ms " +
+                            "(device bias removed, median of n=${epochSamples.size})")
+                    }
+                }
             }
         }
 
@@ -233,8 +242,10 @@ class DacDriftValidator(private val tag: String = "AudioStream") {
         prevRawErrorUs = Long.MIN_VALUE
         // New AudioTrack instance = new framePosition epoch, so the device-bias calibration
         // must be re-derived. (resetTimeline/seek keeps it: same track, same epoch.)
-        epochBaselineUs = Long.MIN_VALUE
-        epochSamples.clear()
+        synchronized(epochLock) {
+            epochBaselineUs = Long.MIN_VALUE
+            epochSamples.clear()
+        }
         clearCalibrations()
     }
 

@@ -979,7 +979,9 @@ class LibraryViewModel @Inject constructor(
                     MediaType.RADIO -> _radios.update { list ->
                         list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
                     }
-                    MediaType.AUDIOBOOK -> {}
+                    MediaType.AUDIOBOOK -> _audiobooks.update { list ->
+                        list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
@@ -997,7 +999,7 @@ class LibraryViewModel @Inject constructor(
                     MediaType.TRACK -> _tracks.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.PLAYLIST -> _playlists.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.RADIO -> _radios.update { list -> list.filter { it.itemId != itemId } }
-                    MediaType.AUDIOBOOK -> {}
+                    MediaType.AUDIOBOOK -> _audiobooks.update { list -> list.filter { it.itemId != itemId } }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "removeFromLibrary failed: ${e.message}")

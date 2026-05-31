@@ -637,14 +637,18 @@ class NowPlayingViewModel @Inject constructor(
     fun previousChapter() {
         val chs = chapters.value
         if (chs.isEmpty()) return
-        val base = chapterNavBaseIndex(chs)
+        val hasPending = pendingChapterTarget in chs.indices
+        val base = if (hasPending) pendingChapterTarget else currentChapterIndex.value
         if (base < 0) return
-        val current = chs[base]
-        val elapsed = elapsedTime.value
-        val target = if (elapsed - current.start > PREVIOUS_CHAPTER_RESTART_THRESHOLD_S || base == 0) {
-            base
-        } else {
-            base - 1
+        // "Restart current chapter if >3s in" only makes sense against the LIVE position.
+        // During an in-flight prev/next seek (hasPending) elapsedTime is still the pre-seek
+        // position, so the restart delta would be bogus — just step to the previous chapter.
+        val restartCurrent = base > 0 && !hasPending &&
+            elapsedTime.value - chs[base].start > PREVIOUS_CHAPTER_RESTART_THRESHOLD_S
+        val target = when {
+            base == 0 -> 0
+            restartCurrent -> base
+            else -> base - 1
         }
         pendingChapterTarget = target
         seek(chs[target].start)
