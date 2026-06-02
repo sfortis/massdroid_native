@@ -39,12 +39,19 @@ class SendspinSyncEngine : SendspinAudioEngine {
         private const val TAG = "AudioStream"
         private const val HEADER_SIZE = 9
         private const val TYPE_PLAYER_AUDIO = 4
-        private const val MAX_ENCODED_BUFFER_BYTES = 1_500_000L
+        // Hard memory ceiling for the encoded frame queue. MUST stay well above
+        // the server's buffer_capacity (~1.5 MB) or the queue sits exactly at
+        // the cap during steady playback and the overflow guard keeps dropping
+        // frames -> audible gaps. 6 MB gives ample headroom so it never fires
+        // in normal operation; it is only a runaway backstop.
+        private const val MAX_ENCODED_BUFFER_BYTES = 6_000_000L
         private const val OPUS_MAX_INPUT_SIZE = 64 * 1024
         private const val FLAC_MAX_INPUT_SIZE = 256 * 1024
 
         private const val SYNC_START_BUFFER_MS = 250L
-        private const val DIRECT_START_BUFFER_MS = 250L
+        // Solo start cushion: enough to ride out a small network/decode hiccup
+        // right after a seek/track start without making the seek feel laggy.
+        private const val DIRECT_START_BUFFER_MS = 350L
         private const val SYNC_CLOCK_WAIT_MS = 3_000L
         private const val SYNC_CLOCK_ERROR_US = 15_000L
         private const val LATE_DROP_MS = 120L
@@ -56,6 +63,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
         // absorbing one-way network latency. Without it the first frames of a
         // fresh stream arrive already past their deadline and get drop-stormed.
         private const val SCHEDULE_HEADROOM_US = 200_000L
+        // DIRECT-mode start lead: the first post-flush frame is anchored to
+        // now + outputLatency + this, so solo playback begins ~this soon
+        // instead of at the server's far-future absolute timestamp.
+        private const val DIRECT_START_HEADROOM_US = 60_000L
         private const val SLEEP_SPIN_US = 500L
         private const val STARTUP_MUTE_MS = 350L
         private const val LATENCY_EMA_ALPHA = 0.05
@@ -102,6 +113,13 @@ class SendspinSyncEngine : SendspinAudioEngine {
     @Volatile private var configured = false
     @Volatile private var playbackActive = false
     @Volatile private var playbackStarted = false
+    // Set on a local track-change discontinuity (next/previous): the server
+    // keeps sending the OLD track's frames until it processes the skip, and
+    // those in-flight frames would otherwise be accepted (they get the bumped
+    // generation) and briefly play the previous track. Drop all frames until
+    // the server's fresh stream/start (configure) arrives. NOT set for seek,
+    // which stays on the same stream (stream/clear, frames continue).
+    @Volatile private var awaitingFreshStream = false
     @Volatile private var paused = false
     @Volatile private var configureGeneration = 0L
     @Volatile private var playbackGeneration = 0L
@@ -137,6 +155,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
     override var syncState: SyncState = SyncState.IDLE
         private set
 
+    // DIRECT-mode local timeline anchor (0 = unset, re-armed on every flush).
+    @Volatile private var directAnchorServerUs = 0L
+    @Volatile private var directAnchorLocalUs = 0L
     @Volatile private var measuredLatencyUs = 0L
     // Last converged latency for the current route. Survives a same-route codec
     // rebuild (which zeroes measuredLatencyUs) so a fresh SYNC start schedules
@@ -163,8 +184,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
         correctionMode = mode
         startupWaitStartedMs = 0L
         resetSyncMetrics()
+        directAnchorServerUs = 0L
+        directAnchorLocalUs = 0L
         if (mode == CorrectionMode.SYNC && playbackStarted) {
             Log.d(TAG, "CorrectionMode hard relock for SYNC boundary")
+            // Bump the stream epoch like every other hard boundary so any
+            // in-flight DIRECT-timeline frame/decoder output is rejected and
+            // does not leak into the SYNC timeline (now scheduled with headroom).
+            configureGeneration++
             flushQueuesAndDecoder()
             playbackStarted = false
             syncMuted = true
@@ -195,6 +222,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
             bitDepth == activeBitDepth
 
         configureGeneration++
+        awaitingFreshStream = false
         startupWaitStartedMs = 0L
         lastFrameReceivedMs = System.currentTimeMillis()
         resetSyncMetrics()
@@ -218,7 +246,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val channelConfig = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
             .coerceAtLeast(sampleRate * channels * 2 / 20)
-        val trackBufferBytes = minBuf * 2
+        // Deeper software buffer (still LOW_LATENCY, unlike the banned NONE
+        // path) so a 96 ms FLAC frame plus playback-thread jitter cannot drain
+        // the DAC between deadline writes -> fewer underrun micro-mutes. The
+        // fast-mixer getTimestamp stays precise, so the added (stable) latency
+        // is measured and compensated without the NONE wobble/desync.
+        val trackBufferBytes = minBuf * 4
         outputLatencyFallbackUs = minBuf.toLong() * 1_000_000L / (sampleRate.toLong() * channels * 2L)
 
         val track = AudioTrack.Builder()
@@ -237,6 +270,10 @@ class SendspinSyncEngine : SendspinAudioEngine {
             )
             .setBufferSizeInBytes(trackBufferBytes)
             .setTransferMode(AudioTrack.MODE_STREAM)
+            // PERFORMANCE_MODE_NONE is BANNED here (see CLAUDE.md): the normal
+            // mixer pushes getTimestamp output latency to ~150 ms and makes it
+            // wobble, which the open-loop scheduler turns into audible desync —
+            // and it did not even cure the underruns. Stay LOW_LATENCY.
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .build()
 
@@ -270,10 +307,16 @@ class SendspinSyncEngine : SendspinAudioEngine {
     override fun currentConfigureGeneration(): Long = configureGeneration
 
     override fun onBinaryMessage(data: ByteArray, generation: Long) {
-        if (!configured || paused || generation != configureGeneration) return
+        if (!configured || paused || generation != configureGeneration || awaitingFreshStream) return
         if (data.size <= HEADER_SIZE || data[0].toInt() != TYPE_PLAYER_AUDIO) return
+        // Overflow backstop: if we are genuinely over the memory ceiling, drop
+        // THIS incoming (newest) frame. Never poll() the head — that is the
+        // frame about to be played, and dropping it punches an audible hole in
+        // the current output. With MAX_ENCODED_BUFFER_BYTES well above the
+        // server buffer_capacity this never triggers in normal playback.
         if (frameQueueBytes.get() > MAX_ENCODED_BUFFER_BYTES) {
-            frameQueue.poll()?.let { frameQueueBytes.addAndGet(-it.payload.size.toLong()) }
+            Log.w(TAG, "Encoded buffer ceiling hit (${frameQueueBytes.get()}B) — dropping incoming frame")
+            return
         }
 
         val serverTimestampUs = parseTimestampUs(data)
@@ -337,12 +380,17 @@ class SendspinSyncEngine : SendspinAudioEngine {
         syncMuted = false
         syncMuteStartedMs = 0L
         startupWaitStartedMs = 0L
+        resetSyncMetrics()
         transitionSyncState(SyncState.IDLE)
     }
 
     override fun clearBuffer() {
         Log.d(TAG, "stream/clear hard boundary buf=${bufferDurationMs()}ms")
         configureGeneration++
+        // A server-initiated stream/clear continues the same stream, so accept
+        // frames again. expectDiscontinuity re-arms the gate after this for a
+        // track change (next/previous), where a new stream/start is expected.
+        awaitingFreshStream = false
         flushQueuesAndDecoder()
         playbackStarted = false
         startupWaitStartedMs = 0L
@@ -355,6 +403,14 @@ class SendspinSyncEngine : SendspinAudioEngine {
     override fun expectDiscontinuity(reason: String) {
         Log.d(TAG, "Discontinuity: $reason")
         clearBuffer()
+        // Every local discontinuity (next/previous AND seek) makes MA open a
+        // fresh stream (stream/end + stream/start). Until that stream/start
+        // (configure) lands, the server is still flushing the OLD position's
+        // in-flight frames; gate them out so we don't briefly play pre-seek /
+        // previous-track audio (and the stutter from mixing it with the new
+        // stream). configure() clears the gate.
+        awaitingFreshStream = true
+        Log.d(TAG, "Awaiting fresh stream after '$reason' — dropping in-flight frames")
     }
 
     override fun onTransportFailure() {
@@ -366,7 +422,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
         Log.d(TAG, "Output route changed: $reason acoustic=${routeAcousticExtraUs / 1000}ms")
         measuredLatencyUs = 0L
         lastStableLatencyUs = 0L
-        outputLatencyFallbackUs = outputLatencyFallbackUs.coerceAtLeast(0L)
         startupWaitStartedMs = 0L
         resetSyncMetrics()
         if (playbackStarted) {
@@ -449,8 +504,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
             if (frame.generation != configureGeneration) continue
 
             if (activeCodec == "pcm") {
-                val pcm = if (activeBitDepth == 24) convertPcm24To16(frame.payload) else frame.payload
-                writeScheduled(PcmChunk(frame.serverTimestampUs, pcm, frame.generation), track, generation)
+                // writeScheduled owns the 24->16 conversion; do not convert here
+                // too or 24-bit PCM gets mangled by a double pass.
+                writeScheduled(PcmChunk(frame.serverTimestampUs, frame.payload, frame.generation), track, generation)
             } else {
                 queueCodecInput(frame)
                 drainDecoder(track, generation)
@@ -565,28 +621,32 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 val outputIndex = mc.dequeueOutputBuffer(info, 0)
                 when {
                     outputIndex >= 0 -> {
-                        val bytes = if (info.size > 0) {
+                        if (info.size > 0) {
                             val out = ByteArray(info.size)
                             mc.getOutputBuffer(outputIndex)?.get(out)
-                            out
-                        } else {
-                            ByteArray(0)
-                        }
-                        mc.releaseOutputBuffer(outputIndex, false)
-                        val mark = decoderMarks.pollFirst()
-                        if (mark != null && bytes.isNotEmpty()) {
-                            decodedChunkCount++
-                            if (decodedChunkCount <= 8 || decodedChunkCount % 500 == 0L) {
-                                val frames = bytes.size / (activeChannels * 2).coerceAtLeast(1)
-                                Log.d(
-                                    TAG,
-                                    "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
-                                        "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${bytes.size} frames=$frames " +
-                                        "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size}"
-                                )
+                            mc.releaseOutputBuffer(outputIndex, false)
+                            // Only consume a timestamp mark for a real output
+                            // buffer. A zero-size buffer (e.g. Opus pre-skip
+                            // priming) must NOT eat a mark or the FIFO desyncs
+                            // and every later chunk is mislabelled by one frame.
+                            val mark = decoderMarks.pollFirst()
+                            if (mark != null) {
+                                decodedChunkCount++
+                                if (decodedChunkCount <= 8 || decodedChunkCount % 500 == 0L) {
+                                    val frames = out.size / (activeChannels * 2).coerceAtLeast(1)
+                                    Log.d(
+                                        TAG,
+                                        "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
+                                            "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${out.size} frames=$frames " +
+                                            "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size}"
+                                    )
+                                }
+                                PcmChunk(mark.serverTimestampUs, out, mark.generation)
+                            } else {
+                                null
                             }
-                            PcmChunk(mark.serverTimestampUs, bytes, mark.generation)
                         } else {
+                            mc.releaseOutputBuffer(outputIndex, false)
                             null
                         }
                     }
@@ -609,26 +669,38 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (chunk.pcm.isEmpty() || generation != playbackGeneration || paused) return
         val plan = timingPlan(chunk.serverTimestampUs)
         val targetWriteUs = plan.targetWriteUs
-        var now = nowUs()
-        val lateMs = (now - targetWriteUs) / 1000L
-        if (correctionMode == CorrectionMode.SYNC && lateMs > LATE_DROP_MS) {
-            updateSyncError(lateMs.toDouble())
-            Log.d(
-                TAG,
-                "Timing/drop late=${lateMs}ms serverTs=${chunk.serverTimestampUs / 1000}ms " +
-                    timingSummary(plan, now) + " buf=${bufferDurationMs()}ms ${clockDebug()}"
-            )
-            return
-        }
 
+        // Both modes gate each chunk to its deadline so the AudioTrack FIFO
+        // stays shallow (~output latency) -> seeks flush almost no stale audio
+        // and respond instantly. The deadline differs by mode (see timingPlan):
+        // SYNC uses the absolute group timeline; DIRECT uses a local anchor that
+        // plays the first post-flush frame ~now (no multi-second far-future
+        // sleep). Late-drop is SYNC-only (DIRECT has no peer to fall behind).
+        // The bail checks configureGeneration so a track change/seek interrupts
+        // a stale sleep immediately.
+        var now = nowUs()
+        if (correctionMode == CorrectionMode.SYNC) {
+            val lateMs = (now - targetWriteUs) / 1000L
+            if (lateMs > LATE_DROP_MS) {
+                updateSyncError(lateMs.toDouble())
+                Log.d(
+                    TAG,
+                    "Timing/drop late=${lateMs}ms serverTs=${chunk.serverTimestampUs / 1000}ms " +
+                        timingSummary(plan, now) + " buf=${bufferDurationMs()}ms ${clockDebug()}"
+                )
+                return
+            }
+        }
         while (true) {
             now = nowUs()
             val remainingUs = targetWriteUs - now
             if (remainingUs <= SLEEP_SPIN_US) break
             sleepMs(((remainingUs - SLEEP_SPIN_US) / 1000L).coerceAtLeast(1L))
-            if (generation != playbackGeneration || paused) return
+            if (generation != playbackGeneration || paused || chunk.generation != configureGeneration) return
         }
-        while (nowUs() < targetWriteUs && generation == playbackGeneration && !paused) {
+        while (nowUs() < targetWriteUs && generation == playbackGeneration &&
+            !paused && chunk.generation == configureGeneration
+        ) {
             Thread.yield()
         }
 
@@ -646,7 +718,9 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val frames = written / (activeChannels * 2)
         totalFramesWritten += frames
         measureOutputLatency(track)
-        updateSyncError((beforeWriteUs - targetWriteUs) / 1000.0)
+        if (correctionMode == CorrectionMode.SYNC) {
+            updateSyncError((beforeWriteUs - targetWriteUs) / 1000.0)
+        }
         writtenChunkCount++
         maybeLogWriteTiming(chunk, plan, beforeWriteUs, written, frames)
 
@@ -662,7 +736,6 @@ class SendspinSyncEngine : SendspinAudioEngine {
     }
 
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
-        val localOutputUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs) ?: nowUs()
         val staticDelayUs = routeAcousticExtraUs.coerceAtLeast(0L)
         // Prefer the live measurement, then the last stable value from this
         // route (survives a same-route codec rebuild so a fresh SYNC start is
@@ -671,7 +744,25 @@ class SendspinSyncEngine : SendspinAudioEngine {
         val outputLatencyUs = measuredLatencyUs.takeIf { it > 0L }
             ?: lastStableLatencyUs.takeIf { it > 0L }
             ?: outputLatencyFallbackUs
-        val headroomUs = if (correctionMode == CorrectionMode.SYNC) SCHEDULE_HEADROOM_US else 0L
+        val localOutputUs: Long
+        val headroomUs: Long
+        if (correctionMode == CorrectionMode.SYNC) {
+            // Grouped: schedule against the absolute group timeline + headroom
+            // so every member plays each sample at serverTime + headroom.
+            localOutputUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs) ?: nowUs()
+            headroomUs = SCHEDULE_HEADROOM_US
+        } else {
+            // Solo: no peer to phase-lock to. Anchor the first post-flush frame
+            // to ~now (+ a small start headroom) and keep the relative spacing,
+            // so playback starts immediately instead of sleeping until the
+            // server's far-future absolute timestamp (the next-track/seek hang).
+            if (directAnchorServerUs == 0L) {
+                directAnchorServerUs = serverTimestampUs
+                directAnchorLocalUs = nowUs() + outputLatencyUs + DIRECT_START_HEADROOM_US
+            }
+            localOutputUs = directAnchorLocalUs + (serverTimestampUs - directAnchorServerUs)
+            headroomUs = 0L
+        }
         val targetWriteUs = localOutputUs +
             headroomUs -
             staticDelayUs +
@@ -702,8 +793,12 @@ class SendspinSyncEngine : SendspinAudioEngine {
         if (!track.getTimestamp(latencyTimestamp) || activeSampleRate <= 0) return
         val framesAtPort = latencyTimestamp.framePosition
         if (framesAtPort <= 0) return
-        val head = track.playbackHeadPosition.toLong()
-        val queuedFrames = head - framesAtPort
+        // Queued (unplayed) frames = frames we wrote since flush - frames the DAC
+        // has presented. Both share the post-flush epoch (totalFramesWritten is
+        // zeroed on flush, framePosition resets with AudioTrack.flush). Do NOT
+        // mix framePosition with playbackHeadPosition: their epochs differ per
+        // HAL and inject a device-specific static latency bias (issue #45).
+        val queuedFrames = totalFramesWritten - framesAtPort
         if (queuedFrames < 0) return
         val tsAgeUs = (System.nanoTime() - latencyTimestamp.nanoTime) / 1000L
         if (tsAgeUs !in 0..50_000L) return
@@ -720,7 +815,7 @@ class SendspinSyncEngine : SendspinAudioEngine {
                 TAG,
                 "Timing/latency raw=${latencyUs / 1000}ms ema=${measuredLatencyUs / 1000}ms " +
                     "fallback=${outputLatencyFallbackUs / 1000}ms tsAge=${tsAgeUs / 1000}ms " +
-                    "queuedFrames=$queuedFrames head=$head port=$framesAtPort"
+                    "queuedFrames=$queuedFrames written=$totalFramesWritten port=$framesAtPort"
             )
         }
     }
@@ -778,11 +873,18 @@ class SendspinSyncEngine : SendspinAudioEngine {
         decoderMarks.clear()
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
+        // Re-arm the DIRECT anchor so the next stream/seek anchors to "now".
+        directAnchorServerUs = 0L
+        directAnchorLocalUs = 0L
         try {
             audioTrack?.pause()
             audioTrack?.flush()
         } catch (_: Exception) {
         }
+        // AudioTrack.flush() resets framePosition/playbackHeadPosition to 0, so
+        // reset our written-frame counter to keep both on the same post-flush
+        // epoch for the queued-frames latency measurement.
+        totalFramesWritten = 0L
         synchronized(codecLock) {
             try { codec?.flush() } catch (_: Exception) {}
         }

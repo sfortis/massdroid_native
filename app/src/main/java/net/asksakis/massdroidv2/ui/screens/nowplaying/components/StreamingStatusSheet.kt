@@ -97,6 +97,10 @@ internal fun SendspinStatusSheet(
         syncAbsMs < 20f -> "Correcting (${formatMs(status.absoluteSyncMs)})"
         else -> "Converging (${formatMs(status.absoluteSyncMs)})"
     }
+    // SYNC (grouped) only: the sync-error value and the convergence graph plot
+    // write-scheduling error against the group timeline. In DIRECT (solo) there
+    // is no peer to converge to, so those readouts are meaningless — hide them.
+    val isSyncMode = !status.correctionMode.equals("DIRECT", ignoreCase = true)
     val routeCorrectionMs = status.acousticCorrectionMs
     val routeExtraMs = (routeCorrectionMs - status.outputLatencyMs).coerceAtLeast(0L)
     // Sync at the audio port for non-BT routes (per the Sendspin spec): the
@@ -153,7 +157,9 @@ internal fun SendspinStatusSheet(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 SmallStatusLine("Sync mode", status.correctionMode, smallStyle, dimColor, valueColor)
                 SmallStatusLine("Sync lock", syncLockLabel, smallStyle, dimColor, valueColor)
-                SmallStatusLine("Sync error", formatMs(status.absoluteSyncMs), smallStyle, dimColor, valueColor)
+                if (isSyncMode) {
+                    SmallStatusLine("Sync error", formatMs(status.absoluteSyncMs), smallStyle, dimColor, valueColor)
+                }
                 DetailStatusLine("Latency", latencyPrimary, latencyDetail, smallStyle, dimColor, valueColor)
                 SmallStatusLine("Clock", clockLabel, smallStyle, dimColor, valueColor)
                 SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
@@ -207,7 +213,7 @@ internal fun SendspinStatusSheet(
                 labelStyle = MaterialTheme.typography.labelMedium
             )
 
-            if (syncHistory.size >= 2) {
+            if (isSyncMode && syncHistory.size >= 2) {
                 SyncErrorGraph(syncHistory)
             }
             Spacer(modifier = Modifier.height(12.dp))

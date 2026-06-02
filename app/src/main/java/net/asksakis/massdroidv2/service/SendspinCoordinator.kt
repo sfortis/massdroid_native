@@ -64,7 +64,6 @@ class SendspinCoordinator(
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var volumeObserver: ContentObserver? = null
     private var btAudioCallback: AudioDeviceCallback? = null
-    private var lastSavedPreferredFormatKey: String? = null
 
     fun start() {
         createController()
@@ -271,19 +270,15 @@ class SendspinCoordinator(
         apiValue: String,
         reason: String,
     ) {
-        val cacheKey = "$playerId:$apiValue"
-        if (lastSavedPreferredFormatKey == cacheKey) {
-            Log.d(TAG, "Sendspin format already applied from cache: $apiValue ($reason)")
-            return
-        }
+        // Authoritative check against the actual server config only. No
+        // in-memory cache: the server can clear an "incompatible" override on
+        // its own, and a stale cache would then never re-apply the format.
         val current = playerRepository.getPlayerConfig(playerId)?.sendspinFormat
         if (current == apiValue) {
-            lastSavedPreferredFormatKey = cacheKey
             Log.d(TAG, "Sendspin format already $apiValue ($reason), skipping save")
             return
         }
         playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
-        lastSavedPreferredFormatKey = cacheKey
         Log.d(TAG, "Applied Sendspin format $apiValue ($reason, was=${current ?: "unknown"})")
     }
 
