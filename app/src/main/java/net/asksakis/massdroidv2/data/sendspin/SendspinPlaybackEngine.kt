@@ -62,9 +62,14 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
         private const val SYNC_SAMPLE_CALLBACK_MS = 1_000L
     }
 
+    // Holds the raw WS frame (header included) with an offset/length view of
+    // the payload, so we don't copy the payload out per frame (GC pressure on
+    // the audio hot path). The client hands a fresh ByteArray per frame.
     protected data class EncodedFrame(
         val serverTimestampUs: Long,
-        val payload: ByteArray,
+        val data: ByteArray,
+        val offset: Int,
+        val length: Int,
         val generation: Long,
     ) : Comparable<EncodedFrame> {
         override fun compareTo(other: EncodedFrame): Int =
@@ -73,12 +78,6 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
 
     private data class DecoderMark(
         val serverTimestampUs: Long,
-        val generation: Long,
-    )
-
-    private data class PcmChunk(
-        val serverTimestampUs: Long,
-        val pcm: ByteArray,
         val generation: Long,
     )
 
@@ -118,6 +117,9 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
     private val codecLock = Any()
     private val playbackThreadLock = Any()
     private val latencyTimestamp = AudioTimestamp()
+    // Reused decoded-PCM scratch buffer (playback thread only) so we don't
+    // allocate a fresh ByteArray per decoded chunk. Grown on demand.
+    private var pcmScratch = ByteArray(16384)
 
     @Volatile private var codec: MediaCodec? = null
     @Volatile private var audioTrack: AudioTrack? = null
@@ -310,15 +312,18 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
         }
 
         val serverTimestampUs = parseTimestampUs(data)
-        val payload = data.copyOfRange(HEADER_SIZE, data.size)
+        val payloadLength = data.size - HEADER_SIZE
         receivedFrameCount++
         val previousTail = lastEnqueuedTimestampUs
         if (previousTail > 0L) {
             val spacing = serverTimestampUs - previousTail
             if (spacing in 5_000L..500_000L) estimatedFrameDurationUs = spacing
         }
-        frameQueue.offer(EncodedFrame(serverTimestampUs, payload, generation))
-        frameQueueBytes.addAndGet(payload.size.toLong())
+        // Reference the WS buffer with an offset instead of copying the payload
+        // out — the client gives us a fresh ByteArray per frame, so a second
+        // copy is pure GC pressure on the audio path.
+        frameQueue.offer(EncodedFrame(serverTimestampUs, data, HEADER_SIZE, payloadLength, generation))
+        frameQueueBytes.addAndGet(payloadLength.toLong())
         lastEnqueuedTimestampUs = serverTimestampUs
         lastFrameReceivedMs = System.currentTimeMillis()
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
@@ -488,13 +493,13 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
             if (drained) continue
 
             val frame = frameQueue.poll(10, TimeUnit.MILLISECONDS) ?: continue
-            frameQueueBytes.addAndGet(-frame.payload.size.toLong())
+            frameQueueBytes.addAndGet(-frame.length.toLong())
             if (frame.generation != configureGeneration) continue
 
             if (activeCodec == "pcm") {
                 // writeScheduled owns the 24->16 conversion; do not convert here
                 // too or 24-bit PCM gets mangled by a double pass.
-                writeScheduled(PcmChunk(frame.serverTimestampUs, frame.payload, frame.generation), track, generation)
+                writeScheduled(frame.serverTimestampUs, frame.data, frame.offset, frame.length, frame.generation, track, generation)
             } else {
                 queueCodecInput(frame)
                 drainDecoder(track, generation)
@@ -530,9 +535,9 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
                 break
             }
             val dropped = frameQueue.poll() ?: break
-            frameQueueBytes.addAndGet(-dropped.payload.size.toLong())
+            frameQueueBytes.addAndGet(-dropped.length.toLong())
             droppedFrames++
-            droppedBytes += dropped.payload.size.toLong()
+            droppedBytes += dropped.length.toLong()
         }
         if (droppedFrames > 0) {
             val now = nowUs()
@@ -578,18 +583,18 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
             if (inputIndex < 0) return
             val input = mc.getInputBuffer(inputIndex) ?: return
             input.clear()
-            if (frame.payload.size > input.remaining()) {
-                Log.w(TAG, "Oversized $activeCodec frame dropped: ${frame.payload.size}B")
+            if (frame.length > input.remaining()) {
+                Log.w(TAG, "Oversized $activeCodec frame dropped: ${frame.length}B")
                 return
             }
-            input.put(frame.payload)
+            input.put(frame.data, frame.offset, frame.length)
             decoderMarks.addLast(DecoderMark(frame.serverTimestampUs, frame.generation))
-            mc.queueInputBuffer(inputIndex, 0, frame.payload.size, frame.serverTimestampUs, 0)
+            mc.queueInputBuffer(inputIndex, 0, frame.length, frame.serverTimestampUs, 0)
             if (receivedFrameCount <= 8 || receivedFrameCount % 500 == 0L) {
                 Log.d(
                     TAG,
                     "Timing/codec-in codec=$activeCodec serverTs=${frame.serverTimestampUs / 1000}ms " +
-                        "payload=${frame.payload.size}B marks=${decoderMarks.size} gen=${frame.generation}"
+                        "payload=${frame.length}B marks=${decoderMarks.size} gen=${frame.generation}"
                 )
             }
         }
@@ -600,57 +605,70 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
         var wroteAny = false
         val info = MediaCodec.BufferInfo()
         while (true) {
-            val chunk = synchronized(codecLock) {
+            var ready = false
+            var chunkTs = 0L
+            var chunkLen = 0
+            var chunkGen = 0L
+            val more = synchronized(codecLock) {
                 val outputIndex = mc.dequeueOutputBuffer(info, 0)
-                when {
-                    outputIndex >= 0 -> {
-                        if (info.size > 0) {
-                            val out = ByteArray(info.size)
-                            mc.getOutputBuffer(outputIndex)?.get(out)
-                            mc.releaseOutputBuffer(outputIndex, false)
-                            // Only consume a timestamp mark for a real output
-                            // buffer. A zero-size buffer (e.g. Opus pre-skip
-                            // priming) must NOT eat a mark or the FIFO desyncs
-                            // and every later chunk is mislabelled by one frame.
-                            val mark = decoderMarks.pollFirst()
-                            if (mark != null) {
-                                decodedChunkCount++
-                                if (decodedChunkCount <= 8 || decodedChunkCount % 500 == 0L) {
-                                    val frames = out.size / (activeChannels * 2).coerceAtLeast(1)
-                                    Log.d(
-                                        TAG,
-                                        "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
-                                            "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${out.size} frames=$frames " +
-                                            "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size}"
-                                    )
-                                }
-                                PcmChunk(mark.serverTimestampUs, out, mark.generation)
-                            } else {
-                                null
-                            }
-                        } else {
-                            mc.releaseOutputBuffer(outputIndex, false)
-                            null
-                        }
-                    }
-                    outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                if (outputIndex < 0) {
+                    if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val fmt = mc.outputFormat
                         Log.d(TAG, "Decoder output: ${fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)}Hz ${fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}ch")
-                        null
                     }
-                    else -> null
+                    return@synchronized false
                 }
-            } ?: break
-            if (chunk.generation != configureGeneration || generation != playbackGeneration) continue
-            writeScheduled(chunk, track, generation)
-            wroteAny = true
+                if (info.size > 0) {
+                    // Only consume a timestamp mark for a real output buffer. A
+                    // zero-size buffer (e.g. Opus pre-skip priming) must NOT eat
+                    // a mark or the FIFO desyncs and every later chunk is
+                    // mislabelled by one frame.
+                    val mark = decoderMarks.pollFirst()
+                    if (mark != null) {
+                        if (pcmScratch.size < info.size) pcmScratch = ByteArray(info.size)
+                        mc.getOutputBuffer(outputIndex)?.get(pcmScratch, 0, info.size)
+                        chunkTs = mark.serverTimestampUs
+                        chunkLen = info.size
+                        chunkGen = mark.generation
+                        ready = true
+                        decodedChunkCount++
+                        if (decodedChunkCount <= 8 || decodedChunkCount % 500 == 0L) {
+                            val frames = info.size / (activeChannels * 2).coerceAtLeast(1)
+                            Log.d(
+                                TAG,
+                                "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
+                                    "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${info.size} frames=$frames " +
+                                    "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size}"
+                            )
+                        }
+                    }
+                }
+                mc.releaseOutputBuffer(outputIndex, false)
+                true
+            }
+            if (!more) break
+            // Write OUTSIDE the codec lock (writeScheduled sleeps to the deadline).
+            // pcmScratch is safe to reuse next iteration: writeScheduled is
+            // synchronous, so the next decode only runs after it returns.
+            if (ready && chunkGen == configureGeneration && generation == playbackGeneration) {
+                writeScheduled(chunkTs, pcmScratch, 0, chunkLen, chunkGen, track, generation)
+                wroteAny = true
+            }
         }
         return wroteAny
     }
 
-    private fun writeScheduled(chunk: PcmChunk, track: AudioTrack, generation: Long) {
-        if (chunk.pcm.isEmpty() || generation != playbackGeneration || paused) return
-        val plan = timingPlan(chunk.serverTimestampUs)
+    private fun writeScheduled(
+        serverTimestampUs: Long,
+        pcm: ByteArray,
+        offset: Int,
+        length: Int,
+        chunkGeneration: Long,
+        track: AudioTrack,
+        generation: Long,
+    ) {
+        if (length <= 0 || generation != playbackGeneration || paused) return
+        val plan = timingPlan(serverTimestampUs)
         val targetWriteUs = plan.targetWriteUs
 
         // Both modes gate each chunk to its deadline so the AudioTrack FIFO
@@ -667,7 +685,7 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
                 updateSyncError(lateMs.toDouble())
                 Log.d(
                     TAG,
-                    "Timing/drop late=${lateMs}ms serverTs=${chunk.serverTimestampUs / 1000}ms " +
+                    "Timing/drop late=${lateMs}ms serverTs=${serverTimestampUs / 1000}ms " +
                         timingSummary(plan, now) + " buf=${bufferDurationMs()}ms ${clockDebug()}"
                 )
                 return
@@ -678,18 +696,23 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
             val remainingUs = targetWriteUs - now
             if (remainingUs <= SLEEP_SPIN_US) break
             sleepMs(((remainingUs - SLEEP_SPIN_US) / 1000L).coerceAtLeast(1L))
-            if (generation != playbackGeneration || paused || chunk.generation != configureGeneration) return
+            if (generation != playbackGeneration || paused || chunkGeneration != configureGeneration) return
         }
         while (nowUs() < targetWriteUs && generation == playbackGeneration &&
-            !paused && chunk.generation == configureGeneration
+            !paused && chunkGeneration == configureGeneration
         ) {
             Thread.yield()
         }
 
         val beforeWriteUs = nowUs()
-        val finalPcm = if (activeBitDepth == 24 && activeCodec == "pcm") convertPcm24To16(chunk.pcm) else chunk.pcm
         val written = try {
-            track.write(finalPcm, 0, finalPcm.size)
+            if (activeBitDepth == 24 && activeCodec == "pcm") {
+                val slice = if (offset == 0 && length == pcm.size) pcm else pcm.copyOfRange(offset, offset + length)
+                val converted = convertPcm24To16(slice)
+                track.write(converted, 0, converted.size)
+            } else {
+                track.write(pcm, offset, length)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "AudioTrack write failed: ${e.message}")
             transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
@@ -704,7 +727,7 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
             updateSyncError((beforeWriteUs - targetWriteUs) / 1000.0)
         }
         writtenChunkCount++
-        maybeLogWriteTiming(chunk, plan, beforeWriteUs, written, frames)
+        maybeLogWriteTiming(serverTimestampUs, plan, beforeWriteUs, written, frames)
 
         if (syncMuted &&
             syncMuteStartedMs > 0L &&
@@ -798,7 +821,7 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
     }
 
     private fun maybeLogWriteTiming(
-        chunk: PcmChunk,
+        serverTimestampUs: Long,
         plan: TimingPlan,
         beforeWriteUs: Long,
         written: Int,
@@ -810,7 +833,7 @@ abstract class SendspinPlaybackEngine : SendspinAudioEngine {
         lastTimingLogMs = nowMs
         Log.d(
             TAG,
-            "Timing/write chunk#$writtenChunkCount codec=$activeCodec serverTs=${chunk.serverTimestampUs / 1000}ms " +
+            "Timing/write chunk#$writtenChunkCount codec=$activeCodec serverTs=${serverTimestampUs / 1000}ms " +
                 timingSummary(plan, beforeWriteUs) +
                 " err=${"%.2f".format(smoothedSyncErrorMs)}ms written=${written}B frames=$frames " +
                 "frameDur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms " +
