@@ -287,7 +287,17 @@ class SendspinClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (gen != connectionGeneration) return
-                val incoming = SendspinIncoming.parse(text, json)
+                // Stamp the NTP receive time (T4) at the earliest possible point
+                // (before deserialize + coroutine dispatch), matching the JS
+                // reference. Capturing T4 later biases the clock offset low ->
+                // we play late. Only server/time needs it.
+                val rxUs = System.nanoTime() / 1000
+                val parsed = SendspinIncoming.parse(text, json)
+                val incoming = if (parsed is SendspinIncoming.ServerTime) {
+                    parsed.copy(clientReceivedUs = rxUs)
+                } else {
+                    parsed
+                }
                 if (!_messages.tryEmit(SendspinMessage.Text(incoming))) {
                     Log.w(TAG, "Dropping text message: $incoming")
                 }

@@ -109,7 +109,9 @@ class ClockSynchronizer {
             count = 2
             drift = (measurement - offset) / dt
             offset = measurement
-            driftCovariance = (offsetCovariance + measurementVariance) / dt
+            // Match sendspin-js time-filter.ts: variance of a finite-difference
+            // drift estimate divides by dt*dt, not dt. Was a port error.
+            driftCovariance = (offsetCovariance + measurementVariance) / (dt * dt)
             offsetCovariance = measurementVariance
             useDrift = false
             publishState()

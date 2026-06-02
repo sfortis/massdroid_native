@@ -94,12 +94,16 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideSendspinSyncEngine(): SendspinSyncEngine = SendspinSyncEngine()
+    fun provideSendspinSyncEngine(
+        @ApplicationContext ctx: Context
+    ): SendspinSyncEngine = SendspinSyncEngine(ctx)
 
     @Provides
     @Singleton
-    fun provideSendspinDirectEngine(): net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine =
-        net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine()
+    fun provideSendspinDirectEngine(
+        @ApplicationContext ctx: Context
+    ): net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine =
+        net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine(ctx)
 
     @Provides
     @Singleton

@@ -1,0 +1,158 @@
+#pragma once
+
+#include <oboe/Oboe.h>
+#include <atomic>
+#include <cstdint>
+#include <memory>
+
+namespace sendspin {
+
+/**
+ * GC-immune Sendspin audio output.
+ *
+ * Why this exists: the Kotlin playback engine used to write each decoded PCM
+ * chunk to an AudioTrack from a JVM thread, gating every chunk to its absolute
+ * deadline (sleep-to-deadline). That keeps the AudioTrack FIFO shallow, which
+ * IS the group-sync mechanism (every chunk re-anchors to the group timeline) —
+ * but a shallow FIFO has no slack, so an ART GC pause on the JVM playback
+ * thread misses a deadline and the DAC underruns (audible micro-drop).
+ *
+ * This class moves the OUTPUT to an Oboe callback running on a real-time HAL
+ * thread (SCHED_FIFO), which is immune to JVM GC pauses. A deep, lock-free
+ * SPSC ring sits between the Kotlin MediaCodec decode (producer) and this
+ * callback (consumer): if the decode JVM thread GC-stalls, the deep ring
+ * absorbs it. Per-chunk sync is preserved by doing the drift correction
+ * INSIDE the callback (sample-accurate skip/insert against the group
+ * timeline) instead of by keeping the buffer shallow. That is the one design
+ * that gives deep-buffer GC-immunity AND per-chunk re-anchoring at once.
+ *
+ * Time domain: every PCM frame carries an intended CLOCK_MONOTONIC
+ * presentation time (microseconds) for its first sample, supplied by the
+ * producer (derived from the group clock). Oboe getTimestamp() reports DAC
+ * presentation time in the same CLOCK_MONOTONIC domain, so the callback can
+ * compare "when will the frame I am about to emit actually leave the DAC?"
+ * against "when was this sample supposed to play?" and correct the difference.
+ *
+ * Threading: single-producer (Kotlin decode thread calls write()),
+ * single-consumer (Oboe callback). flush()/stop()/release() come from a third
+ * (control) thread and coordinate via atomics; see flushRequested_.
+ */
+class SendspinOutputEngine : public oboe::AudioStreamDataCallback,
+                             public oboe::AudioStreamErrorCallback {
+public:
+    SendspinOutputEngine() = default;
+    ~SendspinOutputEngine();
+
+    // Opens and starts the Oboe output stream (PERFORMANCE_MODE_LOW_LATENCY,
+    // I16, MONO/STEREO) and allocates the ring. The stream runs continuously,
+    // emitting silence until the producer feeds data. Returns false on failure.
+    //
+    // driftCorrection: when true (grouped/SYNC) the callback aligns playback to
+    // the absolute timeline (startup insert + tiny steady skip/insert). When
+    // false (solo/DIRECT) the callback is a pure FIFO — there is no peer to
+    // phase-lock to, so timeline correction only adds artifacts.
+    bool start(int32_t sampleRate, int32_t channels, bool driftCorrection);
+
+    // Stops and closes the stream and frees the ring.
+    void stop();
+
+    // Drops all buffered audio + timeline markers (seek / track change).
+    // Safe to call from the control thread while the callback runs.
+    void flush();
+
+    // Producer push (Kotlin decode thread). pcm = interleaved int16 frames.
+    // presentationLocalUs = intended CLOCK_MONOTONIC us of the FIRST frame.
+    // Returns frames accepted (may be < frames if the ring is near full, which
+    // should not happen in steady state given a multi-second ring).
+    int32_t write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs);
+
+    // Current output latency (DAC presentation lag) in microseconds, from the
+    // cached Oboe timestamp anchor. 0 until the first valid timestamp.
+    int64_t outputLatencyUs() const;
+
+    // Buffered (not-yet-played) frames currently in the ring.
+    int64_t bufferedFrames() const;
+
+    // AAudio device id the stream is currently routed to (0 if not open). The
+    // host matches this against AudioManager.getDevices() to recover the
+    // device type / product name (Oboe has no routing listener).
+    int32_t deviceId() const;
+
+    // Smoothed timeline drift (intended - DAC presentation), microseconds.
+    // Surfaced for the sync-error UI; correction itself is internal.
+    int64_t driftEmaUs() const { return driftEmaUs_.load(); }
+
+    void setVolume(float v) { volume_.store(v); }
+
+    int32_t bytesPerFrame() const { return channels_ * 2; }
+
+    // Oboe callbacks (real-time audio thread).
+    oboe::DataCallbackResult onAudioReady(
+        oboe::AudioStream* stream, void* audioData, int32_t numFrames) override;
+    void onErrorAfterClose(oboe::AudioStream* stream, oboe::Result error) override;
+
+private:
+    struct Marker {
+        int64_t frameIndex;     // absolute producer frame index this marker tags
+        int64_t presentationUs; // intended CLOCK_MONOTONIC us of that frame
+    };
+
+    // Maps a ring frame index to its intended presentation time by linear
+    // interpolation from the most recent preceding marker. Returns false if no
+    // marker covers the index yet.
+    bool intendedPresentationUs(int64_t frameIndex, int64_t* outUs);
+
+    void resetRing();
+    void refreshTimestampAnchor(oboe::AudioStream* stream, int64_t framesWritten);
+    int64_t dacPresentationUsForNextWrite(int64_t framesWritten) const;
+
+    static int64_t monotonicNowUs();
+
+    std::shared_ptr<oboe::AudioStream> stream_;
+    int32_t sampleRate_ = 48000;
+    int32_t channels_ = 2;
+
+    // Lock-free SPSC ring of interleaved int16 samples. Indices are absolute
+    // frame counters (monotonic); the physical slot is index % capacityFrames.
+    std::unique_ptr<int16_t[]> ring_;
+    int32_t capacityFrames_ = 0;
+    std::atomic<int64_t> writeIndex_{0}; // next frame the producer will write
+    std::atomic<int64_t> readIndex_{0};  // floor(readPos_), published for the producer
+    // Fractional consumer position (callback thread only). Advancing it by a
+    // rate != 1.0 with linear interpolation IS the steady-state resampler.
+    double readPos_ = 0.0;
+
+    // Timeline markers (one per write()), small SPSC ring. Indices are
+    // absolute counters (mod MARKER_CAP for the slot); int64 so a multi-hour
+    // session cannot overflow them.
+    static constexpr int MARKER_CAP = 512;
+    Marker markers_[MARKER_CAP];
+    std::atomic<int64_t> markerWrite_{0};
+    std::atomic<int64_t> markerRead_{0};
+
+    // volume_ is the TARGET gain (set from Kotlin). appliedVolume_ is the gain
+    // actually in effect, ramped toward the target a little each callback so
+    // mute/unmute/volume changes fade over ~FADE_SEC instead of clicking
+    // mid-waveform. appliedVolume_ is touched only by the callback thread.
+    std::atomic<float> volume_{1.0f};
+    float appliedVolume_ = 0.0f;
+    std::atomic<bool> flushRequested_{false};
+    std::atomic<bool> driftCorrection_{true};
+
+    // Output-latency anchor captured from Oboe getTimestamp (CLOCK_MONOTONIC),
+    // refreshed periodically inside the callback.
+    std::atomic<int64_t> anchorFramePosition_{-1};
+    std::atomic<int64_t> anchorTimeUs_{0};
+    std::atomic<int64_t> latencyUs_{0};
+    int64_t lastTimestampPollFrame_ = 0;
+
+    // Diagnostics
+    std::atomic<int64_t> driftEmaUs_{0};
+    std::atomic<int64_t> underrunFrames_{0};
+    int64_t callbackCount_ = 0;
+    // When >0, log every callback (decremented). Armed when a flush is acked so
+    // we can see exactly what the callback emits across a skip/seek boundary.
+    int postFlushCallbacks_ = 0;
+};
+
+} // namespace sendspin

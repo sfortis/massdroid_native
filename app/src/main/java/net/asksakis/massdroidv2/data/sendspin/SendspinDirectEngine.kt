@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.data.sendspin
 
+import android.content.Context
+
 /**
  * Solo (single-device) Sendspin engine. There is no peer to phase-lock to, so
  * absolute server-time scheduling buys nothing and only adds latency (and the
@@ -10,7 +12,7 @@ package net.asksakis.massdroidv2.data.sendspin
  * [SendspinSyncEngine]. The shared decode/output machinery is in
  * [SendspinPlaybackEngine].
  */
-class SendspinDirectEngine : SendspinPlaybackEngine() {
+class SendspinDirectEngine(context: Context) : SendspinPlaybackEngine(context) {
     companion object {
         // Solo start cushion: enough to ride out a small network/decode hiccup
         // right after a seek/track start without making the seek feel laggy.

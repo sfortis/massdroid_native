@@ -18,3 +18,15 @@ target_link_libraries(acoustic_calibrator
     android
     log
 )
+
+# GC-immune Sendspin audio output (Oboe callback + lock-free PCM ring).
+add_library(sendspin_output SHARED
+    sendspin_output_jni.cpp
+    sendspin_output_engine.cpp
+)
+
+target_link_libraries(sendspin_output
+    oboe::oboe
+    android
+    log
+)

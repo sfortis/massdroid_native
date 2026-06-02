@@ -232,7 +232,10 @@ class SendspinManager(
                 val t1 = incoming.payload.clientTransmitted
                 val t2 = incoming.payload.serverReceived
                 val t3 = incoming.payload.serverTransmitted
-                val t4 = System.nanoTime() / 1000
+                // T4 stamped at the WS onMessage callback (earliest point); fall
+                // back to now only if missing. Avoids coroutine-dispatch delay
+                // biasing the NTP offset low (which made us play ~tens of ms late).
+                val t4 = incoming.clientReceivedUs.takeIf { it > 0L } ?: (System.nanoTime() / 1000)
                 val rttUs = (t4 - t1) - (t3 - t2)
                 // Reject absurd RTT only during initial convergence (first 5 samples).
                 // Tell the synchronizer about each reject so it can back off the

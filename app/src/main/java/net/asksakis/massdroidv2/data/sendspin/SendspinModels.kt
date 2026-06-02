@@ -253,7 +253,11 @@ sealed class SendspinIncoming {
     data object AuthOk : SendspinIncoming()
     data class AuthError(val message: String) : SendspinIncoming()
     data class ServerHello(val raw: JsonObject) : SendspinIncoming()
-    data class ServerTime(val payload: ServerTimePayload) : SendspinIncoming()
+    // clientReceivedUs (T4) is stamped at the WebSocket onMessage callback (the
+    // earliest point, like the JS reference) rather than later in the manager's
+    // coroutine handler — coroutine/deserialize dispatch delay on T4 alone
+    // biases the NTP offset and makes us play late. 0 = not stamped (fallback).
+    data class ServerTime(val payload: ServerTimePayload, val clientReceivedUs: Long = 0L) : SendspinIncoming()
     data object GroupUpdate : SendspinIncoming()
     data class StreamStart(val payload: StreamStartPayload) : SendspinIncoming()
     data object StreamEnd : SendspinIncoming()
