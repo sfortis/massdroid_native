@@ -84,15 +84,14 @@ internal fun SendspinStatusSheet(
         SendspinState.DISCONNECTED -> "Disconnected"
     }
     val syncLockLabel = when {
-        // DIRECT (solo) mode runs no sync loop, so the DAC ground truth never
-        // matures and the sync-lock states below don't apply — show "Direct".
+        // DIRECT (solo) is a pure FIFO — no peer to phase-lock to, no sync loop.
         status.correctionMode.equals("DIRECT", ignoreCase = true) -> "Direct (no sync)"
         status.syncState != SyncState.SYNCHRONIZED -> stateLabel
+        // While muted (startup/seek/resume) the callback snaps onto the timeline;
+        // it only unmutes once the drift is already inside the lock window.
         status.syncMuted -> "Aligning (muted)"
-        // Until the closed-loop DAC ground truth matures, the sync error is the
-        // blind-anchor fallback (~0). Don't claim "Locked" before we actually
-        // know the real offset — show "Measuring".
-        !status.syncTruthAvailable -> "Measuring"
+        // Live drift = intended timeline minus DAC presentation (the value the
+        // callback's resampler drives toward 0). <5ms = locked.
         syncAbsMs < 5f -> "Locked (${formatMs(status.absoluteSyncMs)})"
         syncAbsMs < 20f -> "Correcting (${formatMs(status.absoluteSyncMs)})"
         else -> "Converging (${formatMs(status.absoluteSyncMs)})"
@@ -103,25 +102,24 @@ internal fun SendspinStatusSheet(
     val isSyncMode = !status.correctionMode.equals("DIRECT", ignoreCase = true)
     val routeCorrectionMs = status.acousticCorrectionMs
     val routeExtraMs = (routeCorrectionMs - status.outputLatencyMs).coerceAtLeast(0L)
-    // Sync at the audio port for non-BT routes (per the Sendspin spec): the
-    // AudioTrack pipeline measurement is the one-way port latency, no acoustic
-    // correction is needed. BT routes are the only ones that legitimately
-    // require a chirp-based calibration, so the labels make that explicit
-    // instead of telling phone-speaker users they are missing a calibration
-    // they should never run.
+    // The in-device output latency is COMPUTED (the full AudioManager output
+    // latency, not just the HAL buffer), so playback lands on the group timeline
+    // automatically with no manual nudge. Acoustic calibration is only the
+    // beyond-DAC layer for Bluetooth routes; non-BT routes need no calibration.
     val latencyPrimary = when {
         routeCorrectionMs > 0L -> "${routeCorrectionMs}ms calibrated"
-        !status.isBtRoute && status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms port latency"
-        status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms output estimate"
+        status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms output latency"
         else -> "Measuring"
     }
     val latencyDetail = when {
-        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + route ${routeExtraMs}ms"
-        !status.isBtRoute && status.outputLatencyMs > 0L -> "syncs at the audio port"
-        status.outputLatencyMs > 0L -> "calibrate in player settings for tighter sync"
+        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + BT route ${routeExtraMs}ms"
+        status.isBtRoute && status.outputLatencyMs > 0L -> "calibrate in player settings for tighter BT sync"
+        status.outputLatencyMs > 0L -> "computed, auto-synced"
         else -> "waiting for output timestamp"
     }
-    val clockLabel = "${status.clockSamples} samples / ${formatMs(status.clockErrorUs / 1000f)} clock error"
+    val clockLabel = "${status.clockSamples} samples / ${formatMs(status.clockErrorUs / 1000f)} error"
+    val rttLabel = formatMs(status.clockRttUs / 1000f)
+    val driftLabel = String.format(java.util.Locale.US, "%.1f ppm", status.clockDriftPpm)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -161,8 +159,14 @@ internal fun SendspinStatusSheet(
                     SmallStatusLine("Sync error", formatMs(status.absoluteSyncMs), smallStyle, dimColor, valueColor)
                 }
                 DetailStatusLine("Latency", latencyPrimary, latencyDetail, smallStyle, dimColor, valueColor)
-                SmallStatusLine("Clock", clockLabel, smallStyle, dimColor, valueColor)
-                SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
+                // Clock sync only drives the grouped (SYNC) timeline; DIRECT is a
+                // pure FIFO with no clock dependency, so these are hidden there.
+                if (isSyncMode) {
+                    SmallStatusLine("Clock sync", clockLabel, smallStyle, dimColor, valueColor)
+                    SmallStatusLine("Server RTT", rttLabel, smallStyle, dimColor, valueColor)
+                    SmallStatusLine("Clock drift", driftLabel, smallStyle, dimColor, valueColor)
+                    SmallStatusLine("Resyncs", "${status.resyncs}", smallStyle, dimColor, valueColor)
+                }
                 SmallStatusLine(
                     "Buffer",
                     String.format(java.util.Locale.US, "%.1fs  /  %d KB", bufferSeconds, status.bufferBytes / 1000),

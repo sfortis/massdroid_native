@@ -264,7 +264,13 @@ class RemoteControlPlayer(
             .build()
 
         val entries = queue.entries
-        val activeIdx = playback.currentIndex
+        // The now-playing metadata (currentMetadata) is the single source of truth for
+        // the current track and comes from the playback snapshot. The playlist entries
+        // come from a separate queueItems snapshot, so playback.currentIndex and the
+        // entries list can momentarily diverge during queue churn. Clamp activeIdx the
+        // same way getState() clamps currentMediaItemIndex, so the item the car reads as
+        // "current" always carries the live title instead of a stale entry's metadata.
+        val activeIdx = playback.currentIndex.coerceIn(0, (entries.size - 1).coerceAtLeast(0))
         if (entries.isNotEmpty()) {
             return ImmutableList.copyOf(entries.mapIndexed { index, entry ->
                 val meta = if (index == activeIdx) currentMetadata else {

@@ -75,21 +75,18 @@ data class SendspinStatusUi(
     val syncDelayMs: Int,
     val outputLatencyMs: Long = 0L,
     val acousticCorrectionMs: Long = 0L,
-    val dacSyncErrorMs: Float = 0f,
     val absoluteSyncMs: Float = 0f,
     val syncMuted: Boolean = false,
-    // False until the closed-loop DAC ground truth matures; while false the
-    // displayed sync error is the blind-anchor fallback, so the UI shows
-    // "Measuring" instead of a misleading "Locked".
-    val syncTruthAvailable: Boolean = false,
     val audioRoute: String = "",
-    // True when the active AudioTrack output is routed to a Bluetooth sink.
+    // True when the active output is routed to a Bluetooth sink.
     // Drives the streaming-status sheet's latency label: BT routes show
     // calibration state, non-BT routes are labelled "port latency" since
     // they sync at the audio port via the AudioTrack pipeline measurement.
     val isBtRoute: Boolean = false,
     val clockSamples: Int = 0,
     val clockErrorUs: Long = 0L,
+    val clockRttUs: Long = 0L,
+    val clockDriftPpm: Double = 0.0,
     val resyncs: Int = 0,
     val correctionMode: String = "",
     // Actual Sendspin transport output format (post server re-encode):
@@ -448,13 +445,13 @@ class NowPlayingViewModel @Inject constructor(
                     syncDelayMs = cachedSendspinSyncDelayMs,
                     outputLatencyMs = sendspinManager.outputLatencyMs(),
                     acousticCorrectionMs = sendspinManager.acousticExtraMs(),
-                    dacSyncErrorMs = sendspinManager.dacSyncErrorMs(),
                     absoluteSyncMs = sendspinManager.absoluteSyncMs(),
                     syncMuted = sendspinManager.isSyncMuted(),
-                    syncTruthAvailable = sendspinManager.hasSyncTruth(),
                     isBtRoute = acoustic.isBtRoute(),
                     clockSamples = sendspinManager.clockSampleCount(),
                     clockErrorUs = sendspinManager.clockErrorUs(),
+                    clockRttUs = sendspinManager.clockRttUs(),
+                    clockDriftPpm = sendspinManager.clockDriftPpm(),
                     resyncs = sendspinManager.resyncCount(),
                     correctionMode = sendspinManager.correctionModeName(),
                     outputSampleRate = fmt?.sampleRate ?: 0,

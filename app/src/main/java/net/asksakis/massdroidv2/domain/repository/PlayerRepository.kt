@@ -56,6 +56,14 @@ interface PlayerRepository {
     /** Emits when an action requires a selected player but none is available. */
     val noPlayerSelectedEvent: SharedFlow<Unit>
 
+    /**
+     * Emits when a play/next command is rejected because the queue has no more
+     * tracks (MA error code 11). The server keeps the last track as current_media
+     * for display, so the UI shows a track + play button that silently fails;
+     * this lets the UI surface a "nothing left to play" notice instead.
+     */
+    val queueEndedEvent: SharedFlow<Unit>
+
     /** Emits the queue ID whenever QUEUE_ITEMS_UPDATED or QUEUE_UPDATED fires for the selected player. */
     val queueItemsChanged: SharedFlow<String>
 

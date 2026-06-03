@@ -543,6 +543,15 @@ private fun MassDroidApp(
     }
 
     LaunchedEffect(Unit) {
+        miniPlayerViewModel.queueEndedEvent.collect {
+            snackbarHostState.showSnackbar(
+                message = "Nothing left to play in the queue",
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
         appNoticesViewModel.searchDegraded.collect {
             snackbarHostState.showSnackbar(
                 message = "Some results couldn't load. A music provider isn't responding " +

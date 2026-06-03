@@ -43,6 +43,9 @@ class MiniPlayerViewModel @Inject constructor(
 
     val noPlayerSelectedEvent: SharedFlow<Unit> = playerRepository.noPlayerSelectedEvent
 
+    /** Queue exhausted (play/next rejected with "no more tracks"); UI shows a notice. */
+    val queueEndedEvent: SharedFlow<Unit> = playerRepository.queueEndedEvent
+
     val miniPlayerUiState: StateFlow<MiniPlayerUiState> = combine(
         wsClient.connectionState,
         playerRepository.selectedPlayer,

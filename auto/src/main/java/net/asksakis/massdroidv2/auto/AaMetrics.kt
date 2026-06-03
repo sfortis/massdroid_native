@@ -81,7 +81,7 @@ object AaMetrics {
      */
     private fun traceEnabled() = Log.isLoggable(TAG, Log.DEBUG)
 
-    /** Trace: full updateState payload, fired by PlaybackService.observePlayerState. */
+    /** Trace: full updateState payload, fired by AndroidAutoController.applyAaState. */
     fun traceUpdateState(positionMs: Long, isPlaying: Boolean, title: String, queueId: String?) {
         if (!traceEnabled()) return
         Log.d(TAG, "trace updateState pos=$positionMs play=$isPlaying q=$queueId t=\"$title\"")

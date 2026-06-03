@@ -36,6 +36,8 @@ class PlayerRepositoryImpl @Inject constructor(
 
     companion object {
         private const val TAG = "PlayerRepo"
+        // MA RPC error code for "no more tracks available" (queue exhausted).
+        private const val NO_MORE_TRACKS_CODE = 11
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
         private const val BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS = 2_000L
         private const val BLOCKED_QUEUE_ITEMS_LIMIT = 500
@@ -105,6 +107,9 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _noPlayerSelectedEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     override val noPlayerSelectedEvent: SharedFlow<Unit> = _noPlayerSelectedEvent.asSharedFlow()
+
+    private val _queueEndedEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val queueEndedEvent: SharedFlow<Unit> = _queueEndedEvent.asSharedFlow()
 
     private val _discontinuityCommands = MutableSharedFlow<PlayerDiscontinuityCommand>(extraBufferCapacity = 4)
     override val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand> = _discontinuityCommands.asSharedFlow()
@@ -1573,11 +1578,26 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     private suspend fun playerCmd(cmd: String, playerId: String) {
-        sendPlayerCommandWithRetry(
-            MaCommands.Players.cmd(cmd),
-            PlayerIdArgs(playerId = playerId)
-        )
-        Log.d(TAG, "playerCmd sent: $cmd($playerId)")
+        try {
+            sendPlayerCommandWithRetry(
+                MaCommands.Players.cmd(cmd),
+                PlayerIdArgs(playerId = playerId)
+            )
+            Log.d(TAG, "playerCmd sent: $cmd($playerId)")
+        } catch (e: MaApiException) {
+            // MA keeps the last track as current_media for display even when the
+            // queue is exhausted, so play/next here fails with "no more tracks
+            // available" (code 11). Surface a notice instead of letting the play
+            // button fail silently; the command itself is a no-op in that case.
+            if (e.code == NO_MORE_TRACKS_CODE ||
+                e.message?.contains("no more tracks", ignoreCase = true) == true
+            ) {
+                Log.d(TAG, "playerCmd $cmd: queue exhausted (code=${e.code})")
+                _queueEndedEvent.tryEmit(Unit)
+                return
+            }
+            throw e
+        }
     }
 
     private suspend fun sendPlayerCommandWithRetry(command: String, args: MaCommandArgs) {
