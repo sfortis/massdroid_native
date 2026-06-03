@@ -152,6 +152,28 @@ fi
 
 PACKAGE_NAME="net.asksakis.massdroidv2.debug"
 
+# Dedupe by physical serial: the same device can appear twice (USB + wireless,
+# e.g. RFCY312MMSH and 10.200.200.3:5555 are one phone). Installing on both
+# force-relaunches it twice within seconds, which races the Oboe/audio teardown
+# and leaves Sendspin with no audio on launch. Keep only the first transport.
+declare -a DEDUP_SERIALS=()
+declare -a SEEN_PHYSICAL=()
+for serial in "${TARGET_SERIALS[@]}"; do
+  phys=$("$ADB_BIN" -s "$serial" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')
+  [[ -z "$phys" ]] && phys="$serial"
+  dup=0
+  for seen in "${SEEN_PHYSICAL[@]}"; do
+    [[ "$seen" == "$phys" ]] && { dup=1; break; }
+  done
+  if [[ $dup -eq 1 ]]; then
+    echo "-- skip $serial (same physical device as an already-targeted transport: $phys)"
+    continue
+  fi
+  SEEN_PHYSICAL+=("$phys")
+  DEDUP_SERIALS+=("$serial")
+done
+TARGET_SERIALS=("${DEDUP_SERIALS[@]}")
+
 for serial in "${TARGET_SERIALS[@]}"; do
   echo "-- $serial"
   "$ADB_BIN" -s "$serial" install -r "$APK"
