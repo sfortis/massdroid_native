@@ -44,6 +44,14 @@ interface SettingsRepository {
      */
     val sendspinSyncSystemVolume: Flow<Boolean>
     /**
+     * Last known Sendspin player volume (0..100), persisted across process
+     * death. The MA server resets a re-registering Sendspin player to 100%, so
+     * on startup we seed it back from this value rather than the phone's live
+     * STREAM_MUSIC, which at launch can reflect a different output route's
+     * stored level (the app's audio route is torn down on exit). Default 100.
+     */
+    val sendspinLastVolume: Flow<Int>
+    /**
      * Cached one-way mic-path latency in microseconds, measured once on the
      * phone built-in speaker (chirp roundTrip minus Oboe outputHAL). Stays
      * stable per device + Android version, so subsequent BT calibrations
@@ -75,6 +83,7 @@ interface SettingsRepository {
     suspend fun setSendspinSyncDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
     suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
+    suspend fun setSendspinLastVolume(volume: Int)
     suspend fun setAcousticMicPathUs(valueUs: Long)
     suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration)
     suspend fun removeAcousticRouteCalibration(routeKey: String)

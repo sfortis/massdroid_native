@@ -36,6 +36,8 @@ class ClockSynchronizer {
     private var driftCovariance = 0.0
     private var lastUpdateUs = 0L
     private var count = 0
+    // Most recent round-trip time (us), surfaced for the streaming-status view.
+    @Volatile private var lastRttUs = 0L
 
     // Drift significance gating (from JS reference)
     private var useDrift = false
@@ -75,6 +77,7 @@ class ClockSynchronizer {
     ) {
         val rtt = (clientReceivedUs - clientTransmittedUs) -
             (serverTransmittedUs - serverReceivedUs)
+        lastRttUs = rtt.coerceAtLeast(0L)
         val measurement = ((serverReceivedUs - clientTransmittedUs) +
             (serverTransmittedUs - clientReceivedUs)) / 2.0
         val maxError = (rtt.coerceAtLeast(0L) / 2.0).coerceAtLeast(1.0)
@@ -214,6 +217,15 @@ class ClockSynchronizer {
 
     /** Estimation error (standard deviation) in microseconds. */
     fun errorUs(): Long = round(sqrt(offsetCovariance.coerceAtLeast(0.0))).toLong()
+
+    /** Most recent round-trip time to the server, microseconds. */
+    fun lastRttUs(): Long = lastRttUs
+
+    /**
+     * Estimated client/server clock drift rate in parts-per-million (how fast
+     * the two clocks diverge). 0 until the drift term becomes significant.
+     */
+    fun driftPpm(): Double = if (currentUseDrift) currentDrift * 1_000_000.0 else 0.0
 
     /** Math validity: at least 1 measurement processed. */
     @Synchronized

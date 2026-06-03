@@ -412,6 +412,23 @@ class SendspinManager(
         audio.setPaused(false)
     }
 
+    /** True when the active engine is the solo (DIRECT) one (no group sync). */
+    fun isSoloEngine(): Boolean = engine === directEngine
+
+    /**
+     * Freeze the output across a transient interruption WITHOUT dropping the
+     * ring (solo only): the buffered audio survives and resumes instantly. The
+     * server feeds realtime after a flush and never rebuilds the deep buffer, so
+     * freezing is the only way to keep it. See [SendspinPlaybackEngine.freezeOutput].
+     */
+    fun freezeOutput() {
+        (engine as? SendspinPlaybackEngine)?.freezeOutput()
+    }
+
+    fun unfreezeOutput() {
+        (engine as? SendspinPlaybackEngine)?.unfreezeOutput()
+    }
+
     private fun perceptualGain(volume: Int): Float {
         val linear = (volume.coerceIn(0, 100)) / 100f
         return linear * linear
@@ -448,6 +465,15 @@ class SendspinManager(
 
     fun setInSyncGroup(grouped: Boolean) {
         val target: SendspinAudioEngine = if (grouped) syncEngine else directEngine
+        if (!grouped && timeSyncJob != null) {
+            // DIRECT (solo) is a pure FIFO with no peer to phase-lock to: it never
+            // uses the clock (computeLocalPlan anchors locally on serverTs deltas).
+            // Stop the periodic time-sync to save CPU + WS traffic while solo;
+            // it is restarted on a group join below.
+            Log.d(TAG, "DIRECT solo: stopping clock time-sync (not used without a group)")
+            timeSyncJob?.cancel()
+            timeSyncJob = null
+        }
         if (engine === target) {
             // Already on the right engine. Keep the clock wired/running for sync.
             if (grouped) {
@@ -564,27 +590,20 @@ class SendspinManager(
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000
-    fun dacSyncErrorMs(): Float = (engine as? SendspinPlaybackEngine)?.smoothedSyncErrorMs?.toFloat() ?: 0f
     fun absoluteSyncMs(): Float {
         val e = engine as? SendspinPlaybackEngine ?: return 0f
-        // Prefer the DAC ground-truth absolute error (what the speaker actually
-        // outputs) over the open-loop anchor error. The anchor reads ~0 even
-        // when the real output is off (cold-start/pipeline latency the anchor is
-        // blind to), which made the status show "ideal" while playback was
-        // -16..-40ms off and varying per session. Fall back to the anchor error
-        // before the DAC matures.
+        // Live drift = intended timeline minus DAC presentation, smoothed in the
+        // native callback (the value the resampler/snap drives toward 0). Only
+        // meaningful for grouped/SYNC while SYNCHRONIZED; DIRECT is a pure FIFO
+        // with no peer, so it reads ~0.
         return e.dacGroundTruthErrorMs() ?: (e.startupOffsetMs + e.smoothedSyncErrorMs).toFloat()
     }
-    /**
-     * Whether the closed-loop DAC ground truth is available yet. Until it is,
-     * absoluteSyncMs() falls back to the blind anchor (~0), which would mislead
-     * the status into showing "Locked" before we actually know the real offset.
-     * The UI shows "Measuring" while this is false.
-     */
-    fun hasSyncTruth(): Boolean = (engine as? SendspinPlaybackEngine)?.dacGroundTruthErrorMs() != null
     fun isSyncMuted(): Boolean = (engine as? SendspinPlaybackEngine)?.syncMuted ?: false
     fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
     fun clockErrorUs(): Long = clockSynchronizer.errorUs()
+    fun clockRttUs(): Long = clockSynchronizer.lastRttUs()
+    fun clockDriftPpm(): Double = clockSynchronizer.driftPpm()
+    fun clockOffsetUs(): Long = clockSynchronizer.currentOffsetUs()
     fun resyncCount(): Int = (engine as? SendspinPlaybackEngine)?.resyncCount ?: 0
     fun correctionModeName(): String = engine.correctionMode.name
 

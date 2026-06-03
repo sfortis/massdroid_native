@@ -142,6 +142,8 @@ object AppModule {
             serverMuteEvents = sendspinManager.serverMuteEvents,
             syncEnabledFlow = settingsRepository.sendspinSyncSystemVolume,
             sendspinClientIdFlow = settingsRepository.sendspinClientId,
+            lastVolumeFlow = settingsRepository.sendspinLastVolume,
+            persistLastVolume = { settingsRepository.setSendspinLastVolume(it) },
             playerRepository = playerRepository,
             currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
         )

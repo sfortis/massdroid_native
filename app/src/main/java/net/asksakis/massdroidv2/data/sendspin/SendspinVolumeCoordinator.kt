@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 
@@ -47,6 +48,13 @@ class SendspinVolumeCoordinator(
     private val serverMuteEvents: SharedFlow<Boolean>,
     private val syncEnabledFlow: Flow<Boolean>,
     private val sendspinClientIdFlow: Flow<String?>,
+    /**
+     * Persisted last Sendspin player volume (0..100), survives process death.
+     * Used as the startup seed because the live STREAM_MUSIC read is unreliable
+     * at launch (per-route storage; our audio route is gone on a fresh start).
+     */
+    private val lastVolumeFlow: Flow<Int>,
+    private val persistLastVolume: suspend (Int) -> Unit,
     private val playerRepository: PlayerRepository,
     /**
      * Returns the current audio output route type as reported by the active
@@ -263,11 +271,20 @@ class SendspinVolumeCoordinator(
 
     /**
      * Sendspin engine startup: the volume to seed into the MA player config.
-     * Sync effective -> current STREAM_MUSIC; sync disabled (BT + toggle off) ->
-     * the MA player's last-known volume.
+     * Always sourced from the persisted last Sendspin volume — the server
+     * resets a re-registering player to 100%, and the live STREAM_MUSIC read is
+     * unreliable at launch (Android stores it per output route; the app's audio
+     * route is torn down on the previous exit, so STREAM_MUSIC can reflect a
+     * different route's level). When STREAM_MUSIC mirrors the MA volume on this
+     * route, we also rewrite it to the restored value so the mirror is
+     * consistent and the first observer fire isn't misread as a user change.
      */
-    fun seedStartupVolume(): Int =
-        if (effectiveSyncEnabled()) readPhoneStreamPct() else lastKnownMaVolume
+    suspend fun seedStartupVolume(): Int {
+        val persisted = lastVolumeFlow.first().coerceIn(0, 100)
+        lastKnownMaVolume = persisted
+        if (effectiveSyncEnabled()) writeStreamMusic(persisted)
+        return persisted
+    }
 
     // endregion
 
@@ -275,6 +292,13 @@ class SendspinVolumeCoordinator(
 
     private fun onServerVolumeEvent(pct: Int) {
         val bounded = pct.coerceIn(0, 100)
+        if (bounded != lastKnownMaVolume) {
+            // Persist the authoritative MA player volume so we can restore it on
+            // the next launch (the server resets a re-registering player to
+            // 100%). Every genuine volume change — slider, HW keys, group — is
+            // echoed here, so this is the single persist point.
+            scope?.launch { persistLastVolume(bounded) }
+        }
         lastKnownMaVolume = bounded
         if (!effectiveSyncEnabled()) {
             Log.d(TAG, "server vol $bounded% (sync OFF)")

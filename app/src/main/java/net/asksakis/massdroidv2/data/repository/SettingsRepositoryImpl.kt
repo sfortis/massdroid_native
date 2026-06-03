@@ -50,6 +50,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
         private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
         private val KEY_SENDSPIN_SYNC_SYSTEM_VOLUME = stringPreferencesKey("sendspin_sync_system_volume")
+        private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
         private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
     }
@@ -231,6 +232,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinSyncSystemVolume(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SENDSPIN_SYNC_SYSTEM_VOLUME] = enabled.toString() }
+    }
+
+    override val sendspinLastVolume: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_LAST_VOLUME]?.toIntOrNull()?.coerceIn(0, 100) ?: 100
+    }
+
+    override suspend fun setSendspinLastVolume(volume: Int) {
+        context.dataStore.edit { it[KEY_SENDSPIN_LAST_VOLUME] = volume.coerceIn(0, 100).toString() }
     }
 
     override val acousticMicPathUs: Flow<Long> = safeData.map { prefs ->

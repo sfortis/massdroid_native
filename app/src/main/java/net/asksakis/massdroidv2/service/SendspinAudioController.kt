@@ -80,6 +80,11 @@ class SendspinAudioController(
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private lateinit var focusRequest: AudioFocusRequest
     private var hasAudioFocus = false
+    // True while a transient focus loss has FROZEN the solo (DIRECT) output
+    // (buffer preserved) rather than flushing it. The next focus regain unfreezes
+    // and resumes instantly from the intact buffer. Cleared on regain, permanent
+    // loss, and stop().
+    @Volatile private var outputFrozenForFocus = false
 
     // Noisy audio receiver (headset unplug)
     private var noisyReceiverRegistered = false
@@ -669,10 +674,24 @@ class SendspinAudioController(
                     Log.w(TAG, "Startup: sendspin did not reach ready state, skipping snapshot restore")
                     return@launch
                 }
-                withTimeoutOrNull(5_000) {
+                // Bootstrap user intent from the server's persisted playback
+                // state. When the MA player was left playing before the app
+                // restarted, the engine follows the server and streams, but no
+                // local play() ran, so _userIntent stays false. A later transient
+                // focus dip (e.g. another app plays a short clip) then refuses to
+                // resume on focus regain and silently kills playback. Adopting a
+                // server-confirmed PLAYING session as intent once at startup
+                // closes that gap without deriving intent from transport (the
+                // focus-loss handlers remain the sole writers of intent=false).
+                val startedPlaying = withTimeoutOrNull(8_000) {
                     playerRepository.players
-                        .map { list -> list.any { it.playerId == clientId } }
-                        .first { it }
+                        .map { list -> list.firstOrNull { it.playerId == clientId }?.state }
+                        .first { it == PlaybackState.PLAYING }
+                }
+                if (startedPlaying != null && !_userIntent.value) {
+                    Log.d(TAG, "Startup: adopting server-initiated playback as user intent")
+                    _userIntent.value = true
+                    if (!hasAudioFocus) requestAudioFocus()
                 }
             }
         }
@@ -752,6 +771,7 @@ class SendspinAudioController(
         // reset both flows explicitly so a subsequent start() begins clean.
         _userIntent.value = false
         _currentIsPlaying.value = false
+        outputFrozenForFocus = false
         isReady = false
         isStreaming = false
         notifyStateChanged()
@@ -848,34 +868,49 @@ class SendspinAudioController(
                         val intent = _userIntent.value
                         Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=$intent")
                         hasAudioFocus = true
-                        // Always undo a prior duck. Resume is gated on
-                        // `_userIntent` — the canonical user-level intent
-                        // flow. Noisy receiver, BT-to-speaker fallback, and
-                        // permanent focus loss all clear it, so the
-                        // route-change focus-shuffle that follows a BT
-                        // disconnect will not silently hand audio off to the
-                        // phone speaker. Transient losses (phone call, nav
-                        // prompt) leave intent true and resume normally.
                         sendspinManager.restoreVolume()
+                        // If the transient loss FROZE the solo output (buffer
+                        // preserved), just unfreeze: playback resumes instantly
+                        // and click-free from the intact buffer, no flush/rebuffer.
+                        if (outputFrozenForFocus) {
+                            outputFrozenForFocus = false
+                            sendspinManager.unfreezeOutput()
+                            Log.d(TAG, "Focus regained: unfroze output, buffer preserved")
+                            return@setOnAudioFocusChangeListener
+                        }
+                        // Resume is gated on `_userIntent` — the canonical
+                        // user-level intent flow. Noisy receiver, BT-to-speaker
+                        // fallback, and permanent focus loss all clear it, so the
+                        // route-change focus-shuffle that follows a BT disconnect
+                        // will not silently hand audio off to the phone speaker.
                         if (!intent) {
                             Log.d(TAG, "Focus gained but intent is paused, staying paused")
                             return@setOnAudioFocusChangeListener
                         }
                         if (isStreaming) {
                             sendspinManager.resumeAudio()
-                        } else if (isReady) {
-                            // After phone call: server may have stopped streaming.
-                            // Resume by sending play command.
+                        } else {
+                            // Not streaming: during a long interruption (e.g. a
+                            // phone call routes audio to the earpiece, the Oboe
+                            // stream disconnects and the server ends the idle
+                            // stream) the engine drops to IDLE. Re-trigger
+                            // playback so the server restarts the stream and
+                            // audio comes back; reconnect first if the transport
+                            // is no longer ready.
                             sendspinManager.resumeAudio()
                             val id = sendspinPlayerId
                             if (id != null) {
-                                scope.launch { playerRepository.play(id) }
+                                scope.launch {
+                                    if (!isReady) ensureSendspinConnected()
+                                    playerRepository.play(id)
+                                }
                             }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.d(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
+                        outputFrozenForFocus = false
                         // Align intent with the permanent loss: another app
                         // has taken over, the user is no longer "trying to
                         // play". Without this, a later AUDIOFOCUS_GAIN would
@@ -893,7 +928,19 @@ class SendspinAudioController(
                         Log.d(TAG, "Audio focus lost transiently")
                         hasAudioFocus = false
                         if (isStreaming) {
-                            sendspinManager.pauseAudio()
+                            if (sendspinManager.isSoloEngine()) {
+                                // Solo: FREEZE (preserve the buffer) instead of
+                                // flushing. After a flush the server feeds at
+                                // realtime and never rebuilds the deep buffer, so
+                                // the resume would stay shallow/glitchy. Freezing
+                                // keeps the full buffer for an instant resume.
+                                outputFrozenForFocus = true
+                                sendspinManager.freezeOutput()
+                            } else {
+                                // Grouped: the timeline moves on; flush and relock
+                                // under the startup mute on regain.
+                                sendspinManager.pauseAudio()
+                            }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
