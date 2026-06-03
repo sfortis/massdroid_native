@@ -928,19 +928,18 @@ class SendspinAudioController(
                         Log.d(TAG, "Audio focus lost transiently")
                         hasAudioFocus = false
                         if (isStreaming) {
-                            if (sendspinManager.isSoloEngine()) {
-                                // Solo: FREEZE (preserve the buffer) instead of
-                                // flushing. After a flush the server feeds at
-                                // realtime and never rebuilds the deep buffer, so
-                                // the resume would stay shallow/glitchy. Freezing
-                                // keeps the full buffer for an instant resume.
-                                outputFrozenForFocus = true
-                                sendspinManager.freezeOutput()
-                            } else {
-                                // Grouped: the timeline moves on; flush and relock
-                                // under the startup mute on regain.
-                                sendspinManager.pauseAudio()
-                            }
+                            // FREEZE (preserve the buffer) for BOTH solo and
+                            // grouped instead of flushing. After a flush the
+                            // server continues from its look-ahead pointer and
+                            // never resends the current position, so the resume
+                            // was left holding only future audio and the grouped
+                            // snap waited out tens of seconds of silence. Freezing
+                            // keeps the buffer; on regain solo resumes from the
+                            // freeze point, while grouped skips forward to the live
+                            // group position (still buffered for normal-length
+                            // interruptions) under the mute. See unfreezeOutput.
+                            outputFrozenForFocus = true
+                            sendspinManager.freezeOutput()
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {

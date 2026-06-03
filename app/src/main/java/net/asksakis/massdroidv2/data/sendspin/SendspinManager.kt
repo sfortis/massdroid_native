@@ -412,14 +412,12 @@ class SendspinManager(
         audio.setPaused(false)
     }
 
-    /** True when the active engine is the solo (DIRECT) one (no group sync). */
-    fun isSoloEngine(): Boolean = engine === directEngine
-
     /**
      * Freeze the output across a transient interruption WITHOUT dropping the
-     * ring (solo only): the buffered audio survives and resumes instantly. The
-     * server feeds realtime after a flush and never rebuilds the deep buffer, so
-     * freezing is the only way to keep it. See [SendspinPlaybackEngine.freezeOutput].
+     * ring: the buffered audio survives. Solo resumes from the freeze point;
+     * grouped skips forward to the live group position on unfreeze. A flush
+     * would lose the buffer and the server never resends the current position.
+     * See [SendspinPlaybackEngine.freezeOutput]/[unfreezeOutput].
      */
     fun freezeOutput() {
         (engine as? SendspinPlaybackEngine)?.freezeOutput()

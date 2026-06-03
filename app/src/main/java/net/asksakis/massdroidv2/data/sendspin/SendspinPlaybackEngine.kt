@@ -1069,8 +1069,19 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     fun unfreezeOutput() {
-        Log.d(TAG, "Unfreeze output (resume from preserved buffer) buf=${bufferDurationMs()}ms state=$syncState")
+        Log.d(TAG, "Unfreeze output (resume from preserved buffer) buf=${bufferDurationMs()}ms state=$syncState isSync=$isSync")
         outputFrozen = false
+        if (isSync) {
+            // Grouped: the leader kept playing during the interruption, so the
+            // preserved buffer is now BEHIND the live group timeline. Re-mute and
+            // reset the sync metrics so the native correction SKIPS forward to the
+            // current group position (still in the buffer for interruptions
+            // shorter than the buffer depth) inaudibly, then unmutes once
+            // re-locked. DIRECT (solo) has no peer, so it just fades back in from
+            // the exact freeze point below.
+            beginStartupMute()
+            resetSyncMetrics()
+        }
         nativeOutput.setFrozen(false)
     }
 
