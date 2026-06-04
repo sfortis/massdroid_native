@@ -161,6 +161,7 @@ fun PlayersScreen(
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
                     var groupPlayer by remember { mutableStateOf<Player?>(null) }
+                    var syncSpeakersFor by remember { mutableStateOf<Player?>(null) }
                     var showCreateGroup by remember { mutableStateOf(false) }
 
                     val groupCandidates = remember(players) {
@@ -251,6 +252,10 @@ fun PlayersScreen(
                             },
                             onGroupWith = {
                                 groupPlayer = player
+                                queueMenuPlayer = null
+                            },
+                            onSyncSpeakers = {
+                                syncSpeakersFor = player
                                 queueMenuPlayer = null
                             },
                             onDeleteGroup = if (player.type == PlayerType.GROUP) {
@@ -354,6 +359,35 @@ fun PlayersScreen(
                                 viewModel.addPlayerToGroup(leaderId, player.playerId)
                             },
                             onDismiss = { groupPlayer = null }
+                        )
+                    }
+
+                    syncSpeakersFor?.let { gp ->
+                        // Members of the sync group the opened player belongs to:
+                        // its own group_childs if it is the leader, else the
+                        // leader's. MA lists the leader inside its own childs.
+                        val groupIds = remember(gp.playerId, players) {
+                            when {
+                                gp.groupChilds.isNotEmpty() -> gp.groupChilds.toSet()
+                                gp.activeGroup != null ->
+                                    players.firstOrNull { gp.playerId in it.groupChilds }
+                                        ?.groupChilds?.toSet() ?: setOf(gp.playerId)
+                                else -> setOf(gp.playerId)
+                            }
+                        }
+                        val members = remember(groupIds, players) {
+                            players.filter { it.playerId in groupIds && it.available }
+                        }
+                        val localSyncDelayMs by viewModel.sendspinSyncDelayMs
+                            .collectAsStateWithLifecycle(initialValue = 0)
+                        net.asksakis.massdroidv2.ui.components.SyncSpeakersSheet(
+                            members = members,
+                            ourPlayerId = sendspinClientId,
+                            localSyncDelayMs = localSyncDelayMs,
+                            onLocalSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
+                            onLoadConfig = { viewModel.getPlayerConfig(it) },
+                            onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
+                            onDismiss = { syncSpeakersFor = null }
                         )
                     }
 
@@ -749,6 +783,7 @@ private fun PlayerQueueSheet(
     onPlayerSettings: () -> Unit,
     onConfigureRoom: (() -> Unit)? = null,
     onGroupWith: () -> Unit,
+    onSyncSpeakers: (() -> Unit)? = null,
     onDeleteGroup: (() -> Unit)? = null,
     onBreakSync: (() -> Unit)? = null,
     onPowerToggle: ((powered: Boolean) -> Unit)? = null,
@@ -780,6 +815,18 @@ private fun PlayerQueueSheet(
                 HorizontalDivider(modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
             }
             if (!showTransferList) {
+                // Section flags so dividers fall only BETWEEN logical groups.
+                // Hide grouping entry when this player is managed by a sync_group
+                // parent: editing members here would bypass the group and cause
+                // the server to repeatedly re-sync the removed members.
+                val canEditGroup = "set_members" in player.supportedFeatures &&
+                    player.activeGroup == null
+                val canSyncSpeakers = onSyncSpeakers != null &&
+                    (player.groupChilds.isNotEmpty() || player.activeGroup != null)
+                val hasSyncSection = canEditGroup || canSyncSpeakers || onBreakSync != null
+                val hasDangerSection = onPowerToggle != null || onDeleteGroup != null
+
+                // --- Config ---
                 ListItem(
                     colors = SheetDefaults.listItemColors(),
                     headlineContent = { Text("Player Settings") },
@@ -788,6 +835,21 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onPlayerSettings)
                 )
+                if (onConfigureRoom != null) {
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Configure Room") },
+                        leadingContent = {
+                            Icon(Icons.Default.MeetingRoom, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable {
+                            onConfigureRoom()
+                            onDismiss()
+                        }
+                    )
+                }
+
+                // --- Queue ---
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 if (otherPlayers.isNotEmpty()) {
                     ListItem(
@@ -801,23 +863,6 @@ private fun PlayerQueueSheet(
                         },
                         modifier = Modifier.clickable { showTransferList = true }
                     )
-                }
-                // Hide grouping entry when this player is managed by a sync_group
-                // parent. Editing members here would bypass the group and cause
-                // the server to repeatedly re-sync the removed members.
-                if ("set_members" in player.supportedFeatures && player.activeGroup == null) {
-                    ListItem(
-                        colors = SheetDefaults.listItemColors(),
-                        headlineContent = { Text(if (player.groupChilds.isNotEmpty()) "Edit Sync Group..." else "Synchronize with...") },
-                        leadingContent = {
-                            Icon(Icons.Default.SpeakerGroup, contentDescription = null)
-                        },
-                        modifier = Modifier.clickable {
-                            onGroupWith()
-                            onDismiss()
-                        }
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 }
                 if (player.currentMedia?.uri != null) {
                     ListItem(
@@ -840,83 +885,103 @@ private fun PlayerQueueSheet(
                     },
                     modifier = Modifier.clickable(onClick = onClearQueue)
                 )
-                if (onBreakSync != null) {
+
+                // --- Sync / Group ---
+                if (hasSyncSection) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    ListItem(
-                        colors = SheetDefaults.listItemColors(),
-                        headlineContent = { Text("Break sync") },
-                        supportingContent = {
-                            Text(
-                                "Leave the sendspin sync group",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        },
-                        leadingContent = {
-                            Icon(Icons.Default.LinkOff, contentDescription = null)
-                        },
-                        modifier = Modifier.clickable {
-                            onBreakSync()
-                            onDismiss()
-                        }
-                    )
+                    if (canEditGroup) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = { Text(if (player.groupChilds.isNotEmpty()) "Edit Sync Group..." else "Synchronize with...") },
+                            leadingContent = {
+                                Icon(Icons.Default.SpeakerGroup, contentDescription = null)
+                            },
+                            modifier = Modifier.clickable {
+                                onGroupWith()
+                                onDismiss()
+                            }
+                        )
+                    }
+                    // Tune each member's sync delay to align the group by ear.
+                    if (canSyncSpeakers) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = { Text("Sync speakers...") },
+                            leadingContent = {
+                                Icon(Icons.Default.GraphicEq, contentDescription = null)
+                            },
+                            modifier = Modifier.clickable {
+                                onSyncSpeakers!!()
+                                onDismiss()
+                            }
+                        )
+                    }
+                    if (onBreakSync != null) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = { Text("Break sync") },
+                            supportingContent = {
+                                Text(
+                                    "Leave the sendspin sync group",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            },
+                            leadingContent = {
+                                Icon(Icons.Default.LinkOff, contentDescription = null)
+                            },
+                            modifier = Modifier.clickable {
+                                onBreakSync()
+                                onDismiss()
+                            }
+                        )
+                    }
                 }
-                if (onDeleteGroup != null) {
+
+                // --- Power / destructive ---
+                if (hasDangerSection) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    ListItem(
-                        colors = SheetDefaults.listItemColors(),
-                        headlineContent = {
-                            Text(
-                                "Delete Group",
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        leadingContent = {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            onDeleteGroup()
-                            onDismiss()
-                        }
-                    )
-                }
-                if (onConfigureRoom != null) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    ListItem(
-                        colors = SheetDefaults.listItemColors(),
-                        headlineContent = { Text("Configure Room") },
-                        leadingContent = {
-                            Icon(Icons.Default.MeetingRoom, contentDescription = null)
-                        },
-                        modifier = Modifier.clickable {
-                            onConfigureRoom()
-                            onDismiss()
-                        }
-                    )
-                }
-                if (onPowerToggle != null) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    ListItem(
-                        colors = SheetDefaults.listItemColors(),
-                        headlineContent = {
-                            Text(if (player.powered) "Power off" else "Power on")
-                        },
-                        leadingContent = {
-                            Icon(
-                                Icons.Default.PowerSettingsNew,
-                                contentDescription = null,
-                                tint = if (player.powered) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            onPowerToggle(!player.powered)
-                            onDismiss()
-                        }
-                    )
+                    if (onPowerToggle != null) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = {
+                                Text(if (player.powered) "Power off" else "Power on")
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Default.PowerSettingsNew,
+                                    contentDescription = null,
+                                    tint = if (player.powered) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                onPowerToggle(!player.powered)
+                                onDismiss()
+                            }
+                        )
+                    }
+                    if (onDeleteGroup != null) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = {
+                                Text(
+                                    "Delete Group",
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                onDeleteGroup()
+                                onDismiss()
+                            }
+                        )
+                    }
                 }
             } else {
                 ListItem(

@@ -37,7 +37,18 @@ data class PlayerConfig(
     val sendspinFormat: String? = null,
     val sendspinFormatOptions: List<FormatOption> = emptyList(),
     /** Server-side static delay in ms for remote sendspin players. Null when not applicable. */
-    val sendspinStaticDelayMs: Int? = null
+    val sendspinStaticDelayMs: Int? = null,
+    /**
+     * Server-side per-player Sendspin sync delay (the MA "Sync delay (ms)"
+     * config, range -1000..1000, positive = play later). The config KEY varies
+     * by player (e.g. `sendspin_sync_delay` or `<sub>||protocol||sendspin_sync_delay`),
+     * so it is discovered at load and carried here for the save. Null when the
+     * player does not expose it (e.g. our own client-side player).
+     */
+    val sendspinSyncDelayKey: String? = null,
+    val sendspinSyncDelayMs: Int? = null,
+    /** Server-advertised default for the sync delay; Reset restores this (per speaker). */
+    val sendspinSyncDelayDefault: Int? = null,
 )
 
 enum class CrossfadeMode(val apiValue: String, val label: String) {

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
@@ -126,6 +127,14 @@ fun PlayerSettingsDialog(
     // the load returns null and the row stays hidden.
     var staticDelayMs by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerStaticDelay by remember(player.playerId) { mutableStateOf(false) }
+    // Server-side per-player Sendspin sync delay (MA "Sync delay (ms)", range
+    // -1000..1000, positive = play later). Tunable on REMOTE sendspin receivers
+    // for acoustic alignment; the exact config key varies per player so it is
+    // carried from the loaded config. Hidden when the player does not expose it.
+    var syncDelayServerMs by remember(player.playerId) { mutableIntStateOf(0) }
+    var syncDelayKey by remember(player.playerId) { mutableStateOf<String?>(null) }
+    var syncDelayDefault by remember(player.playerId) { mutableIntStateOf(0) }
+    var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -138,6 +147,12 @@ fun PlayerSettingsDialog(
             if (!isLocalPlayer && loaded.sendspinStaticDelayMs != null) {
                 hasServerStaticDelay = true
                 staticDelayMs = loaded.sendspinStaticDelayMs
+            }
+            if (!isLocalPlayer && loaded.sendspinSyncDelayKey != null) {
+                hasServerSyncDelay = true
+                syncDelayKey = loaded.sendspinSyncDelayKey
+                syncDelayServerMs = loaded.sendspinSyncDelayMs ?: 0
+                syncDelayDefault = loaded.sendspinSyncDelayDefault ?: 0
             }
             Log.d("PlayerSettings", "Loaded: provider=${player.provider} format=${loaded.sendspinFormat} options=${loaded.sendspinFormatOptions.map { it.value }}")
         }
@@ -157,6 +172,40 @@ fun PlayerSettingsDialog(
                 .collect { v ->
                     onSave(player.playerId, mapOf("sendspin_static_delay" to v))
                 }
+        }
+    }
+
+    // Debounced server push of the per-player Sendspin sync delay. Writes the
+    // exact discovered key so it lands on plain and protocol-wrapped players
+    // alike; MA applies it to the running sync group for live tuning.
+    if (hasServerSyncDelay) {
+        LaunchedEffect(player.playerId, isLoading) {
+            if (isLoading) return@LaunchedEffect
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            androidx.compose.runtime.snapshotFlow { syncDelayServerMs }
+                .drop(1)
+                .debounce(250L)
+                .collect { v ->
+                    syncDelayKey?.let { onSave(player.playerId, mapOf(it to v)) }
+                }
+        }
+    }
+
+    // Debounced apply of the LOCAL client-side nudge. The slider fires rapidly,
+    // and onSyncDelayChanged persists to DataStore + reanchors the engine, so
+    // coalesce drags into one apply (steppers benefit too).
+    if (isLocalPlayer && onSyncDelayChanged != null) {
+        // Restart with initialSyncDelayMs: the apply round-trips through DataStore
+        // and re-keys the syncDelayMs remember (new state object), so the
+        // snapshotFlow must re-bind. Without this the observer goes stale after
+        // the first apply and later changes (e.g. Reset) are silently dropped.
+        LaunchedEffect(player.playerId, isLoading, initialSyncDelayMs) {
+            if (isLoading) return@LaunchedEffect
+            @OptIn(kotlinx.coroutines.FlowPreview::class)
+            androidx.compose.runtime.snapshotFlow { syncDelayMs }
+                .drop(1)
+                .debounce(250L)
+                .collect { v -> onSyncDelayChanged?.invoke(v) }
         }
     }
 
@@ -332,31 +381,17 @@ fun PlayerSettingsDialog(
 
                     if (isLocalPlayer) {
                         // Sendspin sync delay (LOCAL client-side UX nudge,
-                        // DataStore-backed). Range -1000..+1000 ms, positive
-                        // shifts playback later — intuitive sign convention
-                        // matching the MA web UI's "Sendspin sync delay"
-                        // slider. Applied locally in SendspinSyncEngine; not
-                        // sent to the server.
-                        DelayStepperCard(
+                        // DataStore-backed). Range -1000..+1000 ms, negative plays
+                        // sooner / positive later. Applied locally in
+                        // SendspinSyncEngine; not sent to the server.
+                        SyncDelayCard(
                             label = "Sendspin sync delay",
-                            helperText = "Negative plays sooner, positive plays later. Applies locally to this device.",
                             valueMs = syncDelayMs,
-                            minValue = -1000,
-                            maxValue = 1000,
-                            onDecrement = {
-                                syncDelayMs = (syncDelayMs - 2).coerceAtLeast(-1000)
-                                onSyncDelayChanged?.invoke(syncDelayMs)
-                            },
-                            onIncrement = {
-                                syncDelayMs = (syncDelayMs + 2).coerceAtMost(1000)
-                                onSyncDelayChanged?.invoke(syncDelayMs)
-                            },
-                            onReset = {
-                                if (syncDelayMs != 0) {
-                                    syncDelayMs = 0
-                                    onSyncDelayChanged?.invoke(0)
-                                }
-                            }
+                            defaultMs = 0,
+                            // Debounced via the LaunchedEffect below (the slider
+                            // fires rapidly and onSyncDelayChanged persists to
+                            // DataStore + reanchors the engine).
+                            onValueChange = { syncDelayMs = it.coerceIn(-1000, 1000) }
                         )
                     }
 
@@ -384,6 +419,19 @@ fun PlayerSettingsDialog(
                                     staticDelayMs = 0
                                 }
                             }
+                        )
+                    }
+
+                    if (hasServerSyncDelay) {
+                        // Per-player Sendspin sync delay (server-side
+                        // sendspin_sync_delay, -1000..1000 ms; negative = earlier,
+                        // positive = later, matching the MA web UI). Slider for a
+                        // quick sweep, 1 ms steppers for fine acoustic alignment;
+                        // Reset returns to the server default. MA applies it live.
+                        SyncDelayCard(
+                            valueMs = syncDelayServerMs,
+                            defaultMs = syncDelayDefault,
+                            onValueChange = { syncDelayServerMs = it.coerceIn(-1000, 1000) }
                         )
                     }
 
@@ -529,6 +577,8 @@ private fun DelayStepperCard(
     onDecrement: () -> Unit,
     onIncrement: () -> Unit,
     onReset: () -> Unit,
+    valueText: String? = null,
+    resetValue: Int = 0,
 ) {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -540,14 +590,14 @@ private fun DelayStepperCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(label, style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        text = "${valueMs}ms",
+                        text = valueText ?: "${valueMs}ms",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
                 MdTextButton(
                     onClick = onReset,
-                    enabled = valueMs != 0,
+                    enabled = valueMs != resetValue,
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(
                         horizontal = 6.dp, vertical = 0.dp
                     )
@@ -581,6 +631,110 @@ private fun DelayStepperCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
             )
+        }
+    }
+}
+
+/**
+ * Per-player Sendspin sync delay tuner: a coarse slider (earlier..later) plus
+ * 1 ms steppers for fine acoustic alignment, a signed value, and Reset to the
+ * server default. Range -1000..1000 ms; negative = earlier, positive = later.
+ */
+@Composable
+internal fun SyncDelayCard(
+    valueMs: Int,
+    defaultMs: Int,
+    onValueChange: (Int) -> Unit,
+    label: String = "Sync delay",
+    compact: Boolean = false,
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 16.dp,
+                vertical = if (compact) 8.dp else 12.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (valueMs > 0) "+$valueMs ms" else "$valueMs ms",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Slider(
+                value = valueMs.toFloat().coerceIn(-1000f, 1000f),
+                onValueChange = { onValueChange(Math.round(it)) },
+                valueRange = -1000f..1000f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+            )
+            // earlier/later hints are redundant in compact rows (the signed
+            // value + steppers already convey direction); drop them to save
+            // vertical space when many speakers are stacked.
+            if (!compact) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        "earlier",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "later",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                RepeatingIconButton(
+                    onClick = { onValueChange(valueMs - 1) },
+                    enabled = valueMs > -1000,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Remove,
+                        contentDescription = "1 ms earlier",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                RepeatingIconButton(
+                    onClick = { onValueChange(valueMs + 1) },
+                    enabled = valueMs < 1000,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "1 ms later",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                MdTextButton(
+                    onClick = { onValueChange(defaultMs) },
+                    enabled = valueMs != defaultMs,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 6.dp, vertical = 0.dp
+                    )
+                ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
+            }
         }
     }
 }

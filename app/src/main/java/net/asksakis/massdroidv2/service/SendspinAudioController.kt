@@ -868,6 +868,13 @@ class SendspinAudioController(
                         val intent = _userIntent.value
                         Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=$intent")
                         hasAudioFocus = true
+                        // Phone call still up: do not resume yet (mid-call focus
+                        // blip). Keep the output frozen/paused; the real GAIN that
+                        // arrives when the call ends (mode == NORMAL) resumes it.
+                        if (isInActiveCall()) {
+                            Log.d(TAG, "Focus gained during active call (mode=${audioManager.mode}); staying paused until the call ends")
+                            return@setOnAudioFocusChangeListener
+                        }
                         sendspinManager.restoreVolume()
                         // If the transient loss FROZE the solo output (buffer
                         // preserved), just unfreeze: playback resumes instantly
@@ -956,6 +963,18 @@ class SendspinAudioController(
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         Log.d(TAG, "Audio focus request: ${if (hasAudioFocus) "granted" else "denied"}")
         return hasAudioFocus
+    }
+
+    // True while a phone call is ringing or active. A transient focus blip
+    // mid-call (ringing -> active transition, call-waiting, speakerphone
+    // toggle, or the Oboe stream reconnecting) can deliver AUDIOFOCUS_GAIN
+    // while the call is still up; resuming then plays music over the call. We
+    // gate the focus-driven resume on this and wait for the real post-call GAIN.
+    private fun isInActiveCall(): Boolean = when (audioManager.mode) {
+        AudioManager.MODE_IN_CALL,
+        AudioManager.MODE_IN_COMMUNICATION,
+        AudioManager.MODE_RINGTONE -> true
+        else -> false
     }
 
     private fun abandonAudioFocus() {

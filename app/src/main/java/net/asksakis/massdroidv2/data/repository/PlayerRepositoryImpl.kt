@@ -1480,6 +1480,13 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
                 ?: emptyList()
 
+            // The per-player Sendspin sync-delay config key varies (plain
+            // `sendspin_sync_delay`, or `<sub>||protocol||sendspin_sync_delay`
+            // for a protocol-wrapped player), so match by suffix and carry the
+            // exact key for the save.
+            val syncDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_sync_delay") }
+            val syncDelayEntry = syncDelayKey?.let { values[it] }
+
             PlayerConfig(
                 name = configName,
                 crossfadeMode = CrossfadeMode.fromApi(
@@ -1488,7 +1495,11 @@ class PlayerRepositoryImpl @Inject constructor(
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
                 sendspinFormat = formatEntry?.configValue(),
                 sendspinFormatOptions = formatOptions,
-                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt()
+                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt(),
+                sendspinSyncDelayKey = syncDelayKey,
+                sendspinSyncDelayMs = syncDelayEntry?.configInt(),
+                sendspinSyncDelayDefault =
+                    (syncDelayEntry as? JsonObject)?.get("default_value")?.jsonPrimitive?.intOrNull,
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")
