@@ -28,9 +28,13 @@ internal data class RoomFit(
  */
 
 private const val MISSING_RSSI = -100           // penalty RSSI for anchors not seen
-private const val DEFAULT_DISTANCE_SCALE = 40.0  // normalize distance to ~0..1 range
+// Fixed, tuned offline against captured fingerprints. A smaller scale sharpens the score spread so
+// well-separated rooms clear the confirm gates with healthy margin while confusable rooms stay
+// borderline. NOT a user knob anymore (it is coupled to the confidence/margin thresholds).
+private const val DEFAULT_DISTANCE_SCALE = 30.0
 private const val SOFTMAX_TEMPERATURE = 0.1
 private const val K_NEAREST = 3                 // use 3 closest fingerprints per room
+private const val ANCHOR_WEIGHT_FLOOR = 0.15    // weight for anchors without a calibrated profile
 
 internal object VectorRoomScorer {
 
@@ -53,8 +57,13 @@ internal object VectorRoomScorer {
         // All anchor keys across room's fingerprints (the room's "vocabulary")
         val roomAnchors = fingerprints.flatMap { it.samples.keys }.toSet()
 
+        // Per-anchor calibrated weight (encodes discrimination + visibility + stability + strength).
+        // Using it in the distance makes a room's *discriminative* anchors decisive and stops a beacon
+        // that is merely strong-in-many-rooms from dominating (the Bedroom/Bathroom shared-beacon case).
+        val anchorWeights = profiles.associate { it.anchorKey to it.weight }
+
         // Compute distance to each calibration fingerprint
-        val distances = fingerprints.map { fp -> fingerprintDistance(currentScan, fp.samples, roomAnchors) }
+        val distances = fingerprints.map { fp -> fingerprintDistance(currentScan, fp.samples, roomAnchors, anchorWeights) }
 
         // k-NN: average of k closest distances
         val kNearest = distances.sorted().take(K_NEAREST.coerceAtMost(distances.size))
@@ -96,15 +105,16 @@ internal object VectorRoomScorer {
     private fun fingerprintDistance(
         current: Map<String, Int>,
         calibration: Map<String, Int>,
-        roomAnchors: Set<String>
+        roomAnchors: Set<String>,
+        anchorWeights: Map<String, Double>
     ): Double {
         var weightedSumSquared = 0.0
         var totalWeight = 0.0
         for (anchor in roomAnchors) {
             val observed = current[anchor] ?: MISSING_RSSI
             val expected = calibration[anchor] ?: MISSING_RSSI
-            // Weight: stronger calibrated signal = more important anchor
-            val weight = signalWeight(expected)
+            // Weight: stronger calibrated signal AND more discriminative anchor = more important.
+            val weight = signalWeight(expected) * (anchorWeights[anchor] ?: ANCHOR_WEIGHT_FLOOR)
             val diff = (observed - expected).toDouble()
             weightedSumSquared += weight * diff * diff
             totalWeight += weight

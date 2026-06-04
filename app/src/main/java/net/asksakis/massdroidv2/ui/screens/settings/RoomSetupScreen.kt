@@ -8,6 +8,9 @@ import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import net.asksakis.massdroidv2.data.proximity.WifiMatchMode
+import net.asksakis.massdroidv2.data.proximity.SENSITIVITY_MAX
+import net.asksakis.massdroidv2.data.proximity.SENSITIVITY_MIN
+import net.asksakis.massdroidv2.data.proximity.effectiveSensitivity
 import androidx.compose.foundation.background
 import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.clickable
@@ -286,6 +289,27 @@ fun RoomSetupScreen(
                                         "Use this when BLE coverage is weaker and the room is harder to fingerprint."
                                 }
                             },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            "Sensitivity",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = if (wifiMode != null) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                        Slider(
+                            value = existingRoom.effectiveSensitivity(),
+                            onValueChange = { viewModel.updateRoomSensitivity(existingRoom.id, it) },
+                            valueRange = SENSITIVITY_MIN..SENSITIVITY_MAX,
+                            steps = 9,
+                            enabled = wifiMode == null
+                        )
+                        Text(
+                            "Left = stricter (fewer false matches), right = easier and faster to switch. " +
+                                "Raise it for rooms that are hard to tell apart.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -5,6 +5,7 @@ private const val STRONG_FIT_MIN_MATCH_RATIO = 0.85
 private const val STRONG_FIT_MAX_AVG_DELTA_DBM = 8.0
 
 internal object RoomDecisionPolicy {
+    @Suppress("LongParameterList")
     fun evaluate(
         winnerRoom: RoomConfig,
         winner: RoomFit,
@@ -14,7 +15,8 @@ internal object RoomDecisionPolicy {
         margin: Double,
         startupDetection: Boolean,
         motionActive: Boolean,
-        candidateWinCount: Int
+        candidateWinCount: Int,
+        thresholds: ConfirmThresholds
     ): DetectResult {
         if (winner.expectedPrimaryLocalAnchors > 0 && winner.matchedPrimaryLocalAnchors == 0) {
             return DetectResult.Borderline(
@@ -47,7 +49,9 @@ internal object RoomDecisionPolicy {
         val rules = winnerRoom.detectionPolicy.rules()
         val strongFit = winner.matchesStrongFitCriteria()
 
-        if (!strongFit && confidence < rules.minConfidence) {
+        // Confidence/margin gates come from the per-room sensitivity (see RoomConfig.confirmThresholds);
+        // the policy still provides the evidence/coverage sub-rules (minConsecutiveWins below, etc.).
+        if (!strongFit && confidence < thresholds.minConfidence) {
             return DetectResult.Borderline(
                 winner = winnerDetected,
                 confidence = confidence,
@@ -55,7 +59,7 @@ internal object RoomDecisionPolicy {
                 reason = "low-confidence"
             )
         }
-        if (!strongFit && runnerUpPresent && margin < rules.minMargin) {
+        if (!strongFit && runnerUpPresent && margin < thresholds.minMargin) {
             return DetectResult.Borderline(
                 winner = winnerDetected,
                 confidence = confidence,

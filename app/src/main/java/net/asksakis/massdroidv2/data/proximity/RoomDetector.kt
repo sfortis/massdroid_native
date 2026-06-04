@@ -118,8 +118,7 @@ class RoomDetector @Inject constructor() {
             eligibleRooms = eligibleRooms,
             scanResults = scanResults,
             roomPrimaryBleAnchors = roomPrimaryBleAnchors,
-            wifi = wifi,
-            config = config
+            wifi = wifi
         )
 
         if (roomFits.isEmpty()) {
@@ -178,7 +177,8 @@ class RoomDetector @Inject constructor() {
             margin = margin,
             startupDetection = _currentRoom.value == null,
             motionActive = motionActive,
-            candidateWinCount = candidateWinCount
+            candidateWinCount = candidateWinCount,
+            thresholds = winnerRoom.confirmThresholds()
         )
         if (decision !is DetectResult.Confirmed) {
             consecutiveWinnerId = winnerId
@@ -277,8 +277,7 @@ class RoomDetector @Inject constructor() {
         eligibleRooms: List<RoomConfig>,
         scanResults: Map<String, Int>,
         roomPrimaryBleAnchors: Map<String, Set<String>>,
-        wifi: WifiMatchContext,
-        config: ProximityConfig
+        wifi: WifiMatchContext
     ): List<RoomFit> {
         val roomFits = mutableListOf<RoomFit>()
         for (room in eligibleRooms) {
@@ -286,7 +285,7 @@ class RoomDetector @Inject constructor() {
             val bleMatched = scanResults.keys.count { it in primaryAnchors }
             if (bleMatched < room.detectionPolicy.rules().minBleCoverage) continue
 
-            val fit = VectorRoomScorer.score(room.id, scanResults, room.fingerprints, room.beaconProfiles, primaryAnchors, distanceScale = config.detectionTolerance.toDouble())
+            val fit = VectorRoomScorer.score(room.id, scanResults, room.fingerprints, room.beaconProfiles, primaryAnchors)
             roomFits.add(fit.copy(score = adjustedRoomScore(room, fit.score, wifi)))
         }
         return roomFits

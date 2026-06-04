@@ -65,6 +65,8 @@ import androidx.lifecycle.Lifecycle
 import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
+import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
+import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
 import net.asksakis.massdroidv2.domain.model.Player
@@ -175,38 +177,43 @@ fun ProximitySettingsScreen(
             if (config.enabled) {
                 HorizontalDivider()
                 ListItem(
-                    headlineContent = { Text("Auto-transfer") },
-                    supportingContent = { Text("Transfer playback automatically instead of asking first.") },
-                    trailingContent = {
-                        Switch(
-                            checked = config.autoTransfer,
-                            onCheckedChange = { viewModel.setAutoTransfer(it) }
-                        )
-                    }
-                )
-
-                ListItem(
-                    headlineContent = { Text("Detection Tolerance") },
+                    headlineContent = { Text("On room change") },
                     supportingContent = {
                         Column {
-                            val label = when {
-                                config.detectionTolerance <= 25f -> "Strict"
-                                config.detectionTolerance <= 45f -> "Normal"
-                                else -> "Relaxed"
+                            val mode = config.effectiveTransferMode()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val options = listOf(
+                                    ProximityTransferMode.ASK to "Ask",
+                                    ProximityTransferMode.AUTO_TRANSFER to "Move here",
+                                    ProximityTransferMode.SELECT_ONLY to "Select only"
+                                )
+                                options.forEach { (m, label) ->
+                                    val selected = mode == m
+                                    androidx.compose.material3.FilterChip(
+                                        selected = selected,
+                                        onClick = { viewModel.setTransferMode(m) },
+                                        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
+                                        leadingIcon = if (selected) {
+                                            { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) }
+                                        } else null,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                "$label (${config.detectionTolerance.toInt()})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            androidx.compose.material3.Slider(
-                                value = config.detectionTolerance,
-                                onValueChange = { viewModel.setDetectionTolerance(it) },
-                                valueRange = 15f..80f,
-                                steps = 12
-                            )
-                            Text(
-                                "How much signal variation to tolerate. Higher = easier match, lower = stricter.",
+                                when (mode) {
+                                    ProximityTransferMode.ASK ->
+                                        "Show a notification to move or play in the detected room."
+                                    ProximityTransferMode.AUTO_TRANSFER ->
+                                        "Move current playback to the room automatically."
+                                    ProximityTransferMode.SELECT_ONLY ->
+                                        "Just select the room's player so its controls (mini player, " +
+                                            "volume keys) are ready. No transfer, no prompt."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

@@ -17,6 +17,8 @@ import net.asksakis.massdroidv2.data.proximity.DetectedRoom
 import net.asksakis.massdroidv2.data.proximity.MotionGate
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
+import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
+import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.proximity.RoomDetector.WifiMatchContext
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -830,6 +832,13 @@ class ProximityController(
 
         playbackController.showRoomDetectedNotification(detected)
 
+        val transferMode = config.effectiveTransferMode()
+        if (transferMode == ProximityTransferMode.SELECT_ONLY) {
+            // Quietly hand the user the room's controls (mini player, volume rocker); no move, no prompt.
+            selectProximityPlayer(detected, "select-only")
+            return
+        }
+
         if (targetIsPlaying) {
             playbackController.applyRoomVolume(detected)
             if (roomConfig?.playbackConfig?.playlistUri != null) {
@@ -842,7 +851,9 @@ class ProximityController(
             return
         }
 
-        if (config.autoTransfer && sourcePlayerId != null && sourcePlayerId != detected.playerId) {
+        if (transferMode == ProximityTransferMode.AUTO_TRANSFER &&
+            sourcePlayerId != null && sourcePlayerId != detected.playerId
+        ) {
             playbackController.applyRoomVolume(detected)
             playbackController.performProximityTransfer(sourcePlayerId, detected)
         } else {
@@ -852,6 +863,18 @@ class ProximityController(
                 sourcePlayerId = sourcePlayerId
             )
         }
+    }
+
+    /** Select the room's player (respecting the BT-A2DP/Sendspin guard and availability). */
+    private fun selectProximityPlayer(detected: DetectedRoom, reason: String) {
+        if (shouldBlockProximitySelectionForBt.invoke()) {
+            Log.d(TAG, "Proximity select skipped ($reason): BT A2DP sendspin active")
+            return
+        }
+        if (!playbackController.isPlayerAvailable(detected.playerId)) return
+        if (playerRepository.selectedPlayer.value?.playerId == detected.playerId) return
+        playerRepository.selectPlayer(detected.playerId)
+        Log.d(TAG, "Proximity selected player ($reason): ${detected.playerName}")
     }
 
     private fun stopEngine() {

@@ -20,6 +20,7 @@ import net.asksakis.massdroidv2.data.proximity.AnchorType
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
+import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.AUTO_FINGERPRINT_CYCLES
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.CALIBRATION_SAMPLES_PER_SCAN_SESSION
 import net.asksakis.massdroidv2.data.proximity.rankBeaconProfilesForDetection
@@ -143,8 +144,8 @@ class ProximityViewModel @Inject constructor(
         viewModelScope.launch { configStore.update { it.copy(enabled = enabled) } }
     }
 
-    fun setAutoTransfer(auto: Boolean) {
-        viewModelScope.launch { configStore.update { it.copy(autoTransfer = auto) } }
+    fun setTransferMode(mode: ProximityTransferMode) {
+        viewModelScope.launch { configStore.update { it.copy(transferMode = mode) } }
     }
 
     fun updateRoomStopOnLeave(roomId: String, enabled: Boolean) {
@@ -181,8 +182,14 @@ class ProximityViewModel @Inject constructor(
         }
     }
 
-    fun setDetectionTolerance(value: Float) {
-        viewModelScope.launch { configStore.update { it.copy(detectionTolerance = value) } }
+    fun updateRoomSensitivity(roomId: String, value: Float) {
+        viewModelScope.launch {
+            configStore.update { config ->
+                config.copy(rooms = config.rooms.map { r ->
+                    if (r.id == roomId) r.copy(sensitivity = value) else r
+                })
+            }
+        }
     }
 
     fun updateRoomWifiMatchMode(roomId: String, mode: WifiMatchMode?) {
