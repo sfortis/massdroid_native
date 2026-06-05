@@ -395,9 +395,22 @@ class SendspinManager(
         timeSyncJob?.cancel()
         val previousOffsetUs = clockSynchronizer.currentOffsetUs()
         if (previousOffsetUs != 0L) {
+            // The server clock reference does not change when we leave/rejoin a
+            // group, so a recently-converged offset is still good on rejoin. If
+            // the prior filter had converged, seed at a TIGHT covariance (~3 ms)
+            // so the playback-start gate (error <= 5 ms) passes immediately,
+            // instead of the wide ~31 ms seed that forces a full re-convergence.
+            // A transient RTT spike at the join moment could otherwise stretch
+            // that re-convergence to 20-30 s of "rebuffering". The tight seed
+            // still lets good-RTT samples pull the offset and effectively ignores
+            // bad-RTT ones (their variance dwarfs the seed). A prior that had NOT
+            // converged keeps the conservative wide seed.
+            val priorConverged = clockSynchronizer.currentSampleCount() >= 8 &&
+                clockSynchronizer.errorUs() in 1L..2_000L
+            val seedCovariance = if (priorConverged) 9_000_000.0 else 1_000_000_000.0
             clockSynchronizer.softReset(
                 previousOffsetUs = previousOffsetUs,
-                initialCovariance = 1_000_000_000.0,
+                initialCovariance = seedCovariance,
             )
             clockSynced = true
         }
