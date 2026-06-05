@@ -725,21 +725,35 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             val drained = drainDecoder(generation)
             if (drained) continue
 
-            val frame = try {
-                frameQueue.poll(10, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                // releaseInternal interrupts us to stop (release / format change).
-                // Exit cleanly instead of crashing the producer thread.
-                break
-            } ?: continue
-            frameQueueBytes.addAndGet(-frame.length.toLong())
+            // A frame held from a previous iteration (codec input buffers were
+            // momentarily full) takes priority over a new one and must not be
+            // dropped, or the FIFO gets a content hole (audible skip, invisible
+            // to underrun; seen on slower decoders like Xiaomi).
+            val frame: EncodedFrame
+            val held = pendingFrame
+            if (held != null) {
+                frame = held
+                pendingFrame = null
+            } else {
+                val polled = try {
+                    frameQueue.poll(10, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    // releaseInternal interrupts us to stop (release / format change).
+                    // Exit cleanly instead of crashing the producer thread.
+                    break
+                } ?: continue
+                frameQueueBytes.addAndGet(-polled.length.toLong())
+                frame = polled
+            }
             if (frame.generation != configureGeneration) continue
 
             if (activeCodec == "pcm") {
                 // writeChunk owns the 24->16 conversion; do not convert here too.
                 writeChunk(frame.serverTimestampUs, frame.data, frame.offset, frame.length, frame.generation, generation)
             } else {
-                queueCodecInput(frame)
+                // Hold + retry instead of dropping when no codec input buffer is
+                // free; draining output below frees the codec to accept it.
+                if (!queueCodecInput(frame)) pendingFrame = frame
                 drainDecoder(generation)
             }
         }
@@ -808,20 +822,30 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         )
     }
 
-    private fun queueCodecInput(frame: EncodedFrame) {
-        synchronized(codecLock) {
+    /**
+     * Queues one encoded frame to the codec input. Returns true if the frame was
+     * consumed (queued, or genuinely unusable/oversized), false if no input
+     * buffer was free and the caller must HOLD and retry the frame, never
+     * dropping it (a dropped frame is a content hole = audible skip, invisible to
+     * the output underrun counter; observed on slower decoders like Xiaomi).
+     */
+    private fun queueCodecInput(frame: EncodedFrame): Boolean {
+        return synchronized(codecLock) {
             // Read the codec INSIDE the lock: a concurrent format change
             // (releaseInternal, also under codecLock) releases it and sets it
             // null, so a ref captured before the lock would be stale/Released.
-            val mc = codec ?: return
+            val mc = codec ?: return@synchronized true
             try {
-                val inputIndex = mc.dequeueInputBuffer(1_000)
-                if (inputIndex < 0) return
-                val input = mc.getInputBuffer(inputIndex) ?: return
+                // 10 ms (was 1 ms): absorb a momentarily-busy decoder without
+                // bouncing. The native ring (~2.5 s) covers this producer stall,
+                // and a false return makes the caller retry rather than drop.
+                val inputIndex = mc.dequeueInputBuffer(10_000)
+                if (inputIndex < 0) return@synchronized false
+                val input = mc.getInputBuffer(inputIndex) ?: return@synchronized false
                 input.clear()
                 if (frame.length > input.remaining()) {
                     Log.w(TAG, "Oversized $activeCodec frame dropped: ${frame.length}B")
-                    return
+                    return@synchronized true
                 }
                 input.put(frame.data, frame.offset, frame.length)
                 decoderMarks.addLast(DecoderMark(frame.serverTimestampUs, frame.generation))
@@ -830,7 +854,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                 // Codec reconfigured/released out from under us (defensive: the
                 // join in releaseInternal should normally prevent this).
                 Log.w(TAG, "queueCodecInput skipped: codec not executing (${e.message})")
-                return
+                return@synchronized true
             }
             if (receivedFrameCount <= 8 || receivedFrameCount % 500 == 0L) {
                 Log.d(
@@ -839,8 +863,14 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                         "payload=${frame.length}B marks=${decoderMarks.size} gen=${frame.generation}"
                 )
             }
+            true
         }
     }
+
+    // A decoded-stream frame that could not be queued to the codec yet (input
+    // buffers momentarily full on a slow decoder). Held and retried next
+    // iteration instead of dropped; dropping punched audible content holes.
+    private var pendingFrame: EncodedFrame? = null
 
     private fun drainDecoder(generation: Long): Boolean {
         if (codec == null) return false
