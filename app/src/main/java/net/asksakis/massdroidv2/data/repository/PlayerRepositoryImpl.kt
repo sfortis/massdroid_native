@@ -127,15 +127,20 @@ class PlayerRepositoryImpl @Inject constructor(
     @Volatile private var selectedPlayerId: String? = null
 
     /**
-     * When the selected player is a member of a group (activeGroup != null),
-     * the authoritative queue events arrive under the group's ID, not the
-     * member's. Resolve to whichever one the server is actually pushing
-     * updates for so Now Playing / mini-player keep updating in group mode.
+     * When the selected player is a synced group member, the authoritative
+     * queue/time events arrive under the GROUP LEADER's id, not the member's,
+     * and the member's OWN queue is stale (often stuck at end-of-track -> the
+     * seek bar pins to the end). MA frequently leaves `active_group` null on
+     * children, so resolve in order: synced_to (the leader = the group queue id)
+     * -> active_group -> own id. The leader itself has synced_to/active_group
+     * null and correctly resolves to its own id.
      */
     private fun effectiveQueueId(): String? {
         val id = selectedPlayerId ?: return null
         val player = _players.value.find { it.playerId == id }
-        return player?.activeGroup?.takeIf { it.isNotEmpty() } ?: id
+        return player?.syncedTo?.takeIf { it.isNotEmpty() }
+            ?: player?.activeGroup?.takeIf { it.isNotEmpty() }
+            ?: id
     }
     @Volatile private var pendingRestoredPlayerId: String? = null
 
