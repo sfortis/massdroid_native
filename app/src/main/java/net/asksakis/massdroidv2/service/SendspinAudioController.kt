@@ -938,21 +938,33 @@ class SendspinAudioController(
                         sendspinManager.pauseAudio()
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                        Log.d(TAG, "Audio focus lost transiently")
                         hasAudioFocus = false
                         if (isStreaming) {
-                            // FREEZE (preserve the buffer) for BOTH solo and
-                            // grouped instead of flushing. After a flush the
-                            // server continues from its look-ahead pointer and
-                            // never resends the current position, so the resume
-                            // was left holding only future audio and the grouped
-                            // snap waited out tens of seconds of silence. Freezing
-                            // keeps the buffer; on regain solo resumes from the
-                            // freeze point, while grouped skips forward to the live
-                            // group position (still buffered for normal-length
-                            // interruptions) under the mute. See unfreezeOutput.
-                            outputFrozenForFocus = true
-                            sendspinManager.freezeOutput()
+                            if (isInActiveCall()) {
+                                // PHONE CALL: freeze (preserve the buffer) instead
+                                // of flushing. After a flush the server continues
+                                // from its look-ahead pointer and never resends the
+                                // current position, so the resume held only future
+                                // audio and the grouped snap waited out tens of
+                                // seconds of silence. Freezing keeps the buffer; on
+                                // regain solo resumes from the freeze point, grouped
+                                // skips forward to the live group position under the
+                                // mute. See unfreezeOutput.
+                                Log.d(TAG, "Audio focus lost transiently (active call): freezing")
+                                outputFrozenForFocus = true
+                                sendspinManager.freezeOutput()
+                            } else {
+                                // SHORT non-call interruption (notification ping,
+                                // nav prompt): just DUCK. Freezing here stopped and
+                                // reopened the Oboe stream, which on some HALs
+                                // re-routed playback to the EARPIECE, and if the
+                                // follow-up AUDIOFOCUS_GAIN was delayed it left
+                                // playback muted long after the ping ended. Ducking
+                                // keeps the stream alive and routed; restoreVolume()
+                                // on GAIN brings the level back.
+                                Log.d(TAG, "Audio focus lost transiently (no call): ducking")
+                                sendspinManager.duck()
+                            }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
