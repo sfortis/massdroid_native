@@ -88,6 +88,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         private const val SYNC_STARTUP_MUTE_MS = 350L
         private const val DIRECT_STARTUP_MUTE_MS = 200L
         private const val SYNC_SAMPLE_CALLBACK_MS = 1_000L
+        // Bounded backstop for the fresh-stream gate. expectDiscontinuity arms
+        // the gate expecting MA to open a fresh stream (configure()/clearBuffer()
+        // clears it). If MA instead keeps feeding the SAME stream and that signal
+        // never comes, the gate would drop every frame forever (silent freeze).
+        // Once gated frames keep arriving past this window the server is clearly
+        // continuing the stream, so accept it. Comfortably above a real track
+        // transition (~1 s) and a measured seek restart (~2 s) so it never
+        // pre-empts a legitimate fresh stream.
+        private const val GATE_FRESH_STREAM_TIMEOUT_MS = 4_000L
     }
 
     // Holds the raw WS frame (header included) with an offset/length view of
@@ -173,12 +182,17 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     // so a reopen mid-freeze (phone call) must re-apply it or the preserved
     // buffer would play out into the still-preempted route and be lost.
     @Volatile private var outputFrozen = false
-    // Set on a local track-change discontinuity (next/previous): the server
-    // keeps sending the OLD track's frames until it processes the skip, and
+    // Set on any local discontinuity (next/previous AND seek): the server keeps
+    // sending the OLD position's frames until it processes the command, and
     // those in-flight frames would otherwise be accepted and briefly play the
-    // previous track. Drop all frames until the server's fresh stream/start
-    // (configure) arrives. NOT set for seek, which stays on the same stream.
+    // pre-discontinuity audio. Drop all frames until the server's fresh
+    // stream/start (configure) or stream/clear (clearBuffer) arrives.
+    // [GATE_FRESH_STREAM_TIMEOUT_MS] is the bounded backstop for the case where
+    // that signal never comes (server continues the same stream).
     @Volatile private var awaitingFreshStream = false
+    // Wall-clock instant the gate was armed; drives the timeout backstop. 0 when
+    // the gate is clear.
+    @Volatile private var awaitingFreshStreamSinceMs = 0L
     @Volatile private var paused = false
     @Volatile private var configureGeneration = 0L
     @Volatile private var playbackGeneration = 0L
@@ -273,6 +287,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         configureGeneration++
         cancelIdleStop()
         awaitingFreshStream = false
+        awaitingFreshStreamSinceMs = 0L
         startupWaitStartedMs = 0L
         // A stream/start means the server is actively streaming again. Resume
         // can arrive as stream/start (not setPaused(false)), so we must clear
@@ -319,8 +334,32 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
 
     override fun currentConfigureGeneration(): Long = configureGeneration
 
+    /**
+     * Bounded backstop for the fresh-stream gate. The gate clears normally on
+     * configure() (stream/start) or clearBuffer() (stream/clear). Here we time
+     * from the FIRST gated frame: if frames keep arriving and getting dropped
+     * for [GATE_FRESH_STREAM_TIMEOUT_MS] with neither signal, the server is
+     * continuing the same stream (e.g. a no-op queue next on a single-item
+     * audiobook), so stop dropping and accept it. Called on the WS binary thread
+     * only while [awaitingFreshStream] is set.
+     */
+    private fun freshStreamGateExpired(): Boolean {
+        val now = System.currentTimeMillis()
+        val since = awaitingFreshStreamSinceMs
+        if (since == 0L) {
+            awaitingFreshStreamSinceMs = now
+            return false
+        }
+        if (now - since < GATE_FRESH_STREAM_TIMEOUT_MS) return false
+        Log.w(TAG, "Fresh-stream gate timeout (${now - since}ms, no configure/clear) — accepting continued stream")
+        awaitingFreshStream = false
+        awaitingFreshStreamSinceMs = 0L
+        return true
+    }
+
     override fun onBinaryMessage(data: ByteArray, generation: Long) {
-        if (!configured || paused || generation != configureGeneration || awaitingFreshStream) return
+        if (!configured || paused || generation != configureGeneration) return
+        if (awaitingFreshStream && !freshStreamGateExpired()) return
         if (data.size <= HEADER_SIZE || data[0].toInt() != TYPE_PLAYER_AUDIO) return
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
@@ -423,6 +462,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // frames again. expectDiscontinuity re-arms the gate after this for a
         // track change (next/previous), where a new stream/start is expected.
         awaitingFreshStream = false
+        awaitingFreshStreamSinceMs = 0L
         flushQueuesAndDecoder()
         playbackStarted = false
         startupWaitStartedMs = 0L

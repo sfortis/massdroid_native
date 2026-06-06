@@ -57,6 +57,14 @@ class PlayerRepositoryImpl @Inject constructor(
         // the next item instead of issuing a Sendspin stream/clear, so this
         // margin is what keeps the current track playing on a seek-to-end.
         private const val SEEK_END_MARGIN_S = 1.0
+        // Audiobook chapter navigation (external transport controls). A press
+        // already past this many seconds into the current chapter rewinds to
+        // the chapter start instead of jumping to the previous chapter (matches
+        // the in-app NowPlaying behavior).
+        private const val PREVIOUS_CHAPTER_RESTART_THRESHOLD_S = 3.0
+        // Tolerance so a position sampled exactly at a chapter boundary resolves
+        // to that chapter, not the one before it.
+        private const val CHAPTER_BOUNDARY_EPSILON_S = 0.001
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -1277,6 +1285,7 @@ class PlayerRepositoryImpl @Inject constructor(
         blockedArtistUrisSnapshot.isNotEmpty()
 
     override suspend fun next(playerId: String) {
+        if (audiobookChapterSkip(playerId, forward = true)) return
         Log.d("sendspindbg", "WS>>> next($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))
@@ -1284,10 +1293,51 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun previous(playerId: String) {
+        if (audiobookChapterSkip(playerId, forward = false)) return
         Log.d("sendspindbg", "WS>>> previous($playerId)")
         maybeRecordManualSkip(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.PREVIOUS))
         playerCmd("previous", playerId)
+    }
+
+    /**
+     * An audiobook is ONE queue item; chapters are seek targets within it. A
+     * queue next/previous on it has no next item, so MA never opens a fresh
+     * stream and the Sendspin gate ([awaitingFreshStream]) wedges -> frozen
+     * playback. External transport controls (Android Auto, MediaSession, AVRCP,
+     * watch, voice) call next()/previous() directly, so route them to a chapter
+     * seek here, matching the in-app NowPlaying behavior. The in-app screen
+     * already calls its own chapter navigation, so it never reaches this path.
+     *
+     * Returns true when the current item is an audiobook (handled here; caller
+     * must NOT fall through to the queue command). A skip past the last chapter
+     * (or on an audiobook with no chapter marks) is a deliberate no-op rather
+     * than a queue advance, so it can never trigger the wedge.
+     */
+    private suspend fun audiobookChapterSkip(playerId: String, forward: Boolean): Boolean {
+        val track = _queueState.value?.currentItem?.track ?: return false
+        if (track.mediaType != MediaType.AUDIOBOOK) return false
+        val chapters = track.chapters
+        if (chapters.isEmpty()) return true
+        val elapsed = _elapsedTime.value
+        val current = chapters.indexOfLast { elapsed + CHAPTER_BOUNDARY_EPSILON_S >= it.start }.coerceAtLeast(0)
+        val targetStart: Double? = if (forward) {
+            chapters.getOrNull(current + 1)?.start
+        } else {
+            val restartCurrent = current > 0 &&
+                elapsed - chapters[current].start > PREVIOUS_CHAPTER_RESTART_THRESHOLD_S
+            val target = when {
+                current == 0 -> 0
+                restartCurrent -> current
+                else -> current - 1
+            }
+            chapters[target].start
+        }
+        targetStart?.let {
+            Log.d("sendspindbg", "audiobook ${if (forward) "next" else "previous"} chapter -> seek ${it}s")
+            seek(playerId, it)
+        }
+        return true
     }
 
     override suspend fun seek(playerId: String, position: Double) {
