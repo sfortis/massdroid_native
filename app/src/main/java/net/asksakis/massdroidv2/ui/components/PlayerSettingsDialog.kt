@@ -145,9 +145,10 @@ fun PlayerSettingsDialog(
             volumeNormalization = loaded.volumeNormalization
             formatOptions = loaded.sendspinFormatOptions
             selectedFormatValue = loaded.sendspinFormat
-            if (!isLocalPlayer && loaded.sendspinStaticDelayMs != null) {
+            val loadedStaticDelay = loaded.sendspinStaticDelayMs
+            if (!isLocalPlayer && loadedStaticDelay != null) {
                 hasServerStaticDelay = true
-                staticDelayMs = loaded.sendspinStaticDelayMs
+                staticDelayMs = loadedStaticDelay
             }
             if (!isLocalPlayer && loaded.sendspinSyncDelayKey != null) {
                 hasServerSyncDelay = true

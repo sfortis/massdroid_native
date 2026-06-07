@@ -1639,8 +1639,9 @@ class DiscoverViewModel @Inject constructor(
 
         val trackGenresByArtist = mutableMapOf<String, List<String>>()
         for (item in items) {
-            val name = item.track?.artistNames?.split(",")?.firstOrNull()?.trim() ?: continue
-            val genres = item.track.genres
+            val track = item.track ?: continue
+            val name = track.artistNames.split(",").firstOrNull()?.trim() ?: continue
+            val genres = track.genres
             if (genres.isNotEmpty() && name.lowercase() !in trackGenresByArtist) {
                 trackGenresByArtist[name.lowercase()] = genres
             }

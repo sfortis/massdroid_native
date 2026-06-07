@@ -334,8 +334,10 @@ fun LibraryScreen(
                         imageUrl = { it.imageUrl },
                         favorite = { it.favorite },
                         onClick = { track ->
-                            if (track.albumItemId != null && track.albumProvider != null) {
-                                onAlbumClick(Album(itemId = track.albumItemId, provider = track.albumProvider, name = track.albumName, uri = ""))
+                            val albumItemId = track.albumItemId
+                            val albumProvider = track.albumProvider
+                            if (albumItemId != null && albumProvider != null) {
+                                onAlbumClick(Album(itemId = albumItemId, provider = albumProvider, name = track.albumName, uri = ""))
                             } else {
                                 viewModel.playTrack(track)
                             }

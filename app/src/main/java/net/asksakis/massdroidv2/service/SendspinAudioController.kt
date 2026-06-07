@@ -321,9 +321,10 @@ class SendspinAudioController(
         lastGroupJoinRelockAtMs = now
 
         val targetPlayerId = player.activeGroup ?: player.playerId
+        val mediaElapsed = player.currentMedia?.elapsedTime
         val positionSec = when {
             currentPositionMs > 0L -> currentPositionMs / 1000.0
-            player.currentMedia?.elapsedTime != null -> player.currentMedia.elapsedTime
+            mediaElapsed != null -> mediaElapsed
             else -> playerRepository.elapsedTime.value
         }.coerceAtLeast(0.0)
 

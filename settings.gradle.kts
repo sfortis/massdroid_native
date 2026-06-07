@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "MassDroidV2"
 include(":app")
 include(":auto")
+include(":core")
