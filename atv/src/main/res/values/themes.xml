@@ -1,0 +1,7 @@
+<resources>
+    <!-- Platform dark, no action bar. Compose draws everything; this just gives
+         a sane window background before the first frame. -->
+    <style name="Theme.MassDroidTv" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

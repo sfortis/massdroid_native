@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#1B1B2F"
+        android:pathData="M0,0 L320,0 L320,180 L0,180 Z" />
+    <!-- open book / library glyph, centered -->
+    <group android:translateX="112" android:translateY="58">
+        <path
+            android:fillColor="#7C9CFF"
+            android:pathData="M4,8 C30,2 78,2 96,16 L96,66 C78,52 30,52 4,58 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M104,16 C122,2 170,2 196,8 L196,58 C170,52 122,52 104,66 Z" />
+    </group>
+</vector>
