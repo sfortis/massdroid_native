@@ -61,6 +61,10 @@ class SendspinAudioController(
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
+    // Name this device registers under as a Sendspin player. Defaults to
+    // "MassDroid" (phone); other front-ends (e.g. Android TV) override it so the
+    // players are distinguishable in Music Assistant.
+    private val clientName: String = "MassDroid",
     private val onMetadataChanged: (SendspinMetadata) -> Unit,
     private val onStateChanged: (ready: Boolean, streaming: Boolean, playing: Boolean) -> Unit
 ) {
@@ -666,7 +670,7 @@ class SendspinAudioController(
                 // for car BT and we don't want that echoed into MA).
                 val seedVolume = volumeCoordinator.seedStartupVolume()
                 sendspinManager.setVolume(seedVolume)
-                sendspinManager.start(clientId, "MassDroid", buildCredentialsProvider())
+                sendspinManager.start(clientId, clientName, buildCredentialsProvider())
                 Log.d(TAG, "Sendspin started, playerId=$clientId seedVol=$seedVolume")
             } else {
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")

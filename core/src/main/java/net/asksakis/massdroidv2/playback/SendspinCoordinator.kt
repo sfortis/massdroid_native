@@ -41,6 +41,8 @@ class SendspinCoordinator(
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: SendspinVolumeCoordinator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
+    // Sendspin player name for this device; defaults to "MassDroid" (phone).
+    private val clientName: String = "MassDroid",
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
     private val onActive: (reason: String) -> Unit,
@@ -103,6 +105,7 @@ class SendspinCoordinator(
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = volumeCoordinator,
+            clientName = clientName,
             onMetadataChanged = { _ -> },
             onStateChanged = { _, _, _ -> onConnectionStateChanged() }
         )
