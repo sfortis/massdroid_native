@@ -3,6 +3,8 @@ package net.asksakis.massdroidv2.tv
 import android.app.Application
 import android.security.KeyChain
 import android.util.Log
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +22,7 @@ import javax.inject.Inject
  * intentionally NOT here; the TV adds its own foreground Sendspin player service.
  */
 @HiltAndroidApp
-class TvApp : Application() {
+class TvApp : Application(), ImageLoaderFactory {
 
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
@@ -54,6 +56,14 @@ class TvApp : Application() {
             wsClient.markStartupReady()
         }
     }
+
+    /** Load artwork through the same authenticated/mTLS-aware OkHttp client as
+     *  the WS connection, mirroring the phone app. */
+    override fun newImageLoader(): ImageLoader =
+        ImageLoader.Builder(this)
+            .okHttpClient { wsClient.getHttpClient() }
+            .crossfade(true)
+            .build()
 
     private companion object {
         const val TAG = "TvApp"
