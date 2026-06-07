@@ -339,7 +339,15 @@ class PlayerRepositoryImpl @Inject constructor(
                     val serverPlayer = event.data?.let {
                         json.decodeFromJsonElement<ServerPlayer>(it)
                     } ?: return@collect
-                    val trackImg = queueTracking[serverPlayer.playerId]?.track?.imageUrl
+                    // Use the cached queue-track image ONLY when it belongs to the
+                    // track now playing. A PLAYER_UPDATED can arrive before the
+                    // matching QUEUE_UPDATED refreshes queueTracking, so a blind
+                    // cache read would pin the PREVIOUS track's art on the new
+                    // track (fresh title/artist, stale image). Mismatch -> fall
+                    // back to the player's own fresh image in toDomain.
+                    val trackImg = queueTracking[serverPlayer.playerId]
+                        ?.takeIf { it.track.uri == serverPlayer.currentMedia?.uri }
+                        ?.track?.imageUrl
                     var player = serverPlayer.toDomain(wsClient, trackImg)
                     if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
                         Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
@@ -1102,9 +1110,14 @@ class PlayerRepositoryImpl @Inject constructor(
             val result = wsClient.sendCommand(MaCommands.Players.ALL)
             val serverPlayers = result?.let { json.decodeFromJsonElement<List<ServerPlayer>>(it) } ?: emptyList()
             Log.d(TAG, "Loaded ${serverPlayers.size} players")
-            val fromServer = serverPlayers.map {
-                val trackImg = queueTracking[it.playerId]?.track?.imageUrl
-                it.toDomain(wsClient, trackImg)
+            val fromServer = serverPlayers.map { sp ->
+                // Only trust the cached queue-track image when it matches the
+                // track currently playing (see PLAYER_UPDATED note); else use the
+                // player's own fresh image so art never lags a track change.
+                val trackImg = queueTracking[sp.playerId]
+                    ?.takeIf { it.track.uri == sp.currentMedia?.uri }
+                    ?.track?.imageUrl
+                sp.toDomain(wsClient, trackImg)
             }
             // Merge: server snapshot + recently event-added players not yet in snapshot
             val serverIds = fromServer.map { it.playerId }.toSet()
