@@ -360,6 +360,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     override fun onBinaryMessage(data: ByteArray, generation: Long) {
         if (!configured || paused || generation != configureGeneration) return
         if (awaitingFreshStream && !freshStreamGateExpired()) return
+        // Fresh frames on a still-active stream after a power-save idle stop must
+        // wake the output + producer; otherwise they pile up undrained (buffer
+        // climbs to the ceiling) and playback never resumes. ensureOutputRunning
+        // is a no-op once already running.
+        if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
         if (data.size <= HEADER_SIZE || data[0].toInt() != TYPE_PLAYER_AUDIO) return
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
