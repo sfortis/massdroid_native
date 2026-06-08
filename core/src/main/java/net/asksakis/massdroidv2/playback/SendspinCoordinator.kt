@@ -341,6 +341,9 @@ class SendspinCoordinator(
                         it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
                     }?.productName
                     autoSelectSendspinForBt("bt_device_added", deviceName)
+                    // Start playback on connect (gated on no active call/meeting,
+                    // inside the controller). Only when Sendspin is the active path.
+                    if (isActive) controller?.autoPlayOnBtConnect()
                 }
             }
         }

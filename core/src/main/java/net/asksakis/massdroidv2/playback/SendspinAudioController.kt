@@ -74,6 +74,16 @@ class SendspinAudioController(
         private const val GROUP_JOIN_RELOCK_COOLDOWN_MS = 5_000L
         private const val GROUP_SOLO_STARTUP_GRACE_MS = 5_000L
         private const val GROUPED_SENDSPIN_FORMAT = "flac:48000:16:2"
+        // External-sink loss is silenced instantly but the real pause waits this
+        // long; a car BT connect/handshake flap returns to BT within ~3s, so the
+        // window must outlast it to treat the flap as transient (not a disconnect).
+        private const val ROUTE_LOSS_SETTLE_MS = 4_000L
+        // BT-connect auto-play waits for the route to actually settle on BT (no
+        // route change across the quiet window) rather than a fixed delay, since
+        // the A2DP connect handshake flaps speaker<->bt for a few seconds.
+        private const val BT_STABILIZE_TIMEOUT_MS = 12_000L
+        private const val BT_STABILIZE_QUIET_MS = 1_200L
+        private const val BT_STABILIZE_POLL_MS = 250L
     }
 
     private val exceptionHandler = CoroutineExceptionHandler { _, e ->
@@ -89,59 +99,88 @@ class SendspinAudioController(
     // (buffer preserved) rather than flushing it. The next focus regain unfreezes
     // and resumes instantly from the intact buffer. Cleared on regain, permanent
     // loss, and stop().
-    @Volatile private var outputFrozenForFocus = false
+    // Composable output freeze: focus interruptions (phone calls) and transient
+    // route losses (BT connect/handshake flap) can both freeze the output. Each
+    // owns a reason; the engine stays frozen until the LAST reason clears, so the
+    // two never fight (e.g. a call ending mid BT-flap won't unfreeze prematurely).
+    private val freezeReasons = mutableSetOf<String>()
 
-    // Noisy audio receiver (headset unplug)
+    @Synchronized
+    private fun freezeOutput(reason: String) {
+        val wasEmpty = freezeReasons.isEmpty()
+        if (freezeReasons.add(reason) && wasEmpty) {
+            sendspinManager.freezeOutput()
+        }
+    }
+
+    /** @return true if [reason] was actually holding a freeze. */
+    @Synchronized
+    private fun unfreezeOutput(reason: String): Boolean {
+        if (!freezeReasons.remove(reason)) return false
+        if (freezeReasons.isEmpty()) sendspinManager.unfreezeOutput()
+        return true
+    }
+
+    @Synchronized
+    private fun clearAllFreezes() {
+        if (freezeReasons.isNotEmpty()) {
+            freezeReasons.clear()
+            sendspinManager.unfreezeOutput()
+        }
+    }
+
+    // Noisy audio receiver: fires just before audio would re-route to the phone
+    // speaker (BT/headset leaving). On a real disconnect we must not leak audio to
+    // the speaker; on a transient connect/handshake flap (the car's A2DP link
+    // settling) the route returns within seconds. Both funnel through the settle
+    // gate, which silences instantly but only commits a real pause on durable loss.
     private var noisyReceiverRegistered = false
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                Log.d(TAG, "Audio becoming noisy (headset unplugged), pausing")
-                val id = sendspinPlayerId ?: return
-                // The connect-time bt->speaker flap fires this too; arm the
-                // volume-push suppression so the transient STREAM_MUSIC swing
-                // isn't mirrored to the MA player volume.
+                if (sendspinPlayerId == null) return
+                Log.d(TAG, "Audio becoming noisy -> route-loss settle")
                 volumeCoordinator.onOutputRouteChanging()
-                _userIntent.value = false
-                sendspinManager.pauseAudio()
-                scope.launch { playerRepository.pause(id) }
+                beginRouteLossSettle(++routeChangeGeneration)
             }
         }
     }
 
-    // Audio route detection: uses AudioTrack.getRoutedDevice() as canonical source
-    @Volatile private var currentOutputRoute = "unknown"
+    // Audio route detection: uses the live stream's routed device as canonical source.
+    @Volatile private var currentRoute = OutputRoute.UNKNOWN
     @Volatile private var currentBtRouteKey = ""
     @Volatile private var routeChangeGeneration = 0L
+    private var routeSettleJob: Job? = null
+    @Volatile private var mutedForRouteSettle = false
     private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
         override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
     }
 
-    private fun classifyDeviceType(type: Int): String = when (type) {
+    private fun classifyDeviceType(type: Int): OutputRoute = when (type) {
         android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
         android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> "bt"
+        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> OutputRoute.BT
         android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> OutputRoute.WIRED
         android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> "usb"
-        else -> "speaker"
+        android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> OutputRoute.USB
+        else -> OutputRoute.SPEAKER
     }
 
-    private fun resolveOutputRoute(): String {
-        // Primary: ask the actual AudioTrack where it's routing (canonical truth)
+    private fun resolveOutputRoute(): OutputRoute {
+        // Primary: ask the actual stream where it's routing (canonical truth)
         sendspinManager.getRoutedDeviceType()?.let { return classifyDeviceType(it) }
         // Fallback: heuristic from connected devices
         @Suppress("DEPRECATION")
-        if (audioManager.isBluetoothA2dpOn) return "bt"
+        if (audioManager.isBluetoothA2dpOn) return OutputRoute.BT
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         return when {
             devices.any { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET } -> "wired"
+                it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET } -> OutputRoute.WIRED
             devices.any { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
-                it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE } -> "usb"
-            else -> "speaker"
+                it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE } -> OutputRoute.USB
+            else -> OutputRoute.SPEAKER
         }
     }
 
@@ -150,37 +189,31 @@ class SendspinAudioController(
 
     private fun checkRouteChange() {
         val newRoute = resolveOutputRoute()
-        val routeChanged = newRoute != currentOutputRoute
-        if (routeChanged) {
-            val oldRoute = currentOutputRoute
-            currentOutputRoute = newRoute
-            // Tell the volume coordinator a route transition is underway so it
-            // stops mirroring STREAM_MUSIC to MA during the bt->speaker->bt
-            // connect flap. Android serves a different per-route STREAM_MUSIC
-            // level on each flap; without this the Sendspin player volume gets
-            // overwritten with the phone-speaker baseline on every car connect.
+        if (newRoute != currentRoute) {
+            val oldRoute = currentRoute
+            currentRoute = newRoute
+            // Tell the volume coordinator a route transition is underway so it stops
+            // mirroring STREAM_MUSIC to MA during the bt->speaker->bt connect flap
+            // (Android serves a different per-route STREAM_MUSIC level each flap).
             volumeCoordinator.onOutputRouteChanging()
             val gen = ++routeChangeGeneration
             Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
-            if (oldRoute == "bt" && newRoute == "speaker") {
-                pauseForBtSpeakerFallback()
-                return
+            when {
+                // Lost an external sink to the phone speaker: do NOT pause yet. Mute
+                // + freeze and settle — the car's handshake flap returns to BT within
+                // seconds; only a durable loss becomes a real pause.
+                oldRoute.isExternal && newRoute == OutputRoute.SPEAKER ->
+                    beginRouteLossSettle(gen)
+                // (Re)gained an external route: cancel any pending loss, unmute +
+                // unfreeze (resumes instantly from the preserved buffer), then relock.
+                newRoute.isExternal -> {
+                    endRouteLossSettle()
+                    relockForRoute(oldRoute, newRoute, gen)
+                }
+                else -> relockForRoute(oldRoute, newRoute, gen)
             }
-            // Resolve correction and notify engine atomically: set correction BEFORE
-            // onOutputRouteChanged so the engine relocks with the correct value.
-            // Generation guard: if another route change arrives before this coroutine
-            // runs, discard the stale result to prevent out-of-order application.
-            scope.launch {
-                if (gen != routeChangeGeneration) return@launch  // superseded
-                val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
-                if (gen != routeChangeGeneration) return@launch  // superseded during resolve
-                sendspinManager.setRouteAcousticExtraUs(correctionUs)
-                sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
-                currentBtRouteKey = if (newRoute == "bt") resolveBtRouteKey() else ""
-            }
-        } else if (newRoute == "bt") {
-            // Same route type but maybe different BT device (bt:A -> bt:B).
-            // Use route-key state, not correction value: valid uncalibrated routes can be 0ms.
+        } else if (newRoute == OutputRoute.BT) {
+            // Same route type but maybe a different BT device (bt:A -> bt:B).
             val routeKey = resolveBtRouteKey()
             if (routeKey != currentBtRouteKey) {
                 volumeCoordinator.onOutputRouteChanging()
@@ -198,15 +231,77 @@ class SendspinAudioController(
         }
     }
 
-    private fun pauseForBtSpeakerFallback() {
+    /** Apply the per-route acoustic correction and relock the engine (gen-guarded). */
+    private fun relockForRoute(oldRoute: OutputRoute, newRoute: OutputRoute, gen: Long) {
+        scope.launch {
+            if (gen != routeChangeGeneration) return@launch  // superseded
+            val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
+            if (gen != routeChangeGeneration) return@launch  // superseded during resolve
+            sendspinManager.setRouteAcousticExtraUs(correctionUs)
+            sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
+            currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
+        }
+    }
+
+    // ===== Output-loss settle: transient route flap vs durable disconnect =====
+    //
+    // External-sink loss is silenced instantly (mute + freeze: no phone-speaker
+    // leak, buffer preserved) but the real pause is deferred by ROUTE_LOSS_SETTLE_MS.
+    // If the route returns to an external sink within the window it was just a
+    // connect/handshake flap and we unfreeze (no server round-trip, _userIntent
+    // untouched). If the window elapses still on speaker it is a real disconnect and
+    // we commit the pause. This replaces the old "pause + clear userIntent on every
+    // transient blip", which left audio stuck paused ~1-in-2 car connects.
+
+    private fun beginRouteLossSettle(gen: Long) {
         val id = sendspinPlayerId ?: return
-        Log.d(TAG, "Bluetooth output disconnected, pausing Sendspin to avoid phone-speaker fallback")
+        if (!mutedForRouteSettle) {
+            mutedForRouteSettle = true
+            sendspinManager.setMuted(true)
+            freezeOutput("route")
+            Log.d(TAG, "Output loss suspected -> mute+freeze, settling ${ROUTE_LOSS_SETTLE_MS}ms")
+        }
+        routeSettleJob?.cancel()
+        routeSettleJob = scope.launch {
+            delay(ROUTE_LOSS_SETTLE_MS)
+            if (gen != routeChangeGeneration) return@launch  // a newer route event owns the state
+            if (resolveOutputRoute().isExternal) {
+                endRouteLossSettle()  // returned without a distinct callback (defensive)
+            } else {
+                commitDurableRouteLoss(id)
+            }
+        }
+    }
+
+    /** Transient flap resolved: unmute + unfreeze, resuming from the intact buffer. */
+    private fun endRouteLossSettle() {
+        routeSettleJob?.cancel()
+        routeSettleJob = null
+        if (mutedForRouteSettle) {
+            mutedForRouteSettle = false
+            unfreezeOutput("route")
+            sendspinManager.setMuted(false)
+            Log.d(TAG, "Output route settled back -> unmute+unfreeze")
+        }
+    }
+
+    private fun commitDurableRouteLoss(id: String) {
+        routeSettleJob = null
+        Log.d(TAG, "Durable output loss (off external sink) -> pausing Sendspin")
+        // Pause first so output is stopped, THEN clear the freeze/mute so the paused
+        // stream is left clean (a later play is neither frozen nor muted) without a
+        // window where the unfrozen-but-unpaused stream could leak to the speaker.
         _userIntent.value = false
         sendspinManager.pauseAudio()
+        unfreezeOutput("route")
+        if (mutedForRouteSettle) {
+            mutedForRouteSettle = false
+            sendspinManager.setMuted(false)
+        }
         scope.launch { playerRepository.pause(id) }
     }
 
-    private suspend fun resolveAcousticCorrectionForRoute(route: String): Long {
+    private suspend fun resolveAcousticCorrectionForRoute(route: OutputRoute): Long {
         return when (route) {
             // Phone speaker: normally the in-device sync model trusts the
             // platform's reported output latency (getOutputLatency), which is
@@ -218,14 +313,14 @@ class SendspinAudioController(
             // calibrated or on honest HALs. NOTE: we store the shortfall ABOVE
             // getOutputLatency, not the full round trip, so this does not
             // reintroduce the old "locked but audibly out of sync" double-count.
-            "speaker" -> {
+            OutputRoute.SPEAKER -> {
                 val calibrations = settingsRepository.acousticRouteCalibrations.first()
                 val correctionUs = calibrations[AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY]?.correctionUs ?: 0L
                 if (correctionUs > 0L) Log.d(TAG, "Speaker acoustic correction: ${correctionUs / 1000}ms")
                 correctionUs
             }
-            "wired", "usb" -> 0L
-            "bt" -> {
+            OutputRoute.WIRED, OutputRoute.USB, OutputRoute.UNKNOWN -> 0L
+            OutputRoute.BT -> {
                 val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
                 val routeKey = "bt:$productName"
                 val calibrations = settingsRepository.acousticRouteCalibrations.first()
@@ -234,7 +329,6 @@ class SendspinAudioController(
                 Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
                 correctionUs
             }
-            else -> 0L
         }
     }
 
@@ -340,9 +434,9 @@ class SendspinAudioController(
     }
 
     fun start() {
-        currentOutputRoute = resolveOutputRoute()
+        currentRoute = resolveOutputRoute()
         scope.launch {
-            val correctionUs = resolveAcousticCorrectionForRoute(currentOutputRoute)
+            val correctionUs = resolveAcousticCorrectionForRoute(currentRoute)
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
         }
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
@@ -782,7 +876,10 @@ class SendspinAudioController(
         // reset both flows explicitly so a subsequent start() begins clean.
         _userIntent.value = false
         _currentIsPlaying.value = false
-        outputFrozenForFocus = false
+        routeSettleJob?.cancel()
+        routeSettleJob = null
+        mutedForRouteSettle = false
+        clearAllFreezes()
         isReady = false
         isStreaming = false
         notifyStateChanged()
@@ -811,6 +908,60 @@ class SendspinAudioController(
             }
             playerRepository.play(id)
         }
+    }
+
+    /**
+     * Auto-start playback once a Bluetooth sink has CONNECTED AND STABILIZED (e.g.
+     * getting in the car), so we don't depend on the head unit sending its own play
+     * (some don't, or send it before Sendspin is ready — the source of the "connects
+     * but no audio" race).
+     *
+     * It waits for the route to actually settle on BT — present and with no route
+     * change for a quiet window — rather than a fixed delay, because the A2DP
+     * handshake flaps speaker<->bt for a few seconds on connect. Then:
+     * - Skipped when a phone call / Teams / Meet / any VoIP session is active
+     *   (MODE_IN_CALL/IN_COMMUNICATION/RINGTONE) so connecting BT for a call never
+     *   forces music on.
+     * - Skipped when already playing (`_userIntent` set, e.g. a transient flap kept
+     *   it going); this only kicks in after a real pause/idle.
+     */
+    fun autoPlayOnBtConnect() {
+        if (sendspinPlayerId == null) return
+        scope.launch {
+            if (!awaitBtRouteStable()) {
+                Log.d(TAG, "BT connect auto-play skipped: route did not stabilize on BT")
+                return@launch
+            }
+            if (_userIntent.value) return@launch  // already playing / intending to
+            if (isInActiveCall()) {
+                Log.d(TAG, "BT connect auto-play skipped: active call/communication")
+                return@launch
+            }
+            Log.d(TAG, "BT route stabilized -> auto-play")
+            handlePlay()
+        }
+    }
+
+    /**
+     * Suspend until the output route has settled on BT: it reads BT and the route
+     * generation does not change across a quiet window (the connect handshake bumps
+     * the generation on every speaker<->bt flap). Returns false on timeout (BT never
+     * stabilized — failed connect / immediate disconnect).
+     */
+    private suspend fun awaitBtRouteStable(): Boolean {
+        val deadline = System.currentTimeMillis() + BT_STABILIZE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (resolveOutputRoute() == OutputRoute.BT) {
+                val genBefore = routeChangeGeneration
+                delay(BT_STABILIZE_QUIET_MS)
+                if (routeChangeGeneration == genBefore && resolveOutputRoute() == OutputRoute.BT) {
+                    return true
+                }
+            } else {
+                delay(BT_STABILIZE_POLL_MS)
+            }
+        }
+        return false
     }
 
     fun handlePause() {
@@ -890,9 +1041,7 @@ class SendspinAudioController(
                         // If the transient loss FROZE the solo output (buffer
                         // preserved), just unfreeze: playback resumes instantly
                         // and click-free from the intact buffer, no flush/rebuffer.
-                        if (outputFrozenForFocus) {
-                            outputFrozenForFocus = false
-                            sendspinManager.unfreezeOutput()
+                        if (unfreezeOutput("focus")) {
                             Log.d(TAG, "Focus regained: unfroze output, buffer preserved")
                             return@setOnAudioFocusChangeListener
                         }
@@ -928,7 +1077,7 @@ class SendspinAudioController(
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.d(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
-                        outputFrozenForFocus = false
+                        unfreezeOutput("focus")
                         // Align intent with the permanent loss: another app
                         // has taken over, the user is no longer "trying to
                         // play". Without this, a later AUDIOFOCUS_GAIN would
@@ -956,8 +1105,7 @@ class SendspinAudioController(
                                 // skips forward to the live group position under the
                                 // mute. See unfreezeOutput.
                                 Log.d(TAG, "Audio focus lost transiently (active call): freezing")
-                                outputFrozenForFocus = true
-                                sendspinManager.freezeOutput()
+                                freezeOutput("focus")
                             } else {
                                 // SHORT non-call interruption (notification ping,
                                 // nav prompt): just DUCK. Freezing here stopped and
@@ -981,10 +1129,34 @@ class SendspinAudioController(
             .build()
     }
 
+    /**
+     * Request audio focus for ANY output path (BT, speaker, Android Auto, wired…).
+     * Distinguishes the three platform results instead of collapsing them to
+     * "denied":
+     *  - GRANTED: we hold focus now.
+     *  - DELAYED: accepted but queued (common on Samsung's per-device MultiFocus
+     *    stack during a BT route transition). We do NOT hold focus yet, but the
+     *    system delivers AUDIOFOCUS_GAIN when it frees up and the listener resumes
+     *    then — so this is benign, not a real denial.
+     *  - FAILED: genuinely refused (another app holds non-yielding focus).
+     * Returns true only when focus is held right now; the engine plays regardless
+     * (focus is advisory for our own output), the result just drives ducking/resume.
+     */
     private fun requestAudioFocus(): Boolean {
-        val result = audioManager.requestAudioFocus(focusRequest)
-        hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        Log.d(TAG, "Audio focus request: ${if (hasAudioFocus) "granted" else "denied"}")
+        hasAudioFocus = when (audioManager.requestAudioFocus(focusRequest)) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                Log.d(TAG, "Audio focus request: granted")
+                true
+            }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                Log.d(TAG, "Audio focus request: delayed (gain will arrive when the path frees up)")
+                false
+            }
+            else -> {
+                Log.d(TAG, "Audio focus request: denied")
+                false
+            }
+        }
         return hasAudioFocus
     }
 
