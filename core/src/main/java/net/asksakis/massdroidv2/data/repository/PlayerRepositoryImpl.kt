@@ -1555,6 +1555,23 @@ class PlayerRepositoryImpl @Inject constructor(
             val syncDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_sync_delay") }
             val syncDelayEntry = syncDelayKey?.let { values[it] }
 
+            // Generic per-provider output codec (e.g. Sonos `output_codec`: flac/mp3/aac/wav).
+            val outputCodecEntry = values?.get("output_codec")
+            val outputCodecOptions = (outputCodecEntry as? JsonObject)?.get("options")
+                ?.jsonArray
+                ?.mapNotNull { opt ->
+                    when (opt) {
+                        is JsonObject -> {
+                            val value = opt["value"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                            val title = opt["title"]?.jsonPrimitive?.contentOrNull ?: value.uppercase()
+                            FormatOption(title, value)
+                        }
+                        is JsonPrimitive -> opt.contentOrNull?.let { FormatOption(it.uppercase(), it) }
+                        else -> null
+                    }
+                }
+                ?: emptyList()
+
             PlayerConfig(
                 name = configName,
                 crossfadeMode = CrossfadeMode.fromApi(
@@ -1563,6 +1580,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
                 sendspinFormat = formatEntry?.configValue(),
                 sendspinFormatOptions = formatOptions,
+                outputCodec = outputCodecEntry?.configValue(),
+                outputCodecOptions = outputCodecOptions,
                 sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt(),
                 sendspinSyncDelayKey = syncDelayKey,
                 sendspinSyncDelayMs = syncDelayEntry?.configInt(),

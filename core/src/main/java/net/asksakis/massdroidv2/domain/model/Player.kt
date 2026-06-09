@@ -36,6 +36,9 @@ data class PlayerConfig(
     val volumeNormalization: Boolean = false,
     val sendspinFormat: String? = null,
     val sendspinFormatOptions: List<FormatOption> = emptyList(),
+    /** Generic per-provider output codec (MA `output_codec`, e.g. Sonos flac/mp3/aac/wav). Null when the player has no such entry. */
+    val outputCodec: String? = null,
+    val outputCodecOptions: List<FormatOption> = emptyList(),
     /** Server-side static delay in ms for remote sendspin players. Null when not applicable. */
     val sendspinStaticDelayMs: Int? = null,
     /**

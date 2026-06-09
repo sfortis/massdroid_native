@@ -29,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
@@ -116,6 +117,11 @@ fun PlayerSettingsDialog(
         mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList())
     }
     var audioFormat by remember(player.playerId, initialAudioFormat) { mutableStateOf(initialAudioFormat) }
+    // Generic per-provider output codec (MA `output_codec`, e.g. Sonos flac/mp3/aac/wav).
+    var outputCodec by remember(player.playerId) { mutableStateOf<String?>(null) }
+    var outputCodecOptions by remember(player.playerId) {
+        mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList())
+    }
     // Local client-side UX sync nudge (DataStore-backed). Range -1000..+1000,
     // positive shifts playback later (intuitive sign, matches MA web UI's
     // "Sendspin sync delay" slider).
@@ -145,6 +151,10 @@ fun PlayerSettingsDialog(
             volumeNormalization = loaded.volumeNormalization
             formatOptions = loaded.sendspinFormatOptions
             selectedFormatValue = loaded.sendspinFormat
+            outputCodecOptions = loaded.outputCodecOptions
+            // Fall back to the first option so the shown selection always matches what Save persists,
+            // even if the server didn't report a current value.
+            outputCodec = loaded.outputCodec ?: loaded.outputCodecOptions.firstOrNull()?.value
             val loadedStaticDelay = loaded.sendspinStaticDelayMs
             if (!isLocalPlayer && loadedStaticDelay != null) {
                 hasServerStaticDelay = true
@@ -381,6 +391,49 @@ fun PlayerSettingsDialog(
                         }
                     }
 
+                    // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav). Shown for
+                    // any non-Sendspin player whose MA config exposes an `output_codec` entry.
+                    if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
+                        val currentCodec = outputCodec ?: outputCodecOptions.firstOrNull()?.value
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Output codec", style = MaterialTheme.typography.labelMedium)
+                            var codecExpanded by remember { mutableStateOf(false) }
+                            val codecTitle = outputCodecOptions.find { it.value == currentCodec }?.title
+                                ?: outputCodecOptions.firstOrNull()?.title ?: ""
+                            Box {
+                                OutlinedCard(
+                                    modifier = Modifier.fillMaxWidth().clickable { codecExpanded = true }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(codecTitle, style = MaterialTheme.typography.bodyMedium)
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = codecExpanded,
+                                    onDismissRequest = { codecExpanded = false }
+                                ) {
+                                    outputCodecOptions.forEach { opt ->
+                                        DropdownMenuItem(
+                                            text = { Text(opt.title, style = MaterialTheme.typography.bodyMedium) },
+                                            onClick = {
+                                                outputCodec = opt.value
+                                                codecExpanded = false
+                                            },
+                                            trailingIcon = if (currentCodec == opt.value) {{
+                                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                            }} else null
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (isLocalPlayer) {
                         // Sendspin sync delay (LOCAL client-side UX nudge,
                         // DataStore-backed). Range -1000..+1000 ms, negative plays
@@ -598,6 +651,9 @@ fun PlayerSettingsDialog(
                                     }
                                     if (localFormat != null) onAudioFormatChanged?.invoke(localFormat)
                                 }
+                            }
+                            if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
+                                outputCodec?.let { values["output_codec"] = it }
                             }
                             onSave(player.playerId, values)
                             if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
