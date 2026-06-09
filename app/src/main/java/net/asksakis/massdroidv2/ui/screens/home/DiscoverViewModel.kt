@@ -973,11 +973,13 @@ class DiscoverViewModel @Inject constructor(
 
     @Suppress("TooGenericExceptionCaught")
     private fun loadFromServer(isManualRefresh: Boolean = false) {
-        viewModelScope.launch {
-            try {
-                val beta = settingsRepository.includeBetaUpdates.first()
-                appUpdateChecker.checkForUpdates(force = false, includePrerelease = beta)
-            } catch (_: Exception) { /* best-effort */ }
+        if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
+            viewModelScope.launch {
+                try {
+                    val beta = settingsRepository.includeBetaUpdates.first()
+                    appUpdateChecker.checkForUpdates(force = false, includePrerelease = beta)
+                } catch (_: Exception) { /* best-effort */ }
+            }
         }
         if (!isManualRefresh && !cacheStale && _uiState.value.sections.isNotEmpty()) {
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")

@@ -1,0 +1,6 @@
+- Sync speakers: nudge grouped speakers earlier or later by ear to line them up.
+- No music over phone calls: playback stays quiet until the call ends.
+- Tidier player menu, grouped into clear sections.
+- Lower battery use from room detection.
+- Home screen shows connection drops at a glance.
+- Sendspin player no longer drops to Reconnecting mid-song on some tracks.

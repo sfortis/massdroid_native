@@ -30,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
@@ -409,12 +410,52 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        UpdatesCard(
-            state = updateUiState,
-            onCheck = { viewModel.checkForUpdates(force = true) },
-            onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
-        )
+        // The in-app updater is github-flavor only; F-Droid handles updates itself.
+        if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
+            UpdatesCard(
+                state = updateUiState,
+                onCheck = { viewModel.checkForUpdates(force = true) },
+                onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
+            )
+        }
         DiagnosticsCard()
+        SupportCard()
+    }
+}
+
+@Composable
+private fun SupportCard() {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Support", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "MassDroid is free and open-source. If it is useful to you, you can support its development.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            MdFilledTonalButton(
+                onClick = { launchCustomTab(context, "https://www.buymeacoffee.com/sfortis") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    Icons.Filled.Coffee,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Buy me a coffee")
+            }
+        }
     }
 }
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Flavor-specific manifest overrides for the fdroid build. Merged with the main
+    AndroidManifest by the build system; tools:node="remove" strips the in-app
+    updater's install permission, which F-Droid's review would otherwise flag.
+    The updater code itself is compiled out via BuildConfig.ENABLE_UPDATE_CHECK.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+</manifest>

@@ -1,0 +1,24 @@
+MassDroid is a native Android client for Music Assistant (music-assistant.io), the open-source music server that unifies your streaming services, local files, and players into one library. It is a full remote control for your Music Assistant server and can also turn the phone itself into a synced speaker.
+
+You need your own Music Assistant server to use this app.
+
+Features:
+
+* Remote control any Music Assistant player: play/pause, next/previous, seek, volume, shuffle and repeat.
+* Browse your whole library: artists, albums, tracks, playlists, radios, and per-provider browse trees.
+* Queue management: view, reorder and edit the play queue, and transfer the queue between players.
+* Phone as a speaker (Sendspin): stream synchronised audio to this phone and play it together with your other speakers, in time.
+* Group playback: join the phone to a sync group and fine-tune per-speaker timing by ear.
+* Local recommendation engine: personalised Smart Mix and Genre Radio built from your own listening history, focused on music exploration and discovery.
+* Search across all your connected music providers.
+* Android Auto and Android TV support.
+* Material You dynamic theming.
+
+Optional Last.fm integration enriches artist and genre metadata for better recommendations; the app works fine without it.
+
+About permissions:
+
+* Microphone is optional and used only to measure this phone's speaker output latency for tighter group sync (a short tone is played and heard back through the mic). Nothing is recorded or uploaded.
+* Location is optional and used only by the "Follow Me" room-detection feature (Wi-Fi/Bluetooth fingerprint to detect which room you are in). It stays off unless you enable Follow Me.
+
+This app is an unofficial, third-party client and is not affiliated with the Music Assistant project.

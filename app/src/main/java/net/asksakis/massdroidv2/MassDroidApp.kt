@@ -101,15 +101,19 @@ class MassDroidApp : Application(), ImageLoaderFactory {
             }
         }
 
-        appScope.launch {
-            try {
-                val includeBeta = settingsRepository.includeBetaUpdates.first()
-                val result = appUpdateChecker.checkForUpdates(force = false, includePrerelease = includeBeta)
-                if (result is net.asksakis.massdroidv2.data.update.AppUpdateChecker.CheckResult.UpdateAvailable) {
-                    Log.d("MassDroidApp", "Update available: ${result.info.version}")
+        // Self-update via GitHub Releases is the github flavor only; the fdroid
+        // flavor (ENABLE_UPDATE_CHECK=false) updates through F-Droid's repository.
+        if (BuildConfig.ENABLE_UPDATE_CHECK) {
+            appScope.launch {
+                try {
+                    val includeBeta = settingsRepository.includeBetaUpdates.first()
+                    val result = appUpdateChecker.checkForUpdates(force = false, includePrerelease = includeBeta)
+                    if (result is net.asksakis.massdroidv2.data.update.AppUpdateChecker.CheckResult.UpdateAvailable) {
+                        Log.d("MassDroidApp", "Update available: ${result.info.version}")
+                    }
+                } catch (e: Exception) {
+                    Log.d("MassDroidApp", "Background update check skipped: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.d("MassDroidApp", "Background update check skipped: ${e.message}")
             }
         }
 

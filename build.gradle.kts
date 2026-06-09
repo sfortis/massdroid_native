@@ -8,13 +8,18 @@ plugins {
     id("io.gitlab.arturbosch.detekt") version "1.23.7"
 }
 
-// Redirect build output to local filesystem (source lives on S3 remote mount).
-// Override with: -PmassdroidBuildRoot=/custom/path or MASSDROID_BUILD_ROOT env var.
+// Redirect build output to a local filesystem ONLY when explicitly requested
+// (source may live on a remote/NFS mount). Default to the STANDARD Gradle layout
+// so F-Droid's `fdroid build` (which sets no property) finds the APK where it
+// expects it; redirecting by default broke the F-Droid build (it looked for the
+// APK under build/ but everything went to ~/massdroid-native-build). The dev
+// build-install.sh passes -PmassdroidBuildRoot to keep using the local mount.
 val configuredBuildRoot = providers.gradleProperty("massdroidBuildRoot").orNull
     ?: System.getenv("MASSDROID_BUILD_ROOT")
-    ?: (System.getProperty("user.home") + "/massdroid-native-build")
-val localBuildRoot = file(configuredBuildRoot)
-allprojects {
-    val subDir = if (path == ":") "root" else path.removePrefix(":").replace(":", "/")
-    layout.buildDirectory = localBuildRoot.resolve(subDir)
+if (configuredBuildRoot != null) {
+    val localBuildRoot = file(configuredBuildRoot)
+    allprojects {
+        val subDir = if (path == ":") "root" else path.removePrefix(":").replace(":", "/")
+        layout.buildDirectory = localBuildRoot.resolve(subDir)
+    }
 }

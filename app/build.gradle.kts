@@ -24,8 +24,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "2.25.0"
+        versionCode = 26
+        versionName = "2.26.0"
     }
 
     signingConfigs {
@@ -55,6 +55,9 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("release")
+            // Reproducible-build: strip VCS info so the commit hash AGP embeds in
+            // the manifest does not differ between build hosts. AGP 8.3+.
+            vcsInfo.include = false
         }
         create("profile") {
             initWith(getByName("release"))
@@ -64,11 +67,45 @@ android {
         }
     }
 
+    // F-Droid scanner flags the AGP-emitted "Dependency metadata" extra signing
+    // block as non-free content. Disable for both APK and AAB.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
+    // Reproducible-build: disable AGP's auto-generated baseline profile; the
+    // .prof/.profm ordering is non-deterministic across build hosts and its
+    // checksum leaks into classes.dex via R8 (F-Droid Reproducible_Builds guide).
+    tasks.whenTaskAdded {
+        if (name.contains("ArtProfile")) {
+            enabled = false
+        }
+    }
+
+    // github = default (in-app updater polls GitHub Releases, installs via
+    // REQUEST_INSTALL_PACKAGES). fdroid = updater compiled out + the install
+    // permission stripped via src/fdroid/AndroidManifest.xml; F-Droid updates
+    // through its own repository.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("github") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
+        }
+        create("fdroid") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
+        }
+    }
+
     applicationVariants.all {
         val variant = this
         outputs.all {
+            // variant.name includes the flavor (e.g. githubRelease / fdroidRelease)
+            // so the two flavors do not collide on a single filename.
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-                "massdroid-${variant.versionName}-${variant.buildType.name}.apk"
+                "massdroid-${variant.versionName}-${variant.name}.apk"
         }
     }
 

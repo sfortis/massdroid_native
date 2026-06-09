@@ -277,6 +277,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun checkForUpdates(force: Boolean = true) {
+        // No in-app updater in the fdroid flavor (F-Droid handles updates).
+        if (!net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) return
         if (_updateUiState.value.isChecking || _updateUiState.value.isDownloading) return
         viewModelScope.launch {
             _updateUiState.update {

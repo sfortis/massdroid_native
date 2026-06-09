@@ -35,7 +35,9 @@ jobs:
           cp ./.ci/debug.keystore $HOME/.android/debug.keystore
 
       - name: Execute APK build
-        run: ./gradlew app:assembleDebug atv:assembleDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        # app has github/fdroid flavors; the dev channel ships the github flavor
+        # (keeps the in-app updater). atv has no flavors.
+        run: ./gradlew app:assembleGithubDebug atv:assembleDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
 
       - uses: actions/upload-artifact@v7
         with:
@@ -48,7 +50,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         run: |
           gh release create dev-latest --target dev --title "Dev Build (latest)" --notes "Automatically updated debug APKs (phone + Android TV) from the latest dev push." --prerelease 2>/dev/null || true
-          gh release upload dev-latest build-output/app/outputs/apk/debug/*.apk build-output/atv/outputs/apk/debug/*.apk --clobber
+          gh release upload dev-latest build-output/app/outputs/apk/github/debug/*.apk build-output/atv/outputs/apk/debug/*.apk --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

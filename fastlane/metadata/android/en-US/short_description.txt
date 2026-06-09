@@ -1,0 +1,1 @@
+A native client and remote for the Music Assistant open-source music server.
