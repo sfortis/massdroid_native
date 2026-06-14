@@ -1,7 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -49,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -75,6 +75,7 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 
@@ -84,6 +85,15 @@ private const val AUTO_COLLAPSE_MS = 8_000L
 private const val EXPAND_ANIM_MS = 500
 private const val FOCUS_ATTACH_TRIES = 10
 private const val FOCUS_ATTACH_RETRY_MS = 50L
+
+// Explicit island focus order: index 0 is the media/pill, 1..5 the transport buttons.
+private const val TRANSPORT_BUTTON_COUNT = 5
+private const val ISLAND_LAST_INDEX = TRANSPORT_BUTTON_COUNT
+
+// Settle window before the pill is disarmed after focus leaves it. An intra-island move across
+// the transport row's AnimatedVisibility boundary briefly reports no-focus; this debounce lets
+// that resolve so the gate does not flip the media surface non-focusable mid-navigation.
+private const val DISARM_SETTLE_MS = 120L
 
 private const val HINT_PREFS = "tv_hints"
 private const val HINT_KEY_MINI_PLAYER = "mini_player_back_hint_shown"
@@ -124,9 +134,44 @@ fun TvMiniPlayer(
     // Bumped on every focus move/press inside the component; restarts the idle timer.
     var interactionTick by remember { mutableIntStateOf(0) }
     var hasFocusInside by remember { mutableStateOf(false) }
+    // The pill is a SEPARATE component that must not interact with the main view: it is
+    // focusable ONLY while "armed" (set on the deliberate hold-BACK entry), and disarmed the
+    // moment focus leaves it. So content focus loss (a click/reload on a screen) can never
+    // escape onto the pill: it is simply not a focus-search candidate unless the user
+    // explicitly went there.
+    var armed by remember { mutableStateOf(false) }
+    // True only between a BACK-to-content press and focus actually leaving the pill, so the
+    // auto-collapse refocus is suppressed and we do NOT disarm while still focused (disarming
+    // a focused pill makes Compose auto-move focus to a default content item — the row start —
+    // racing the exact-card restore).
+    var exiting by remember { mutableStateOf(false) }
     val internalPillFocus = remember { FocusRequester() }
-    // The island doubles as the "last row" focus target the root jumps to on DPAD-DOWN.
+    // Focus requester for the pill; used only by the deliberate hold-BACK entry (the pill is
+    // not reachable by navigating/scrolling the content).
     val pillFocus = entryFocus ?: internalPillFocus
+    // Explicit, index-based island focus order: [0] = media/pill, [1..5] = the five transport
+    // buttons. ALL horizontal D-pad navigation is driven by requestFocus on these (see the
+    // Column onPreviewKeyEvent below), NOT by Compose's 2D spatial search: the transport row's
+    // AnimatedVisibility is a focus boundary the spatial search cannot cross leftward, and
+    // tv-material3 IconButton overrides focusProperties internally. requestFocus to a specific
+    // node is the one mechanism that crosses that boundary reliably.
+    val buttonFocus = remember { List(TRANSPORT_BUTTON_COUNT) { FocusRequester() } }
+    var focusedIndex by remember { mutableIntStateOf(0) }
+    fun islandTarget(index: Int): FocusRequester = if (index == 0) pillFocus else buttonFocus[index - 1]
+
+    // Deliberate entry focuses the pill AFTER the arm has been applied. Arming is a state
+    // write that makes the pill focusable, but canFocus only takes effect on the next
+    // recomposition; requesting focus from this effect (which runs post-composition) lands
+    // on the FIRST try, so the expanded player does not flash unfocused for a few frames
+    // first (the old "arm + immediately request in a loop" showed an unfocused window).
+    LaunchedEffect(armed) {
+        if (!armed) return@LaunchedEffect
+        repeat(FOCUS_ATTACH_TRIES) {
+            runCatching { pillFocus.requestFocus() }
+            if (hasFocusInside) return@LaunchedEffect
+            delay(FOCUS_ATTACH_RETRY_MS)
+        }
+    }
 
     LaunchedEffect(expanded, hasFocusInside) { onActiveChange?.invoke(expanded || hasFocusInside) }
     DisposableEffect(Unit) { onDispose { onActiveChange?.invoke(false) } }
@@ -157,7 +202,13 @@ fun TvMiniPlayer(
                     showOpenHint = true
                 }
                 expanded = true
-                pillFocus.requestFocusRetrying()
+                focusedIndex = 0
+                // Cold entry: arm so the pill becomes focusable, then LaunchedEffect(armed)
+                // focuses it post-composition (no unfocused flash). If the pill is ALREADY armed
+                // (still in the focus tree from a prior entry), the armed transition won't
+                // re-fire that effect, so request focus directly here — canFocus is already true,
+                // so there is no flash, and the shortcut reliably returns the cursor to the media.
+                if (armed) pillFocus.requestFocusRetrying() else armed = true
             }
         }
     }
@@ -166,13 +217,25 @@ fun TvMiniPlayer(
         delay(AUTO_COLLAPSE_MS)
         expanded = false
     }
-    // On collapse a transport button may have been focused and is now gone; pull focus back
-    // to the always-present island so the D-pad never lands on a removed node. On expand the
-    // island stays focused (it is the same node), so no hand-off is needed.
+    // AUTO-collapse only: when the idle timer folds the expanded player while the cursor is
+    // still deliberately on it (armed), a transport button may have been removed, so pull
+    // focus back to the collapsed pill. Gated on `armed` so it does NOT fire on a BACK exit
+    // (which disarms first) — otherwise it raced exitToContent and sometimes yanked focus
+    // back instead of letting the content restore run.
     LaunchedEffect(expanded) {
-        if (!expanded && hasFocusInside) pillFocus.requestFocusRetrying()
+        if (!expanded) {
+            // The transport buttons are gone; reset to the media index so a stray LEFT/RIGHT
+            // during the collapse animation can't act on a removed button requester.
+            focusedIndex = 0
+            if (hasFocusInside && armed && !exiting) pillFocus.requestFocusRetrying()
+        }
     }
 
+    val navScope = androidx.compose.runtime.rememberCoroutineScope()
+    // Pending disarm job: debounces the canFocus gate so a transient intra-island focus blip
+    // (crossing the transport row's AnimatedVisibility boundary) does not flip the pill
+    // non-focusable mid-navigation.
+    val disarmJob = remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     // Leaving the island: restore the content's saved focus when the host provides it
     // (lands on the exact card the user came from), else fall back to a spatial move.
@@ -185,24 +248,82 @@ fun TvMiniPlayer(
     // BACK while the cursor is on the mini player = leave the player (collapse + focus back to
     // the content) instead of bubbling to the screen's back handling (home would prompt to exit).
     androidx.activity.compose.BackHandler(enabled = expanded || hasFocusInside) {
-        if (hasFocusInside) exitToContent()
+        val wasInside = hasFocusInside
+        // Mark a deliberate exit: suppresses the auto-collapse refocus. Keep `armed` true for
+        // now — disarming a still-focused pill makes Compose auto-move focus to a default
+        // content item (the row start) before the restore lands on the exact card. The disarm
+        // happens reactively in onFocusChanged once focus actually leaves the pill.
+        exiting = true
         expanded = false
+        if (wasInside) exitToContent()
     }
     val touch = Modifier.onFocusChanged { if (it.isFocused) interactionTick++ }
     Column(
         horizontalAlignment = Alignment.End,
         modifier = modifier
-            .onFocusChanged { hasFocusInside = it.hasFocus }
-            // The floating island sits over the content, where the native 2D focus search can
-            // fail to find a way out; force the exit so UP (and LEFT while collapsed) always
-            // returns the cursor to the content.
+            .onFocusChanged {
+                val has = it.hasFocus
+                hasFocusInside = has
+                if (has) {
+                    // Focus is (back) inside the island: cancel any pending disarm. A move
+                    // between the media surface and a transport button crosses the transport
+                    // row's AnimatedVisibility boundary and momentarily reports no-focus; that
+                    // must NOT disarm, or the focus-gated media becomes non-focusable and LEFT
+                    // can no longer return to it.
+                    disarmJob.value?.cancel()
+                } else {
+                    // Debounce: only disarm if focus is STILL outside after a short settle, i.e.
+                    // the user really left for the content (not a transient transition blip), so
+                    // the pill drops out of the focus tree and content can never land on it
+                    // without a deliberate entry.
+                    disarmJob.value?.cancel()
+                    disarmJob.value = navScope.launch {
+                        delay(DISARM_SETTLE_MS)
+                        if (!hasFocusInside) {
+                            armed = false
+                            exiting = false
+                        }
+                    }
+                }
+            }
+            // ALL island D-pad navigation is handled HERE, at the island root. This preview
+            // handler runs before the focused child gets the key (preview dispatches top-down),
+            // and explicit requestFocus is the only thing that reliably crosses the transport
+            // row's AnimatedVisibility focus boundary, so we never rely on the 2D spatial search
+            // for intra-island moves.
+            //   UP             -> leave the island, back to the content
+            //   LEFT at media  -> leave the island (media is the leftmost element)
+            //   LEFT / RIGHT   -> step along the explicit focus order [media, ...transport]
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                val exits = event.key == Key.DirectionUp ||
-                    (event.key == Key.DirectionLeft && !expanded)
-                if (!exits) return@onPreviewKeyEvent false
-                exitToContent()
-                true
+                when (event.key) {
+                    Key.DirectionUp -> {
+                        exitToContent()
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        when {
+                            // Step left among the island's controls.
+                            focusedIndex > 0 -> runCatching { islandTarget(focusedIndex - 1).requestFocus() }
+                            // Collapsed pill: it is the leftmost thing on screen and content sits
+                            // to its left, so LEFT leaves the island for the content.
+                            !expanded -> exitToContent()
+                            // Expanded, on the media control (leftmost): stay put. The media is a
+                            // control (OK opens the full player), so LEFT must not escape to the
+                            // content mid-interaction — leaving the expanded player is BACK / UP.
+                        }
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        if (expanded && focusedIndex < ISLAND_LAST_INDEX) {
+                            runCatching { islandTarget(focusedIndex + 1).requestFocus() }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    else -> false
+                }
             }
     ) {
         if (showHint && !expanded) {
@@ -220,6 +341,9 @@ fun TvMiniPlayer(
             player = selected,
             expanded = expanded,
             pillFocus = pillFocus,
+            pillCanFocus = armed,
+            buttonFocus = buttonFocus,
+            onElementFocused = { focusedIndex = it },
             touch = touch,
             onPrimaryClick = {
                 if (expanded) {
@@ -271,6 +395,9 @@ private fun MiniPlayerIsland(
     player: Player?,
     expanded: Boolean,
     pillFocus: FocusRequester,
+    pillCanFocus: Boolean,
+    buttonFocus: List<FocusRequester>,
+    onElementFocused: (Int) -> Unit,
     touch: Modifier,
     onPrimaryClick: () -> Unit,
     onPlayPause: () -> Unit,
@@ -289,11 +416,17 @@ private fun MiniPlayerIsland(
     // Bar background only when expanded. Drawn on the Row (background draws but does NOT clip
     // its children), not via a wrapping Surface: a Surface would clip the focused pill's
     // magnify and leave a dark rounded frame around the grey selection when collapsed.
-    val barColor by animateColorAsState(
-        targetValue = if (expanded) MaterialTheme.colorScheme.surface else Color.Transparent,
-        animationSpec = tween(EXPAND_ANIM_MS, easing = FastOutSlowInEasing),
-        label = "miniBar"
-    )
+    //
+    // The bar color is INSTANT, never crossfaded: a translucent bar (mid alpha-animation) lets
+    // the bright content grid behind it bleed through — a visible white flash during the expand.
+    // Driven off the (synchronous, per-frame) artwork-size animation so there is no 1-frame gap
+    // a separate state/LaunchedEffect would introduce: opaque the moment we expand, and opaque
+    // for the whole collapse until the artwork has shrunk all the way back to the pill size.
+    val barColor = if (expanded || artSize > PILL_ART) {
+        MaterialTheme.colorScheme.surface
+    } else {
+        Color.Transparent
+    }
     val barPadding by animateDpAsState(
         targetValue = if (expanded) 6.dp else 0.dp,
         animationSpec = tween(EXPAND_ANIM_MS, easing = FastOutSlowInEasing),
@@ -325,8 +458,14 @@ private fun MiniPlayerIsland(
                 pressedContentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ),
             modifier = touch
+                // Only focusable on a deliberate entry (see `armed`): keeps the pill out of
+                // the content's focus search so a click/reload never lands on it.
+                .focusProperties { canFocus = pillCanFocus }
                 .focusRequester(pillFocus)
-                .onFocusChanged { focused = it.isFocused }
+                .onFocusChanged {
+                    focused = it.isFocused
+                    if (it.isFocused) onElementFocused(0)
+                }
                 .scale(if (focused && !expanded) PILL_FOCUS_SCALE else 1f)
         ) {
             Row(
@@ -377,28 +516,31 @@ private fun MiniPlayerIsland(
             exit = shrinkHorizontally(animationSpec = tween(EXPAND_ANIM_MS, easing = FastOutSlowInEasing)) +
                 fadeOut(anim)
         ) {
+            // The transport buttons carry the [1..5] focus requesters; LEFT/RIGHT between them
+            // and back to the media surface is handled entirely by the island root preview
+            // handler via requestFocus, so no per-button key interception is needed here.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.width(4.dp))
-                IconButton(onClick = onPlayPause, modifier = touch) {
+                IconButton(onClick = onPlayPause, modifier = touch.transportFocus(buttonFocus[0], 1, onElementFocused)) {
                     Icon(
                         if (player?.state == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = "Play/Pause"
                     )
                 }
                 Spacer(Modifier.width(6.dp))
-                IconButton(onClick = onNext, modifier = touch) {
+                IconButton(onClick = onNext, modifier = touch.transportFocus(buttonFocus[1], 2, onElementFocused)) {
                     Icon(Icons.Filled.SkipNext, contentDescription = "Next")
                 }
                 Spacer(Modifier.width(6.dp))
-                IconButton(onClick = onVolumeDown, modifier = touch) {
+                IconButton(onClick = onVolumeDown, modifier = touch.transportFocus(buttonFocus[2], 3, onElementFocused)) {
                     Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = "Volume down")
                 }
                 Spacer(Modifier.width(6.dp))
-                IconButton(onClick = onVolumeUp, modifier = touch) {
+                IconButton(onClick = onVolumeUp, modifier = touch.transportFocus(buttonFocus[3], 4, onElementFocused)) {
                     Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Volume up")
                 }
                 Spacer(Modifier.width(6.dp))
-                IconButton(onClick = onSwitchPlayer, modifier = touch) {
+                IconButton(onClick = onSwitchPlayer, modifier = touch.transportFocus(buttonFocus[4], 5, onElementFocused)) {
                     Icon(Icons.Filled.Speaker, contentDescription = "Switch player")
                 }
                 Spacer(Modifier.width(2.dp))
@@ -556,6 +698,18 @@ private fun PlayerPickerCard(
         }
     }
 }
+
+/**
+ * Attaches a transport button's focus requester and reports its island index on focus, so the
+ * island root preview handler can step the explicit focus order. No key interception here.
+ */
+private fun Modifier.transportFocus(
+    requester: FocusRequester,
+    index: Int,
+    onElementFocused: (Int) -> Unit
+): Modifier = this
+    .focusRequester(requester)
+    .onFocusChanged { if (it.isFocused) onElementFocused(index) }
 
 /** [FocusRequester.requestFocus] that tolerates the node attaching a few frames later. */
 private suspend fun FocusRequester.requestFocusRetrying() {

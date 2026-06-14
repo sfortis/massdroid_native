@@ -17,11 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
@@ -79,22 +74,10 @@ fun TvRoot(
                     }
                 }
             }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    // The mini player acts as the LAST ROW of the view: when DPAD-DOWN has no
-                    // target further down in the content, the cursor lands on the pill.
-                    .onPreviewKeyEvent { event ->
-                        if (!miniPlayerVisible) return@onPreviewKeyEvent false
-                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) {
-                            return@onPreviewKeyEvent false
-                        }
-                        if (!focusManager.moveFocus(FocusDirection.Down)) {
-                            runCatching { miniPlayerFocus.requestFocus() }
-                        }
-                        true
-                    }
-            ) {
+            // The pill is reachable ONLY by the deliberate hold-BACK shortcut — never by
+            // scrolling/navigating the content (it must not behave like a "last row"), so
+            // there is no DPAD-DOWN interception here.
+            Box(modifier = Modifier.fillMaxSize()) {
             androidx.compose.runtime.CompositionLocalProvider(LocalTvFocusMemory provides focusMemory) {
             NavHost(navController = nav, startDestination = "home") {
                 composable("home") {

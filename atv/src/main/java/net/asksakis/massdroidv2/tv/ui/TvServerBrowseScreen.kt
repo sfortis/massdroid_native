@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -46,6 +48,12 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
     // Back pops one folder; at the root it is disabled so the system Back exits.
     BackHandler(enabled = canGoBack) { viewModel.back() }
 
+    // Drilling into a folder replaces the whole list; the shared grid-focus helper keeps
+    // the cursor on a content item so it never escapes to the mini player pill.
+    val gridState = rememberLazyGridState()
+    val entryKeys = remember(entries) { entries.map { it.uri } }
+    val gridFocus = rememberGridItemFocus(entryKeys, gridState)
+
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(top = 40.dp, bottom = 24.dp)) {
             Text(
@@ -63,13 +71,14 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
                 )
             } else {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Fixed(SERVER_GRID_COLUMNS),
                     contentPadding = PaddingValues(horizontal = SERVER_EDGE, vertical = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(20.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
                     items(entries, key = { it.uri }) { entry ->
-                        BrowseTreeCard(entry) { viewModel.open(entry) }
+                        BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.uri)) { viewModel.open(entry) }
                     }
                 }
             }
@@ -81,8 +90,8 @@ private val SERVER_EDGE = 56.dp
 private const val SERVER_GRID_COLUMNS = 6
 
 @Composable
-private fun BrowseTreeCard(item: ServerBrowseItem, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+private fun BrowseTreeCard(item: ServerBrowseItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Card(onClick = onClick, modifier = modifier.fillMaxWidth()) {
         Column {
             Box(
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f),

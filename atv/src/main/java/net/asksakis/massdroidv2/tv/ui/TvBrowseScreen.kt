@@ -19,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +30,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,34 +61,13 @@ fun TvBrowseScreen(
     var showSortDialog by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
 
-    // Track the focused card so the mini player can hand the cursor back to it on exit.
-    var lastFocusedKey by remember { mutableStateOf<String?>(null) }
-    val restoreRequester = remember { FocusRequester() }
-    // Where the cursor returns when leaving the mini player: the remembered card if it is
-    // still in the current list, otherwise the first item. Falling back to a grid item (not
-    // null) keeps restore inside the grid; a null target would let the host clear focus and
-    // land on the first focusable on screen instead (the "Artists" category chip).
-    val restoreKey = lastFocusedKey?.takeIf { k -> items.any { it.uri == k } }
-        ?: items.firstOrNull()?.uri
-    val focusMemory = LocalTvFocusMemory.current
-    DisposableEffect(focusMemory) {
-        val hook: () -> Boolean = {
-            val target = lastFocusedKey?.takeIf { k -> items.any { it.uri == k } }
-                ?: items.firstOrNull()?.uri
-            target != null && runCatching { restoreRequester.requestFocus() }.isSuccess
-        }
-        focusMemory.restoreToLastFocused = hook
-        // Only clear our own hook: on navigation the NEW screen registers before the old
-        // one disposes, and an unconditional null here would wipe the new screen's hook.
-        onDispose {
-            if (focusMemory.restoreToLastFocused === hook) focusMemory.restoreToLastFocused = null
-        }
-    }
-    val focusModifierFor: (String) -> Modifier = { key ->
-        Modifier
-            .onFocusChanged { if (it.isFocused) lastFocusedKey = key }
-            .then(if (key == restoreKey) Modifier.focusRequester(restoreRequester) else Modifier)
-    }
+    // Shared D-pad focus: remembers the focused card, serves the mini player's exit
+    // restore, and validates the remembered key against the current list so a stale key
+    // (after a category switch) never escapes to the pill or the category chips.
+    // autoFocusOnLoad = false: the category chips sit above the grid, so entering the
+    // screen must not yank focus into the grid; the grid never loses focus on its own.
+    val itemKeys = remember(items) { items.map { it.uri } }
+    val gridFocus = rememberGridItemFocus(itemKeys, gridState, autoFocusOnLoad = false)
 
     LaunchedEffect(gridState, items.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
@@ -130,7 +107,7 @@ fun TvBrowseScreen(
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
                 items(items, key = { it.uri }) { item ->
-                    BrowseCard(item, modifier = focusModifierFor(item.uri)) {
+                    BrowseCard(item, modifier = gridFocus.modifierFor(item.uri)) {
                         if (item.isArtist) onOpenArtist(item.itemId, item.provider)
                         else viewModel.play(item.uri)
                     }
