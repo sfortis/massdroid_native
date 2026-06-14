@@ -7,6 +7,13 @@ plugins {
     kotlin("kapt")
 }
 
+import java.util.Properties
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) load(file.inputStream())
+}
+
 android {
     namespace = "net.asksakis.massdroidv2.tv"
     compileSdk = 35
@@ -15,8 +22,25 @@ android {
         applicationId = "net.asksakis.massdroidv2.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Versioned in lockstep with the phone app so the TV APK in a release matches the tag.
+        versionCode = 27
+        versionName = "2.27.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            val storeFilePath = localProperties.getProperty("RELEASE_STORE_FILE")
+                ?: System.getenv("RELEASE_STORE_FILE")
+            if (storeFilePath != null) {
+                storeFile = file(storeFilePath)
+                storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
+                    ?: System.getenv("RELEASE_STORE_PASSWORD")
+                keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
+                    ?: System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+                    ?: System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +49,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
