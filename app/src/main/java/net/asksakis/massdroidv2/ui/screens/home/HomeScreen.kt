@@ -9,7 +9,6 @@ import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -448,9 +447,12 @@ private fun SmartMixFab(
 
     ExtendedFloatingActionButton(
         onClick = { if (!isBusy && displayMessage == null) onClick() },
-        modifier = modifier.animateContentSize(
-            animationSpec = tween(durationMillis = 280)
-        ),
+        // No animateContentSize here: it clips to the rectangular layout bounds,
+        // which cuts the FAB's real elevation shadow at the rounded corners (ugly
+        // in light mode). The label's AnimatedContent already animates the width
+        // smoothly via its SizeTransform, and the elevation shadow now renders in
+        // full (like the mini player's).
+        modifier = modifier,
         shape = CircleShape,
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
         contentColor = MaterialTheme.colorScheme.onSurface,
