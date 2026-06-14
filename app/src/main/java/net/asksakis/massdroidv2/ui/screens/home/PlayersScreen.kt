@@ -476,10 +476,17 @@ private fun PlayerListItem(
         isPlaying -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    // Neutral-grey weighting: idle cards read darker, the actively-playing card
+    // reads lighter, and the SELECTED player is marked by a primary border rather
+    // than a tinted fill (clearer affordance, theme-agnostic).
     val containerColor = when {
-        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f)
-        isPlaying -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.32f)
-        else -> MaterialTheme.colorScheme.surfaceVariant
+        isPlaying -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else -> MaterialTheme.colorScheme.surfaceContainer
+    }
+    val selectionBorder = if (isSelected) {
+        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+    } else {
+        null
     }
     val title = player.currentMedia?.title
     val artist = player.currentMedia?.artist
@@ -492,7 +499,8 @@ private fun PlayerListItem(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         color = containerColor,
-        tonalElevation = if (isSelected || isPlaying) 1.dp else 0.dp,
+        border = selectionBorder,
+        tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
         Column(
