@@ -613,6 +613,17 @@ class NowPlayingViewModel @Inject constructor(
     /** Jump to a chapter by seeking to its start. Chapters are markers within one item. */
     fun seekToChapter(chapter: Chapter) = seek(chapter.start)
 
+    /**
+     * Relative seek by [deltaSeconds] (negative = back), clamped to the item bounds. Used by the
+     * audiobook quick-skip buttons so listeners can nudge a little instead of jumping a whole
+     * chapter (the chapter step is coarse). Builds on [seek]; the position ticker reflects it.
+     */
+    fun seekRelative(deltaSeconds: Int) {
+        val durationSec = queueState.value?.currentItem?.duration?.takeIf { it > 0.0 } ?: Double.MAX_VALUE
+        val target = (elapsedTime.value + deltaSeconds).coerceIn(0.0, durationSec)
+        seek(target)
+    }
+
     // Optimistic chapter target: the position ticker (and thus currentChapterIndex)
     // lags a seek by up to ~500ms + server round-trip, so consecutive prev/next presses
     // would otherwise re-use a stale index and seek to the same chapter. We base the

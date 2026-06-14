@@ -5,10 +5,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Replay30
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -51,9 +53,21 @@ internal fun TransportControls(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // For an audiobook (a single queue item) shuffle/repeat are meaningless and
-        // prev/next operate on chapters, not queue items.
-        if (!isAudiobook) {
+        // For an audiobook (a single queue item) shuffle/repeat are meaningless and prev/next
+        // operate on chapters, not queue items; the outer slots become a fine-grained ±30s skip
+        // (a chapter is a coarse jump — listeners want to nudge back a little to re-orient).
+        if (isAudiobook) {
+            MdIconButton(onClick = {
+                onHaptic()
+                viewModel.seekRelative(-SKIP_SECONDS)
+            }, modifier = Modifier.size(buttonSize), enabled = enabled) {
+                Icon(
+                    Icons.Default.Replay30,
+                    contentDescription = "Back 30 seconds",
+                    modifier = Modifier.size(iconSize)
+                )
+            }
+        } else {
             MdIconButton(onClick = {
                 onHaptic()
                 viewModel.toggleShuffle()
@@ -101,7 +115,18 @@ internal fun TransportControls(
             )
         }
 
-        if (!isAudiobook) {
+        if (isAudiobook) {
+            MdIconButton(onClick = {
+                onHaptic()
+                viewModel.seekRelative(SKIP_SECONDS)
+            }, modifier = Modifier.size(buttonSize), enabled = enabled) {
+                Icon(
+                    Icons.Default.Forward30,
+                    contentDescription = "Forward 30 seconds",
+                    modifier = Modifier.size(iconSize)
+                )
+            }
+        } else {
             MdIconButton(onClick = {
                 onHaptic()
                 viewModel.cycleRepeat()
@@ -120,3 +145,6 @@ internal fun TransportControls(
         }
     }
 }
+
+/** Audiobook quick-skip step; matches the Replay30/Forward30 icons. */
+private const val SKIP_SECONDS = 30
