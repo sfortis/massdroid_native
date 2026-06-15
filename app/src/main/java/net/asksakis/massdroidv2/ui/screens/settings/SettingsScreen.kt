@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
+import net.asksakis.massdroidv2.ui.components.LabeledSlider
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -390,6 +391,7 @@ private fun RecommendationsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         SmartListeningCard(viewModel = viewModel)
+        SmartMixTuningCard(viewModel = viewModel)
         InsightsCard(viewModel = viewModel, onOpen = onOpenInsights)
         LastFmCard(viewModel = viewModel)
     }
@@ -902,6 +904,70 @@ private fun SmartListeningCard(viewModel: SettingsViewModel) {
         )
     }
 }
+
+@Composable
+private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
+    val variety by viewModel.smartMixVariety.collectAsStateWithLifecycle()
+    val discovery by viewModel.smartMixDiscovery.collectAsStateWithLifecycle()
+    val length by viewModel.smartMixLength.collectAsStateWithLifecycle()
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Smart Mix tuning", style = MaterialTheme.typography.titleMedium)
+            LabeledSlider(
+                title = "Variety",
+                description = "How much repeated mixes rotate tracks from the same artists.",
+                value = variety,
+                onValueChangeFinished = viewModel::setSmartMixVariety,
+                valueLabel = { v ->
+                    when {
+                        v < 0.33f -> "Low: the same strong picks each time"
+                        v < 0.66f -> "Medium: balanced"
+                        else -> "High: different tracks every run"
+                    }
+                }
+            )
+            LabeledSlider(
+                title = "Discovery",
+                description = "How far the mix ventures from your familiar artists and genres.",
+                value = discovery,
+                onValueChangeFinished = viewModel::setSmartMixDiscovery,
+                valueLabel = { v ->
+                    when {
+                        v < 0.33f -> "Low: comfort, closest to your taste"
+                        v < 0.66f -> "Medium: some adjacent artists"
+                        else -> "High: more new and adjacent artists"
+                    }
+                }
+            )
+            LabeledSlider(
+                title = "Length",
+                description = "Roughly how many tracks each Smart Mix aims for.",
+                value = length,
+                onValueChangeFinished = viewModel::setSmartMixLength,
+                valueLabel = { v -> "~${smartMixTrackTarget(v)} tracks" }
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                OutlinedButton(onClick = viewModel::resetSmartMixTuning) {
+                    Text("Reset to defaults")
+                }
+            }
+        }
+    }
+}
+
+// Mirrors the DiscoverViewModel length mapping so the label matches the actual
+// target (20..60 tracks, 40 at the neutral default).
+private fun smartMixTrackTarget(length: Float): Int = (20 + length.coerceIn(0f, 1f) * 40).toInt()
 
 @Composable
 private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {

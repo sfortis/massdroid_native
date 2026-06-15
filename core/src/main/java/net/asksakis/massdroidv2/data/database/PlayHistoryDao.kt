@@ -144,6 +144,28 @@ interface PlayHistoryDao {
     )
     suspend fun clearSimilarArtistResolved(sourceArtist: String)
 
+    /**
+     * Any still-fresh resolved provider URI for a similar-artist NAME (a name can
+     * be similar to several sources; any non-expired resolution is reusable).
+     * Used to skip the slow MA provider search during Smart Mix expansion.
+     */
+    @Query(
+        """SELECT resolved_uri FROM lastfm_similar_artists
+           WHERE similar_artist = :similarArtist
+             AND resolved_uri IS NOT NULL
+             AND resolved_at IS NOT NULL
+             AND resolved_at > :minResolvedAt
+           LIMIT 1"""
+    )
+    suspend fun getResolvedUriBySimilarName(similarArtist: String, minResolvedAt: Long): String?
+
+    /** Cache a resolved provider URI for every edge that shares this similar-artist name. */
+    @Query(
+        """UPDATE lastfm_similar_artists SET resolved_uri = :uri, resolved_at = :resolvedAt
+           WHERE similar_artist = :similarArtist"""
+    )
+    suspend fun cacheResolvedUriBySimilarName(similarArtist: String, uri: String, resolvedAt: Long)
+
     @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName")
     suspend fun getLastFmTags(artistName: String): LastFmArtistTagsEntity?
 

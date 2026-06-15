@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
@@ -38,6 +39,12 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_PASSWORD = stringPreferencesKey("password")
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
+        private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
+        private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
+        private val KEY_SMART_MIX_LENGTH = floatPreferencesKey("smart_mix_length")
+        private const val DEFAULT_SMART_MIX_VARIETY = 0.5f
+        private const val DEFAULT_SMART_MIX_DISCOVERY = 0.5f
+        private const val DEFAULT_SMART_MIX_LENGTH = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
@@ -129,6 +136,38 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSmartListeningEnabled(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SMART_LISTENING_ENABLED] = enabled }
+    }
+
+    override val smartMixVariety: Flow<Float> = safeData.map { prefs ->
+        (prefs[KEY_SMART_MIX_VARIETY] ?: DEFAULT_SMART_MIX_VARIETY).coerceIn(0f, 1f)
+    }
+
+    override suspend fun setSmartMixVariety(value: Float) {
+        context.dataStore.edit { it[KEY_SMART_MIX_VARIETY] = value.coerceIn(0f, 1f) }
+    }
+
+    override val smartMixDiscovery: Flow<Float> = safeData.map { prefs ->
+        (prefs[KEY_SMART_MIX_DISCOVERY] ?: DEFAULT_SMART_MIX_DISCOVERY).coerceIn(0f, 1f)
+    }
+
+    override suspend fun setSmartMixDiscovery(value: Float) {
+        context.dataStore.edit { it[KEY_SMART_MIX_DISCOVERY] = value.coerceIn(0f, 1f) }
+    }
+
+    override val smartMixLength: Flow<Float> = safeData.map { prefs ->
+        (prefs[KEY_SMART_MIX_LENGTH] ?: DEFAULT_SMART_MIX_LENGTH).coerceIn(0f, 1f)
+    }
+
+    override suspend fun setSmartMixLength(value: Float) {
+        context.dataStore.edit { it[KEY_SMART_MIX_LENGTH] = value.coerceIn(0f, 1f) }
+    }
+
+    override suspend fun resetSmartMixTuning() {
+        context.dataStore.edit {
+            it.remove(KEY_SMART_MIX_VARIETY)
+            it.remove(KEY_SMART_MIX_DISCOVERY)
+            it.remove(KEY_SMART_MIX_LENGTH)
+        }
     }
 
     override val includeBetaUpdates: Flow<Boolean> = safeData.map { prefs ->

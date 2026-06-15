@@ -6,6 +6,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.Indication
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
@@ -15,7 +16,10 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonColors
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
@@ -28,6 +32,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 
 /**
  * Light wrappers and modifiers that add haptic feedback to interactive
@@ -176,6 +182,61 @@ fun MdFilledTonalIconButton(
         content = content
     )
 }
+
+/**
+ * Standard app slider: Material 3 [Slider] with the app's tap haptic fired when
+ * the user finishes dragging, plus the slim thumb / thin track used by the rest
+ * of the app (matching the full-player seek bar) so every slider looks and feels
+ * the same instead of the chunky stock thumb.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MdSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    onValueChangeFinished: (() -> Unit)? = null,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    steps: Int = 0,
+    enabled: Boolean = true
+) {
+    val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        onValueChangeFinished = onValueChangeFinished?.let { finished ->
+            {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                finished()
+            }
+        },
+        modifier = modifier,
+        enabled = enabled,
+        valueRange = valueRange,
+        steps = steps,
+        interactionSource = interactionSource,
+        thumb = {
+            SliderDefaults.Thumb(
+                interactionSource = interactionSource,
+                thumbSize = DpSize(MD_SLIDER_THUMB_WIDTH, MD_SLIDER_THUMB_HEIGHT),
+                enabled = enabled
+            )
+        },
+        track = { sliderState ->
+            SliderDefaults.Track(
+                sliderState = sliderState,
+                modifier = Modifier.height(MD_SLIDER_TRACK_HEIGHT),
+                thumbTrackGapSize = 0.dp,
+                enabled = enabled
+            )
+        }
+    )
+}
+
+private val MD_SLIDER_THUMB_WIDTH = 5.dp
+private val MD_SLIDER_THUMB_HEIGHT = 16.dp
+private val MD_SLIDER_TRACK_HEIGHT = 8.dp
 
 @Composable
 fun MdSwitch(

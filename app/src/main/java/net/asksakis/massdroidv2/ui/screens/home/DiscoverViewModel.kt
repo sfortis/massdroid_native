@@ -6,8 +6,12 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,7 +81,21 @@ private const val GENRE_RADIO_DECADE_LOOKBACK_DAYS = 720
 private const val ARTIST_DECADE_LOOKBACK_DAYS = 720
 private const val SMART_MIX_DAYPART_LOOKBACK_DAYS = 180
 private const val SMART_MIX_RECENT_LOOKBACK_DAYS = 14
-private const val SMART_MIX_TRACK_TARGET = 40
+// Smart Mix track-count target is derived from the user "length" knob (0..1):
+// 20 tracks at 0, 60 at 1, so the neutral 0.5 default lands on a round 40.
+private const val SMART_MIX_TARGET_MIN = 20
+private const val SMART_MIX_TARGET_SPAN = 40
+// Discovery >= this leaves the comfort band: adjacent genres are allowed into
+// the mix (below it the mix stays strictly on the picked / top genres).
+private const val DISCOVERY_ADJACENT_THRESHOLD = 0.34
+// Top genres kept as the accepted-genre anchor for the multi-genre fallback.
+private const val FALLBACK_GENRE_BREADTH = 6
+// Discovery >= this pays for Last.fm similar-artist expansion even when the local
+// pool already fills the target (the user explicitly wants more new artists).
+private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
+// Mirrors MixEngine's per-artist track cap: used to estimate how many tracks the
+// fetched artist pool can actually yield (each artist gives at most this many).
+private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
 // How many past mixes contribute to the soft-exclusion window. 3 gives
@@ -94,6 +112,14 @@ private const val SMART_MIX_LASTFM_SEED_LIMIT = 5
 // How many similars to ask Last.fm for per seed. Wider than the expansion
 // budget so we can still hit the budget after dedup against the in-pool set.
 private const val SMART_MIX_LASTFM_SIMILARS_PER_SEED = 20
+// Provider search for resolving genuinely-new (not-owned) Last.fm similar artists.
+// MA search is slow (multi-provider), so cap how many cache-MISS searches a single
+// mix may run; cache hits are unlimited and free. Resolutions are cached for
+// RESOLVED_ARTIST_TTL_MS so subsequent mixes skip the search.
+private const val SMART_MIX_SEARCH_LIMIT = 5
+private const val SMART_MIX_MAX_SEARCHES = 8
+private const val SMART_MIX_SEARCH_TIMEOUT_MS = 4000L
+private const val RESOLVED_ARTIST_TTL_MS = 30L * 24 * 60 * 60 * 1000
 // Subtracted from an artist's composite score for each of the last few mixes
 // they appeared in. The penalty is intentionally harsh because BLL scores for
 // heavy-listener favourites can sit well above 1.5; -0.6 per mix barely
@@ -117,6 +143,15 @@ private const val ARTIST_TRACK_CACHE_TTL_MS = 12 * 60 * 60 * 1000L
 // few tracks per artist (interleaved), so a generous cap keeps the variety the
 // scorer/genre-filter needs while bounding the per-artist work.
 private const val MAX_TRACKS_PER_ARTIST = 40
+// Per-artist track fetches run bounded-parallel instead of strictly sequential:
+// most artists resolve instantly from the local cache, but the occasional
+// provider artist (Deezer) can be slow/throttled, and serially that one stalls
+// the whole mix build. Bounded so total time ~= the slowest single fetch without
+// firing a flood of concurrent provider RPCs.
+private const val ARTIST_FETCH_CONCURRENCY = 6
+// Lower concurrency for the background expansion prefetch so it stays gentle on
+// the MA server while the user isn't waiting on it.
+private const val PREFETCH_CONCURRENCY = 2
 private const val GENRE_RADIO_DISCOVERY_SEEDS = 10
 private const val GENRE_RADIO_SIMILAR_RESOLVE_LIMIT = 5
 private const val GENRE_RADIO_SPAM_WINDOW_MS = 1_500L
@@ -242,8 +277,28 @@ class DiscoverViewModel @Inject constructor(
     // re-rolling the same dice.
     private val recentSmartMixGenres: ArrayDeque<String> = ArrayDeque()
 
+    // User Smart Mix tuning knobs (all 0..1), collected from settings and read
+    // per mix build. Variety -> per-artist track pool + jitter, discovery ->
+    // exploration/adjacent breadth, length -> track-count target. 0.5 = neutral.
+    @Volatile private var smartMixVariety: Double = 0.5
+    @Volatile private var smartMixDiscovery: Double = 0.5
+    @Volatile private var smartMixLength: Double = 0.5
+
+    // Single-flight background job that warms the expansion-artist cache (URIs +
+    // catalogues) for the next high-discovery mix. See scheduleExpansionPrefetch.
+    @Volatile private var expansionPrefetchJob: Job? = null
+
     init {
         autoConnect()
+        viewModelScope.launch {
+            settingsRepository.smartMixVariety.collect { v -> smartMixVariety = v.toDouble() }
+        }
+        viewModelScope.launch {
+            settingsRepository.smartMixDiscovery.collect { v -> smartMixDiscovery = v.toDouble() }
+        }
+        viewModelScope.launch {
+            settingsRepository.smartMixLength.collect { v -> smartMixLength = v.toDouble() }
+        }
         viewModelScope.launch {
             loadFromCache()
             observeConnection()
@@ -623,6 +678,10 @@ class DiscoverViewModel @Inject constructor(
         }
     }
 
+    // Track-count target from the user "length" knob (see SMART_MIX_TARGET_*).
+    private fun smartMixTrackTarget(): Int =
+        (SMART_MIX_TARGET_MIN + smartMixLength * SMART_MIX_TARGET_SPAN).toInt()
+
     private suspend fun buildSmartMixTracks(): SmartMixResult {
         val mixSeed = System.currentTimeMillis()
         val random = kotlin.random.Random(mixSeed)
@@ -753,9 +812,14 @@ class DiscoverViewModel @Inject constructor(
             }
             triedGenres.add(pickedGenre)
 
-            val adjacentGenres = genreAdjacencyMap[pickedGenre]?.map {
-                normalizeGenre(it)
-            }?.toSet() ?: emptySet()
+            // Discovery controls genre breadth: in the comfort band stay strictly
+            // on the picked genre (max consistency, e.g. pure heavy metal); above
+            // it, allow adjacent genres in.
+            val adjacentGenres = if (smartMixDiscovery < DISCOVERY_ADJACENT_THRESHOLD) {
+                emptySet()
+            } else {
+                genreAdjacencyMap[pickedGenre]?.map { normalizeGenre(it) }?.toSet() ?: emptySet()
+            }
             val result = buildTracksForGenre(
                 pickedGenre = pickedGenre,
                 artistScores = artistScores,
@@ -793,14 +857,21 @@ class DiscoverViewModel @Inject constructor(
             smartArtistScoreMap = smartArtistScoreMap,
             favoriteArtistUris = favoriteArtistUris,
             excludedArtistUris = excludedArtistUris,
-            randomSeed = mixSeed
+            randomSeed = mixSeed,
+            discovery = smartMixDiscovery
         )
         if (artistOrder.isEmpty()) return SmartMixResult(emptyList(), null)
 
-        val tracksByArtist = mutableMapOf<String, List<Track>>()
-        for (artistUri in artistOrder) {
-            val tracks = getArtistTracksForIdentity(artistUri)
-            if (tracks.isNotEmpty()) tracksByArtist[artistUri] = tracks
+        // Even in the multi-genre fallback, anchor tracks to the user's top
+        // genres so a mix never picks up an off-vibe cut (e.g. a downtempo
+        // interlude inside a metal set). Tagged tracks must overlap the accepted
+        // set; untagged tracks pass (cannot be validated, and this is the last
+        // resort). Discovery widens the accepted set to adjacent genres.
+        val acceptedGenres = fallbackAcceptedGenres(blendedGenreScores, genreAdjacencyMap)
+        val tracksByArtist = fetchTracksByArtist(artistOrder) { _, rawTracks ->
+            rawTracks.filter { track ->
+                track.genres.isEmpty() || track.genres.any { normalizeGenre(it) in acceptedGenres }
+            }
         }
         if (tracksByArtist.isEmpty()) return SmartMixResult(emptyList(), null)
 
@@ -820,11 +891,26 @@ class DiscoverViewModel @Inject constructor(
                         (smartArtistScoreMap[key] ?: 0.0) * 0.5 +
                         daypartTrackBias(daypartAffinity[key])
                 },
-                target = SMART_MIX_TRACK_TARGET,
-                randomSeed = mixSeed + 17L
+                target = smartMixTrackTarget(),
+                randomSeed = mixSeed + 17L,
+                variety = smartMixVariety
             ),
             null
         )
+    }
+
+    // Accepted-genre set for the multi-genre fallback: the user's top genres,
+    // widened to adjacent genres only when discovery is past the comfort band.
+    private fun fallbackAcceptedGenres(
+        blendedGenreScores: List<GenreScore>,
+        genreAdjacencyMap: Map<String, Set<String>>
+    ): Set<String> {
+        val top = blendedGenreScores.asSequence()
+            .map { normalizeGenre(it.genre) }
+            .take(FALLBACK_GENRE_BREADTH)
+            .toSet()
+        if (smartMixDiscovery < DISCOVERY_ADJACENT_THRESHOLD) return top
+        return top + top.flatMap { genreAdjacencyMap[it]?.map(::normalizeGenre).orEmpty() }
     }
 
     private suspend fun buildTracksForGenre(
@@ -866,60 +952,87 @@ class DiscoverViewModel @Inject constructor(
             smartArtistScoreMap = smartArtistScoreMap,
             favoriteArtistUris = genreFavorites.toSet(),
             excludedArtistUris = excludedArtistUris,
-            randomSeed = mixSeed
+            randomSeed = mixSeed,
+            discovery = smartMixDiscovery
         )
         if (artistOrder.isEmpty()) return emptyList()
 
-        // Augment the play-history-driven pool with Last.fm-similar library
-        // artists. They go RIGHT AFTER the small comfort anchor block (top 2)
-        // rather than at the tail of artistOrder. Tail position made them
-        // effectively unreachable: the interleaver fills the 40-track target
-        // from the front of the list, and BLL favourites overflowed the slots
-        // before any expansion artist was emitted. Inserting them near the
-        // front gives them a real shot while still respecting the user's top
-        // priorities.
-        val expansionArtists = resolveLastFmExpansionArtists(
-            seedArtistUris = artistOrder,
-            excludedArtistUris = excludedArtistUris
+        // Genre-track filter shared by the base and (optional) expansion fetch.
+        // Every artist in the pool is genre-relevant (exact pool, adjacency, or
+        // genre-validated Last.fm similar), and most provider tracks carry no
+        // per-track genre tag, so we KEEP untagged tracks (dropping them all is
+        // what starved mixes to a handful of songs). Tagged tracks must still
+        // match the picked/adjacent set so a clearly off-genre cut can't slip in.
+        val genreMatchSet = (adjacentGenres + pickedGenre).map { normalizeGenre(it) }.toSet()
+        val trackFilter = { _: String, rawTracks: List<Track> ->
+            rawTracks.filter { track ->
+                track.genres.isEmpty() || track.genres.any { normalizeGenre(it) in genreMatchSet }
+            }
+        }
+
+        // Fill from the user's own genre artists first. Estimate the REAL yield:
+        // each artist contributes at most MIX_MAX_TRACKS_PER_ARTIST to the final
+        // mix (not its whole catalogue), so counting raw tracks would wrongly skip
+        // expansion while still far short of the target. Last.fm expansion is the
+        // slow network step, so only pay for it when the local pool can't reach
+        // the target, or discovery is high enough that the user wants more.
+        val target = smartMixTrackTarget()
+        val baseTracksByArtist = fetchTracksByArtist(artistOrder, transform = trackFilter)
+        val estimatedYield = baseTracksByArtist.values.sumOf { minOf(it.size, MIX_MAX_TRACKS_PER_ARTIST) }
+        val needExpansion = estimatedYield < target || smartMixDiscovery >= DISCOVERY_EXPANSION_THRESHOLD
+        Log.d(
+            TAG,
+            "Genre '$pickedGenre': order=${artistOrder.size}, base=${baseTracksByArtist.size} artists " +
+                "(${baseTracksByArtist.values.sumOf { it.size }} tracks), est=$estimatedYield/$target, needExp=$needExpansion"
         )
-        val expandedArtistOrder = if (expansionArtists.isEmpty()) {
-            artistOrder
-        } else {
+
+        val expandedArtistOrder: List<String>
+        val tracksByArtist: Map<String, List<Track>>
+        if (needExpansion) {
+            // INLINE: cache-only. Use already-resolved similar URIs (no live MA
+            // search) and only their already-cached catalogues (cacheOnly). The
+            // slow search + catalogue fetch happens in the background prefetch
+            // below, so the mix the user sees never blocks on the network.
+            val expansionArtists = resolveLastFmExpansionArtists(
+                seedArtistUris = artistOrder,
+                excludedArtistUris = excludedArtistUris,
+                allowProviderSearch = false
+            )
             val seenKeys = artistOrder
                 .mapNotNull { MediaIdentity.artistKeyFromUri(it) ?: it.takeIf { it.isNotBlank() } }
                 .toMutableSet()
+            // Splice expansion artists right after the top-2 anchor slots so they
+            // are reachable (the interleaver fills the target from the front).
             val newcomers = expansionArtists.filter { uri ->
                 val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
                 seenKeys.add(key)
             }
-            // Reserve the first 2 slots for the user's anchor preferences and
-            // splice expansion artists immediately after them.
-            val anchorSlots = 2.coerceAtMost(artistOrder.size)
-            val head = artistOrder.take(anchorSlots)
-            val tail = artistOrder.drop(anchorSlots)
-            head + newcomers + tail
+            if (newcomers.isEmpty()) {
+                expandedArtistOrder = artistOrder
+                tracksByArtist = baseTracksByArtist
+            } else {
+                val anchorSlots = 2.coerceAtMost(artistOrder.size)
+                expandedArtistOrder =
+                    artistOrder.take(anchorSlots) + newcomers + artistOrder.drop(anchorSlots)
+                tracksByArtist = baseTracksByArtist +
+                    fetchTracksByArtist(newcomers, cacheOnly = true, transform = trackFilter)
+            }
+            Log.d(
+                TAG,
+                "Genre '$pickedGenre': expansion resolved=${expansionArtists.size}, new=${newcomers.size}, " +
+                    "total=${tracksByArtist.size} artists (${tracksByArtist.values.sumOf { it.size }} tracks)"
+            )
+        } else {
+            expandedArtistOrder = artistOrder
+            tracksByArtist = baseTracksByArtist
         }
 
-        // Track-level genre validation: "rock-adjacent" artists like Toto are
-        // in the candidate pool because the artist-level adjacency map links
-        // their primary genre to the picked one, but their actual tracks are
-        // pure rock with zero stoner-rock tags. Without this filter we would
-        // serve "Toto - Pamela" inside a stoner-rock mix. Keep tracks only if
-        // they have at least one genre tag in the picked-or-adjacent set.
-        // Tracks without any genre tags are dropped here; they cannot be
-        // validated against a genre-specific mix and the multi-genre fallback
-        // (or a different genre attempt) will pick them up if no single-genre
-        // path produces enough material.
-        val genreMatchSet = (adjacentGenres + pickedGenre).map { normalizeGenre(it) }.toSet()
-        val tracksByArtist = mutableMapOf<String, List<Track>>()
-        for (artistUri in expandedArtistOrder) {
-            val rawTracks = getArtistTracksForIdentity(artistUri)
-            if (rawTracks.isEmpty()) continue
-            val matched = rawTracks.filter { track ->
-                track.genres.any { normalizeGenre(it) in genreMatchSet }
-            }
-            if (matched.isNotEmpty()) tracksByArtist[artistUri] = matched
+        // Background: warm the cache (resolve similar -> provider URI, fetch their
+        // catalogues) so the NEXT high-discovery mix can include them instantly.
+        if (smartMixDiscovery >= DISCOVERY_EXPANSION_THRESHOLD) {
+            scheduleExpansionPrefetch(artistOrder, excludedArtistUris)
         }
+
         if (tracksByArtist.isEmpty()) return emptyList()
 
         return mixEngine.buildTracks(
@@ -937,9 +1050,10 @@ class DiscoverViewModel @Inject constructor(
                     (smartArtistScoreMap[key] ?: 0.0) * 0.5 +
                     daypartTrackBias(daypartAffinity[key])
             },
-            target = SMART_MIX_TRACK_TARGET,
+            target = target,
             randomSeed = mixSeed + 17L,
-            adjacentGenres = adjacentGenres
+            adjacentGenres = adjacentGenres,
+            variety = smartMixVariety
         )
     }
 
@@ -1238,21 +1352,18 @@ class DiscoverViewModel @Inject constructor(
     }
 
     /**
-     * Pull library artists that Last.fm marks as similar to the current pool's
-     * top seeds. Library-only (no MA search round-trip), cache-only on the
-     * Last.fm side, so this is cheap to call inside SmartMix generation.
-     *
-     * The returned URIs are ones the user already owns but were not surfaced
-     * by the play-history-driven artist ordering; they widen the pool with
-     * "you have it, you don't play it much" candidates that are still musically
-     * adjacent to what the user actually listens to. Genre coherence is
-     * enforced downstream by the track-level filter.
+     * Pull artists that Last.fm marks as similar to the current pool's top seeds.
+     * Owned (library) similars are used first (no round-trip); if they don't fill
+     * the budget, genuinely-new similars are resolved to a provider URI via MA
+     * search so the mix can discover beyond what the user already owns. Genre
+     * coherence is enforced downstream by the track-level filter.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun resolveLastFmExpansionArtists(
         seedArtistUris: List<String>,
         excludedArtistUris: Set<String>,
-        targetCount: Int = SMART_MIX_LASTFM_EXPANSION
+        targetCount: Int = SMART_MIX_LASTFM_EXPANSION,
+        allowProviderSearch: Boolean = false
     ): List<String> {
         if (seedArtistUris.isEmpty() || targetCount <= 0) return emptyList()
 
@@ -1285,6 +1396,7 @@ class DiscoverViewModel @Inject constructor(
             .toMutableSet()
 
         val collected = mutableListOf<String>()
+        val newNames = mutableListOf<String>()
         coroutineScope {
             val deferreds = seedNames.map { name ->
                 async {
@@ -1299,23 +1411,126 @@ class DiscoverViewModel @Inject constructor(
                 .sortedByDescending { it.matchScore }
 
             for (similar in merged) {
-                if (collected.size >= targetCount) break
                 if (similar.name in alreadyInPoolNames) continue
-                val libraryUri = nameToUri[similar.name] ?: continue
-                if (libraryUri in excludedArtistUris) continue
-                collected += libraryUri
-                alreadyInPoolNames += similar.name
+                val libraryUri = nameToUri[similar.name]
+                if (libraryUri != null) {
+                    if (libraryUri in excludedArtistUris) continue
+                    if (collected.size < targetCount) {
+                        collected += libraryUri
+                        alreadyInPoolNames += similar.name
+                    }
+                } else {
+                    // Not in the library: a genuinely new artist. Remember it for a
+                    // provider search below so expansion can discover beyond what
+                    // the user already owns (the old code dropped these entirely).
+                    newNames += similar.name
+                    alreadyInPoolNames += similar.name
+                }
+            }
+        }
+
+        // Owned matches alone rarely fill the target (and they carry the same few
+        // owned tracks). Resolve genuinely-new similar artists via a provider
+        // search so they bring a full streaming catalogue. This costs network
+        // round-trips, so it's gated to high discovery; the dynamic per-artist cap
+        // keeps the default (owned-only) path full without it. Bounded-parallel so
+        // the extra round-trips don't serialise the build.
+        if (collected.size < targetCount && newNames.isNotEmpty()) {
+            val gate = Semaphore(ARTIST_FETCH_CONCURRENCY)
+            // Cache hits are always free. Live MA search (the slow part) only runs
+            // when explicitly allowed (the background prefetch), so the inline mix
+            // build uses cached resolutions only and never blocks on a search.
+            var searchBudget = if (allowProviderSearch) SMART_MIX_MAX_SEARCHES else 0
+            // Resolve new artists to a provider URI. Cache hits are free; only
+            // cache misses spend the (slow) MA search budget, and every resolution
+            // is cached so later mixes skip the search entirely.
+            val resolved = coroutineScope {
+                newNames.mapNotNull { name ->
+                    val cachedUri = playHistoryRepository.getCachedResolvedArtistUri(
+                        name, RESOLVED_ARTIST_TTL_MS
+                    )
+                    when {
+                        cachedUri != null -> async { cachedUri }
+                        searchBudget > 0 -> {
+                            searchBudget--
+                            async { gate.withPermit { searchAndCacheArtistUri(name) } }
+                        }
+                        else -> null
+                    }
+                }.awaitAll()
+            }
+            for (uri in resolved) {
+                if (collected.size >= targetCount) break
+                if (uri.isNullOrBlank() || uri in excludedArtistUris) continue
+                val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
+                if (collected.any { (MediaIdentity.artistKeyFromUri(it) ?: it) == key }) continue
+                collected += uri
             }
         }
 
         if (collected.isNotEmpty()) {
             Log.d(
                 TAG,
-                "Last.fm expansion: ${collected.size} library artists added " +
-                    "from ${seedNames.size} seeds"
+                "Last.fm expansion: ${collected.size}/$targetCount artists from ${seedNames.size} seeds " +
+                    "(${newNames.size} new candidates searched)"
             )
         }
         return collected
+    }
+
+    // Background prefetch: resolve similar artists to provider URIs (live search)
+    // and warm their catalogue cache, so the NEXT high-discovery mix can include
+    // them with zero network wait. Single-flight: ignored while one is running.
+    @Suppress("TooGenericExceptionCaught")
+    private fun scheduleExpansionPrefetch(
+        seedArtistUris: List<String>,
+        excludedArtistUris: Set<String>
+    ) {
+        if (expansionPrefetchJob?.isActive == true) return
+        expansionPrefetchJob = viewModelScope.launch {
+            try {
+                val artists = resolveLastFmExpansionArtists(
+                    seedArtistUris = seedArtistUris,
+                    excludedArtistUris = excludedArtistUris,
+                    allowProviderSearch = true
+                )
+                if (artists.isNotEmpty()) {
+                    // cacheOnly = false performs (and caches) the catalogue fetch.
+                    // Low concurrency keeps this background job a polite citizen on
+                    // the MA server (Last.fm is already globally rate-limited).
+                    fetchTracksByArtist(artists, concurrency = PREFETCH_CONCURRENCY) { _, tracks -> tracks }
+                    Log.d(TAG, "Expansion prefetch: warmed ${artists.size} artists")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Expansion prefetch failed: ${e.message}")
+            }
+        }
+    }
+
+    // Resolve a (not-in-library) artist name to a playable provider URI via MA
+    // search, preferring an exact name match, and cache the result so later mixes
+    // skip the slow search. Used by Last.fm expansion to bring in new artists.
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun searchAndCacheArtistUri(name: String): String? {
+        return try {
+            // MA search has no server-side per-provider timeout: one slow provider
+            // can hang the whole call for minutes. Bound it so a stuck search can
+            // never stall the mix; a miss just means this artist is skipped.
+            val result = withTimeoutOrNull(SMART_MIX_SEARCH_TIMEOUT_MS) {
+                musicRepository.search(
+                    query = name,
+                    mediaTypes = listOf(MediaType.ARTIST),
+                    limit = SMART_MIX_SEARCH_LIMIT
+                )
+            } ?: return null
+            val match = result.artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
+                ?: result.artists.firstOrNull()
+            val uri = match?.uri?.takeIf { it.isNotBlank() }
+            if (uri != null) playHistoryRepository.cacheResolvedArtistUri(name, uri)
+            uri
+        } catch (_: Exception) {
+            null
+        }
     }
 
     @Suppress("TooGenericExceptionCaught")
@@ -1881,22 +2096,78 @@ class DiscoverViewModel @Inject constructor(
         return emptyList()
     }
 
-    private suspend fun getArtistTracksForIdentity(artistIdentity: String): List<Track> {
+    /**
+     * Resolve tracks for each artist in [artistOrder] concurrently (bounded by
+     * [ARTIST_FETCH_CONCURRENCY]), applying [transform] to each artist's tracks,
+     * and return only the artists that yielded a non-empty result. Replaces a
+     * strictly-sequential loop so one slow provider artist no longer serialises
+     * the whole build. Result map order is irrelevant (the caller orders by
+     * [artistOrder]).
+     */
+    private suspend fun fetchTracksByArtist(
+        artistOrder: List<String>,
+        cacheOnly: Boolean = false,
+        concurrency: Int = ARTIST_FETCH_CONCURRENCY,
+        transform: (String, List<Track>) -> List<Track>
+    ): Map<String, List<Track>> = coroutineScope {
+        val gate = Semaphore(concurrency)
+        artistOrder
+            .map { artistUri ->
+                async {
+                    artistUri to gate.withPermit {
+                        transform(artistUri, getArtistTracksForIdentity(artistUri, cacheOnly))
+                    }
+                }
+            }
+            .awaitAll()
+            .filter { it.second.isNotEmpty() }
+            .toMap()
+    }
+
+    // Sample up to MAX_TRACKS_PER_ARTIST tracks from a (possibly large) catalogue.
+    // The MA artist_tracks endpoint returns a deterministic order (album /
+    // popularity), so a plain take(N) would always serve the same head-of-list
+    // tracks and bury the rest for the whole cache window. A seeded shuffle keeps
+    // the subset representative of the discography while staying reproducible.
+    private fun sampleTracksForMix(tracks: List<Track>, seed: Long): List<Track> =
+        if (tracks.size <= MAX_TRACKS_PER_ARTIST) {
+            tracks
+        } else {
+            tracks.shuffled(kotlin.random.Random(seed)).take(MAX_TRACKS_PER_ARTIST)
+        }
+
+    private suspend fun getArtistTracksForIdentity(
+        artistIdentity: String,
+        cacheOnly: Boolean = false
+    ): List<Track> {
         val cacheKey = MediaIdentity.artistKeyFromUri(artistIdentity) ?: artistIdentity
         playHistoryRepository.getCachedArtistTracks(cacheKey, ARTIST_TRACK_CACHE_TTL_MS)?.let { cached ->
             if (cached.isNotEmpty()) {
-                Log.d(TAG, "Artist track cache hit: $cacheKey (${cached.size} tracks)")
-                return enrichTracksWithLastFmGenres(cached)
+                // Cap on READ too, not just on fill: entries cached before the cap
+                // existed (or by other paths) can still hold the full catalogue, and
+                // enriching hundreds of cached tracks is itself the slow step.
+                // Sample (not head-of-list) so a prolific artist's deep cuts can
+                // surface; stable per-artist seed keeps the enriched subset
+                // consistent across reads within the cache window.
+                val capped = sampleTracksForMix(cached, cacheKey.hashCode().toLong())
+                Log.d(TAG, "Artist track cache hit: $cacheKey (${capped.size}/${cached.size} tracks)")
+                return enrichTracksWithLastFmGenres(capped)
             }
         }
+        // cacheOnly callers (inline mix build) must never pay the MA fetch: an
+        // uncached artist is simply skipped and picked up later from cache once
+        // the background prefetch has populated it.
+        if (cacheOnly) return emptyList()
         for ((provider, itemId) in resolveArtistRefs(artistIdentity)) {
             try {
                 val tracks = musicRepository.getArtistTracks(itemId, provider)
                 if (tracks.isNotEmpty()) {
                     // Cap BEFORE enrichment: artist_tracks returns the full catalogue
                     // (MA ignores a limit arg), and enriching hundreds of tracks is
-                    // what stalled the mix build on a prolific artist.
-                    val capped = tracks.take(MAX_TRACKS_PER_ARTIST)
+                    // what stalled the mix build on a prolific artist. Sample rather
+                    // than head-of-list so the cached subset is representative of the
+                    // whole discography, not just the first 40 by the server's order.
+                    val capped = sampleTracksForMix(tracks, cacheKey.hashCode().toLong())
                     val enriched = enrichTracksWithLastFmGenres(capped)
                     playHistoryRepository.cacheArtistTracks(cacheKey, enriched)
                     Log.d(TAG, "Artist track cache fill: $cacheKey (${enriched.size}/${tracks.size} tracks)")

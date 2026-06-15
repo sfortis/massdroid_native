@@ -142,6 +142,12 @@ class SettingsViewModel @Inject constructor(
     }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    val smartMixVariety = settingsRepository.smartMixVariety
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
+    val smartMixDiscovery = settingsRepository.smartMixDiscovery
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
+    val smartMixLength = settingsRepository.smartMixLength
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
     val includeBetaUpdates = settingsRepository.includeBetaUpdates
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
@@ -417,6 +423,30 @@ class SettingsViewModel @Inject constructor(
     fun toggleSendspin(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setSendspinEnabled(enabled)
+        }
+    }
+
+    fun setSmartMixVariety(value: Float) {
+        viewModelScope.launch {
+            settingsRepository.setSmartMixVariety(value)
+        }
+    }
+
+    fun setSmartMixDiscovery(value: Float) {
+        viewModelScope.launch {
+            settingsRepository.setSmartMixDiscovery(value)
+        }
+    }
+
+    fun setSmartMixLength(value: Float) {
+        viewModelScope.launch {
+            settingsRepository.setSmartMixLength(value)
+        }
+    }
+
+    fun resetSmartMixTuning() {
+        viewModelScope.launch {
+            settingsRepository.resetSmartMixTuning()
         }
     }
 

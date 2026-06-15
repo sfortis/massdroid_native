@@ -75,6 +75,9 @@ interface PlayHistoryRepository {
     suspend fun getPlaysForTimeAnalysis(days: Int = 30): List<Long>
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
+    /** Cached provider URI for a Last.fm similar-artist name (null if absent or older than maxAgeMs). */
+    suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String?
+    suspend fun cacheResolvedArtistUri(name: String, uri: String)
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

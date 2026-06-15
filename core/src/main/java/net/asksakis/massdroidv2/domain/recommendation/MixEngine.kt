@@ -6,6 +6,7 @@ import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.ceil
 import kotlin.random.Random
 
 private const val TAG = "MixEngine"
@@ -17,13 +18,35 @@ private const val TOP_ARTISTS_LIMIT = 16
 private const val TOP_GENRES_LIMIT = 6
 // Deeper sampling per genre lets less-played but on-genre artists into the pool.
 private const val ARTISTS_PER_GENRE = 20
-// Fewer guaranteed top-scorers so the mix isn't dominated by 4 comfort artists
-// every single time.
-private const val COMFORT_ANCHOR_LIMIT = 2
-private const val EXPLORATION_ARTIST_TARGET = 28
+// Comfort-anchor count and exploration-pool size are now derived from the
+// user "discovery" knob (see DISCOVERY_* constants below).
 private const val FAVORITE_ARTISTS_CANDIDATE_LIMIT = 24
 private const val RECENT_ARTIST_WEIGHT = 0.65
 private const val SM_ARTIST_RANK_JITTER = 0.22
+// Per-track genre affinity boost weight (applied to the non-negative averaged
+// genre affinity, see genreAffinity).
+private const val GENRE_AFFINITY_WEIGHT = 0.6
+
+// --- User tuning knobs (all in [0,1], 0.5 = neutral/legacy behaviour) ---
+private const val DEFAULT_VARIETY = 0.5
+private const val DEFAULT_DISCOVERY = 0.5
+// Variety -> track-rank jitter multiplier range (0.5x .. 2.0x).
+private const val VARIETY_JITTER_MIN = 0.5
+private const val VARIETY_JITTER_SPAN = 1.5
+// Variety -> per-artist candidate-pool factor (x2 .. x10 of maxPerArtist).
+private const val VARIETY_POOL_MIN = 2.0
+private const val VARIETY_POOL_SPAN = 8.0
+// Per-artist track cap floor/ceiling (see dynamicMaxPerArtist). Floor keeps
+// diversity when the pool is large; ceiling lets a small pool still fill up.
+private const val MAX_PER_ARTIST_FLOOR = 2
+private const val MAX_PER_ARTIST_CEIL = 5
+// Discovery -> how many comfort anchors are guaranteed before exploration fills
+// the rest. Low discovery keeps more familiar artists up front.
+private const val DISCOVERY_COMFORT_MAX = 6
+private const val DISCOVERY_COMFORT_MIN = 1
+// Discovery -> exploration artist pool target (familiar-leaning .. wide).
+private const val DISCOVERY_EXPLORE_MIN = 14
+private const val DISCOVERY_EXPLORE_SPAN = 24
 
 sealed class MixMode {
     data class SmartMix(
@@ -45,10 +68,14 @@ class MixEngine @Inject constructor() {
         smartArtistScoreMap: Map<String, Double>,
         favoriteArtistUris: Set<String>,
         excludedArtistUris: Set<String>,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        // User "discovery" knob in [0,1]. Low keeps more familiar (comfort)
+        // artists up front and a narrower exploration pool; high pushes more
+        // exploration/adjacent artists in.
+        discovery: Double = DEFAULT_DISCOVERY
     ): List<String> = buildSmartMixArtistOrder(
         mode as MixMode.SmartMix, bllArtistScoreMap, smartArtistScoreMap,
-        favoriteArtistUris, excludedArtistUris, randomSeed
+        favoriteArtistUris, excludedArtistUris, randomSeed, discovery
     )
 
     fun buildTracks(
@@ -62,12 +89,25 @@ class MixEngine @Inject constructor() {
         artistBaseScore: (String) -> Double,
         target: Int,
         randomSeed: Long = System.currentTimeMillis(),
-        adjacentGenres: Set<String> = emptySet()
+        adjacentGenres: Set<String> = emptySet(),
+        // User "variety" knob in [0,1]. It widens BOTH the per-artist candidate
+        // pool (how many of an artist's tracks are eligible to rotate in) and the
+        // track-rank jitter. Low = tight, the strongest few tracks every time;
+        // high = repeated mixes diverge more. The pool was the dominant rotation
+        // source, so a jitter-only knob barely moved the result.
+        variety: Double = DEFAULT_VARIETY
     ): List<Track> {
         if (target <= 0 || artistOrder.isEmpty()) return emptyList()
         val random = Random(randomSeed)
-        val maxPerArtist = maxTracksPerArtist(mode)
-        val jitter = trackJitter(mode)
+        val varietyClamped = variety.coerceIn(0.0, 1.0)
+        // Per-artist cap scales to how many artists actually have tracks: a flat
+        // cap of 2 left small-library genres stuck at ~9 tracks even when a few
+        // artists had deep catalogues. With a small pool we allow more per artist
+        // so the mix can reach the target; with a large pool it stays at the floor
+        // for maximum diversity.
+        val usableArtists = artistOrder.count { !tracksByArtist[it].isNullOrEmpty() }
+        val maxPerArtist = dynamicMaxPerArtist(target, usableArtists)
+        val jitter = trackJitter(mode) * (VARIETY_JITTER_MIN + varietyClamped * VARIETY_JITTER_SPAN)
         val favArtist = favArtistBonus(mode)
         val favAlbum = favAlbumBonus(mode)
         val favTrack = favTrackBonus(mode)
@@ -98,8 +138,11 @@ class MixEngine @Inject constructor() {
                     trackArtistKeys.any { it in excludedArtistUris }
                 }
                 .mapNotNull { track ->
-                    val genreScore =
-                        track.genres.sumOf { g -> genreScoreMap[normalizeGenre(g)] ?: 0.0 } * 0.6
+                    // Non-negative, tag-count-fair affinity: a loved-but-binged
+                    // genre has a negative log-domain BLL score, which must NOT
+                    // penalise the track (that's "familiar", not "disliked").
+                    // Real dislikes are excluded upstream via suppressed/blocked.
+                    val genreScore = genreAffinity(track.genres, genreScoreMap) * GENRE_AFFINITY_WEIGHT
 
                     val trackAlbumKey = MediaIdentity.canonicalAlbumKey(track.albumItemId, track.albumUri)
                     val score = artistBaseScore(artistUri) +
@@ -121,7 +164,8 @@ class MixEngine @Inject constructor() {
             // discography on every mix. Drawing maxPerArtist out of a wider
             // bucket keeps quality high (still scored top tier) while letting
             // less-played album cuts surface across mixes.
-            val candidatePoolSize = (maxPerArtist * 5).coerceAtLeast(maxPerArtist)
+            val poolFactor = VARIETY_POOL_MIN + varietyClamped * VARIETY_POOL_SPAN
+            val candidatePoolSize = (maxPerArtist * poolFactor).toInt().coerceAtLeast(maxPerArtist)
             val sampled = ranked.take(candidatePoolSize).shuffled(random)
 
             for (candidate in sampled) {
@@ -160,8 +204,11 @@ class MixEngine @Inject constructor() {
             limit = target,
             random = random,
             artistPriority = artistPriority,
-            firstPassUniqueArtists = firstPassUnique(mode),
-            minArtistGap = artistGap(mode)
+            // Clamp to the real pool size: with few artists a fixed 20-unique /
+            // 12-gap rule blocks every second track (it can never reach 20 unique)
+            // and leaves the mix short. Scale both to what's actually available.
+            firstPassUniqueArtists = minOf(firstPassUnique(mode), usableArtists),
+            minArtistGap = minOf(artistGap(mode), (usableArtists - 1).coerceAtLeast(0))
         )
         interleaved.forEachIndexed { i, track ->
             Log.d(modeTag, "  track #${i + 1}: ${track.artistNames} - ${track.name}")
@@ -203,9 +250,15 @@ class MixEngine @Inject constructor() {
         smartArtistScoreMap: Map<String, Double>,
         favoriteArtistUris: Set<String>,
         excludedArtistUris: Set<String>,
-        randomSeed: Long
+        randomSeed: Long,
+        discovery: Double
     ): List<String> {
         val random = Random(randomSeed)
+        val discoveryClamped = discovery.coerceIn(0.0, 1.0)
+        val comfortLimit = (
+            DISCOVERY_COMFORT_MAX - discoveryClamped * (DISCOVERY_COMFORT_MAX - DISCOVERY_COMFORT_MIN)
+            ).toInt().coerceAtLeast(DISCOVERY_COMFORT_MIN)
+        val exploreTarget = (DISCOVERY_EXPLORE_MIN + discoveryClamped * DISCOVERY_EXPLORE_SPAN).toInt()
         val artistScoreMap = mode.artistScores.toScoreMap()
         val topGenres = mode.genreScores.take(TOP_GENRES_LIMIT).map { normalizeGenre(it.genre) }
         val scoreByUri = mutableMapOf<String, Double>()
@@ -247,7 +300,7 @@ class MixEngine @Inject constructor() {
                     mode.recentArtistScoreMap, favoriteArtistUris, mode.daypartAffinityByArtist
                 ).also { scoreByUri[uri] = it }
             }
-            .take(COMFORT_ANCHOR_LIMIT)
+            .take(comfortLimit)
 
         val explorationPool = (genreCandidates + comfortCandidates)
             .filterNot { it in comfortAnchors }
@@ -256,7 +309,7 @@ class MixEngine @Inject constructor() {
         val explorationArtists = weightedSampleArtists(
             candidates = explorationPool,
             scoreByUri = scoreByUri,
-            limit = EXPLORATION_ARTIST_TARGET,
+            limit = exploreTarget,
             random = random
         )
 
@@ -459,11 +512,15 @@ class MixEngine @Inject constructor() {
 
     // --- Constants ---
 
-    // Cap at 2 so a 40-track mix needs at least ~20 distinct artists, which
-    // forces the interleaver to pull deeper into the candidate pool instead of
-    // bunching three tracks each from the top half-dozen scorers.
-    @Suppress("UnusedParameter")
-    private fun maxTracksPerArtist(mode: MixMode): Int = 2
+    // Per-artist track cap, scaled to the pool size. With many artists it stays
+    // at the floor (2) for maximum diversity; with a small genre pool it rises
+    // (up to the ceiling) so a few deep-catalogue artists can still fill the
+    // target instead of leaving the mix at a handful of tracks.
+    private fun dynamicMaxPerArtist(target: Int, usableArtists: Int): Int {
+        if (usableArtists <= 0) return MAX_PER_ARTIST_FLOOR
+        val needed = ceil(target.toDouble() / usableArtists).toInt()
+        return needed.coerceIn(MAX_PER_ARTIST_FLOOR, MAX_PER_ARTIST_CEIL)
+    }
     @Suppress("UnusedParameter")
     private fun firstPassUnique(mode: MixMode): Int = 20
     @Suppress("UnusedParameter")

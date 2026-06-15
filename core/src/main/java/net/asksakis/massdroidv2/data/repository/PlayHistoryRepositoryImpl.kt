@@ -328,6 +328,13 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String? =
+        dao.getResolvedUriBySimilarName(name, System.currentTimeMillis() - maxAgeMs)
+
+    override suspend fun cacheResolvedArtistUri(name: String, uri: String) {
+        dao.cacheResolvedUriBySimilarName(name, uri, System.currentTimeMillis())
+    }
+
     override suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>) {
         val now = System.currentTimeMillis()
         val payload = json.encodeToString(ListSerializer(Track.serializer()), tracks)

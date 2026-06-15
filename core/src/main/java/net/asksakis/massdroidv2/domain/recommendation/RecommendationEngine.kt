@@ -71,7 +71,11 @@ class RecommendationEngine @Inject constructor() {
         val scored = eligible.map { artist ->
             val key = artistIdentity(artist)
             val genres = resolveGenres(artist)
-            val affinityScore = genres.sumOf { g -> genreScoreMap[g] ?: 0.0 }
+            // Non-negative, tag-count-fair affinity (see genreAffinity): avoids
+            // an over-tagged artist out-scoring a precise one and stops a
+            // loved-but-binged genre (negative log-domain BLL) from dragging an
+            // artist's relevance below the > 0 cutoff and excluding them.
+            val affinityScore = genreAffinity(genres, genreScoreMap)
             val signalBoost = artistSignalScores[key] ?: 0.0
             val similarBonus = (similarArtistScores[key] ?: 0.0) * 0.6
             ScoredArtist(artist, affinityScore + signalBoost * 0.5 + similarBonus)

@@ -14,6 +14,12 @@ interface SettingsRepository {
     val password: Flow<String>
     val sendspinEnabled: Flow<Boolean>
     val smartListeningEnabled: Flow<Boolean>
+    /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
+    val smartMixVariety: Flow<Float>
+    /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */
+    val smartMixDiscovery: Flow<Float>
+    /** Smart Mix length 0f..1f: mapped to a track-count target for generated mixes. */
+    val smartMixLength: Flow<Float>
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
     val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
@@ -76,6 +82,11 @@ interface SettingsRepository {
     suspend fun setPassword(password: String)
     suspend fun setSendspinEnabled(enabled: Boolean)
     suspend fun setSmartListeningEnabled(enabled: Boolean)
+    suspend fun setSmartMixVariety(value: Float)
+    suspend fun setSmartMixDiscovery(value: Float)
+    suspend fun setSmartMixLength(value: Float)
+    /** Restore all Smart Mix tuning knobs (variety, discovery, length) to defaults. */
+    suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
