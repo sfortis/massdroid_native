@@ -204,7 +204,6 @@ class DiscoverViewModel @Inject constructor(
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache,
     private val sessionEventBus: SessionEventBus,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 ) : ViewModel() {
@@ -573,18 +572,17 @@ class DiscoverViewModel @Inject constructor(
             recentSmartMixGenres.addLast(normalizeGenre(picked))
             while (recentSmartMixGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) recentSmartMixGenres.removeFirst()
         }
-        val hadDstm = queueDstmCache.dstmFor(queueId)
-        if (hadDstm) musicRepository.setDontStopTheMusic(queueId, false)
-        try {
-            musicRepository.playMedia(
-                queueId = queueId,
-                uris = tracks.map { it.uri },
-                option = "replace",
-                awaitResponse = true
-            )
-        } finally {
-            if (hadDstm) musicRepository.setDontStopTheMusic(queueId, true)
-        }
+        // EXPERIMENT: no longer disabling DSTM around the replace. On MA 2.9.1 the
+        // replace is atomic (PR #3753), so DSTM does not inject into the curated
+        // list mid-replace; it only continues AFTER the last curated track, which
+        // is desirable. Removing the disable/restore also fixes DSTM getting stuck
+        // OFF when this coroutine is cancelled before the restore runs.
+        musicRepository.playMedia(
+            queueId = queueId,
+            uris = tracks.map { it.uri },
+            option = "replace",
+            awaitResponse = true
+        )
         logQueueContents(logSource, awaitQueueItems = true)
     }
 
