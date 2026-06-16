@@ -41,6 +41,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -56,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -148,36 +150,53 @@ fun ProximitySettingsScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             val btEnabled by viewModel.bluetoothEnabled.collectAsStateWithLifecycle()
-            ListItem(
-                headlineContent = { Text("Enable Follow Me") },
-                supportingContent = {
-                    Text(
-                        if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
-                        else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
-                        else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
-                        else "Detect room changes and control speaker hand-offs."
-                    )
-                },
-                trailingContent = {
-                    Switch(
-                        checked = config.enabled,
-                        enabled = btEnabled || config.enabled,
-                        onCheckedChange = { enabled ->
-                            if (!enabled) {
-                                viewModel.setEnabled(false)
-                            } else if (btEnabled) {
-                                if (hasAllFollowMePermissions) viewModel.setEnabled(true)
-                                else showFollowMePermissionDialog = true
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+            ) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text("Enable Follow Me") },
+                    supportingContent = {
+                        Text(
+                            if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
+                            else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
+                            else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
+                            else "Detect room changes and control speaker hand-offs."
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = config.enabled,
+                            enabled = btEnabled || config.enabled,
+                            onCheckedChange = { enabled ->
+                                if (!enabled) {
+                                    viewModel.setEnabled(false)
+                                } else if (btEnabled) {
+                                    if (hasAllFollowMePermissions) viewModel.setEnabled(true)
+                                    else showFollowMePermissionDialog = true
+                                }
                             }
-                        }
-                    )
-                }
-            )
+                        )
+                    }
+                )
+            }
 
             if (config.enabled) {
-                HorizontalDivider()
-                ListItem(
-                    headlineContent = { Text("On room change") },
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                ) {
+                  Column {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("On room change") },
                     supportingContent = {
                         Column {
                             val mode = config.effectiveTransferMode()
@@ -221,11 +240,12 @@ fun ProximitySettingsScreen(
                     }
                 )
 
-                // Schedule
-                ListItem(
-                    headlineContent = { Text("Schedule") },
-                    supportingContent = {
-                        if (config.schedule.enabled) {
+                    // Schedule
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("Schedule") },
+                        supportingContent = {
+                            if (config.schedule.enabled) {
                             val dayNames = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
                             val activeDays = config.schedule.days.sorted().map { dayNames[it - 1] }.joinToString(", ")
                             Text(
@@ -244,11 +264,12 @@ fun ProximitySettingsScreen(
                     }
                 )
 
-                if (config.schedule.enabled) {
-                    ScheduleConfig(config.schedule, viewModel)
+                    if (config.schedule.enabled) {
+                        ScheduleConfig(config.schedule, viewModel)
+                    }
+                  }
                 }
 
-                HorizontalDivider()
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     "Rooms",
