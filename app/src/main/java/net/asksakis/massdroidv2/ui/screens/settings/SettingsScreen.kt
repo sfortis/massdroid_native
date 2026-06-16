@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.ui.components.MdTextButton
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
@@ -60,6 +61,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -896,6 +898,7 @@ private fun SmartListeningCard(viewModel: SettingsViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("Smart Listening") },
             supportingContent = { Text("Learns from skip/like/listen actions and improves recommendations.") },
             trailingContent = {
@@ -993,6 +996,7 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("Recommendation Insights") },
             supportingContent = {
                 Column {
@@ -1155,6 +1159,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("Sendspin (Phone as Speaker)") },
             supportingContent = {
                 Text(
@@ -1185,6 +1190,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
         // codec transport.
         if (sendspinEnabled) {
             ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 headlineContent = { Text("Sync system volume on Bluetooth") },
                 supportingContent = {
                     Text(
