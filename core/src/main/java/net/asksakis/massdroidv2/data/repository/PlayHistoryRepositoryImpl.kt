@@ -346,13 +346,19 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         dao.deleteExpiredTrackUriCache(now - (30 * MILLIS_PER_DAY))
     }
 
-    override suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack> =
-        dao.getSeedTracks(sinceMs, minListenedMs, limit).map {
+    override suspend fun getSeedTracks(
+        sinceMs: Long,
+        minListenedMs: Long,
+        minScore: Double,
+        limit: Int
+    ): List<SeedTrack> =
+        dao.getSeedTracks(sinceMs, minListenedMs, minScore, limit).map {
             SeedTrack(
                 trackUri = it.trackUri,
                 trackName = it.trackName,
                 artistName = it.artistName,
                 lastPlayedAt = it.lastPlayedAt,
+                score = it.score,
                 genres = it.genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
             )
         }

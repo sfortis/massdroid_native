@@ -42,9 +42,11 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
         private val KEY_SMART_MIX_LENGTH = floatPreferencesKey("smart_mix_length")
+        private val KEY_SMART_MIX_STRICTNESS = floatPreferencesKey("smart_mix_strictness")
         private const val DEFAULT_SMART_MIX_VARIETY = 0.5f
         private const val DEFAULT_SMART_MIX_DISCOVERY = 0.5f
         private const val DEFAULT_SMART_MIX_LENGTH = 0.5f
+        private const val DEFAULT_SMART_MIX_STRICTNESS = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
@@ -162,11 +164,20 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SMART_MIX_LENGTH] = value.coerceIn(0f, 1f) }
     }
 
+    override val smartMixStrictness: Flow<Float> = safeData.map { prefs ->
+        (prefs[KEY_SMART_MIX_STRICTNESS] ?: DEFAULT_SMART_MIX_STRICTNESS).coerceIn(0f, 1f)
+    }
+
+    override suspend fun setSmartMixStrictness(value: Float) {
+        context.dataStore.edit { it[KEY_SMART_MIX_STRICTNESS] = value.coerceIn(0f, 1f) }
+    }
+
     override suspend fun resetSmartMixTuning() {
         context.dataStore.edit {
             it.remove(KEY_SMART_MIX_VARIETY)
             it.remove(KEY_SMART_MIX_DISCOVERY)
             it.remove(KEY_SMART_MIX_LENGTH)
+            it.remove(KEY_SMART_MIX_STRICTNESS)
         }
     }
 

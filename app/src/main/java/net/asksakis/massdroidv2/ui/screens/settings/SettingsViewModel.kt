@@ -148,6 +148,8 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
     val smartMixLength = settingsRepository.smartMixLength
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
+    val smartMixStrictness = settingsRepository.smartMixStrictness
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.5f)
     val includeBetaUpdates = settingsRepository.includeBetaUpdates
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
@@ -441,6 +443,12 @@ class SettingsViewModel @Inject constructor(
     fun setSmartMixLength(value: Float) {
         viewModelScope.launch {
             settingsRepository.setSmartMixLength(value)
+        }
+    }
+
+    fun setSmartMixStrictness(value: Float) {
+        viewModelScope.launch {
+            settingsRepository.setSmartMixStrictness(value)
         }
     }
 

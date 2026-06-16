@@ -285,6 +285,7 @@ class DiscoverViewModel @Inject constructor(
     @Volatile private var smartMixVariety: Double = 0.5
     @Volatile private var smartMixDiscovery: Double = 0.5
     @Volatile private var smartMixLength: Double = 0.5
+    @Volatile private var smartMixStrictness: Double = 0.5
 
     // Single-flight background job that warms the expansion-artist cache (URIs +
     // catalogues) for the next high-discovery mix. See scheduleExpansionPrefetch.
@@ -300,6 +301,9 @@ class DiscoverViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsRepository.smartMixLength.collect { v -> smartMixLength = v.toDouble() }
+        }
+        viewModelScope.launch {
+            settingsRepository.smartMixStrictness.collect { v -> smartMixStrictness = v.toDouble() }
         }
         viewModelScope.launch {
             loadFromCache()
@@ -691,7 +695,8 @@ class DiscoverViewModel @Inject constructor(
     private suspend fun buildGenreRadioSeedMix(genre: String): List<Track> =
         seedTrackMixGenerator.buildGenreRadio(genre, seedTuning(), smartMixTrackTarget(), currentRecency())
 
-    private fun seedTuning() = SeedTrackMixGenerator.Tuning(smartMixVariety, smartMixDiscovery)
+    private fun seedTuning() =
+        SeedTrackMixGenerator.Tuning(smartMixVariety, smartMixDiscovery, smartMixStrictness)
 
     // Recent-mix cool-down context: which tracks/artists surfaced in the last few
     // mixes (so the generator can de-rank them) plus persistent exclusions.

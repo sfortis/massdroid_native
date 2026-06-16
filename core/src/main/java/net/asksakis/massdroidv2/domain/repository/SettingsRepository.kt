@@ -20,6 +20,8 @@ interface SettingsRepository {
     val smartMixDiscovery: Flow<Float>
     /** Smart Mix length 0f..1f: mapped to a track-count target for generated mixes. */
     val smartMixLength: Flow<Float>
+    /** Smart Mix strictness 0f..1f: higher = seed only from your more-loved tracks (by score). */
+    val smartMixStrictness: Flow<Float>
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
     val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
@@ -85,6 +87,7 @@ interface SettingsRepository {
     suspend fun setSmartMixVariety(value: Float)
     suspend fun setSmartMixDiscovery(value: Float)
     suspend fun setSmartMixLength(value: Float)
+    suspend fun setSmartMixStrictness(value: Float)
     /** Restore all Smart Mix tuning knobs (variety, discovery, length) to defaults. */
     suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)

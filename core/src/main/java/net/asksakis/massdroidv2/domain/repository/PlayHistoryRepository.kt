@@ -21,6 +21,7 @@ data class SeedTrack(
     val trackName: String,
     val artistName: String,
     val lastPlayedAt: Long,
+    val score: Double = 0.0,
     val genres: List<String> = emptyList()
 )
 
@@ -90,8 +91,12 @@ interface PlayHistoryRepository {
     /** Cached playable URI for a normalized "artist|track" name key (seed-track resolution). */
     suspend fun getCachedResolvedTrackUri(nameKey: String, maxAgeMs: Long): String?
     suspend fun cacheResolvedTrackUri(nameKey: String, uri: String)
-    /** Recently listened tracks (one per track, most recent first) used as seed-track seeds. */
-    suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack>
+    /**
+     * Seed-track seeds: listened tracks scored at or above [minScore], ordered
+     * by preference (score desc, then recency). minScore is the Strictness knob:
+     * 0 = any non-disliked recent track, higher = only your more-loved tracks.
+     */
+    suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

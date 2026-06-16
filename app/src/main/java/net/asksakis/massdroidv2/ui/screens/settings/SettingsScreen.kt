@@ -910,6 +910,7 @@ private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
     val variety by viewModel.smartMixVariety.collectAsStateWithLifecycle()
     val discovery by viewModel.smartMixDiscovery.collectAsStateWithLifecycle()
     val length by viewModel.smartMixLength.collectAsStateWithLifecycle()
+    val strictness by viewModel.smartMixStrictness.collectAsStateWithLifecycle()
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
@@ -952,6 +953,19 @@ private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
                 value = length,
                 onValueChangeFinished = viewModel::setSmartMixLength,
                 valueLabel = { v -> "~${smartMixTrackTarget(v)} tracks" }
+            )
+            LabeledSlider(
+                title = "Strictness",
+                description = "Which of your tracks are allowed to seed a mix, by how much you like them.",
+                value = strictness,
+                onValueChangeFinished = viewModel::setSmartMixStrictness,
+                valueLabel = { v ->
+                    when {
+                        v < 0.33f -> "Low: anything you've recently played"
+                        v < 0.66f -> "Medium: tracks you like"
+                        else -> "High: only your most-loved tracks"
+                    }
+                }
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
