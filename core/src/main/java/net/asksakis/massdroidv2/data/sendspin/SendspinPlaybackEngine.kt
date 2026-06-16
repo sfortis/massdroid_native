@@ -673,6 +673,20 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         val stillPresent = boundId > 0 && outputs.any { it.id == boundId }
         if (!stillPresent) {
             scheduleReopen("bound device $boundId gone")
+            return
+        }
+        // Connect-side supersede: our bound device is still present, but a
+        // higher-priority external sink (BT A2DP / wired / USB) just appeared
+        // while we're bound to a non-external output (the built-in speaker).
+        // Android routes music to the new sink, but the Oboe stream keeps playing
+        // to the now-inactive built-in path: the timeline advances yet there's no
+        // sound (issue #52). Reopen onto the new route. Skip when already bound to
+        // an external sink so a spurious add doesn't churn an active BT stream.
+        val boundType = outputs.firstOrNull { it.id == boundId }?.type
+        val boundIsExternal = boundType != null && isExternalSink(boundType)
+        val externalSinkPresent = outputs.any { isExternalSink(it.type) }
+        if (!boundIsExternal && externalSinkPresent) {
+            scheduleReopen("external sink appeared while bound to built-in output")
         } else {
             refreshRoutedDevice()
         }

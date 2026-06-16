@@ -373,11 +373,13 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     int64_t available = write - read;
 
     if (available <= 0) {
+        // Ring empty = idle/paused (or waiting to refill). This is the expected
+        // resting state, so emit silence WITHOUT logging or spending the
+        // post-flush budget: an idle stream would otherwise spam one line per
+        // ~4ms callback and flush the log of anything useful. The budget is kept
+        // for the producing callbacks below, where post-flush recovery (drift,
+        // rate, refill) is what we actually want to see.
         std::memset(out, 0, static_cast<size_t>(numFrames) * ch * sizeof(int16_t));
-        if (postFlushCallbacks_ > 0) {
-            postFlushCallbacks_--;
-            LOGD("post-flush cb: SILENCE (ring empty) g=%.2f->%.2f", g0, g1);
-        }
         return oboe::DataCallbackResult::Continue;
     }
 
