@@ -208,6 +208,35 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Seed-track generator caches: Last.fm track.getSimilar results +
+            // reusable name->playable-URI resolution. Both name-based, no FK.
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `lastfm_similar_tracks` (
+                    `source_key` TEXT NOT NULL,
+                    `similar_artist` TEXT NOT NULL,
+                    `similar_track` TEXT NOT NULL,
+                    `match_score` REAL NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`source_key`, `similar_artist`, `similar_track`)
+                )
+                """.trimIndent()
+            )
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `track_uri_cache` (
+                    `name_key` TEXT NOT NULL,
+                    `uri` TEXT NOT NULL,
+                    `resolved_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`name_key`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     private val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(
@@ -244,7 +273,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
         .fallbackToDestructiveMigration()
         .build()
 

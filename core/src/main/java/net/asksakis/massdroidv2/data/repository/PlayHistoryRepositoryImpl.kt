@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
+import net.asksakis.massdroidv2.data.database.TrackUriCacheEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -22,6 +23,7 @@ import net.asksakis.massdroidv2.domain.repository.DecadeScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.RecentAlbum
+import net.asksakis.massdroidv2.domain.repository.SeedTrack
 import net.asksakis.massdroidv2.domain.repository.TrackScore
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -335,6 +337,26 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         dao.cacheResolvedUriBySimilarName(name, uri, System.currentTimeMillis())
     }
 
+    override suspend fun getCachedResolvedTrackUri(nameKey: String, maxAgeMs: Long): String? =
+        dao.getCachedTrackUri(nameKey, System.currentTimeMillis() - maxAgeMs)
+
+    override suspend fun cacheResolvedTrackUri(nameKey: String, uri: String) {
+        val now = System.currentTimeMillis()
+        dao.upsertTrackUriCache(TrackUriCacheEntity(nameKey = nameKey, uri = uri, resolvedAt = now))
+        dao.deleteExpiredTrackUriCache(now - (30 * MILLIS_PER_DAY))
+    }
+
+    override suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack> =
+        dao.getSeedTracks(sinceMs, minListenedMs, limit).map {
+            SeedTrack(
+                trackUri = it.trackUri,
+                trackName = it.trackName,
+                artistName = it.artistName,
+                lastPlayedAt = it.lastPlayedAt,
+                genres = it.genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
+            )
+        }
+
     override suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>) {
         val now = System.currentTimeMillis()
         val payload = json.encodeToString(ListSerializer(Track.serializer()), tracks)
@@ -379,16 +401,34 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun cleanup(retentionMonths: Int) {
         val cutoff = System.currentTimeMillis() - (retentionMonths * 30L * MILLIS_PER_DAY)
         val feedbackCutoff = System.currentTimeMillis() - (FEEDBACK_RETENTION_DAYS * MILLIS_PER_DAY)
+        val dupBefore = try {
+            dao.countDuplicateArtistMappings()
+        } catch (_: Exception) {
+            -1
+        }
         appDatabase.withTransaction {
             dao.deleteOlderThan(cutoff)
             dao.deleteOldSmartFeedback(feedbackCutoff)
+            // Self-healing (deterministic, structural only): collapse provider://
+            // artist mappings onto the canonical library:// row of the same
+            // artist, then propagate genres across an artist's remaining URIs.
+            // Does NOT touch Last.fm tag content (community mis-tags need a
+            // separate validation path). Runs before orphan cleanup so the
+            // provider artists it strips get swept in the same pass.
+            dao.consolidateProviderArtistMappings()
+            dao.backfillArtistGenres()
             dao.deleteOrphanTracks()
             dao.deleteOrphanAlbums()
             dao.deleteOrphanArtists()
             dao.deleteOrphanArtistGenres()
             dao.deleteOrphanGenres()
         }
-        Log.d(TAG, "Cleaned up play history older than $retentionMonths months + smart feedback older than $FEEDBACK_RETENTION_DAYS days + orphans")
+        val dupAfter = try {
+            dao.countDuplicateArtistMappings()
+        } catch (_: Exception) {
+            -1
+        }
+        Log.d(TAG, "Cleanup done: retention $retentionMonths months, feedback $FEEDBACK_RETENTION_DAYS days, orphans purged, duplicate artist mappings $dupBefore -> $dupAfter")
     }
 
     override suspend fun clearRecommendationData() {

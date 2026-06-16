@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,8 @@ import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.data.lastfm.LastFmTrackSimilarResolver
+import net.asksakis.massdroidv2.domain.recommendation.CandidateTrack
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSectionBuilder
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
@@ -58,6 +61,7 @@ import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SeedTrack
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
@@ -65,6 +69,7 @@ import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import javax.inject.Inject
 import java.time.LocalTime
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private const val TAG = "DiscoverVM"
 private const val MIN_SECTION_ITEMS = 3
@@ -98,6 +103,42 @@ private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
 private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
+// --- Seed-track generator (primary Smart Mix path) ---
+// Recently listened tracks become the seeds; Last.fm track.getSimilar then
+// produces a coherent candidate pool. This is structurally more consistent than
+// the artist/genre path (a synthpop seed returns synthpop tracks, not the whole
+// artist catalogue filtered by tag).
+private const val SEED_COUNT = 8
+// Max stable seed anchors (used at variety=0); the Variety knob scales the
+// actual anchor count / primary-pool window down from here.
+private const val SEED_ANCHOR_MAX = 3
+// Above this Variety value the cluster primary is drawn from the WHOLE tagged
+// pool (full rotation); below it, from a recency-biased window.
+private const val VARIETY_FULL_ROTATION_THRESHOLD = 0.66
+private const val SEED_LOOKBACK_DAYS = 30
+private const val SEED_MIN_LISTENED_MS = 30_000L
+private const val SEED_POOL_QUERY_LIMIT = 60
+// Genre Radio seeds from a longer history (the user may not have played the
+// picked genre recently) and a deeper pool to find enough in-genre tracks.
+private const val GENRE_SEED_LOOKBACK_DAYS = 365
+private const val GENRE_SEED_POOL_LIMIT = 250
+// Discovery knob -> depth of each seed's similar list (min..min+span).
+private const val SEED_SIMILARS_MIN = 15
+private const val SEED_SIMILARS_SPAN = 25
+// MA provider search resolves a "artist - track" name to a playable URI. Slow
+// (multi-provider, no per-provider timeout server-side), so the inline mix runs
+// at most this many cache-MISS searches; the rest is warmed by a background
+// prefetch. Cache hits are unlimited and instant.
+private const val SEED_INLINE_SEARCH_BUDGET = 24
+private const val SEED_SEARCH_CONCURRENCY = 6
+private const val SEED_TRACK_SEARCH_LIMIT = 5
+private const val RESOLVED_TRACK_TTL_MS = 30L * 24 * 60 * 60 * 1000
+// Each appearance in the last few mixes subtracts from a candidate's match
+// score so back-to-back mixes do not resurface the same artists.
+private const val SEED_RECENT_ARTIST_PENALTY = 0.2
+// A track that was in a recent mix is pushed down hard (but not excluded) so
+// fresh candidates win when the pool is large enough.
+private const val SEED_RECENT_TRACK_PENALTY = 0.5
 // How many past mixes contribute to the soft-exclusion window. 3 gives
 // back-to-back variety without locking out tracks for an unreasonable amount
 // of time once the user does want to hear something again.
@@ -197,6 +238,7 @@ class DiscoverViewModel @Inject constructor(
     private val mixEngine: MixEngine,
     private val sectionBuilder: DiscoverSectionBuilder,
     private val lastFmSimilarResolver: net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver,
+    private val lastFmTrackSimilarResolver: net.asksakis.massdroidv2.data.lastfm.LastFmTrackSimilarResolver,
     private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
     private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver,
     private val shortcutDispatcher: ShortcutActionDispatcher,
@@ -287,6 +329,9 @@ class DiscoverViewModel @Inject constructor(
     // Single-flight background job that warms the expansion-artist cache (URIs +
     // catalogues) for the next high-discovery mix. See scheduleExpansionPrefetch.
     @Volatile private var expansionPrefetchJob: Job? = null
+    // Single-flight background job that warms the seed-track resolution cache
+    // (name -> playable URI) so the next mix resolves more candidates instantly.
+    @Volatile private var seedPrefetchJob: Job? = null
 
     init {
         autoConnect()
@@ -515,55 +560,7 @@ class DiscoverViewModel @Inject constructor(
                     )
                     return@launch
                 }
-                playerRepository.setQueueFilterMode(
-                    queueId,
-                    PlayerRepository.QueueFilterMode.SMART_GENERATED
-                )
-                lastSmartMixSelection = mixResult.tracks
-                val freshUris = mixResult.tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }.toSet()
-                if (freshUris.isNotEmpty()) {
-                    recentSmartMixHistory.addLast(freshUris)
-                    while (recentSmartMixHistory.size > SMART_MIX_HISTORY_DEPTH) {
-                        recentSmartMixHistory.removeFirst()
-                    }
-                }
-                // Track which canonical artists actually surfaced this mix so
-                // the next round can de-rank them and prefer underused ones.
-                val freshArtistKeys = mixResult.tracks
-                    .mapNotNull { track ->
-                        MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri)
-                            ?: track.artistNames.split(",").firstOrNull()?.trim()?.lowercase()
-                    }
-                    .toSet()
-                if (freshArtistKeys.isNotEmpty()) {
-                    recentSmartMixArtists.addLast(freshArtistKeys)
-                    while (recentSmartMixArtists.size > RECENT_ARTIST_HISTORY_DEPTH) {
-                        recentSmartMixArtists.removeFirst()
-                    }
-                }
-                mixResult.genre?.let { picked ->
-                    recentSmartMixGenres.addLast(normalizeGenre(picked))
-                    while (recentSmartMixGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) {
-                        recentSmartMixGenres.removeFirst()
-                    }
-                }
-                val hadDstm = queueDstmCache.dstmFor(queueId)
-                if (hadDstm) {
-                    musicRepository.setDontStopTheMusic(queueId, false)
-                }
-                try {
-                    musicRepository.playMedia(
-                        queueId = queueId,
-                        uris = trackUris,
-                        option = "replace",
-                        awaitResponse = true
-                    )
-                } finally {
-                    if (hadDstm) {
-                        musicRepository.setDontStopTheMusic(queueId, true)
-                    }
-                }
-                logQueueContents("smartMix", awaitQueueItems = true)
+                playGeneratedMix(queueId, mixResult.tracks, mixResult.genre, "smartMix")
                 val message = if (mixResult.genre != null) {
                     val displayGenre = mixResult.genre.replaceFirstChar { it.uppercase() }
                     "$displayGenre mix ready (${trackUris.size} tracks)"
@@ -584,6 +581,50 @@ class DiscoverViewModel @Inject constructor(
 
     fun clearSmartMixMessage() {
         _uiState.value = _uiState.value.copy(smartMixMessage = null)
+    }
+
+    // Shared play path for a generated finite mix (Smart Mix + seed-track Genre
+    // Radio): mark the queue smart-generated, record recent history/artists/genre
+    // for the next round's cool-down, then replace the queue with DSTM disabled
+    // so the server cannot inject off-list tracks mid-replace.
+    private suspend fun playGeneratedMix(
+        queueId: String,
+        tracks: List<Track>,
+        pickedGenre: String?,
+        logSource: String
+    ) {
+        playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.SMART_GENERATED)
+        lastSmartMixSelection = tracks
+        val freshUris = tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }.toSet()
+        if (freshUris.isNotEmpty()) {
+            recentSmartMixHistory.addLast(freshUris)
+            while (recentSmartMixHistory.size > SMART_MIX_HISTORY_DEPTH) recentSmartMixHistory.removeFirst()
+        }
+        val freshArtistKeys = tracks.mapNotNull { track ->
+            MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri)
+                ?: track.artistNames.split(",").firstOrNull()?.trim()?.lowercase()
+        }.toSet()
+        if (freshArtistKeys.isNotEmpty()) {
+            recentSmartMixArtists.addLast(freshArtistKeys)
+            while (recentSmartMixArtists.size > RECENT_ARTIST_HISTORY_DEPTH) recentSmartMixArtists.removeFirst()
+        }
+        pickedGenre?.let { picked ->
+            recentSmartMixGenres.addLast(normalizeGenre(picked))
+            while (recentSmartMixGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) recentSmartMixGenres.removeFirst()
+        }
+        val hadDstm = queueDstmCache.dstmFor(queueId)
+        if (hadDstm) musicRepository.setDontStopTheMusic(queueId, false)
+        try {
+            musicRepository.playMedia(
+                queueId = queueId,
+                uris = tracks.map { it.uri },
+                option = "replace",
+                awaitResponse = true
+            )
+        } finally {
+            if (hadDstm) musicRepository.setDontStopTheMusic(queueId, true)
+        }
+        logQueueContents(logSource, awaitQueueItems = true)
     }
 
     fun startContinuousConnectionProbe(sampleCount: Int = CONNECTION_PING_SAMPLES) {
@@ -682,7 +723,353 @@ class DiscoverViewModel @Inject constructor(
     private fun smartMixTrackTarget(): Int =
         (SMART_MIX_TARGET_MIN + smartMixLength * SMART_MIX_TARGET_SPAN).toInt()
 
+    private data class SeedCandidate(
+        val artist: String,
+        val track: String,
+        val matchScore: Double,
+        val nameKey: String
+    )
+
+    /**
+     * Seed-track generator: recent well-listened tracks seed Last.fm
+     * track.getSimilar, producing a genre-coherent candidate pool that is then
+     * resolved to playable URIs (cache-first, bounded provider search) and run
+     * through the shared diversity/interleave rules. Returns an empty mix if it
+     * cannot resolve enough candidates, leaving the orchestrator to fall back.
+     */
+    private suspend fun buildSeedTrackMix(): SmartMixResult {
+        val target = smartMixTrackTarget()
+        val mixSeed = System.currentTimeMillis()
+        val random = kotlin.random.Random(mixSeed)
+
+        // Seeds are SAMPLED (not the fixed top-N) so each generation draws a
+        // different slice of recent taste -> different similar pools -> a
+        // genuinely different mix. Without this the candidate pool is identical
+        // every run and the output never changes (echo chamber).
+        val seeds = selectSeedTracks(random)
+        if (seeds.size < 2) {
+            Log.d(TAG, "Seed-track: only ${seeds.size} seeds, skipping")
+            return SmartMixResult(emptyList(), null)
+        }
+        Log.d(TAG, "Seed-track: ${seeds.size} seeds -> ${seeds.joinToString { "${it.artistName} - ${it.trackName}" }}")
+
+        val mix = assembleSeedTrackMix(seeds, target, mixSeed)
+        return SmartMixResult(mix, null)
+    }
+
+    // Shared seed-track core used by both Smart Mix and Genre Radio: take a seed
+    // set, gather a deduped track.getSimilar candidate pool, resolve to playable
+    // tracks (cache-first + bounded search + background prefetch), apply the
+    // recent-mix cool-down, and run the diversity/interleave. Returns the final
+    // ordered track list. The Discovery knob deepens the similar list (more
+    // adventurous, lower-match candidates); Length drives the target upstream.
+    private suspend fun assembleSeedTrackMix(
+        seeds: List<SeedTrack>,
+        target: Int,
+        mixSeed: Long
+    ): List<Track> {
+        val similarsPerSeed = seedSimilarsPerSeed()
+        val similarLists = coroutineScope {
+            seeds.map { seed ->
+                async {
+                    try {
+                        lastFmTrackSimilarResolver.resolve(seed.artistName, seed.trackName, similarsPerSeed)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
+        }
+        val bestByKey = LinkedHashMap<String, SeedCandidate>()
+        for (list in similarLists) {
+            for (sim in list) {
+                if (sim.artist.isBlank() || sim.track.isBlank()) continue
+                val nameKey = LastFmTrackSimilarResolver.sourceKey(sim.artist, sim.track)
+                val existing = bestByKey[nameKey]
+                if (existing == null || sim.matchScore > existing.matchScore) {
+                    bestByKey[nameKey] = SeedCandidate(sim.artist, sim.track, sim.matchScore, nameKey)
+                }
+            }
+        }
+        if (bestByKey.isEmpty()) {
+            Log.d(TAG, "Seed-track: Last.fm returned no similar tracks")
+            return emptyList()
+        }
+
+        val ordered = bestByKey.values.sortedByDescending { it.matchScore }
+        Log.d(TAG, "Seed-track: ${ordered.size} unique candidates from track.getSimilar")
+
+        val resolved = resolveSeedCandidates(ordered)
+        // Warm the cache for everything we could not resolve inline so the next
+        // mix is fuller and instant.
+        scheduleSeedPrefetch(ordered)
+
+        // Recent-mix cool-down: tracks that appeared in the last few mixes, and
+        // artists that recurred, are softly penalised so back-to-back mixes
+        // diverge instead of resurfacing the same picks. Soft (not a hard
+        // exclude) so a small pool never collapses below the target.
+        val recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount()
+        val recentMixTrackUris = recentSmartMixHistory.flatten().toSet()
+        val candidates = resolved
+            .filterNot { it.track.uri in excludedTrackUris }
+            .map { c ->
+                val artistKey = c.track.artistNames.split(",").firstOrNull()?.trim()?.lowercase().orEmpty()
+                val artistPenalty = (recentArtistCounts[artistKey] ?: 0) * SEED_RECENT_ARTIST_PENALTY
+                val trackPenalty = if (c.track.uri in recentMixTrackUris) SEED_RECENT_TRACK_PENALTY else 0.0
+                CandidateTrack(track = c.track, score = c.score - artistPenalty - trackPenalty)
+            }
+        if (candidates.isEmpty()) return emptyList()
+
+        val mix = mixEngine.buildFromCandidates(candidates, target, mixSeed)
+        Log.d(TAG, "Seed-track: built ${mix.size} tracks (target $target) from ${candidates.size} resolved candidates")
+        return mix
+    }
+
+    // Discovery knob -> how deep into each seed's similar list we pull. Low
+    // discovery keeps the safest top matches; high discovery reaches further
+    // down (more obscure, lower-match candidates).
+    private fun seedSimilarsPerSeed(): Int =
+        (SEED_SIMILARS_MIN + smartMixDiscovery * SEED_SIMILARS_SPAN).toInt().coerceAtLeast(SEED_SIMILARS_MIN)
+
+    // Variety knob -> how many of the most-recent tracks stay as stable anchors.
+    // High variety keeps fewer anchors (more rotation, mixes diverge more); low
+    // variety keeps more anchors (steadier seed set run to run).
+    private fun seedAnchorCount(): Int =
+        ((1.0 - smartMixVariety) * SEED_ANCHOR_MAX).roundToInt().coerceIn(0, SEED_ANCHOR_MAX)
+
+    // Pick a genre-COHERENT cluster of seeds, rotated per run. Variety comes
+    // from which cluster is chosen each generation (a different random primary
+    // seed), while consistency within a single mix is preserved by only adding
+    // seeds whose genres overlap the primary's genre family (plus adjacency).
+    // This is what stops a mix from mixing metal with downtempo: those seeds
+    // never land in the same generation. Falls back to a plain sampled rotation
+    // when there is no genre data to anchor a cluster.
+    private suspend fun selectSeedTracks(random: kotlin.random.Random): List<SeedTrack> {
+        val since = System.currentTimeMillis() - SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
+        val pool = try {
+            playHistoryRepository.getSeedTracks(since, SEED_MIN_LISTENED_MS, SEED_POOL_QUERY_LIMIT)
+        } catch (e: Exception) {
+            Log.w(TAG, "selectSeedTracks failed: ${e.message}")
+            emptyList()
+        }
+        // De-duplicate to one track per primary artist, preserving recency order.
+        val seenArtists = mutableSetOf<String>()
+        val byArtist = mutableListOf<SeedTrack>()
+        for (row in pool) {
+            val artistKey = LastFmTrackSimilarResolver.normalizeName(row.artistName)
+            if (artistKey.isBlank() || !seenArtists.add(artistKey)) continue
+            byArtist += row
+        }
+        if (byArtist.size <= SEED_COUNT) return byArtist
+
+        // Anchor a coherent cluster on a random genre-tagged seed.
+        val tagged = byArtist.filter { it.genres.isNotEmpty() }
+        if (tagged.isEmpty()) {
+            // No genre data: best we can do is a plain sampled rotation.
+            val anchorCount = seedAnchorCount()
+            val anchors = byArtist.take(anchorCount)
+            val sampled = byArtist.drop(anchorCount).shuffled(random).take(SEED_COUNT - anchorCount)
+            return anchors + sampled
+        }
+        // Variety biases WHICH primary we anchor on: low variety restricts the
+        // primary to the most-recent tagged seeds (steadier, repeats favourites);
+        // high variety draws from the whole tagged pool (full rotation).
+        val primaryPool = if (smartMixVariety >= VARIETY_FULL_ROTATION_THRESHOLD) {
+            tagged
+        } else {
+            val window = (SEED_ANCHOR_MAX + smartMixVariety * tagged.size).toInt().coerceIn(1, tagged.size)
+            tagged.take(window)
+        }
+        val primary = primaryPool.shuffled(random).first()
+        // Gate the cluster on the primary's EXACT genres only (no adjacency
+        // widening): adjacency bridged distant families (a seed tagged both
+        // indie and electronic dragged techno into a folk mix). Exact overlap
+        // keeps each generation tight; variety still comes from the rotating
+        // primary, not from widening one mix.
+        val primaryGenres = primary.genres.map { normalizeGenre(it) }.toSet()
+
+        val cluster = byArtist
+            .filter { seed ->
+                seed.trackUri == primary.trackUri ||
+                    seed.genres.any { normalizeGenre(it) in primaryGenres }
+            }
+        // Primary first, the rest shuffled for within-cluster variety.
+        val ordered = listOf(primary) +
+            cluster.filter { it.trackUri != primary.trackUri }.shuffled(random)
+        val result = ordered.take(SEED_COUNT)
+        Log.d(TAG, "Seed cluster around '${primary.artistName}' (${primaryGenres.joinToString("/")}): ${result.size} seeds")
+        return result
+    }
+
+    // Seeds for a seed-track Genre Radio: the user's own well-listened tracks
+    // tagged with the chosen genre (longer lookback than Smart Mix, since the
+    // user may not have played this genre recently). Genre is fixed, so every
+    // seed is in-genre and the candidate pool stays coherent with zero bleed.
+    private suspend fun selectGenreSeedTracks(genre: String, random: kotlin.random.Random): List<SeedTrack> {
+        val target = normalizeGenre(genre)
+        val since = System.currentTimeMillis() - GENRE_SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
+        val pool = try {
+            playHistoryRepository.getSeedTracks(since, SEED_MIN_LISTENED_MS, GENRE_SEED_POOL_LIMIT)
+        } catch (e: Exception) {
+            Log.w(TAG, "selectGenreSeedTracks failed: ${e.message}")
+            emptyList()
+        }
+        val seenArtists = mutableSetOf<String>()
+        val byArtist = mutableListOf<SeedTrack>()
+        for (row in pool) {
+            if (row.genres.none { normalizeGenre(it) == target }) continue
+            val artistKey = LastFmTrackSimilarResolver.normalizeName(row.artistName)
+            if (artistKey.isBlank() || !seenArtists.add(artistKey)) continue
+            byArtist += row
+        }
+        return byArtist.shuffled(random).take(SEED_COUNT)
+    }
+
+    // Build a finite seed-track Genre Radio mix for the chosen genre. Empty if
+    // there are too few in-genre seeds (caller falls back to the server radio).
+    private suspend fun buildGenreRadioSeedMix(genre: String): List<Track> {
+        // No Last.fm key -> no track-level similars -> defer to the server radio.
+        if (!hasLastFmKey()) return emptyList()
+        val mixSeed = System.currentTimeMillis()
+        val random = kotlin.random.Random(mixSeed)
+        val seeds = selectGenreSeedTracks(genre, random)
+        if (seeds.size < 2) {
+            Log.d(TAG, "Genre radio seed-track: only ${seeds.size} in-genre seeds for '$genre', deferring to server radio")
+            return emptyList()
+        }
+        Log.d(TAG, "Genre radio seed-track '$genre': ${seeds.size} seeds -> ${seeds.joinToString { it.artistName }}")
+        return assembleSeedTrackMix(seeds, smartMixTrackTarget(), mixSeed)
+    }
+
+    // Resolve candidate names to playable tracks: cache-first (instant, no
+    // network), then a bounded number of live MA provider searches. Cache misses
+    // beyond the inline budget are left to the background prefetch.
+    private suspend fun resolveSeedCandidates(ordered: List<SeedCandidate>): List<CandidateTrack> =
+        coroutineScope {
+            val searchBudget = AtomicInteger(SEED_INLINE_SEARCH_BUDGET)
+            val gate = Semaphore(SEED_SEARCH_CONCURRENCY)
+            ordered.map { cand ->
+                async {
+                    val cachedUri = playHistoryRepository
+                        .getCachedResolvedTrackUri(cand.nameKey, RESOLVED_TRACK_TTL_MS)
+                    if (cachedUri != null) {
+                        return@async CandidateTrack(buildSyntheticTrack(cand, cachedUri), cand.matchScore)
+                    }
+                    if (searchBudget.getAndDecrement() <= 0) return@async null
+                    gate.withPermit {
+                        searchAndCacheTrack(cand)?.let { CandidateTrack(it, cand.matchScore) }
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun searchAndCacheTrack(cand: SeedCandidate): Track? {
+        return try {
+            val result = withTimeoutOrNull(SMART_MIX_SEARCH_TIMEOUT_MS) {
+                musicRepository.search(
+                    query = "${cand.artist} ${cand.track}",
+                    mediaTypes = listOf(MediaType.TRACK),
+                    limit = SEED_TRACK_SEARCH_LIMIT
+                )
+            } ?: return null
+            val match = result.tracks.firstOrNull { trackMatchesCandidate(it, cand) }
+            val uri = match?.uri?.takeIf { it.isNotBlank() } ?: return null
+            playHistoryRepository.cacheResolvedTrackUri(cand.nameKey, uri)
+            match
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // A search hit is accepted only if the title matches and at least one
+    // significant artist-name token overlaps, mirroring the exact-match
+    // discipline of artist resolution: better to skip than inject the wrong
+    // track (e.g. a same-titled cover by an unrelated artist).
+    private fun trackMatchesCandidate(track: Track, cand: SeedCandidate): Boolean {
+        val tName = LastFmTrackSimilarResolver.normalizeName(track.name)
+        val cName = LastFmTrackSimilarResolver.normalizeName(cand.track)
+        if (tName.isBlank() || cName.isBlank()) return false
+        val nameMatch = tName == cName || tName.contains(cName) || cName.contains(tName)
+        if (!nameMatch) return false
+        val artistTokens = LastFmTrackSimilarResolver.normalizeName(cand.artist)
+            .split(" ").filter { it.length > 2 }
+        if (artistTokens.isEmpty()) return true
+        val trackArtists = LastFmTrackSimilarResolver.normalizeName(track.artistNames)
+        return artistTokens.any { trackArtists.contains(it) }
+    }
+
+    private fun buildSyntheticTrack(cand: SeedCandidate, uri: String): Track {
+        val parsed = parseMediaUri(uri)
+        return Track(
+            itemId = parsed?.second ?: uri,
+            provider = parsed?.first ?: "",
+            name = cand.track,
+            uri = uri,
+            artistNames = cand.artist
+        )
+    }
+
+    private fun scheduleSeedPrefetch(ordered: List<SeedCandidate>) {
+        if (seedPrefetchJob?.isActive == true) return
+        seedPrefetchJob = viewModelScope.launch {
+            try {
+                val gate = Semaphore(PREFETCH_CONCURRENCY)
+                val warmed = AtomicInteger(0)
+                coroutineScope {
+                    ordered.map { cand ->
+                        async {
+                            val cached = playHistoryRepository
+                                .getCachedResolvedTrackUri(cand.nameKey, RESOLVED_TRACK_TTL_MS)
+                            if (cached != null) return@async
+                            gate.withPermit {
+                                if (searchAndCacheTrack(cand) != null) warmed.incrementAndGet()
+                            }
+                        }
+                    }.awaitAll()
+                }
+                Log.d(TAG, "Seed-track prefetch: warmed ${warmed.get()} resolutions")
+            } catch (e: Exception) {
+                Log.w(TAG, "Seed-track prefetch failed: ${e.message}")
+            }
+        }
+    }
+
+    // Smart Mix orchestrator: try the seed-track generator first (coherent,
+    // track-level similarity). Only if it cannot produce a solid mix (cold
+    // cache, no Last.fm key, or too few resolved candidates) do we fall back to
+    // the legacy artist/genre engine.
     private suspend fun buildSmartMixTracks(): SmartMixResult {
+        // Cold-start guard: the seed-track engine needs a Last.fm key (track-level
+        // similars come from there). With no key it can only ever produce an empty
+        // pool, so skip the attempt and go straight to the genre engine, which
+        // works off MA + locally-enriched genres.
+        if (!hasLastFmKey()) {
+            Log.d(TAG, "Smart mix: no Last.fm key, using genre engine directly")
+            return buildGenreSmartMixTracks()
+        }
+        val seedResult = try {
+            buildSeedTrackMix()
+        } catch (e: Exception) {
+            Log.w(TAG, "Seed-track mix failed, falling back to genre engine: ${e.message}")
+            SmartMixResult(emptyList(), null)
+        }
+        if (seedResult.tracks.size >= SMART_MIX_MIN_TRACKS) {
+            Log.d(TAG, "Seed-track mix produced ${seedResult.tracks.size} tracks")
+            return seedResult
+        }
+        Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$SMART_MIX_MIN_TRACKS), using genre engine")
+        return buildGenreSmartMixTracks()
+    }
+
+    private suspend fun hasLastFmKey(): Boolean =
+        try {
+            settingsRepository.lastFmApiKey.first().isNotBlank()
+        } catch (_: Exception) {
+            false
+        }
+
+    private suspend fun buildGenreSmartMixTracks(): SmartMixResult {
         val mixSeed = System.currentTimeMillis()
         val random = kotlin.random.Random(mixSeed)
         // Soft-exclude tracks that were in the last few mixes so back-to-back
@@ -957,16 +1344,23 @@ class DiscoverViewModel @Inject constructor(
         )
         if (artistOrder.isEmpty()) return emptyList()
 
-        // Genre-track filter shared by the base and (optional) expansion fetch.
-        // Every artist in the pool is genre-relevant (exact pool, adjacency, or
-        // genre-validated Last.fm similar), and most provider tracks carry no
-        // per-track genre tag, so we KEEP untagged tracks (dropping them all is
-        // what starved mixes to a handful of songs). Tagged tracks must still
-        // match the picked/adjacent set so a clearly off-genre cut can't slip in.
+        // Genre-track filter. Untagged tracks are KEPT only for EXACT-genre
+        // artists (those in this genre's own pool), whose untagged cuts are
+        // overwhelmingly in-genre. For adjacent / Last.fm-expansion artists we
+        // require an explicit tag match, because an untagged track there can be
+        // anything (e.g. a rap track from a wrongly-pulled artist landing in a
+        // synthpop mix). Tagged tracks must always match the picked/adjacent set.
         val genreMatchSet = (adjacentGenres + pickedGenre).map { normalizeGenre(it) }.toSet()
-        val trackFilter = { _: String, rawTracks: List<Track> ->
+        val exactArtistKeys = exactArtists.toSet()
+        val trackFilter = { artistUri: String, rawTracks: List<Track> ->
+            val key = MediaIdentity.artistKeyFromUri(artistUri) ?: artistUri
+            val isExact = key in exactArtistKeys
             rawTracks.filter { track ->
-                track.genres.isEmpty() || track.genres.any { normalizeGenre(it) in genreMatchSet }
+                if (track.genres.isEmpty()) {
+                    isExact
+                } else {
+                    track.genres.any { normalizeGenre(it) in genreMatchSet }
+                }
             }
         }
 
@@ -1288,6 +1682,22 @@ class DiscoverViewModel @Inject constructor(
                 ensureBllArtistScoresLoaded()
                 ensureArtistDecadesLoaded()
                 _uiState.value = _uiState.value.copy(radioOverlayGenre = genre)
+
+                // Primary path: a finite, coherent seed-track radio for this
+                // genre (same engine as Smart Mix, seeded from the user's
+                // in-genre tracks). Falls through to the server radio below when
+                // there are too few in-genre seeds or the pool cannot resolve.
+                val seedMix = buildGenreRadioSeedMix(genre)
+                if (seedMix.size >= SMART_MIX_MIN_TRACKS) {
+                    playGeneratedMix(queueId, seedMix, genre, "genreRadio[$genre]")
+                    _uiState.value = _uiState.value.copy(
+                        radioOverlayGenre = null,
+                        smartMixMessage = "${genre.replaceFirstChar { it.uppercase() }} radio ready (${seedMix.size} tracks)"
+                    )
+                    return@launch
+                }
+                Log.d(TAG, "Genre radio '$genre': seed-track yielded ${seedMix.size} (<$SMART_MIX_MIN_TRACKS), using server radio")
+
                 val focusDecade = loadGenreRadioFocusDecade(genre, baseCandidateUris)
                 val rankedUris = rankGenreRadioArtistUris(baseCandidateUris, focusDecade)
                 val libraryUris = prioritizeDecadeCoherentUris(rankedUris, focusDecade)
@@ -1523,8 +1933,12 @@ class DiscoverViewModel @Inject constructor(
                     limit = SMART_MIX_SEARCH_LIMIT
                 )
             } ?: return null
+            // Require an EXACT (case-insensitive) name match. The old fuzzy
+            // fallback to "first result" pulled in the wrong artist when the name
+            // didn't resolve, e.g. similar "Blackbook" (synthpop) returning
+            // "Black Book" (rap) and contaminating the mix. Better to skip an
+            // unresolved name than inject an off-genre artist.
             val match = result.artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
-                ?: result.artists.firstOrNull()
             val uri = match?.uri?.takeIf { it.isNotBlank() }
             if (uri != null) playHistoryRepository.cacheResolvedArtistUri(name, uri)
             uri

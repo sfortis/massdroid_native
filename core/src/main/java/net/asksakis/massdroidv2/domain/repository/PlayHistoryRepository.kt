@@ -15,6 +15,15 @@ data class GenreScore(
     val score: Double
 )
 
+/** A recently listened track used as a seed for the seed-track generator. */
+data class SeedTrack(
+    val trackUri: String,
+    val trackName: String,
+    val artistName: String,
+    val lastPlayedAt: Long,
+    val genres: List<String> = emptyList()
+)
+
 data class ArtistScore(
     val artistUri: String,
     val artistName: String,
@@ -78,6 +87,11 @@ interface PlayHistoryRepository {
     /** Cached provider URI for a Last.fm similar-artist name (null if absent or older than maxAgeMs). */
     suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String?
     suspend fun cacheResolvedArtistUri(name: String, uri: String)
+    /** Cached playable URI for a normalized "artist|track" name key (seed-track resolution). */
+    suspend fun getCachedResolvedTrackUri(nameKey: String, maxAgeMs: Long): String?
+    suspend fun cacheResolvedTrackUri(nameKey: String, uri: String)
+    /** Recently listened tracks (one per track, most recent first) used as seed-track seeds. */
+    suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

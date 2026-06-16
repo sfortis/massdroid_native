@@ -37,9 +37,13 @@ private const val VARIETY_JITTER_SPAN = 1.5
 private const val VARIETY_POOL_MIN = 2.0
 private const val VARIETY_POOL_SPAN = 8.0
 // Per-artist track cap floor/ceiling (see dynamicMaxPerArtist). Floor keeps
-// diversity when the pool is large; ceiling lets a small pool still fill up.
+// diversity when the pool is large; ceiling lets a small pool fill a bit more.
+// Kept low (3) so a small genre can't turn into "the same artist x6" now that
+// the cap is enforced per provider-agnostic artist (no cross-provider doubling).
 private const val MAX_PER_ARTIST_FLOOR = 2
-private const val MAX_PER_ARTIST_CEIL = 5
+private const val MAX_PER_ARTIST_CEIL = 3
+// Max tracks from one album, so a single record can't dominate the mix.
+private const val MAX_PER_ALBUM = 2
 // Discovery -> how many comfort anchors are guaranteed before exploration fills
 // the rest. Low discovery keeps more familiar artists up front.
 private const val DISCOVERY_COMFORT_MAX = 6
@@ -58,6 +62,12 @@ sealed class MixMode {
     ) : MixMode()
 
 }
+
+/** A pre-scored candidate for [MixEngine.buildFromCandidates] (seed-track path). */
+data class CandidateTrack(
+    val track: Track,
+    val score: Double
+)
 
 @Singleton
 class MixEngine @Inject constructor() {
@@ -100,11 +110,11 @@ class MixEngine @Inject constructor() {
         if (target <= 0 || artistOrder.isEmpty()) return emptyList()
         val random = Random(randomSeed)
         val varietyClamped = variety.coerceIn(0.0, 1.0)
-        // Per-artist cap scales to how many artists actually have tracks: a flat
-        // cap of 2 left small-library genres stuck at ~9 tracks even when a few
-        // artists had deep catalogues. With a small pool we allow more per artist
-        // so the mix can reach the target; with a large pool it stays at the floor
-        // for maximum diversity.
+        // Per-artist cap scales gently with how many artists actually have tracks
+        // (floor 2, ceiling 3): a small genre may allow 3/artist to fill out, a
+        // large pool stays at 2 for maximum diversity. The cap is now enforced per
+        // provider-agnostic artist name, so it can't be doubled by the same artist
+        // appearing under library:// and a provider URI.
         val usableArtists = artistOrder.count { !tracksByArtist[it].isNullOrEmpty() }
         val maxPerArtist = dynamicMaxPerArtist(target, usableArtists)
         val jitter = trackJitter(mode) * (VARIETY_JITTER_MIN + varietyClamped * VARIETY_JITTER_SPAN)
@@ -118,6 +128,7 @@ class MixEngine @Inject constructor() {
 
         val seenTrackKeys = mutableSetOf<String>()
         val byArtistCount = mutableMapOf<String, Int>()
+        val byAlbumCount = mutableMapOf<String, Int>()
         val scored = mutableListOf<ScoredTrack>()
 
         for (artistUri in artistOrder) {
@@ -152,7 +163,9 @@ class MixEngine @Inject constructor() {
                         (if (!trackAlbumKey.isNullOrBlank() && trackAlbumKey in favoriteAlbumUris) favAlbum else 0.0) +
                         random.nextDouble(-jitter, jitter)
 
-                    ScoredTrack(track = track, artistUri = artistUri, score = score)
+                    val nameKey = artistNameKey(track)
+                        .ifBlank { MediaIdentity.artistKeyFromUri(artistUri) ?: artistUri }
+                    ScoredTrack(track = track, artistUri = artistUri, artistKey = nameKey, score = score)
                 }
                 .sortedByDescending { it.score }
                 .toList()
@@ -169,24 +182,21 @@ class MixEngine @Inject constructor() {
             val sampled = ranked.take(candidatePoolSize).shuffled(random)
 
             for (candidate in sampled) {
-                // Bucket by the iteration artist first; the per-track artistUri
-                // can be a provider URI (e.g. spotify://artist/abc) while the
-                // iteration URI is the canonical library:// one. If we trust
-                // track-level URIs we end up with one logical artist split
-                // across multiple buckets, and the per-artist cap silently
-                // doubles. Fall back to track-level only if iteration URI is
-                // missing for some reason.
-                val bucketArtist = MediaIdentity.artistKeyFromUri(candidate.artistUri)
-                    ?: MediaIdentity.canonicalArtistKey(
-                        itemId = candidate.track.artistItemId,
-                        uri = candidate.track.artistUri
-                    )
-                    ?: candidate.artistUri
-                val count = byArtistCount[bucketArtist] ?: 0
-                if (count >= maxPerArtist) continue
+                // Bucket by provider-agnostic artist name so the same artist under
+                // library:// and deezer:// can't double the per-artist cap. Also
+                // cap tracks per album so one record can't dominate the mix.
+                val bucketArtist = candidate.artistKey
+                if ((byArtistCount[bucketArtist] ?: 0) >= maxPerArtist) continue
+                val albumKey = MediaIdentity.canonicalAlbumKey(
+                    candidate.track.albumItemId, candidate.track.albumUri
+                )
+                if (!albumKey.isNullOrBlank() && (byAlbumCount[albumKey] ?: 0) >= MAX_PER_ALBUM) continue
                 scored += candidate
                 seenTrackKeys += trackDedupeKey(candidate.track)
-                byArtistCount[bucketArtist] = count + 1
+                byArtistCount[bucketArtist] = (byArtistCount[bucketArtist] ?: 0) + 1
+                if (!albumKey.isNullOrBlank()) {
+                    byAlbumCount[albumKey] = (byAlbumCount[albumKey] ?: 0) + 1
+                }
                 if (scored.size >= target * 2) break
             }
             if (scored.size >= target * 2) break
@@ -198,7 +208,11 @@ class MixEngine @Inject constructor() {
 
         Log.d(modeTag, "buildTracks: ${ordered.size} scored from ${tracksByArtist.size} artists, target=$target")
 
-        val artistPriority = artistOrder.withIndex().associate { it.value to it.index }
+        // Priority is keyed by the same provider-agnostic artistKey the buckets
+        // use: each artist's best (highest-scored) position in the ordered list.
+        val artistPriority = ordered.withIndex()
+            .groupBy { it.value.artistKey }
+            .mapValues { (_, items) -> items.minOf { it.index } }
         val interleaved = interleaveByArtist(
             scoredTracks = ordered,
             limit = target,
@@ -216,31 +230,69 @@ class MixEngine @Inject constructor() {
         return interleaved
     }
 
-    fun buildTrackUris(
-        mode: MixMode,
-        artistOrder: List<String>,
-        tracksByArtist: Map<String, List<Track>>,
-        excludedArtistUris: Set<String>,
-        excludedTrackUris: Set<String> = emptySet(),
-        favoriteArtistUris: Set<String>,
-        favoriteAlbumUris: Set<String>,
-        artistBaseScore: (String) -> Double,
+    /**
+     * Build a final mix from a flat list of pre-scored candidate tracks: the
+     * seed-track generator path (Last.fm track.getSimilar). Scores are supplied
+     * per candidate (match x BLL x recency), so this skips the artist-first
+     * scoring of [buildTracks] but reuses the exact same diversity guarantees:
+     * cross-provider per-artist cap, per-album cap, and the anti-clustering
+     * interleave. This is what keeps a coherent seed-track pool from collapsing
+     * into the same artist back-to-back.
+     */
+    fun buildFromCandidates(
+        candidates: List<CandidateTrack>,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis(),
-        adjacentGenres: Set<String> = emptySet()
-    ): List<String> = buildTracks(
-        mode = mode,
-        artistOrder = artistOrder,
-        tracksByArtist = tracksByArtist,
-        excludedArtistUris = excludedArtistUris,
-        excludedTrackUris = excludedTrackUris,
-        favoriteArtistUris = favoriteArtistUris,
-        favoriteAlbumUris = favoriteAlbumUris,
-        artistBaseScore = artistBaseScore,
-        target = target,
-        randomSeed = randomSeed,
-        adjacentGenres = adjacentGenres
-    ).map { it.uri }
+        randomSeed: Long = System.currentTimeMillis()
+    ): List<Track> {
+        if (target <= 0 || candidates.isEmpty()) return emptyList()
+        val random = Random(randomSeed)
+        val scored = candidates
+            .filter { it.track.uri.isNotBlank() }
+            .map { c ->
+                val key = artistNameKey(c.track)
+                    .ifBlank { MediaIdentity.artistKeyFromUri(c.track.artistUri.orEmpty()) ?: c.track.uri }
+                ScoredTrack(
+                    track = c.track,
+                    artistUri = c.track.artistUri ?: c.track.uri,
+                    artistKey = key,
+                    score = c.score
+                )
+            }
+            .sortedByDescending { it.score }
+            .distinctBy { trackDedupeKey(it.track) }
+        if (scored.isEmpty()) return emptyList()
+
+        val usableArtists = scored.map { it.artistKey }.distinct().size
+        val maxPerArtist = dynamicMaxPerArtist(target, usableArtists)
+        val byArtistCount = mutableMapOf<String, Int>()
+        val byAlbumCount = mutableMapOf<String, Int>()
+        val capped = mutableListOf<ScoredTrack>()
+        for (c in scored) {
+            if ((byArtistCount[c.artistKey] ?: 0) >= maxPerArtist) continue
+            val albumKey = MediaIdentity.canonicalAlbumKey(c.track.albumItemId, c.track.albumUri)
+            if (!albumKey.isNullOrBlank() && (byAlbumCount[albumKey] ?: 0) >= MAX_PER_ALBUM) continue
+            capped += c
+            byArtistCount[c.artistKey] = (byArtistCount[c.artistKey] ?: 0) + 1
+            if (!albumKey.isNullOrBlank()) {
+                byAlbumCount[albumKey] = (byAlbumCount[albumKey] ?: 0) + 1
+            }
+            if (capped.size >= target * 2) break
+        }
+
+        val artistPriority = capped.withIndex()
+            .groupBy { it.value.artistKey }
+            .mapValues { (_, items) -> items.minOf { it.index } }
+        val interleaved = interleaveByArtist(
+            scoredTracks = capped,
+            limit = target,
+            random = random,
+            artistPriority = artistPriority,
+            firstPassUniqueArtists = minOf(20, usableArtists),
+            minArtistGap = minOf(12, (usableArtists - 1).coerceAtLeast(0))
+        )
+        Log.d(TAG, "buildFromCandidates: ${interleaved.size}/${target} from ${candidates.size} candidates, $usableArtists artists, cap=$maxPerArtist")
+        return interleaved
+    }
 
     // --- SmartMix artist ordering ---
 
@@ -442,7 +494,7 @@ class MixEngine @Inject constructor() {
     ): List<Track> {
         if (scoredTracks.isEmpty()) return emptyList()
         val buckets = scoredTracks
-            .groupBy { it.artistUri }
+            .groupBy { it.artistKey }
             .mapValues { (_, list) -> ArrayDeque(list) }
             .toMutableMap()
         val result = mutableListOf<Track>()
@@ -543,8 +595,16 @@ class MixEngine @Inject constructor() {
     private data class ScoredTrack(
         val track: Track,
         val artistUri: String,
+        // Provider-agnostic artist identity (normalized name): the SAME artist
+        // under library:// and deezer:// must share one bucket so the per-artist
+        // cap and interleave gap can't be doubled by a cross-provider duplicate.
+        val artistKey: String,
         val score: Double
     )
+
+    /** Normalized first-artist name, the cross-provider artist bucket key. */
+    private fun artistNameKey(track: Track): String =
+        normalizeTrackText(track.artistNames.substringBefore(","))
 
     companion object {
         private const val SM_FAV_ARTIST_BONUS = 0.8

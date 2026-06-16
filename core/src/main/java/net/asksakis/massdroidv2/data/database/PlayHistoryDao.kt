@@ -118,6 +118,30 @@ interface PlayHistoryDao {
     @Query("DELETE FROM artist_track_cache WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTrackCache(olderThan: Long)
 
+    // ---- Seed-track generator caches ----
+
+    @Transaction
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSimilarTracks(entities: List<LastFmSimilarTrackEntity>)
+
+    @Query("SELECT * FROM lastfm_similar_tracks WHERE source_key = :sourceKey ORDER BY match_score DESC")
+    suspend fun getSimilarTracks(sourceKey: String): List<LastFmSimilarTrackEntity>
+
+    @Query("SELECT fetched_at FROM lastfm_similar_tracks WHERE source_key = :sourceKey LIMIT 1")
+    suspend fun getSimilarTracksFetchedAt(sourceKey: String): Long?
+
+    @Query("DELETE FROM lastfm_similar_tracks WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredSimilarTracks(olderThan: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertTrackUriCache(cache: TrackUriCacheEntity)
+
+    @Query("SELECT uri FROM track_uri_cache WHERE name_key = :nameKey AND resolved_at > :minResolvedAt LIMIT 1")
+    suspend fun getCachedTrackUri(nameKey: String, minResolvedAt: Long): String?
+
+    @Query("DELETE FROM track_uri_cache WHERE resolved_at < :olderThan")
+    suspend fun deleteExpiredTrackUriCache(olderThan: Long)
+
     @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist ORDER BY match_score DESC")
     suspend fun getSimilarArtists(sourceArtist: String): List<LastFmSimilarArtistEntity>
 
@@ -366,6 +390,26 @@ interface PlayHistoryDao {
     @Query("SELECT genre_name FROM track_genres WHERE track_uri = :trackUri")
     suspend fun getGenresForTrack(trackUri: String): List<String>
 
+    // Seed tracks for the seed-track recommendation generator: recently played
+    // tracks the user actually listened to (not skipped), with their primary
+    // artist name, most-recent first. One row per track.
+    @Query(
+        """
+        SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
+               MAX(ph.played_at) AS lastPlayedAt,
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        JOIN artists a ON a.uri = ta.artist_uri
+        WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
+        GROUP BY t.uri
+        ORDER BY lastPlayedAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getSeedTracks(since: Long, minListenedMs: Long, limit: Int): List<SeedTrackRow>
+
     // Genre play timestamps for BLL scoring (track_genres + artist_genres)
     @Query(
         """
@@ -537,6 +581,40 @@ interface PlayHistoryDao {
     )
     suspend fun deleteOrphanGenres()
 
+    // --- Self-healing: artist mapping consolidation ---
+    // The same artist is often stored under several URIs (library:// plus one or
+    // more provider:// URIs, or even two provider URIs). When a track is mapped
+    // to more than one URI of the SAME artist (by name), the extras are
+    // redundant and bloat per-artist grouping/scoring. Keep exactly one canonical
+    // row per (track, artist name): prefer library://, otherwise the
+    // alphabetically-first URI (deterministic). Delete the rest.
+    @Query("""
+        DELETE FROM track_artists
+        WHERE artist_uri <> (
+            SELECT t2.artist_uri
+            FROM track_artists t2
+            JOIN artists a2 ON a2.uri = t2.artist_uri
+            JOIN artists a ON a.uri = track_artists.artist_uri
+            WHERE t2.track_uri = track_artists.track_uri AND a2.name = a.name
+            ORDER BY CASE WHEN t2.artist_uri LIKE 'library://%' THEN 0 ELSE 1 END, t2.artist_uri
+            LIMIT 1
+        )
+    """)
+    suspend fun consolidateProviderArtistMappings()
+
+    // Count of tracks that still carry duplicate same-name artist rows, for
+    // logging how much the consolidation healed.
+    @Query("""
+        SELECT COUNT(*) FROM (
+            SELECT ta.track_uri
+            FROM track_artists ta
+            JOIN artists a ON a.uri = ta.artist_uri
+            GROUP BY ta.track_uri, a.name
+            HAVING COUNT(*) > 1
+        )
+    """)
+    suspend fun countDuplicateArtistMappings(): Int
+
     @Query("DELETE FROM smart_feedback WHERE created_at < :before")
     suspend fun deleteOldSmartFeedback(before: Long)
 
@@ -649,6 +727,14 @@ data class TimeAnalysisRow(
 data class TrackArtistRow(
     @ColumnInfo(name = "artistUri") val artistUri: String,
     @ColumnInfo(name = "artistName") val artistName: String
+)
+
+data class SeedTrackRow(
+    @ColumnInfo(name = "trackUri") val trackUri: String,
+    @ColumnInfo(name = "trackName") val trackName: String,
+    @ColumnInfo(name = "artistName") val artistName: String,
+    @ColumnInfo(name = "lastPlayedAt") val lastPlayedAt: Long,
+    @ColumnInfo(name = "genres") val genres: String?
 )
 
 data class GenrePlayTimestamp(
