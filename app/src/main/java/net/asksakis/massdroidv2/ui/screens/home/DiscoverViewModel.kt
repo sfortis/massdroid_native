@@ -254,6 +254,8 @@ class DiscoverViewModel @Inject constructor(
     private var smartArtistScoreMap = emptyMap<String, Double>()
     private var excludedArtistUris = emptySet<String>()
     private var excludedTrackUris = emptySet<String>()
+    // Raw names of blocked artists, always applied (blocking is explicit, not gated by Smart Listening).
+    private var blockedArtistNames = emptySet<String>()
     private var lastRadioStartAtMs = 0L
     private var lastRadioStartGenre: String? = null
     private var lastSmartMixSelection = emptyList<Track>()
@@ -663,16 +665,20 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private suspend fun refreshSmartFiltersForMix() {
+        // Blocked artists are an EXPLICIT user action: always excluded, even when
+        // Smart Listening (the preference-learning layer) is off.
+        val blockedInfos = smartListeningRepository.getBlockedArtists()
+        val blocked = blockedInfos.map { it.artistUri }.toSet()
+        blockedArtistNames = blockedInfos.mapNotNull { it.artistName?.takeIf(String::isNotBlank) }.toSet()
         val smartListeningEnabled = settingsRepository.smartListeningEnabled.first()
         if (smartListeningEnabled) {
-            val blocked = smartListeningRepository.getBlockedArtistUris()
             val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
             val metrics = smartListeningRepository.getArtistMetrics(days = 120)
             excludedArtistUris = blocked + suppressed
             excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
             smartArtistScoreMap = metrics.mapValues { it.value.score }
         } else {
-            excludedArtistUris = emptySet()
+            excludedArtistUris = blocked
             excludedTrackUris = emptySet()
             smartArtistScoreMap = emptyMap()
         }
@@ -701,7 +707,8 @@ class DiscoverViewModel @Inject constructor(
     private fun currentRecency() = SeedTrackMixGenerator.Recency(
         excludedTrackUris = excludedTrackUris,
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
-        recentMixTrackUris = recentSmartMixHistory.flatten().toSet()
+        recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
+        blockedArtistNames = blockedArtistNames
     )
 
     // Smart Mix orchestrator: try the seed-track generator first (coherent,

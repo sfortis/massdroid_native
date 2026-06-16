@@ -93,11 +93,13 @@ class SeedTrackMixGenerator @Inject constructor(
      */
     data class Tuning(val variety: Double, val discovery: Double, val strictness: Double)
 
-    /** Cool-down context owned by the caller so back-to-back mixes diverge. */
+    /** Cool-down + exclusion context owned by the caller so back-to-back mixes diverge. */
     data class Recency(
         val excludedTrackUris: Set<String>,
         val recentArtistCounts: Map<String, Int>,
-        val recentMixTrackUris: Set<String>
+        val recentMixTrackUris: Set<String>,
+        /** Raw names of blocked artists; the generator normalizes and excludes them from seeds, candidates and injection. */
+        val blockedArtistNames: Set<String> = emptySet()
     )
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -165,9 +167,20 @@ class SeedTrackMixGenerator @Inject constructor(
         recency: Recency,
         coherentGenres: Set<String>
     ): List<Track> {
+        // Blocked artists are excluded everywhere: as seeds, as similar
+        // candidates, and from loved injection. Matched by normalized name.
+        val blockedKeys = recency.blockedArtistNames
+            .map { LastFmTrackSimilarResolver.normalizeName(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val activeSeeds = seeds.filterNot {
+            LastFmTrackSimilarResolver.normalizeName(it.artistName) in blockedKeys
+        }
+        if (activeSeeds.isEmpty()) return emptyList()
+
         val similarsPerSeed = seedSimilarsPerSeed(tuning)
         val similarLists = coroutineScope {
-            seeds.map { seed ->
+            activeSeeds.map { seed ->
                 async {
                     try {
                         lastFmTrackSimilarResolver.resolve(seed.artistName, seed.trackName, similarsPerSeed)
@@ -181,6 +194,7 @@ class SeedTrackMixGenerator @Inject constructor(
         for (list in similarLists) {
             for (sim in list) {
                 if (sim.artist.isBlank() || sim.track.isBlank()) continue
+                if (LastFmTrackSimilarResolver.normalizeName(sim.artist) in blockedKeys) continue
                 val nameKey = LastFmTrackSimilarResolver.sourceKey(sim.artist, sim.track)
                 val existing = bestByKey[nameKey]
                 if (existing == null || sim.matchScore > existing.matchScore) {
@@ -246,8 +260,16 @@ class SeedTrackMixGenerator @Inject constructor(
         recency: Recency
     ): List<CandidateTrack> {
         val since = System.currentTimeMillis() - GENRE_SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
+        val blockedKeys = recency.blockedArtistNames
+            .map { LastFmTrackSimilarResolver.normalizeName(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
         val raw = querySeedTracks(since, LOVED_INJECT_MIN_SCORE, LOVED_INJECT_POOL_LIMIT)
-        val notRecent = raw.filter { it.trackUri.isNotBlank() && it.trackUri !in recency.recentMixTrackUris }
+        val notRecent = raw.filter {
+            it.trackUri.isNotBlank() &&
+                it.trackUri !in recency.recentMixTrackUris &&
+                LastFmTrackSimilarResolver.normalizeName(it.artistName) !in blockedKeys
+        }
         val inGenre = notRecent.filter { row ->
             coherentGenres.isEmpty() || row.genres.any { normalizeGenre(it) in coherentGenres }
         }
