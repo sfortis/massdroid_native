@@ -51,13 +51,12 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Smart Mix: fuller mixes that stay truer to the chosen genre.
-- Smart Mix: new sliders to tune the engine, Variety, Discovery and Length, with a reset.
-- Smart Mix: faster recommendation engine.
-- Better music recommendations from your listening history.
-- Now Playing: fixed track position.
-- Bluetooth: clean pause when the speaker disconnects, auto-resume when it reconnects, and no more silence after disconnecting.
-- Players: clearer card styling for idle, active and selected players.
+- Smart Mix: brand-new engine that builds each mix around the tracks you actually like, for more coherent and varied playlists.
+- Smart Mix: new "Strictness" slider to control how closely a mix sticks to your favourites (Settings, Recommendations).
+- Smart Mix: every mix now also includes some of your own loved tracks alongside fresh discoveries.
+- Genre Radio: now uses the same engine for more consistent, on-genre radios.
+- Blocked artists no longer show up in any mix or radio.
+- "Don't Stop the Music" no longer turns itself off after a Smart Mix or Genre Radio.
 
 ## Screenshots
 
