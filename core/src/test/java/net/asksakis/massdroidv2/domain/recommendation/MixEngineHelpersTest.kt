@@ -117,4 +117,40 @@ class MixEngineHelpersTest {
         assertThat(a).isEqualTo(b)
         assertThat(engine.weightedOrderArtists(emptyList(), scores, Random(7))).isEmpty()
     }
+
+    // --- score composition helpers ---
+
+    @Test
+    fun `compressPreferenceScore is a sign-preserving square root`() {
+        assertThat(engine.compressPreferenceScore(0.0)).isEqualTo(0.0)
+        assertThat(engine.compressPreferenceScore(100.0)).isWithin(1e-9).of(10.0)
+        assertThat(engine.compressPreferenceScore(4.0)).isWithin(1e-9).of(2.0)
+        assertThat(engine.compressPreferenceScore(-100.0)).isWithin(1e-9).of(-10.0)
+    }
+
+    @Test
+    fun `daypartBonus is centered at 0_35 and clamped`() {
+        assertThat(engine.daypartBonus(null)).isEqualTo(0.0)
+        assertThat(engine.daypartBonus(0.35)).isWithin(1e-9).of(0.0)
+        assertThat(engine.daypartBonus(0.5)).isWithin(1e-9).of(0.27)
+        assertThat(engine.daypartBonus(1.0)).isWithin(1e-9).of(0.95)   // clamped from 1.17
+        assertThat(engine.daypartBonus(0.0)).isWithin(1e-9).of(-0.45)  // clamped from -0.63
+    }
+
+    @Test
+    fun `compositeArtistScore sums its weighted terms`() {
+        val empty = emptyMap<String, Double>()
+        // direct artist preference (compressed): sqrt(100) = 10
+        assertThat(engine.compositeArtistScore("u", mapOf("u" to 100.0), empty, empty, empty, emptySet(), empty))
+            .isWithin(1e-9).of(10.0)
+        // BLL fallback when no direct preference: sqrt(4) = 2
+        assertThat(engine.compositeArtistScore("u", empty, mapOf("u" to 4.0), empty, empty, emptySet(), empty))
+            .isWithin(1e-9).of(2.0)
+        // smart signal weighted 0.45
+        assertThat(engine.compositeArtistScore("u", empty, empty, mapOf("u" to 10.0), empty, emptySet(), empty))
+            .isWithin(1e-9).of(4.5)
+        // favorite bonus only
+        assertThat(engine.compositeArtistScore("u", empty, empty, empty, empty, setOf("u"), empty))
+            .isWithin(1e-9).of(0.8)
+    }
 }

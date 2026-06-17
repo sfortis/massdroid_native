@@ -460,6 +460,10 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         var sessionCount = 0
         var prevTime = 0L
         val sum = sorted.sumOf { (playedAt, weight) ->
+            // The FIRST play always resets sessionCount (prevTime == 0L gate): it has
+            // no predecessor, so it is never an in-session repeat and keeps full
+            // weight (sessionFactor 0.7^0 = 1). Do NOT "simplify" away the prevTime>0
+            // guard - dropping it would dampen every mix's opening track.
             if (playedAt - prevTime < SESSION_GAP_MS && prevTime > 0) {
                 sessionCount++
             } else {

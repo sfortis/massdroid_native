@@ -397,7 +397,8 @@ class MixEngine @Inject constructor() {
 
     // --- Shared scoring helpers ---
 
-    private fun compositeArtistScore(
+    @VisibleForTesting
+    internal fun compositeArtistScore(
         uri: String,
         artistScoreMap: Map<String, Double>,
         bllArtistScoreMap: Map<String, Double>,
@@ -414,10 +415,12 @@ class MixEngine @Inject constructor() {
         return artistScore + smart + recent + favoriteArtistBonus + daypart
     }
 
-    private fun compressPreferenceScore(raw: Double): Double =
+    @VisibleForTesting
+    internal fun compressPreferenceScore(raw: Double): Double =
         if (raw == 0.0) 0.0 else kotlin.math.sign(raw) * kotlin.math.sqrt(kotlin.math.abs(raw))
 
-    private fun daypartBonus(affinity: Double?): Double {
+    @VisibleForTesting
+    internal fun daypartBonus(affinity: Double?): Double {
         if (affinity == null) return 0.0
         return ((affinity - 0.35) * 1.8).coerceIn(-0.45, 0.95)
     }
