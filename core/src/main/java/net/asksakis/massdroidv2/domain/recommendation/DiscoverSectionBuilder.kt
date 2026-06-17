@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
+import androidx.annotation.VisibleForTesting
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.GenreItem
@@ -87,7 +88,8 @@ class DiscoverSectionBuilder @Inject constructor() {
         return sections
     }
 
-    private fun folderToSection(
+    @VisibleForTesting
+    internal fun folderToSection(
         folder: RecommendationFolder,
         titleOverride: String? = null
     ): DiscoverSection? {
@@ -104,17 +106,11 @@ class DiscoverSectionBuilder @Inject constructor() {
                 DiscoverSection.ArtistSection(title, items.artists)
             items.tracks.size >= MIN_SECTION_ITEMS ->
                 DiscoverSection.TrackSection(title, items.tracks)
-            // Mixed content: try combining if total is enough
-            items.totalCount >= MIN_SECTION_ITEMS -> {
-                // For mixed folders, prefer albums if any, otherwise tracks
-                when {
-                    items.albums.isNotEmpty() -> DiscoverSection.AlbumSection(title, items.albums)
-                    items.playlists.isNotEmpty() -> DiscoverSection.PlaylistSection(title, items.playlists)
-                    items.tracks.isNotEmpty() -> DiscoverSection.TrackSection(title, items.tracks)
-                    items.artists.isNotEmpty() -> DiscoverSection.ArtistSection(title, items.artists)
-                    else -> null
-                }
-            }
+            // A mixed folder whose total reaches MIN_SECTION_ITEMS but whose
+            // largest single type does NOT cannot form a valid section: the UI
+            // only has single-type sections, so emitting one here would show a
+            // sub-minimum card (e.g. 2 albums + 2 artists -> a 2-album section).
+            // Skip it instead (this was the <MIN_SECTION_ITEMS invariant bug).
             else -> null
         }
     }

@@ -26,6 +26,11 @@ class ClockSynchronizer {
         private const val DEFAULT_OFFSET_PROCESS_STD_DEV = 0.01
         private const val DEFAULT_FORGET_FACTOR = 1.1
         private const val DRIFT_SIGNIFICANCE_THRESHOLD = 2.0
+        // Clamp the published drift so the (1 + drift) divisor in serverToLocalUs
+        // can never reach 0. A real client/server drift is ~ppm; a drift near -1
+        // would only come from a pathological early-Kalman transient, but the
+        // divide-by-zero would be catastrophic, so guard the snapshot.
+        private const val MAX_DRIFT = 0.999
     }
 
     // Filter state
@@ -181,7 +186,7 @@ class ClockSynchronizer {
 
     private fun publishState() {
         currentOffset = offset
-        currentDrift = drift
+        currentDrift = drift.coerceIn(-MAX_DRIFT, MAX_DRIFT)
         currentUseDrift = useDrift
         currentLastUpdate = lastUpdateUs
     }

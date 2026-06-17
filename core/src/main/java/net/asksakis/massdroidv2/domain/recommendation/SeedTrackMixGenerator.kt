@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,6 +69,16 @@ private const val LOVED_INJECT_POOL_LIMIT = 600
 // 0.5 they sit mid-distribution (Last.fm match scores span ~0..1), surfacing some
 // comfort without burying the discoveries.
 private const val OWN_INJECT_SCORE = 0.5
+
+/**
+ * Loved-track injection quota: Discovery tapers the share of the mix reserved
+ * for the user's own loved tracks. At Discovery=0 up to [OWN_INJECT_MAX_FRACTION]
+ * of [target]; at Discovery>=1 it is 0 (pure discovery). NO floor (the old
+ * always-4 floor made high-Discovery mixes never fully fresh). Never negative.
+ */
+@VisibleForTesting
+internal fun seedTrackInjectCount(discovery: Double, target: Int): Int =
+    ((1.0 - discovery) * OWN_INJECT_MAX_FRACTION * target).roundToInt().coerceAtLeast(0)
 
 /**
  * Track-level recommendation generator: recent (or in-genre) well-listened
@@ -237,9 +248,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // injected tracks carry a mid-pack score so they COMPETE with the
         // similars (no longer guaranteed/front-loaded), sampled per run so
         // favourites rotate.
-        val injectCount = ((1.0 - tuning.discovery) * OWN_INJECT_MAX_FRACTION * target)
-            .roundToInt()
-            .coerceAtLeast(0)
+        val injectCount = seedTrackInjectCount(tuning.discovery, target)
         val injected = if (injectCount > 0) {
             lovedInjection(coherentGenres, injectCount, mixSeed, recency)
         } else {
