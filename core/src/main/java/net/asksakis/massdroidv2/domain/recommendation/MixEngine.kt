@@ -424,7 +424,8 @@ class MixEngine @Inject constructor() {
 
     // --- Weighted sampling (SmartMix) ---
 
-    private fun weightedSampleArtists(
+    @VisibleForTesting
+    internal fun weightedSampleArtists(
         candidates: List<String>,
         scoreByUri: Map<String, Double>,
         limit: Int,
@@ -454,7 +455,8 @@ class MixEngine @Inject constructor() {
         return result
     }
 
-    private fun weightedOrderArtists(
+    @VisibleForTesting
+    internal fun weightedOrderArtists(
         candidates: List<String>,
         scoreByUri: Map<String, Double>,
         random: Random
