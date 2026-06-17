@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.sendspin
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlin.math.round
 import kotlin.math.sqrt
 
@@ -246,6 +247,14 @@ class ClockSynchronizer {
 
     @Synchronized
     fun currentSampleCount(): Int = count
+
+    /** Raw filter offset (us) — exposed for parity tests against sendspin-js. */
+    @VisibleForTesting
+    internal fun rawOffsetUs(): Double = offset
+
+    /** Raw filter drift rate — exposed for parity tests against sendspin-js. */
+    @VisibleForTesting
+    internal fun rawDrift(): Double = drift
 
     /**
      * Called by the protocol layer when it dropped a `server/time`
