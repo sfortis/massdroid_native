@@ -147,7 +147,21 @@ object AppModule {
             persistLastVolume = { settingsRepository.setSendspinLastVolume(it) },
             playerRepository = playerRepository,
             currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
-            currentBtRouteKey = { sendspinManager.getRoutedDeviceProductName()?.let { "bt:$it" } },
+            // Resolve the BT route key from the CONNECTED A2DP/BLE sink (OS level),
+            // not the Oboe-bound device name: on a BT connect the Oboe stream lags
+            // (reopen debounced) so getRoutedDeviceProductName transiently returns
+            // null -> "bt:unknown", missing the car-audio match. getDevices resolves
+            // the real name as soon as A2DP connects.
+            currentBtRouteKey = {
+                am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+                    .firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER
+                    }
+                    ?.productName?.toString()
+                    ?.let { "bt:$it" }
+            },
             carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
             recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },
         )

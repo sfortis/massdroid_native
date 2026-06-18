@@ -5,11 +5,13 @@ import android.media.AudioManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 
 /**
  * Sole gateway for Sendspin player volume side effects. Every input that wants
@@ -73,6 +75,13 @@ class SendspinVolumeCoordinator(
 ) {
     companion object {
         private const val TAG = "SsVolCoord"
+        // Selection-lock reason for a connected car-audio device: while it holds,
+        // ALL transport/UI targets the Sendspin (phone) player, never a remote one.
+        private const val CAR_LOCK_REASON = "car_audio"
+        // A car device that drops keeps the selection lock for this long before it
+        // clears, so a BT connect/disconnect flap does not leak transport to a
+        // remote player in the gap. A reconnect cancels the pending clear.
+        private const val CAR_LOCK_CLEAR_DEBOUNCE_MS = 8_000L
         // Window during which STREAM_MUSIC observer fires are NOT pushed to MA
         // because they're route-switching artifacts, not user volume changes.
         // Android stores STREAM_MUSIC per output route; a BT connect/disconnect
@@ -122,6 +131,14 @@ class SendspinVolumeCoordinator(
     // Route keys the user flagged as car audio: pin STREAM_MUSIC 100% on connect,
     // and disable the STREAM_MUSIC<->MA bridge for them.
     @Volatile private var carAudioDevices: Set<String> = emptySet()
+    // Pending debounced clear of the car selection lock (cancelled on reconnect).
+    // @Volatile: cancelled from onBtRouteConnected (IO coroutine) and reassigned
+    // from onBtRouteLost (main thread) — cross-thread access.
+    @Volatile private var carLockClearJob: Job? = null
+    // STREAM_MUSIC % captured when a fresh car session pins to 100%, restored when
+    // the car durably disconnects (so leaving the car doesn't leave the phone at
+    // full volume). Null = no car session active.
+    @Volatile private var preCarStreamPct: Int? = null
     @Volatile private var awaitingBaseline: Boolean = true
     @Volatile private var lastKnownMaVolume: Int = 100
     @Volatile private var cachedSendspinPlayerId: String? = null
@@ -180,16 +197,79 @@ class SendspinVolumeCoordinator(
     fun onBtRouteConnected() {
         val key = currentBtRouteKey() ?: return
         scope?.launch { recordKnownBtDevice(key) }
-        if (key in carAudioDevices) {
-            Log.d(TAG, "car-audio device $key connected -> full volume (system + player 100%)")
+        applyCarRouteState()
+    }
+
+    /**
+     * Idempotent: if the CURRENT BT route is a car-flagged device, lock transport
+     * to Sendspin and (on a fresh session) pin to 100% after saving the prior
+     * level. Self-determines the route from [currentBtRouteKey], so it is safe to
+     * call from route events AND from the client-id / car-devices flow collectors
+     * — this covers cold-start (already in the car at launch) and the late-arriving
+     * Sendspin player id, neither of which fires a route transition.
+     */
+    private fun applyCarRouteState() {
+        val key = currentBtRouteKey() ?: return
+        if (key !in carAudioDevices) return
+        val id = cachedSendspinPlayerId ?: return  // re-runs once the id flow emits
+        // Fresh car session vs a flap reconnect: if the car lock is already held
+        // (or its clear is still pending) this is a flap — re-affirm the lock but
+        // DO NOT re-pin volume, so a flapping device can't keep slamming the level
+        // back to 100% over the user's adjustment.
+        val freshSession = playerRepository.selectionLock.value?.reason != CAR_LOCK_REASON
+        carLockClearJob?.cancel()
+        // Lock all transport/UI to the phone (Sendspin) while the car is connected,
+        // so play/pause/next never leaks to a remote player.
+        playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
+        if (freshSession) {
+            preCarStreamPct = currentStreamMusicPct()  // remember the pre-car level
+            Log.d(TAG, "car-audio device $key connected -> full volume (was ${preCarStreamPct}%)")
             writeStreamMusic(100)
-            // Also raise the MA player volume to 100 so the in-app slider reflects
-            // the full-open phone output (the head unit's dial does the real
-            // attenuation). recordLocalPush suppresses the echo so it doesn't loop.
-            cachedSendspinPlayerId?.let { id ->
-                recordLocalPush(100)
-                playerRepository.applyVolumeOptimistic(id, 100)
-                launchPushToServer(id, 100, reason = "car-audio-pin")
+            // Raise the MA player volume to 100 too so the in-app slider reflects
+            // the full-open output. recordLocalPush suppresses the echo loop.
+            recordLocalPush(100)
+            playerRepository.applyVolumeOptimistic(id, 100)
+            launchPushToServer(id, 100, reason = "car-audio-pin")
+        } else {
+            Log.d(TAG, "car-audio device $key reconnected (flap) -> keep current volume")
+        }
+    }
+
+    private fun currentStreamMusicPct(): Int {
+        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (max <= 0) return 100
+        return ((audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100f / max) + 0.5f).toInt()
+    }
+
+    /**
+     * The output route left an external sink (BT dropped to phone speaker). If a
+     * car selection lock is held, schedule a debounced clear: a genuine
+     * disconnect releases it after [CAR_LOCK_CLEAR_DEBOUNCE_MS], but a flap
+     * reconnect ([onBtRouteConnected]) cancels the clear so transport never leaks
+     * to a remote player in the gap.
+     */
+    fun onBtRouteLost() {
+        if (playerRepository.selectionLock.value?.reason != CAR_LOCK_REASON) return
+        carLockClearJob?.cancel()
+        carLockClearJob = scope?.launch {
+            delay(CAR_LOCK_CLEAR_DEBOUNCE_MS)
+            val key = currentBtRouteKey()
+            if ((key == null || key !in carAudioDevices) &&
+                playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON
+            ) {
+                Log.d(TAG, "car-audio device gone -> releasing selection lock + restoring volume")
+                playerRepository.setSelectionLock(null)
+                // Restore the pre-car level so leaving the car doesn't leave the
+                // phone (and the next non-car output) pinned at 100%.
+                preCarStreamPct?.let { pct ->
+                    writeStreamMusic(pct)
+                    cachedSendspinPlayerId?.let { id ->
+                        recordLocalPush(pct)
+                        playerRepository.applyVolumeOptimistic(id, pct)
+                        launchPushToServer(id, pct, reason = "car-audio-restore")
+                    }
+                }
+                preCarStreamPct = null
             }
         }
     }
@@ -213,10 +293,15 @@ class SendspinVolumeCoordinator(
             }
         }
         jobs += coroutineScope.launch {
-            carAudioDevicesFlow.collect { carAudioDevices = it }
+            // Re-evaluate on flag changes too: flagging the currently-connected
+            // device as car audio takes effect immediately (no reconnect needed).
+            carAudioDevicesFlow.collect { carAudioDevices = it; applyCarRouteState() }
         }
         jobs += coroutineScope.launch {
-            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id }
+            // The Sendspin player id arrives async; re-evaluate so a cold-start
+            // already in the car locks/pins once the id is known (covers the
+            // route-already-settled case that fires no transition).
+            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id; applyCarRouteState() }
         }
         jobs += coroutineScope.launch {
             serverVolumeEvents.collect { pct -> onServerVolumeEvent(pct) }
@@ -230,6 +315,12 @@ class SendspinVolumeCoordinator(
     fun stop() {
         jobs.forEach { it.cancel() }
         jobs = mutableListOf()
+        carLockClearJob?.cancel()
+        carLockClearJob = null
+        // Release a held car lock so a stopped Sendspin can't pin player selection.
+        if (playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON) {
+            playerRepository.setSelectionLock(null)
+        }
         scope = null
         Log.d(TAG, "stopped")
     }

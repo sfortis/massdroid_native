@@ -261,6 +261,9 @@ class SendspinAudioController(
         sendspinManager.pauseAudio()
         unfreezeOutput("route")
         sendspinManager.setMuted(false)
+        // Debounced release of any car-audio selection lock (a flap reconnect
+        // cancels it, so transport stays on the phone through the gap).
+        volumeCoordinator.onBtRouteLost()
         scope.launch { playerRepository.pause(id) }
     }
 
