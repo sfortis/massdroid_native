@@ -133,11 +133,12 @@ class SettingsViewModel @Inject constructor(
     val sendspinState = sendspinManager.connectionState
     val sendspinEnabled = settingsRepository.sendspinEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-    val sendspinSyncSystemVolume = settingsRepository.sendspinSyncSystemVolume
+    val knownBtDevices = settingsRepository.knownBtDevices
+    val carAudioBtDevices = settingsRepository.carAudioBtDevices
 
-    fun setSendspinSyncSystemVolume(enabled: Boolean) {
+    fun setCarAudioBtDevice(routeKey: String, enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setSendspinSyncSystemVolume(enabled)
+            settingsRepository.setCarAudioBtDevice(routeKey, enabled)
         }
     }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled

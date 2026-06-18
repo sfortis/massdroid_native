@@ -217,6 +217,7 @@ class SendspinAudioController(
                     sendspinManager.setRouteAcousticExtraUs(correctionUs)
                     sendspinManager.onOutputRouteChanged("bt:device-switch")
                     currentBtRouteKey = routeKey  // commit only after successful apply
+                    volumeCoordinator.onBtRouteConnected()
                 }
             }
         }
@@ -231,6 +232,7 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
             sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
+            if (newRoute == OutputRoute.BT) volumeCoordinator.onBtRouteConnected()
         }
     }
 

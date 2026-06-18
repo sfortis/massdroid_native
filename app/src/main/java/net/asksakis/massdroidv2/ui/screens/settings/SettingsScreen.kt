@@ -81,6 +81,14 @@ import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.Manifest
+import android.bluetooth.BluetoothClass
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextRange
@@ -1147,11 +1155,40 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
     }
 }
 
+private fun hasBtConnectPermission(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+        PackageManager.PERMISSION_GRANTED
+
+/** Paired BT audio devices as route keys ("bt:NAME"), matching the runtime route key. */
+private fun pairedBtAudioRouteKeys(context: Context): List<String> {
+    if (!hasBtConnectPermission(context)) return emptyList()
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        ?: return emptyList()
+    return runCatching {
+        adapter.bondedDevices.orEmpty()
+            .filter {
+                val cls = it.bluetoothClass
+                cls != null && (
+                    cls.hasService(BluetoothClass.Service.AUDIO) ||
+                        cls.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO
+                    )
+            }
+            .mapNotNull { dev -> dev.name?.takeIf { it.isNotBlank() }?.let { "bt:$it" } }
+    }.getOrDefault(emptyList())
+}
+
 @Composable
 private fun SendspinCard(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
-    val syncSystemVolume by viewModel.sendspinSyncSystemVolume.collectAsStateWithLifecycle(initialValue = true)
+    val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
+    val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
+    val context = LocalContext.current
+    var hasBtPerm by remember { mutableStateOf(hasBtConnectPermission(context)) }
+    val btPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasBtPerm = granted }
+    val pairedKeys = remember(hasBtPerm) { if (hasBtPerm) pairedBtAudioRouteKeys(context) else emptyList() }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1184,30 +1221,64 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
             }
         )
 
-        // Sub-setting (sendspin gated). Decouples MA player volume from
-        // STREAM_MUSIC, useful in cars where the head unit attenuates
-        // further and STREAM_MUSIC should stay at 100% for full-fidelity BT
-        // codec transport.
+        // Sub-setting (sendspin gated): per-device "car audio". A flagged BT
+        // device is pinned to STREAM_MUSIC 100% on connect (the head unit's dial
+        // does the attenuation) and its volume is left alone — never reset. Other
+        // BT devices keep the normal phone-volume sync.
         if (sendspinEnabled) {
             ListItem(
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                headlineContent = { Text("Sync system volume on Bluetooth") },
+                headlineContent = { Text("Full volume on connect (car audio)") },
                 supportingContent = {
                     Text(
-                        "When on Bluetooth, tie phone volume keys and slider to " +
-                            "the Sendspin player. Turn off in the car — the head " +
-                            "unit handles attenuation and the phone stream stays " +
-                            "at full level for best codec fidelity. Phone speaker, " +
-                            "wired, and USB always sync regardless of this setting."
-                    )
-                },
-                trailingContent = {
-                    MdSwitch(
-                        checked = syncSystemVolume,
-                        onCheckedChange = { viewModel.setSendspinSyncSystemVolume(it) }
+                        "Pick Bluetooth devices whose own dial controls the volume (e.g. your " +
+                            "car). On connect the phone output is pinned to 100% so the head unit " +
+                            "handles attenuation, and the app never resets the level. Other devices " +
+                            "keep normal volume sync."
                     )
                 }
             )
+            // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
+            // ones the app has already routed to, plus anything already flagged.
+            val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
+            if (!hasBtPerm) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text("Show paired Bluetooth devices") },
+                    supportingContent = {
+                        Text("Grant the Bluetooth permission to pick your car from the paired list.")
+                    },
+                    trailingContent = {
+                        MdFilledTonalButton(
+                            onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
+                        ) { Text("Allow") }
+                    }
+                )
+            }
+            displayDevices.forEach { key ->
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text(key.removePrefix("bt:")) },
+                    trailingContent = {
+                        MdSwitch(
+                            checked = key in carAudioBtDevices,
+                            onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
+                        )
+                    }
+                )
+            }
+            if (hasBtPerm && displayDevices.isEmpty()) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = {
+                        Text(
+                            "No paired Bluetooth audio devices found.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                )
+            }
         }
     }
 }

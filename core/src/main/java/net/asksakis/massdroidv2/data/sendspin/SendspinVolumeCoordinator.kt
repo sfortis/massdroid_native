@@ -64,6 +64,12 @@ class SendspinVolumeCoordinator(
      * headphones, or USB, STREAM_MUSIC always tracks the MA player volume.
      */
     private val currentOutputDeviceType: () -> Int?,
+    /** Current BT output device route key (`bt:NAME`), or null if not on BT. */
+    private val currentBtRouteKey: () -> String?,
+    /** Route keys flagged as car audio (full volume on connect, no bridge). */
+    private val carAudioDevicesFlow: Flow<Set<String>>,
+    /** Record a BT route key as seen (for the car-audio picker). */
+    private val recordKnownBtDevice: suspend (String) -> Unit,
 ) {
     companion object {
         private const val TAG = "SsVolCoord"
@@ -113,6 +119,9 @@ class SendspinVolumeCoordinator(
     // never yank a car-pinned STREAM_MUSIC level during the brief DataStore
     // hydration window on cold start).
     @Volatile private var syncHydrated: Boolean = false
+    // Route keys the user flagged as car audio: pin STREAM_MUSIC 100% on connect,
+    // and disable the STREAM_MUSIC<->MA bridge for them.
+    @Volatile private var carAudioDevices: Set<String> = emptySet()
     @Volatile private var awaitingBaseline: Boolean = true
     @Volatile private var lastKnownMaVolume: Int = 100
     @Volatile private var cachedSendspinPlayerId: String? = null
@@ -136,20 +145,53 @@ class SendspinVolumeCoordinator(
      */
     private fun effectiveSyncEnabled(): Boolean {
         val routeType = currentOutputDeviceType()
-        val isBt = if (routeType != null) {
-            routeType == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                routeType == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                routeType == AudioDeviceInfo.TYPE_BLE_SPEAKER
-        } else {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                    it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+        val routeIsBt = routeType == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            routeType == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+            routeType == AudioDeviceInfo.TYPE_BLE_SPEAKER
+        // Treat "on BT" as: the resolved route is BT, OR any A2DP/BLE sink is
+        // connected. During a BT connect/disconnect FLAP the resolved route
+        // momentarily reads SPEAKER while A2DP is still settling; keying only off
+        // the route would fall into the non-BT "always sync" branch and push a
+        // transient STREAM_MUSIC level to MA — resetting a car-pinned volume even
+        // with the toggle OFF. The device-presence check keeps the toggle honoured
+        // across the whole flap.
+        val btConnected = routeIsBt || audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+        }
+        if (!btConnected) return true
+        // Car-audio devices are fully decoupled: STREAM_MUSIC is pinned to 100%
+        // on connect and the head unit's dial does the attenuation, so the bridge
+        // must never push/pull their volume.
+        val key = currentBtRouteKey()
+        if (key != null && key in carAudioDevices) return false
+        // Other BT: honour the toggle — but until the persisted value has loaded,
+        // default to OFF so a stale MA volume can't yank a car-pinned level.
+        return syncHydrated && syncEnabled
+    }
+
+    /**
+     * The output route just settled on a BT device. Remembers it for the
+     * car-audio picker, and — if the user flagged it as car audio — pins
+     * STREAM_MUSIC to 100% once so the head unit's own dial controls loudness
+     * (and the decoupled bridge leaves it there).
+     */
+    fun onBtRouteConnected() {
+        val key = currentBtRouteKey() ?: return
+        scope?.launch { recordKnownBtDevice(key) }
+        if (key in carAudioDevices) {
+            Log.d(TAG, "car-audio device $key connected -> full volume (system + player 100%)")
+            writeStreamMusic(100)
+            // Also raise the MA player volume to 100 so the in-app slider reflects
+            // the full-open phone output (the head unit's dial does the real
+            // attenuation). recordLocalPush suppresses the echo so it doesn't loop.
+            cachedSendspinPlayerId?.let { id ->
+                recordLocalPush(100)
+                playerRepository.applyVolumeOptimistic(id, 100)
+                launchPushToServer(id, 100, reason = "car-audio-pin")
             }
         }
-        // On BT, honour the toggle — but until the persisted value has loaded,
-        // default to OFF so a stale MA volume can't yank a car-pinned level.
-        return if (isBt) syncHydrated && syncEnabled else true
     }
 
     /**
@@ -169,6 +211,9 @@ class SendspinVolumeCoordinator(
                     syncEnabled = enabled
                 }
             }
+        }
+        jobs += coroutineScope.launch {
+            carAudioDevicesFlow.collect { carAudioDevices = it }
         }
         jobs += coroutineScope.launch {
             sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id }

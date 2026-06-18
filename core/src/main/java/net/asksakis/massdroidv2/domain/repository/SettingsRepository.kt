@@ -57,6 +57,19 @@ interface SettingsRepository {
      */
     val sendspinSyncSystemVolume: Flow<Boolean>
     /**
+     * BT output devices the app has routed to at least once (route keys like
+     * `bt:MINI45864`). Populates the "car audio" picker so the user can flag a
+     * device without us enumerating bonded devices (no BLUETOOTH_CONNECT).
+     */
+    val knownBtDevices: Flow<Set<String>>
+    /**
+     * BT devices (route keys) flagged as car audio: on connect their output is
+     * pinned to STREAM_MUSIC 100% (the head unit's own dial does the attenuation)
+     * and the STREAM_MUSIC<->MA volume bridge is disabled so a car-pinned level is
+     * never reset. Other BT devices keep the normal bridge.
+     */
+    val carAudioBtDevices: Flow<Set<String>>
+    /**
      * Last known Sendspin player volume (0..100), persisted across process
      * death. The MA server resets a re-registering Sendspin player to 100%, so
      * on startup we seed it back from this value rather than the phone's live
@@ -105,6 +118,10 @@ interface SettingsRepository {
     suspend fun setSendspinSyncDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
     suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
+    /** Record a BT route key as seen (idempotent), for the car-audio picker. */
+    suspend fun recordKnownBtDevice(routeKey: String)
+    /** Flag/unflag a BT route key as car audio (full volume on connect). */
+    suspend fun setCarAudioBtDevice(routeKey: String, enabled: Boolean)
     suspend fun setSendspinLastVolume(volume: Int)
     suspend fun setAcousticMicPathUs(valueUs: Long)
     suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration)

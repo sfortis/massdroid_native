@@ -147,6 +147,9 @@ object AppModule {
             persistLastVolume = { settingsRepository.setSendspinLastVolume(it) },
             playerRepository = playerRepository,
             currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
+            currentBtRouteKey = { sendspinManager.getRoutedDeviceProductName()?.let { "bt:$it" } },
+            carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
+            recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },
         )
     }
 
