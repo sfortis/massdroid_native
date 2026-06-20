@@ -26,7 +26,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 
 class ProximityController(
-    private val service: PlaybackService,
+    private val service: android.app.Service,
     private val scope: CoroutineScope,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,

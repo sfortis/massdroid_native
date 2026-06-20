@@ -73,7 +73,7 @@ import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
 import net.asksakis.massdroidv2.domain.model.Player
-import net.asksakis.massdroidv2.service.PlaybackService
+import net.asksakis.massdroidv2.service.FollowMeService
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
 import net.asksakis.massdroidv2.ui.permissions.PermissionRationaleDialog
@@ -136,8 +136,8 @@ fun ProximitySettingsScreen(
                 viewModel.setEnabled(true)
             }
             context.startService(
-                android.content.Intent(context, PlaybackService::class.java)
-                    .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                android.content.Intent(context, FollowMeService::class.java)
+                    .setAction(FollowMeService.PROXIMITY_REEVALUATE_ACTION)
             )
         }
     }
@@ -590,8 +590,8 @@ fun ProximitySettingsScreen(
                         viewModel.setEnabled(true)
                     }
                     context.startService(
-                        android.content.Intent(context, PlaybackService::class.java)
-                            .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                        android.content.Intent(context, FollowMeService::class.java)
+                            .setAction(FollowMeService.PROXIMITY_REEVALUATE_ACTION)
                     )
                 }
             },

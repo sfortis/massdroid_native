@@ -134,8 +134,8 @@ class MainActivity : ComponentActivity() {
     ) { results ->
         if (results.values.all { it }) {
             startService(
-                Intent(this, net.asksakis.massdroidv2.service.PlaybackService::class.java)
-                    .setAction(net.asksakis.massdroidv2.service.PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                Intent(this, net.asksakis.massdroidv2.service.FollowMeService::class.java)
+                    .setAction(net.asksakis.massdroidv2.service.FollowMeService.PROXIMITY_REEVALUATE_ACTION)
             )
         }
     }
