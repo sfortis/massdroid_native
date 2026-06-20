@@ -25,7 +25,9 @@ import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.AUTO_F
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.CALIBRATION_SAMPLES_PER_SCAN_SESSION
 import net.asksakis.massdroidv2.data.proximity.rankBeaconProfilesForDetection
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
+import net.asksakis.massdroidv2.data.proximity.RoomConfusion
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
+import net.asksakis.massdroidv2.data.proximity.RoomSeparability
 import net.asksakis.massdroidv2.data.proximity.RoomFingerprint
 import net.asksakis.massdroidv2.data.proximity.ProximitySchedule
 import net.asksakis.massdroidv2.data.proximity.RoomPlaybackConfig
@@ -111,6 +113,11 @@ class ProximityViewModel @Inject constructor(
     private val _calibrationSummary = MutableStateFlow<String?>(null)
     val calibrationSummary: StateFlow<String?> = _calibrationSummary.asStateFlow()
     fun dismissCalibrationSummary() { _calibrationSummary.value = null }
+
+    // Joint room-separability result keyed by room id (recomputed on every calibrate). Drives the
+    // GOOD/WEAK label and the confuser hint surfaced in the calibration summary / settings UI.
+    private val _separabilityReport = MutableStateFlow<Map<String, RoomConfusion>>(emptyMap())
+    val separabilityReport: StateFlow<Map<String, RoomConfusion>> = _separabilityReport.asStateFlow()
 
     private val _bleInspectionInProgress = MutableStateFlow(false)
     val bleInspectionInProgress: StateFlow<Boolean> = _bleInspectionInProgress.asStateFlow()
@@ -433,23 +440,28 @@ class ProximityViewModel @Inject constructor(
                         cfg.copy(rooms = updated)
                     }
 
+                    // Re-evaluate ALL rooms jointly so the calibrated room's quality reflects how it
+                    // separates from the current neighbours (order-independent), then read it back.
+                    recomputeJointQuality()
                     roomDetector.reset()
                     val updatedRoom = configStore.config.value.rooms.find { it.id == roomId }
-                    if (updatedRoom != null && quality != CalibrationQuality.UNCALIBRATED) {
-                        val rules = updatedRoom.detectionPolicy.rules()
-                        if (quality == CalibrationQuality.GOOD || rules.allowWeakCalibration) {
-                            roomDetector.seedRoom(DetectedRoom(updatedRoom.id, updatedRoom.name, updatedRoom.playerId, updatedRoom.playerName))
-                        }
+                    val jointQuality = updatedRoom?.calibrationQuality ?: quality
+                    // WEAK rooms are now eligible (stiffer confirm bar), so seed any calibrated room.
+                    if (updatedRoom != null && jointQuality != CalibrationQuality.UNCALIBRATED) {
+                        roomDetector.seedRoom(DetectedRoom(updatedRoom.id, updatedRoom.name, updatedRoom.playerId, updatedRoom.playerName))
                     }
 
                     _calibrationSummary.value = buildCalibrationSummary(
                         roomName = room?.name ?: roomId,
-                        quality = quality,
+                        quality = jointQuality,
                         profiles = profiles,
-                        warnings = warnings
+                        warnings = warnings,
+                        confusion = _separabilityReport.value[roomId],
+                        confuserName = _separabilityReport.value[roomId]?.topConfuserId
+                            ?.let { id -> configStore.config.value.rooms.find { it.id == id }?.name }
                     )
 
-                    Log.d(TAG, "Single-room calibration: ${room?.name}, ${fingerprints.size} fp, ${profiles.size} profiles, quality=$quality")
+                    Log.d(TAG, "Single-room calibration: ${room?.name}, ${fingerprints.size} fp, ${profiles.size} profiles, quality=$jointQuality (anchor-gate said $quality)")
                     if (warnings.isNotEmpty()) warnings.forEach { Log.w(TAG, "  $it") }
                 }
                 onDone()
@@ -634,18 +646,18 @@ class ProximityViewModel @Inject constructor(
                     config.copy(rooms = config.rooms.map { updatedById[it.id] ?: it })
                 }
 
+                // Final quality comes from the joint confusion matrix over the freshly tuned set.
+                recomputeJointQuality()
+                _separabilityReport.value.forEach { (id, c) ->
+                    if (roomResults.containsKey(id)) roomResults[id] = c.quality
+                }
+
                 roomDetector.reset()
                 val lastTraining = allTraining.lastOrNull()
                 if (lastTraining != null) {
                     val lastRoom = configStore.config.value.rooms.find { it.id == lastTraining.roomId }
-                    if (lastRoom != null) {
-                        val quality = lastRoom.calibrationQuality
-                        val rules = lastRoom.detectionPolicy.rules()
-                        if (quality == CalibrationQuality.GOOD ||
-                            (rules.allowWeakCalibration && quality == CalibrationQuality.WEAK)
-                        ) {
-                            roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
-                        }
+                    if (lastRoom != null && lastRoom.calibrationQuality != CalibrationQuality.UNCALIBRATED) {
+                        roomDetector.seedRoom(DetectedRoom(lastRoom.id, lastRoom.name, lastRoom.playerId, lastRoom.playerName))
                     }
                 }
 
@@ -656,6 +668,39 @@ class ProximityViewModel @Inject constructor(
                 _tuningResult.value = TuningResult(roomResults, warnings)
                 roomDetector.resume()
             }
+        }
+    }
+
+    /**
+     * Recompute calibration quality for ALL rooms jointly from the cross-room confusion matrix
+     * (see [RoomSeparability]). Call after any room's fingerprints/profiles are written. This is what
+     * makes quality order-independent: a room can no longer go stale-WEAK just because a neighbour was
+     * calibrated later, and a room with one strong unique anchor (e.g. Mancave's Govee) is no longer
+     * rejected on beacon-count. Rooms still flagged UNCALIBRATED (never calibrated) are left untouched.
+     */
+    private suspend fun recomputeJointQuality() {
+        val rooms = configStore.config.value.rooms
+        val confusion = withContext(Dispatchers.Default) { RoomSeparability.analyze(rooms) }
+        if (confusion.isEmpty()) return
+        _separabilityReport.value = confusion
+        configStore.update { cfg ->
+            cfg.copy(rooms = cfg.rooms.map { room ->
+                val derived = confusion[room.id]?.quality
+                if (derived != null && room.calibrationQuality != CalibrationQuality.UNCALIBRATED) {
+                    room.copy(calibrationQuality = derived)
+                } else {
+                    room
+                }
+            })
+        }
+        confusion.values.forEach { c ->
+            val name = rooms.find { it.id == c.roomId }?.name ?: c.roomId
+            val confuser = c.topConfuserId?.let { id -> rooms.find { it.id == id }?.name ?: id }
+            Log.d(
+                TAG,
+                "Separability: $name self=${String.format("%.0f%%", c.selfRecognition * 100)}, " +
+                    "confuser=${confuser ?: "none"} (${String.format("%.0f%%", c.topConfuserRate * 100)}) -> ${c.quality}"
+            )
         }
     }
 
@@ -735,7 +780,9 @@ class ProximityViewModel @Inject constructor(
         roomName: String,
         quality: CalibrationQuality,
         profiles: List<BeaconProfile>,
-        warnings: List<String>
+        warnings: List<String>,
+        confusion: RoomConfusion? = null,
+        confuserName: String? = null
     ): String {
         val bleProfiles = profiles.filter { !it.anchorKey.startsWith("wifi:") }
         val usableCount = bleProfiles.count { it.weight > MIN_WEIGHT }
@@ -744,6 +791,22 @@ class ProximityViewModel @Inject constructor(
         val visibilityPct = ((bleProfiles.map { it.visibilityRate }.average().takeIf { !it.isNaN() } ?: 0.0) * 100).toInt()
         val lowVisibility = visibilityPct < (MIN_AVG_VISIBILITY * 100).toInt()
         val patternDriven = discriminativeCount < MIN_DISCRIMINATIVE_BEACONS && moderateDiscriminativeCount >= 3
+
+        // Prefer the joint separability story (how well this room is told apart from the others) when
+        // available; it is what actually drives detection. Fall back to anchor stats for the first
+        // room (no neighbours to compare against yet).
+        if (confusion != null) {
+            val selfPct = (confusion.selfRecognition * 100).toInt()
+            return if (quality == CalibrationQuality.GOOD) {
+                "Good separation: recognised $selfPct% of the time and well separated from other rooms ($usableCount usable anchors)."
+            } else if (confuserName != null && confusion.topConfuserRate > 0.0) {
+                val confPct = (confusion.topConfuserRate * 100).toInt()
+                "Weak separation: often confused with $confuserName ($confPct% of scans). Add a beacon unique to this room, or move the rooms further apart."
+            } else {
+                "Weak separation: this room's fingerprint is not distinctive enough (recognised $selfPct%). Try recalibrating, or add a beacon unique to this room."
+            }
+        }
+
         return if (quality == CalibrationQuality.GOOD) {
             if (lowVisibility && patternDriven) {
                 "Good calibration: low-signal but structured RSSI fingerprint with $usableCount usable BLE anchors, $moderateDiscriminativeCount moderate-separation anchors, avg visibility ${visibilityPct}%."

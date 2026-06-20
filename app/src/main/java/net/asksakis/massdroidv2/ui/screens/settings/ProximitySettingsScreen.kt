@@ -54,6 +54,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,7 +95,10 @@ fun ProximitySettingsScreen(
         else config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
     }
     var deleteTarget by remember { mutableStateOf<RoomConfig?>(null) }
-    var showTuningWizard by remember { mutableStateOf(false) }
+    // rememberSaveable so the "Calibrate Rooms" wizard stays open across an Activity recreation
+    // (e.g. screen rotation). The scan/step state itself lives in the ViewModel and already survives;
+    // only this visibility flag was being reset to false, which closed the dialog mid-flow.
+    var showTuningWizard by rememberSaveable { mutableStateOf(false) }
     val tuningSnapshots by viewModel.tuningSnapshots.collectAsStateWithLifecycle()
     val tuningStep by viewModel.tuningStep.collectAsStateWithLifecycle()
     val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()

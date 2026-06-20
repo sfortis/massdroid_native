@@ -97,19 +97,6 @@ class ProximityPlaybackController(
     fun isPendingRoom(roomId: String): Boolean =
         pendingProximityTransfer?.roomId == roomId
 
-    fun showRoomDetectedNotification(room: DetectedRoom) {
-        val notification = NotificationCompat.Builder(service, PROXIMITY_CHANNEL_ID)
-            .setContentTitle("Now in ${room.roomName}")
-            .setContentText("Follow Me detected ${room.roomName}")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setOnlyAlertOnce(true)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setTimeoutAfter(10_000)
-            .build()
-        notificationManager()?.notify(PROXIMITY_NOTIFICATION_ID, notification)
-    }
-
     fun showActionNotification(room: DetectedRoom, canTransfer: Boolean, sourcePlayerId: String?) {
         pendingProximityTransfer = room
         pendingTransferSourcePlayerId = sourcePlayerId

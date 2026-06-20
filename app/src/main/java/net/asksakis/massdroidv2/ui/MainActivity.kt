@@ -63,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -611,6 +612,18 @@ private fun MassDroidApp(
         0.dp
     }
 
+    // The NavHost is shared between the portrait and landscape layouts. Because those are two
+    // different composables, calling MassDroidNavHost inside each would place it at a different slot
+    // in the tree on every rotation, recreating the NavHost's internal SaveableStateHolder and
+    // dropping each screen's rememberSaveable state (selected settings category, open wizard, ...)
+    // even though the back-stack route survives on the shared NavController. movableContentOf keeps
+    // it as ONE instance that simply moves between the two layouts, preserving that state.
+    val navHostContent = remember(navController) {
+        movableContentOf<Modifier> { modifier ->
+            MassDroidNavHost(navController = navController, modifier = modifier)
+        }
+    }
+
     CompositionLocalProvider(
         LocalMiniPlayerPadding provides miniPlayerPadding,
         LocalIsConnected provides isConnected
@@ -625,7 +638,8 @@ private fun MassDroidApp(
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
                 extraBottomPadding = 0.dp,
-                onBottomBarHeightChanged = { bottomBarHeight = it }
+                onBottomBarHeightChanged = { bottomBarHeight = it },
+                navHost = navHostContent
             )
         } else {
             PortraitLayout(
@@ -636,7 +650,8 @@ private fun MassDroidApp(
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
                 extraBottomPadding = 0.dp,
-                onBottomBarHeightChanged = { bottomBarHeight = it }
+                onBottomBarHeightChanged = { bottomBarHeight = it },
+                navHost = navHostContent
             )
         }
 
@@ -661,7 +676,8 @@ private fun PortraitLayout(
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
     extraBottomPadding: Dp = 0.dp,
-    onBottomBarHeightChanged: (Dp) -> Unit = {}
+    onBottomBarHeightChanged: (Dp) -> Unit = {},
+    navHost: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
     Scaffold(
@@ -688,10 +704,7 @@ private fun PortraitLayout(
             }
         }
     ) { paddingValues ->
-        MassDroidNavHost(
-            navController = navController,
-            modifier = Modifier.padding(paddingValues)
-        )
+        navHost(Modifier.padding(paddingValues))
     }
 }
 
@@ -704,7 +717,8 @@ private fun LandscapeLayout(
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
     extraBottomPadding: Dp = 0.dp,
-    onBottomBarHeightChanged: (Dp) -> Unit = {}
+    onBottomBarHeightChanged: (Dp) -> Unit = {},
+    navHost: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
     Scaffold(
@@ -736,9 +750,8 @@ private fun LandscapeLayout(
             if (showNav) {
                 SideNavRail(navController, currentRoute)
             }
-            MassDroidNavHost(
-                navController = navController,
-                modifier = Modifier
+            navHost(
+                Modifier
                     .weight(1f)
                     .windowInsetsPadding(
                         WindowInsets.navigationBars.union(WindowInsets.displayCutout)

@@ -259,8 +259,13 @@ class RoomDetector @Inject constructor() {
         rooms.filter { room ->
             if (room.wifiMatchMode != null) return@filter false
             if (room.beaconProfiles.isEmpty()) return@filter false
-            val rules = room.detectionPolicy.rules()
-            if (!rules.allowWeakCalibration && room.calibrationQuality != CalibrationQuality.GOOD) return@filter false
+            // WEAK rooms are no longer excluded as a hard capability gate. Calibration quality is a
+            // separability hint (see RoomSeparability / confusion matrix); a weakly-separable room
+            // still participates in scoring but faces a stiffer confirm bar (see confirmThresholds)
+            // plus the existing confidence/margin/consecutive-win hysteresis. This is what lets a
+            // room with one strong nearby anchor (e.g. JBL at 2m) win even when its shared anchors
+            // overlap a neighbour. Only an uncalibrated room (no usable fingerprints) is dropped.
+            if (room.fingerprints.isEmpty()) return@filter false
             if (room.calibrationQuality == CalibrationQuality.UNCALIBRATED) return@filter false
             true
         }
