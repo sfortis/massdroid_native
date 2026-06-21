@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.data.sendspin
 
-import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -78,10 +77,16 @@ class SendspinVolumeCoordinator(
         // Selection-lock reason for a connected car-audio device: while it holds,
         // ALL transport/UI targets the Sendspin (phone) player, never a remote one.
         private const val CAR_LOCK_REASON = "car_audio"
-        // A car device that drops keeps the selection lock for this long before it
-        // clears, so a BT connect/disconnect flap does not leak transport to a
-        // remote player in the gap. A reconnect cancels the pending clear.
-        private const val CAR_LOCK_CLEAR_DEBOUNCE_MS = 8_000L
+        // A car device that drops keeps the selection lock + pinned volume for this
+        // long before releasing/restoring, so a BT connect/disconnect flap does not
+        // leak transport to a remote player (or bounce the volume) in the gap. A
+        // reconnect cancels the pending clear. Sized to the A2DP flap window
+        // (~ROUTE_TRANSITION_SUPPRESS_MS) — long enough to absorb a handshake flap,
+        // short enough that an intentional disconnect restores the volume promptly.
+        private const val CAR_LOCK_CLEAR_DEBOUNCE_MS = 3_000L
+        // How long the restored pre-car volume is held firmly against stale/late
+        // server volume echoes (the now-idle player gets no corrective update).
+        private const val CAR_RESTORE_HOLD_MS = 6_000L
         // Window during which STREAM_MUSIC observer fires are NOT pushed to MA
         // because they're route-switching artifacts, not user volume changes.
         // Android stores STREAM_MUSIC per output route; a BT connect/disconnect
@@ -98,6 +103,13 @@ class SendspinVolumeCoordinator(
         // filter robust to that. Short enough that a genuine user change right
         // after is only missed once (the next change reconciles).
         private const val SELF_WRITE_SETTLE_MS = 500L
+        // Samsung's setStreamVolume is async and, under rapid writes (e.g. a remote
+        // controller dragging its slider floods us with values), individual writes
+        // can land LATE and OUT OF ORDER — an earlier index we wrote can surface in
+        // the observer seconds later, after a newer write. We remember every index
+        // we wrote for this long so such a late self-write is not misread as a user
+        // change and bounced back to the server (which reverted a remote-set value).
+        private const val SELF_WRITE_RECENT_MS = 2_500L
         // Upper bound on how long we wait for the server to echo a value we
         // pushed. Sized above real-world WS round-trips (in-car cellular ~2s).
         private const val ECHO_EXPIRY_MS = 6_000L
@@ -128,19 +140,34 @@ class SendspinVolumeCoordinator(
     // never yank a car-pinned STREAM_MUSIC level during the brief DataStore
     // hydration window on cold start).
     @Volatile private var syncHydrated: Boolean = false
-    // Route keys the user flagged as car audio: pin STREAM_MUSIC 100% on connect,
-    // and disable the STREAM_MUSIC<->MA bridge for them.
+    // Route keys the user flagged as car audio.
     @Volatile private var carAudioDevices: Set<String> = emptySet()
-    // Pending debounced clear of the car selection lock (cancelled on reconnect).
-    // @Volatile: cancelled from onBtRouteConnected (IO coroutine) and reassigned
-    // from onBtRouteLost (main thread) — cross-thread access.
+
+    /**
+     * Car-audio session state machine. `null` = NoCar (no car-flagged route bound).
+     * Non-null = CarActive: we have locked transport to the phone and pinned the
+     * volume to 100% for [routeKey], remembering [preCarVolume] to restore on a
+     * durable disconnect. Held entirely in memory — a car session is inherently
+     * transient, so there is no persistence to reconcile (the old per-device
+     * DataStore map + reconcile flow are gone). Guarded by [carLock] so the
+     * enter/affirm/exit transitions are atomic across the route-event / clientId /
+     * car-devices callers that all fire on connect.
+     */
+    private data class CarSession(val routeKey: String, val preCarVolume: Int)
+    @Volatile private var carSession: CarSession? = null
+    private val carLock = Any()
+    // Pending debounced exit of the car session (cancelled by a flap reconnect).
     @Volatile private var carLockClearJob: Job? = null
-    // STREAM_MUSIC % captured when a fresh car session pins to 100%, restored when
-    // the car durably disconnects (so leaving the car doesn't leave the phone at
-    // full volume). Null = no car session active.
-    @Volatile private var preCarStreamPct: Int? = null
     @Volatile private var awaitingBaseline: Boolean = true
     @Volatile private var lastKnownMaVolume: Int = 100
+    // THE canonical "remembered Sendspin volume": the phone-route level. Persisted
+    // (mirrors sendspinLastVolume) and updated ONLY on a genuine phone-route change
+    // (no BT sink connected) — so it is immune to a car pin (transient 100%) and to a
+    // BT speaker's absolute-volume push on (re)connect. It is the single source for:
+    // the startup seed, what the phone speaker (STREAM_MUSIC) syncs to, and the
+    // pre-car capture. Freezes while any BT sink is connected; seeded from the
+    // persisted value at startup.
+    @Volatile private var phoneVolume: Int = 100
     @Volatile private var cachedSendspinPlayerId: String? = null
     @Volatile private var suppressPushUntilMs: Long = 0L
 
@@ -154,6 +181,11 @@ class SendspinVolumeCoordinator(
     // Set when we write STREAM_MUSIC ourselves; observer fires before this are
     // our own write settling (see SELF_WRITE_SETTLE_MS), not user changes.
     @Volatile private var selfWriteUntilMs: Long = 0L
+    // Every STREAM_MUSIC index we wrote recently -> expiry. Covers Samsung's
+    // async/out-of-order setStreamVolume landings (see SELF_WRITE_RECENT_MS) so a
+    // late self-write is recognised as ours rather than bounced back as a user
+    // change. Keyed by index; pruned on access.
+    private val recentSelfWrites = java.util.concurrent.ConcurrentHashMap<Int, Long>()
 
     /**
      * The user-facing sync toggle only applies on Bluetooth. On any other route
@@ -161,117 +193,125 @@ class SendspinVolumeCoordinator(
      * getDevices() when the active AudioTrack route is momentarily null.
      */
     private fun effectiveSyncEnabled(): Boolean {
+        // An active car session is fully decoupled: the volume is pinned to 100%
+        // and the head unit's dial does the attenuation, so the bridge must never
+        // push/pull it. The session (not a live route-key lookup) is the source of
+        // truth, so this holds steadily across a BT connect/disconnect flap.
+        if (carSession != null) return false
         val routeType = currentOutputDeviceType()
-        val routeIsBt = routeType == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-            routeType == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-            routeType == AudioDeviceInfo.TYPE_BLE_SPEAKER
+        val routeIsBt = routeType != null && isBluetoothSink(routeType)
         // Treat "on BT" as: the resolved route is BT, OR any A2DP/BLE sink is
         // connected. During a BT connect/disconnect FLAP the resolved route
-        // momentarily reads SPEAKER while A2DP is still settling; keying only off
-        // the route would fall into the non-BT "always sync" branch and push a
-        // transient STREAM_MUSIC level to MA — resetting a car-pinned volume even
-        // with the toggle OFF. The device-presence check keeps the toggle honoured
-        // across the whole flap.
-        val btConnected = routeIsBt || audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-        }
+        // momentarily reads SPEAKER while A2DP is still settling.
+        val btConnected = routeIsBt || audioManager.anyBluetoothSinkConnected()
         if (!btConnected) return true
-        // Car-audio devices are fully decoupled: STREAM_MUSIC is pinned to 100%
-        // on connect and the head unit's dial does the attenuation, so the bridge
-        // must never push/pull their volume.
-        val key = currentBtRouteKey()
-        if (key != null && key in carAudioDevices) return false
         // Other BT: honour the toggle — but until the persisted value has loaded,
-        // default to OFF so a stale MA volume can't yank a car-pinned level.
+        // default to OFF so a stale MA volume can't yank a freshly-set level.
         return syncHydrated && syncEnabled
     }
 
     /**
-     * The output route just settled on a BT device. Remembers it for the
-     * car-audio picker, and — if the user flagged it as car audio — pins
-     * STREAM_MUSIC to 100% once so the head unit's own dial controls loudness
-     * (and the decoupled bridge leaves it there).
+     * The output route just settled on a BT device. Records it for the car-audio
+     * picker and re-evaluates the car session (enters/affirms CarActive if the
+     * route is car-flagged).
      */
     fun onBtRouteConnected() {
         val key = currentBtRouteKey() ?: return
         scope?.launch { recordKnownBtDevice(key) }
-        applyCarRouteState()
+        evaluateCarRoute()
     }
 
     /**
-     * Idempotent: if the CURRENT BT route is a car-flagged device, lock transport
-     * to Sendspin and (on a fresh session) pin to 100% after saving the prior
-     * level. Self-determines the route from [currentBtRouteKey], so it is safe to
-     * call from route events AND from the client-id / car-devices flow collectors
-     * — this covers cold-start (already in the car at launch) and the late-arriving
-     * Sendspin player id, neither of which fires a route transition.
+     * Enter or affirm the car session for the CURRENT route. Idempotent and
+     * self-determining from [currentBtRouteKey], so it is safe to call from route
+     * events AND from the clientId / car-devices flow collectors — covering
+     * cold-start (already in the car at launch) and the late-arriving Sendspin
+     * player id, neither of which fires a route transition.
+     *
+     * State machine: NoCar -> CarActive on the first connect to a car-flagged
+     * route (capture pre-car volume, lock transport, pin to 100%). A flap
+     * reconnect (same routeKey already CarActive) only re-affirms the lock and
+     * cancels a pending exit — it never re-pins or re-captures.
      */
-    private fun applyCarRouteState() {
+    private fun evaluateCarRoute() {
         val key = currentBtRouteKey() ?: return
         if (key !in carAudioDevices) return
         val id = cachedSendspinPlayerId ?: return  // re-runs once the id flow emits
-        // Fresh car session vs a flap reconnect: if the car lock is already held
-        // (or its clear is still pending) this is a flap — re-affirm the lock but
-        // DO NOT re-pin volume, so a flapping device can't keep slamming the level
-        // back to 100% over the user's adjustment.
-        val freshSession = playerRepository.selectionLock.value?.reason != CAR_LOCK_REASON
-        carLockClearJob?.cancel()
-        // Lock all transport/UI to the phone (Sendspin) while the car is connected,
-        // so play/pause/next never leaks to a remote player.
-        playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
-        if (freshSession) {
-            preCarStreamPct = currentStreamMusicPct()  // remember the pre-car level
-            Log.d(TAG, "car-audio device $key connected -> full volume (was ${preCarStreamPct}%)")
-            writeStreamMusic(100)
-            // Raise the MA player volume to 100 too so the in-app slider reflects
-            // the full-open output. recordLocalPush suppresses the echo loop.
-            recordLocalPush(100)
-            playerRepository.applyVolumeOptimistic(id, 100)
-            launchPushToServer(id, 100, reason = "car-audio-pin")
-        } else {
-            Log.d(TAG, "car-audio device $key reconnected (flap) -> keep current volume")
+        val entered: Boolean
+        synchronized(carLock) {
+            carLockClearJob?.cancel()
+            // Lock all transport/UI to the phone (Sendspin) while the car is
+            // connected, so play/pause/next never leaks to a remote player.
+            playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
+            entered = carSession?.routeKey != key
+            if (entered) {
+                // Capture the pre-car volume from phoneVolume (the last genuine
+                // phone-route level), NOT lastKnownMaVolume: on a BT (re)connect an
+                // absolute-volume speaker pushes its stored level (often the pinned
+                // 100%) into lastKnownMaVolume just before we recognise the car, which
+                // would capture 100 and make the restore a no-op. phoneVolume is frozen
+                // while BT is connected, so it holds the real pre-car level. On a
+                // car->car switch carry the ORIGINAL pre-car level forward.
+                val preCar = carSession?.preCarVolume ?: phoneVolume
+                carSession = CarSession(key, preCar)
+            }
         }
-    }
-
-    private fun currentStreamMusicPct(): Int {
-        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        if (max <= 0) return 100
-        return ((audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100f / max) + 0.5f).toInt()
+        if (!entered) {
+            Log.d(TAG, "car-audio $key reconnected (flap) -> hold")
+            return
+        }
+        Log.d(TAG, "car-audio $key connected -> pin 100% (pre-car ${carSession?.preCarVolume}%)")
+        // Pin to 100% via the normal volume path (MA + STREAM_MUSIC), once.
+        writeStreamMusic(100)
+        recordLocalPush(100)
+        playerRepository.applyVolumeOptimistic(id, 100)
+        launchPushToServer(id, 100, reason = "car-pin")
     }
 
     /**
-     * The output route left an external sink (BT dropped to phone speaker). If a
-     * car selection lock is held, schedule a debounced clear: a genuine
-     * disconnect releases it after [CAR_LOCK_CLEAR_DEBOUNCE_MS], but a flap
-     * reconnect ([onBtRouteConnected]) cancels the clear so transport never leaks
-     * to a remote player in the gap.
+     * The output route left an external sink (BT dropped to phone speaker).
+     * Schedules a debounced exit of the car session: a genuine disconnect ends it
+     * after [CAR_LOCK_CLEAR_DEBOUNCE_MS] (release lock + restore pre-car volume),
+     * but a flap reconnect ([onBtRouteConnected]) cancels the exit so transport
+     * never leaks to a remote player in the gap.
      */
     fun onBtRouteLost() {
-        if (playerRepository.selectionLock.value?.reason != CAR_LOCK_REASON) return
-        carLockClearJob?.cancel()
-        carLockClearJob = scope?.launch {
-            delay(CAR_LOCK_CLEAR_DEBOUNCE_MS)
-            val key = currentBtRouteKey()
-            if ((key == null || key !in carAudioDevices) &&
-                playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON
-            ) {
-                Log.d(TAG, "car-audio device gone -> releasing selection lock + restoring volume")
-                playerRepository.setSelectionLock(null)
-                // Restore the pre-car level so leaving the car doesn't leave the
-                // phone (and the next non-car output) pinned at 100%.
-                preCarStreamPct?.let { pct ->
-                    writeStreamMusic(pct)
-                    cachedSendspinPlayerId?.let { id ->
-                        recordLocalPush(pct)
-                        playerRepository.applyVolumeOptimistic(id, pct)
-                        launchPushToServer(id, pct, reason = "car-audio-restore")
-                    }
+        synchronized(carLock) {
+            if (carSession == null) return
+            // Don't restart a countdown that's already running: this fires from BOTH
+            // the fast "becoming noisy" signal AND the (much later) OS route-left-BT
+            // detection — restarting would push the restore back to the slow signal.
+            // The first trigger's timer stands; a reconnect (evaluateCarRoute) cancels
+            // it for flap protection. No route re-check here: both route signals lag
+            // ~8s on disconnect, so we rely on the reconnect-cancel instead.
+            if (carLockClearJob?.isActive == true) return
+            carLockClearJob = scope?.launch {
+                delay(CAR_LOCK_CLEAR_DEBOUNCE_MS)
+                val ended: CarSession
+                synchronized(carLock) {
+                    ended = carSession ?: return@launch
+                    carSession = null
+                    playerRepository.setSelectionLock(null)
                 }
-                preCarStreamPct = null
+                Log.d(TAG, "car-audio gone -> release lock + restore ${ended.preCarVolume}%")
+                restoreCarVolume(ended.preCarVolume)
             }
         }
+    }
+
+    /**
+     * Restore the pre-car volume on a durable car disconnect. Sticky + long hold:
+     * the player is idle after leaving the car, so a late/out-of-order stale server
+     * volume (the pinned 100%) would otherwise bounce the slider back with no
+     * further update to correct it. Holds the restored value firmly until the stale
+     * echoes drain.
+     */
+    private fun restoreCarVolume(pct: Int) {
+        writeStreamMusic(pct)
+        val id = cachedSendspinPlayerId ?: return
+        recordLocalPush(pct)
+        playerRepository.applyVolumeOptimistic(id, pct, holdMs = CAR_RESTORE_HOLD_MS, sticky = true)
+        launchPushToServer(id, pct, reason = "car-restore")
     }
 
     /**
@@ -284,6 +324,18 @@ class SendspinVolumeCoordinator(
         scope = coroutineScope
         awaitingBaseline = true
         jobs += coroutineScope.launch {
+            // Seed the pre-car capture baseline from the persisted last volume once,
+            // before any car connect (which only happens later, when the user is in
+            // the car). Guarded by awaitingBaseline so a live server event that has
+            // already arrived wins. Without this, a car connect before any playback
+            // would read the default 100% and the restore on disconnect is a no-op.
+            val persisted = lastVolumeFlow.first().coerceIn(0, 100)
+            if (awaitingBaseline) {
+                lastKnownMaVolume = persisted
+                phoneVolume = persisted
+            }
+        }
+        jobs += coroutineScope.launch {
             syncEnabledFlow.collect { enabled ->
                 syncHydrated = true
                 if (syncEnabled != enabled) {
@@ -295,13 +347,13 @@ class SendspinVolumeCoordinator(
         jobs += coroutineScope.launch {
             // Re-evaluate on flag changes too: flagging the currently-connected
             // device as car audio takes effect immediately (no reconnect needed).
-            carAudioDevicesFlow.collect { carAudioDevices = it; applyCarRouteState() }
+            carAudioDevicesFlow.collect { carAudioDevices = it; evaluateCarRoute() }
         }
         jobs += coroutineScope.launch {
             // The Sendspin player id arrives async; re-evaluate so a cold-start
             // already in the car locks/pins once the id is known (covers the
             // route-already-settled case that fires no transition).
-            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id; applyCarRouteState() }
+            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id; evaluateCarRoute() }
         }
         jobs += coroutineScope.launch {
             serverVolumeEvents.collect { pct -> onServerVolumeEvent(pct) }
@@ -315,11 +367,14 @@ class SendspinVolumeCoordinator(
     fun stop() {
         jobs.forEach { it.cancel() }
         jobs = mutableListOf()
-        carLockClearJob?.cancel()
-        carLockClearJob = null
-        // Release a held car lock so a stopped Sendspin can't pin player selection.
-        if (playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON) {
-            playerRepository.setSelectionLock(null)
+        synchronized(carLock) {
+            carLockClearJob?.cancel()
+            carLockClearJob = null
+            carSession = null
+            // Release a held car lock so a stopped Sendspin can't pin player selection.
+            if (playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON) {
+                playerRepository.setSelectionLock(null)
+            }
         }
         scope = null
         Log.d(TAG, "stopped")
@@ -328,22 +383,25 @@ class SendspinVolumeCoordinator(
     // region Input intents
 
     /**
-     * The system observed STREAM_MUSIC possibly changing (ContentObserver fire).
-     * The coordinator reads the current index itself: if it equals the index we
-     * last set/observed, this is our own mirror write or an unrelated URI wake —
-     * ignored. A different index is a genuine user change (HW keys, system bar),
-     * mirrored to the MA Sendspin player when sync is effective.
+     * STREAM_MUSIC changed (driven by the VOLUME_CHANGED_ACTION broadcast, filtered
+     * to STREAM_MUSIC — so this only fires on real volume changes, not screen-on or
+     * other Settings.System noise). The broadcast ALSO fires for our own mirror
+     * writes, so we still read the index and drop it when it equals the one we set
+     * (plus the self-write settle / recent-write windows). A different index is a
+     * genuine user change (HW keys, system bar), mirrored to MA when sync is effective.
      */
     fun onPhoneStreamVolumeChanged() {
         val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (max <= 0) return
         val index = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         if (index == lastKnownStreamIndex) {
-            return  // our own write, or an unrelated Settings.System wake
+            return  // our own write (we stamp the index before writing)
         }
-        if (System.currentTimeMillis() < selfWriteUntilMs) {
-            // Our own STREAM_MUSIC write is still settling (device fired the
-            // observer with a curve-adjusted index). Adopt it, do NOT push back.
+        val nowStream = System.currentTimeMillis()
+        if (nowStream < selfWriteUntilMs || isRecentSelfWrite(index, nowStream)) {
+            // Our own STREAM_MUSIC write settling (Samsung curve-adjusted index) OR
+            // an earlier self-write landing late/out-of-order under rapid writes.
+            // Adopt it, do NOT bounce it back to the server.
             lastKnownStreamIndex = index
             return
         }
@@ -418,6 +476,9 @@ class SendspinVolumeCoordinator(
     suspend fun seedStartupVolume(): Int {
         val persisted = lastVolumeFlow.first().coerceIn(0, 100)
         lastKnownMaVolume = persisted
+        // persisted IS the remembered phone-route value, so adopt it as the canonical
+        // phoneVolume regardless of the current route.
+        phoneVolume = persisted
         if (effectiveSyncEnabled()) writeStreamMusic(persisted)
         return persisted
     }
@@ -428,14 +489,17 @@ class SendspinVolumeCoordinator(
 
     private fun onServerVolumeEvent(pct: Int) {
         val bounded = pct.coerceIn(0, 100)
-        if (bounded != lastKnownMaVolume) {
-            // Persist the authoritative MA player volume so we can restore it on
-            // the next launch (the server resets a re-registering player to
-            // 100%). Every genuine volume change — slider, HW keys, group — is
-            // echoed here, so this is the single persist point.
+        lastKnownMaVolume = bounded
+        // The single canonical "remembered Sendspin volume" = the phone-route level.
+        // Update + persist it ONLY on a genuine phone-route change (no BT sink
+        // connected, which also rules out a car session). This keeps it immune to a
+        // car pin (transient 100%) and to a BT speaker's absolute-volume push on
+        // connect. This one value is: the startup seed, what the phone speaker
+        // (STREAM_MUSIC) syncs to, and the pre-car capture source.
+        if (!audioManager.anyBluetoothSinkConnected() && phoneVolume != bounded) {
+            phoneVolume = bounded
             scope?.launch { persistLastVolume(bounded) }
         }
-        lastKnownMaVolume = bounded
         if (!effectiveSyncEnabled()) {
             Log.d(TAG, "server vol $bounded% (sync OFF)")
             return
@@ -472,6 +536,12 @@ class SendspinVolumeCoordinator(
 
     // region Side-effect helpers
 
+    /** True if [index] is one we wrote within [SELF_WRITE_RECENT_MS] (prunes expired). */
+    private fun isRecentSelfWrite(index: Int, now: Long): Boolean {
+        recentSelfWrites.entries.removeAll { it.value <= now }
+        return (recentSelfWrites[index] ?: 0L) > now
+    }
+
     private fun writeStreamMusic(pct: Int) {
         val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (max <= 0) return
@@ -481,18 +551,17 @@ class SendspinVolumeCoordinator(
         lastKnownStreamIndex = targetIndex
         // Arm the settle window so any curve-adjusted observer fire (Samsung) is
         // also treated as our own write, not a user change.
-        selfWriteUntilMs = System.currentTimeMillis() + SELF_WRITE_SETTLE_MS
+        val nowWrite = System.currentTimeMillis()
+        selfWriteUntilMs = nowWrite + SELF_WRITE_SETTLE_MS
+        // Remember this index so a late/out-of-order Samsung landing is recognised
+        // as ours even after a newer write moved lastKnownStreamIndex on.
+        recentSelfWrites[targetIndex] = nowWrite + SELF_WRITE_RECENT_MS
         val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         if (current == targetIndex) return
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetIndex, 0)
         Log.d(TAG, "STREAM_MUSIC -> ${pct}% (index $targetIndex)")
     }
 
-    private fun readPhoneStreamPct(): Int {
-        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        return if (max > 0) ((cur * 100f / max) + 0.5f).toInt() else 0
-    }
 
     /** Remember a value we pushed to MA so its eventual server echo is not
      *  written back to STREAM_MUSIC. Drops expired entries and caps the queue. */

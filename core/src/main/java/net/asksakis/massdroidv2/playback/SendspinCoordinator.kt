@@ -1,16 +1,16 @@
 package net.asksakis.massdroidv2.playback
 
+import android.content.BroadcastReceiver
 import android.content.Context
-import android.database.ContentObserver
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +56,12 @@ class SendspinCoordinator(
     companion object {
         private const val TAG = "SendspinCoord"
         private const val GROUPED_SENDSPIN_FORMAT = "flac:48000:16:2"
+        // Hidden but long-stable AudioManager broadcast: sent only on a volume change
+        // (carries stream type + new/old value), unlike a Settings.System observer
+        // which also wakes on unrelated changes. String literals because the
+        // constants are @hide.
+        private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
+        private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
     }
 
     var playerId: String? = null
@@ -68,7 +74,7 @@ class SendspinCoordinator(
         private set
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var volumeObserver: ContentObserver? = null
+    private var volumeReceiver: BroadcastReceiver? = null
     private var btAudioCallback: AudioDeviceCallback? = null
 
     fun start() {
@@ -317,18 +323,27 @@ class SendspinCoordinator(
     }
 
     private fun observePhoneVolume() {
-        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
+        // Listen for the dedicated volume-changed broadcast instead of a
+        // Settings.System ContentObserver. The observer watched the WHOLE URI and so
+        // also woke on unrelated changes (notably screen-on), which could be misread
+        // as a user volume change and bounced to MA (the "jumped to 100% on
+        // screen-on" bug). This broadcast fires ONLY on a real volume change and
+        // carries the stream type, so we react solely to STREAM_MUSIC.
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
                 if (!isActive) return
+                val stream = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, -1)
+                if (stream != AudioManager.STREAM_MUSIC) return
                 // The coordinator reads the STREAM_MUSIC index itself and decides
-                // (index-based dedup) whether this is a real user change or its
-                // own mirror write / an unrelated Settings.System URI wake.
+                // (index-based dedup) whether this is a real user change or its own
+                // mirror write.
                 volumeCoordinator.onPhoneStreamVolumeChanged()
             }
         }
-        volumeObserver = observer
-        context.contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer)
+        volumeReceiver = receiver
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(VOLUME_CHANGED_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     private fun registerBtAudioDeviceCallback() {
@@ -373,8 +388,8 @@ class SendspinCoordinator(
     }
 
     private fun unregisterPhoneVolumeObserver() {
-        volumeObserver?.let { context.contentResolver.unregisterContentObserver(it) }
-        volumeObserver = null
+        volumeReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        volumeReceiver = null
     }
 
     private fun unregisterNetworkCallback() {

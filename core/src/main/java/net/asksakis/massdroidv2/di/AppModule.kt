@@ -15,6 +15,8 @@ import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -147,20 +149,22 @@ object AppModule {
             persistLastVolume = { settingsRepository.setSendspinLastVolume(it) },
             playerRepository = playerRepository,
             currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
-            // Resolve the BT route key from the CONNECTED A2DP/BLE sink (OS level),
-            // not the Oboe-bound device name: on a BT connect the Oboe stream lags
-            // (reopen debounced) so getRoutedDeviceProductName transiently returns
-            // null -> "bt:unknown", missing the car-audio match. getDevices resolves
-            // the real name as soon as A2DP connects.
+            // Resolve the BT route key. Prefer the Oboe-routed device name when it
+            // resolves to a BT sink: it is the device actually playing, so with
+            // multiple connected A2DP sinks it picks the right one (and matches the
+            // acoustic-calibration route key, which uses the same source). Fall back
+            // to the first connected BT sink while the Oboe stream is still settling
+            // on connect (its name lags -> would be null -> "bt:unknown", a missed
+            // car-audio match). If the routed device is known and NOT BT, no key.
             currentBtRouteKey = {
-                am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
-                    .firstOrNull {
-                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                            it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                            it.type == android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER
-                    }
-                    ?.productName?.toString()
-                    ?.let { "bt:$it" }
+                val routedType = sendspinManager.getRoutedDeviceType()
+                val name = when {
+                    routedType == null -> am.soleBluetoothSinkName()
+                    isBluetoothSink(routedType) ->
+                        sendspinManager.getRoutedDeviceProductName() ?: am.soleBluetoothSinkName()
+                    else -> null
+                }
+                name?.let { "bt:$it" }
             },
             carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
             recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },

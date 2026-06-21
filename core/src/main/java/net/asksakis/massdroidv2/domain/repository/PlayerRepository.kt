@@ -144,8 +144,15 @@ interface PlayerRepository {
     suspend fun next(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
-    /** Synchronous optimistic volume update + cooldown. Prevents UI flicker from server echoes. */
-    fun applyVolumeOptimistic(playerId: String, volumeLevel: Int)
+    /**
+     * Synchronous optimistic volume update. Suppresses server echoes until the
+     * server confirms the value (prevents UI flicker). [holdMs] overrides the
+     * default confirmation cap (0 = default). [sticky] keeps preserving the value
+     * until the cap even AFTER a matching confirm — used for the car-audio restore,
+     * where the player is idle and a late/out-of-order stale server volume must not
+     * bounce the slider back to the pinned 100%.
+     */
+    fun applyVolumeOptimistic(playerId: String, volumeLevel: Int, holdMs: Long = 0L, sticky: Boolean = false)
     suspend fun setVolume(playerId: String, volumeLevel: Int)
     suspend fun setGroupVolume(parentId: String, volume: Int)
     fun updateGroupMemberOffset(parentId: String, memberId: String, volume: Int)

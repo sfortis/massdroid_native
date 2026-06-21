@@ -131,12 +131,8 @@ class AcousticCalibrationCoordinator @Inject constructor(
      * callers should not rely on this for live updates (the device-routed
      * callback in SendspinAudioController is the canonical change signal).
      */
-    fun isBtRoute(): Boolean = when (sendspinManager.getRoutedDeviceType()) {
-        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-        AudioDeviceInfo.TYPE_BLE_HEADSET,
-        AudioDeviceInfo.TYPE_BLE_SPEAKER -> true
-        else -> false
-    }
+    fun isBtRoute(): Boolean =
+        sendspinManager.getRoutedDeviceType()?.let { isBluetoothSink(it) } == true
 
     fun getBtRouteName(): String =
         sendspinManager.getRoutedDeviceProductName() ?: "Bluetooth"
