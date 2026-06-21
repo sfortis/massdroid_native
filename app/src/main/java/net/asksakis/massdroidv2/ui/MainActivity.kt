@@ -121,7 +121,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
     @Inject lateinit var acousticCalibrationCoordinator: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 
-    private val volumeStep = 2
+    private val volumeStep = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
     @Volatile private var cachedSsClientId: String? = null
     @Volatile private var hwVolumeChangeUntilMs = 0L
 

@@ -695,7 +695,7 @@ class AndroidAutoController(
         private const val TAG = "AndroidAutoController"
         // MA-volume units added/removed per hardware-rocker press. Independent of
         // the device-volume mapping (now 1:1 with MA), so it can be tuned freely.
-        private const val VOLUME_STEP = 3
+        private const val VOLUME_STEP = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
         private const val VOLUME_OVERRIDE_MS = 15_000L
         private const val ARTWORK_FETCH_TIMEOUT_S = 8L
     }
