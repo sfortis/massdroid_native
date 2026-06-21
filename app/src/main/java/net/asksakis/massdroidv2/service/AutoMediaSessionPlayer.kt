@@ -276,8 +276,11 @@ class RemoteControlPlayer(
             .setContentPositionMs(contentPosition)
             .setPlaylist(playlist)
             .setCurrentMediaItemIndex(effectiveIndex)
-            .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(20).build())
-            .setDeviceVolume(playback.volumeLevel / VOLUME_SCALE)
+            // 1:1 with the MA player volume (0..100): the device-volume scale IS the
+            // MA scale, so every value round-trips exactly with no integer-division
+            // rounding. (The old 0..20 scale truncated any non-multiple-of-5 MA value.)
+            .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(MAX_VOLUME).build())
+            .setDeviceVolume(playback.volumeLevel)
             .setIsDeviceMuted(playback.isMuted)
             .build()
     }
@@ -445,14 +448,13 @@ class RemoteControlPlayer(
 
     override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
         Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
-        val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
+        val maVolume = volume.coerceIn(0, MAX_VOLUME)
         onVolumeSet(maVolume)
         return Futures.immediateVoidFuture()
     }
 
     companion object {
         private const val C_TIME_UNSET = Long.MIN_VALUE + 1
-        internal const val VOLUME_SCALE = 5
         internal const val MAX_VOLUME = 100
         // Tolerance so a position sampled at a chapter boundary resolves to that
         // chapter, not the one before it.
