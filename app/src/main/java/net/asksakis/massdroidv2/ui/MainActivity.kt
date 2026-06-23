@@ -123,7 +123,6 @@ class MainActivity : ComponentActivity() {
 
     private val volumeStep = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
     @Volatile private var cachedSsClientId: String? = null
-    @Volatile private var hwVolumeChangeUntilMs = 0L
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -161,24 +160,15 @@ class MainActivity : ComponentActivity() {
         checkBatteryOptimization()
         handleShortcutIntent(intent)
 
-        // Cache sendspin client ID and sync phone volume for local player
+        // Cache sendspin client ID for the local-player checks below. STREAM_MUSIC
+        // mirroring of the Sendspin player volume is owned SOLELY by
+        // SendspinVolumeCoordinator, which respects the sync toggle and the
+        // car-audio decoupling. A second mirror used to live here (selectedPlayer
+        // volume -> STREAM_MUSIC) but it bypassed that gating and overrode the
+        // level on every selectedPlayer emission (e.g. snapping a car-pinned
+        // volume back down to a stale MA value on each track change).
         lifecycleScope.launch {
             settingsRepository.sendspinClientId.collect { cachedSsClientId = it }
-        }
-        lifecycleScope.launch {
-            var initialized = false
-            playerRepository.selectedPlayer.collect { player ->
-                val ssId = cachedSsClientId
-                if (player == null || ssId == null || player.playerId != ssId) return@collect
-                if (!initialized) {
-                    // Skip first emission (startup) to avoid overriding phone volume
-                    initialized = true
-                    return@collect
-                }
-                // Skip sync if change originated from HW buttons (avoid round-trip bounce)
-                if (System.currentTimeMillis() < hwVolumeChangeUntilMs) return@collect
-                syncPhoneVolume(player.volumeLevel)
-            }
         }
 
         setContent {
@@ -279,7 +269,6 @@ class MainActivity : ComponentActivity() {
                     // entry point for every STREAM_MUSIC mutation (HW keys,
                     // system bar, accessibility shortcuts, all the same).
                     if (event.action == KeyEvent.ACTION_DOWN) {
-                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                             AudioManager.ADJUST_RAISE
@@ -308,7 +297,6 @@ class MainActivity : ComponentActivity() {
                         // STREAM_MUSIC + UI overlay; the ContentObserver wakeup
                         // mirrors the new level to MA via onPhoneStreamVolumeChanged,
                         // so there is no need to push from here.
-                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                             AudioManager.ADJUST_RAISE
@@ -366,23 +354,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
-    }
-
-    private fun readPhoneVolumePercent(): Int {
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        return if (max > 0) ((current * 100f / max) + 0.5f).toInt() else 0
-    }
-
-    private fun syncPhoneVolume(maVolumePercent: Int) {
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val targetVol = ((maVolumePercent * maxVol / 100f) + 0.5f).toInt().coerceIn(0, maxVol)
-        val currentVol = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        if (targetVol != currentVol) {
-            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-        }
     }
 
     private fun handleShortcutIntent(intent: Intent?) {
