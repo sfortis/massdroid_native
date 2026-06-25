@@ -52,7 +52,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 - New DSP Effects: a sound compressor for phone-as-speaker that evens out the volume, gently lifts quiet or low-recorded tracks and tames loud peaks. Pick Off, Soft, Medium or Hard (great for the car or late-night listening).
-- DSP Effects: optional High-end audio (noise-shaped dithering) for cleaner detail in quiet passages and fades.
+- DSP Effects: optional output dithering that reduces low-level quantization noise, for smoother quiet passages, fades and decays.
 - Car audio: choose which Bluetooth devices start at full volume on connect, so the car begins loud and its own dial takes over (Settings, Sendspin).
 - Car audio: the volume no longer drops or jumps when the track changes in the car.
 - Car audio: play, pause and skip stay on your phone in the car and never jump to a remote speaker.

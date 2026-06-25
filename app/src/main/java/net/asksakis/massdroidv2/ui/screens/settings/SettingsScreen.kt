@@ -1347,11 +1347,12 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         ListItem(
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("High-end audio") },
+            headlineContent = { Text("Output dithering") },
             supportingContent = {
                 Text(
-                    "Noise-shaped dithering on the audio output for cleaner detail in " +
-                        "quiet passages and fades. Tiny CPU cost; leave on for best quality."
+                    "Noise-shaped dithering on the 16-bit output: reduces low-level " +
+                        "quantization noise, so quiet passages, fades and decays sound " +
+                        "smoother. Subtle, only at low levels. Tiny CPU cost."
                 )
             },
             trailingContent = {
