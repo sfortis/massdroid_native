@@ -99,6 +99,11 @@ public:
 
     void setVolume(float v) { volume_.store(v); }
 
+    // Dynamic-range compressor level: 0 = off (bypass), 1 = soft, 2 = medium,
+    // 3 = hard. Amplitude-only (applied in the callback with the volume gain), so
+    // it does not touch the timeline/ring/latency. Read live by the callback.
+    void setCompressorLevel(int level) { compressorLevel_.store(level); }
+
     // Freeze/unfreeze the consumer WITHOUT dropping the ring (transient focus
     // loss in solo/DIRECT). While frozen the callback fades to silence and then
     // holds the read position, so the buffered audio survives and resumes
@@ -165,6 +170,10 @@ private:
     // mid-waveform. appliedVolume_ is touched only by the callback thread.
     std::atomic<float> volume_{1.0f};
     float appliedVolume_ = 0.0f;
+    // Compressor level (0..3), set from Kotlin, read live by the callback.
+    std::atomic<int> compressorLevel_{0};
+    // Peak envelope follower state (callback thread only); reset on ring reset.
+    float compEnv_ = 0.0f;
     std::atomic<bool> flushRequested_{false};
     std::atomic<bool> driftCorrection_{true};
     // Freeze: hold the read position (preserve the ring) across a transient

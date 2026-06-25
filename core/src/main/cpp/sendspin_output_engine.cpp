@@ -4,6 +4,7 @@
 #include <ctime>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 #define LOG_TAG "SendspinNative"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -59,6 +60,26 @@ constexpr int64_t LAT_SLEW_US = 1000;
 // Gain-ramp time: mute/unmute/volume changes reach the target over this long
 // instead of jumping mid-waveform (which clicks).
 constexpr float FADE_SEC = 0.02f;
+
+// Dynamic-range compressor presets (phone-as-speaker). Amplitude-only: applied
+// in the output callback alongside the volume gain, so it has NO effect on the
+// timeline/ring/latency (sync-safe). Index 0 = off (bypass). A soft-knee-free
+// static curve with a peak envelope follower; makeup raises the overall level so
+// quiet passages come up. Higher levels = lower threshold + higher ratio + more
+// makeup = smaller dynamic range (louder, denser).
+struct CompPreset {
+    float thresholdDb;
+    float ratio;
+    float makeupDb;
+    float attackMs;
+    float releaseMs;
+};
+constexpr CompPreset kCompPresets[4] = {
+    {0.0f, 1.0f, 0.0f, 0.0f, 0.0f},        // 0 off (unused, bypassed)
+    {-18.0f, 2.0f, 2.0f, 10.0f, 150.0f},   // 1 soft
+    {-24.0f, 3.0f, 4.0f, 8.0f, 150.0f},    // 2 medium
+    {-30.0f, 4.0f, 6.0f, 5.0f, 120.0f},    // 3 hard
+};
 } // namespace
 
 SendspinOutputEngine::~SendspinOutputEngine() {
@@ -181,6 +202,7 @@ void SendspinOutputEngine::resetRing() {
     readPos_ = static_cast<double>(w);
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
+    compEnv_ = 0.0f;
 }
 
 int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs) {
@@ -446,9 +468,26 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // Publish the applied rate for the quality readout (1e6 = 1.0 = locked).
     lastRateMicros_.store(static_cast<int64_t>(rate * 1000000.0));
 
-    // --- Resampled fill with gain fade ----------------------------------
+    // --- Compressor coefficients (amplitude-only; sync-safe) -------------
+    // Precomputed once per callback from the live level. OFF (level 0) leaves
+    // comp=false and the loop is an exact passthrough of the original behaviour.
+    const int compLevel = compressorLevel_.load();
+    const bool comp = compLevel >= 1 && compLevel <= 3;
+    float thrDb = 0.0f, ratio = 1.0f, makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
+    if (comp) {
+        const CompPreset& p = kCompPresets[compLevel];
+        thrDb = p.thresholdDb;
+        ratio = p.ratio;
+        makeupDb = p.makeupDb;
+        atkCoef = std::exp(-1.0f / (p.attackMs * 0.001f * static_cast<float>(sampleRate_)));
+        relCoef = std::exp(-1.0f / (p.releaseMs * 0.001f * static_cast<float>(sampleRate_)));
+    }
+
+    // --- Resampled fill with gain fade (+ optional compression) ----------
     // Linear interpolation between ring[i0] and ring[i0+1] at the fractional
-    // position; advancing pos by `rate` per output frame is the resampler.
+    // position; advancing pos by `rate` per output frame is the resampler. The
+    // compressor (when on) derives a per-frame gain from a peak envelope and is
+    // multiplied into the volume gain; output is clamped (makeup can exceed FS).
     const float span = static_cast<float>(numFrames);
     int produced = 0;
     for (int f = 0; f < numFrames - silenceFront; ++f) {
@@ -457,12 +496,33 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         const float frac = static_cast<float>(pos - static_cast<double>(i0));
         const int64_t s0 = (i0 % capacityFrames_) * ch;
         const int64_t s1 = ((i0 + 1) % capacityFrames_) * ch;
-        const float gain = g0 + (g1 - g0) * static_cast<float>(silenceFront + f) / span;
-        int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
+        float smp[2];
+        float peak = 0.0f;
         for (int c = 0; c < ch; ++c) {
             const float a = static_cast<float>(ring_[s0 + c]);
             const float b = static_cast<float>(ring_[s1 + c]);
-            dp[c] = static_cast<int16_t>((a + (b - a) * frac) * gain);
+            const float v = a + (b - a) * frac;
+            smp[c] = v;
+            const float av = v < 0.0f ? -v : v;
+            if (av > peak) peak = av;
+        }
+        float compGain = 1.0f;
+        if (comp) {
+            const float in = peak * (1.0f / 32768.0f); // 0..1 full-scale
+            const float coef = (in > compEnv_) ? atkCoef : relCoef;
+            compEnv_ = in + coef * (compEnv_ - in);
+            const float envDb = 20.0f * std::log10(compEnv_ > 1e-6f ? compEnv_ : 1e-6f);
+            float grDb = 0.0f;
+            if (envDb > thrDb) grDb = (envDb - thrDb) * (1.0f - 1.0f / ratio);
+            compGain = std::pow(10.0f, (makeupDb - grDb) * (1.0f / 20.0f));
+        }
+        const float gain = (g0 + (g1 - g0) * static_cast<float>(silenceFront + f) / span) * compGain;
+        int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
+        for (int c = 0; c < ch; ++c) {
+            float o = smp[c] * gain;
+            if (o > 32767.0f) o = 32767.0f;
+            else if (o < -32768.0f) o = -32768.0f;
+            dp[c] = static_cast<int16_t>(o);
         }
         pos += rate;
         ++produced;

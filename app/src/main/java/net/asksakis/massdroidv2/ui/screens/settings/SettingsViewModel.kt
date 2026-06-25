@@ -141,6 +141,15 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.setCarAudioBtDevice(routeKey, enabled)
         }
     }
+
+    val sendspinCompressorLevel = settingsRepository.sendspinCompressorLevel
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    fun setSendspinCompressorLevel(level: Int) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinCompressorLevel(level)
+        }
+    }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val smartMixVariety = settingsRepository.smartMixVariety

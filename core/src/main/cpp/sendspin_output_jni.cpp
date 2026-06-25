@@ -92,6 +92,12 @@ Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativeSetFrozen
 }
 
 JNIEXPORT void JNICALL
+Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativeSetCompressorLevel(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr, jint level) {
+    if (ptr != 0) reinterpret_cast<SendspinOutputEngine*>(ptr)->setCompressorLevel(level);
+}
+
+JNIEXPORT void JNICALL
 Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativePauseStream(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {
     if (ptr != 0) reinterpret_cast<SendspinOutputEngine*>(ptr)->pauseStream();

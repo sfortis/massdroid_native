@@ -66,6 +66,9 @@ class SendspinNativeOutput {
             return false
         }
         ptr = created
+        // The native engine is recreated on every (re)open, so re-apply the
+        // cached compressor level (default 0 = off needs no call).
+        if (compressorLevel != 0) nativeSetCompressorLevel(created, compressorLevel)
         return true
     }
 
@@ -140,6 +143,21 @@ class SendspinNativeOutput {
         if (p != 0L) nativeSetVolume(p, volume.coerceIn(0f, 1f))
     }
 
+    // Cached so it survives the native recreate on every (re)open (see start()).
+    @Volatile private var compressorLevel = 0
+
+    /**
+     * Dynamic-range compressor level: 0 = off, 1 = soft, 2 = medium, 3 = hard.
+     * Amplitude-only output effect (applied in the native callback with the
+     * volume gain); no effect on timing/latency/sync.
+     */
+    fun setCompressorLevel(level: Int) {
+        val bounded = level.coerceIn(0, 3)
+        compressorLevel = bounded
+        val p = ptr
+        if (p != 0L) nativeSetCompressorLevel(p, bounded)
+    }
+
     /**
      * Freeze (true) or resume (false) the consumer without dropping the ring.
      * Frozen = fade to silence then hold the read position, preserving the
@@ -189,6 +207,7 @@ class SendspinNativeOutput {
     private external fun nativeOutputLatencyUs(ptr: Long): Long
     private external fun nativeBufferedFrames(ptr: Long): Long
     private external fun nativeSetVolume(ptr: Long, volume: Float)
+    private external fun nativeSetCompressorLevel(ptr: Long, level: Int)
     private external fun nativeSetFrozen(ptr: Long, frozen: Boolean)
     private external fun nativePauseStream(ptr: Long)
     private external fun nativeResumeStream(ptr: Long)

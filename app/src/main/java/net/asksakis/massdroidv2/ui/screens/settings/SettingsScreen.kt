@@ -66,6 +66,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -1177,9 +1180,11 @@ private fun pairedBtAudioRouteKeys(context: Context): List<String> {
     }.getOrDefault(emptyList())
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SendspinCard(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
+    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
     val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
@@ -1277,6 +1282,39 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                )
+            }
+
+            // Output dynamic-range compressor (Off/Soft/Medium/Hard). Amplitude-only
+            // effect in the native output, so it never affects sync/timing. The
+            // description below updates with the selected level's use case.
+            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+            val compOptions = listOf("Off", "Soft", "Medium", "Hard")
+            val compDescriptions = listOf(
+                "Full original dynamics. Best sound quality (default).",
+                "Gently evens out the volume while keeping most of the dynamics. " +
+                    "Good for relaxed listening at home.",
+                "Keeps quiet and loud parts closer together for a more consistent " +
+                    "level. Good for casual or mixed playlists.",
+                "Strongest leveling, smallest dynamic range. For noisy places like " +
+                    "the car, or late-night listening where you do not want loud peaks."
+            )
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text("Sound compressor", style = MaterialTheme.typography.bodyLarge)
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    compOptions.forEachIndexed { index, label ->
+                        SegmentedButton(
+                            selected = compressorLevel == index,
+                            onClick = { viewModel.setSendspinCompressorLevel(index) },
+                            shape = SegmentedButtonDefaults.itemShape(index, compOptions.size)
+                        ) { Text(label) }
+                    }
+                }
+                Text(
+                    compDescriptions[compressorLevel.coerceIn(0, 3)],
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
                 )
             }
         }
