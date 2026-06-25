@@ -497,6 +497,9 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // comp=false and the loop is a bit-exact passthrough of the original output.
     const int compLevel = compressorLevel_.load();
     const bool comp = compLevel >= 1 && compLevel <= 3;
+    // High-end output quantization: noise-shaped TPDF dither at the float->int16
+    // step (we always process in float now). OFF = the original truncation.
+    const bool dither = dither_.load();
     float downThrDb = 0.0f, kneeDb = 0.0f, upThrDb = 0.0f, maxBoostDb = 0.0f,
           makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
     float downSlope = 0.0f, upSlope = 0.0f, halfKnee = 0.0f;
@@ -576,9 +579,22 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
         for (int c = 0; c < ch; ++c) {
             float o = smp[c] * gain;
-            if (o > 32767.0f) o = 32767.0f;
-            else if (o < -32768.0f) o = -32768.0f;
-            dp[c] = static_cast<int16_t>(o);
+            if (dither) {
+                // First-order error-feedback noise shaping + TPDF dither (~1 LSB):
+                // decorrelates the 16-bit quantization noise and shapes it out of
+                // the most audible band, so quiet detail/fades are cleaner.
+                const float w = o + ditherError_[c];
+                const float y = w + nextTpdf();
+                float q = std::lrintf(y);
+                if (q > 32767.0f) q = 32767.0f;
+                else if (q < -32768.0f) q = -32768.0f;
+                ditherError_[c] = y - q;
+                dp[c] = static_cast<int16_t>(q);
+            } else {
+                if (o > 32767.0f) o = 32767.0f;
+                else if (o < -32768.0f) o = -32768.0f;
+                dp[c] = static_cast<int16_t>(o);
+            }
         }
         pos += rate;
         ++produced;

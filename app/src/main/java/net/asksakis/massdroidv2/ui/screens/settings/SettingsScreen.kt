@@ -1306,6 +1306,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
 @Composable
 private fun DspEffectsCard(viewModel: SettingsViewModel) {
     val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
+    val dither by viewModel.sendspinDither.collectAsStateWithLifecycle()
     val compNames = listOf("Off", "Soft", "Medium", "Hard")
     val compDescriptions = listOf(
         "Full original dynamics, untouched. Best sound quality.",
@@ -1342,6 +1343,20 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("High-end audio") },
+            supportingContent = {
+                Text(
+                    "Noise-shaped dithering on the audio output for cleaner detail in " +
+                        "quiet passages and fades. Tiny CPU cost; leave on for best quality."
+                )
+            },
+            trailingContent = {
+                MdSwitch(checked = dither, onCheckedChange = { viewModel.setSendspinDither(it) })
+            }
         )
     }
 }

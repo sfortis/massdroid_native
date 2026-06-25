@@ -485,6 +485,12 @@ class SendspinManager(
         directEngine.setCompressorLevel(level)
     }
 
+    /** Output noise-shaped dither toggle; applied to BOTH engines (see above). */
+    fun setDither(enabled: Boolean) {
+        syncEngine.setDither(enabled)
+        directEngine.setDither(enabled)
+    }
+
     fun duck() {
         // Transient AudioTrack attenuation. Keeps currentVolume unchanged so
         // restoreVolume() can bring us back to full gain.

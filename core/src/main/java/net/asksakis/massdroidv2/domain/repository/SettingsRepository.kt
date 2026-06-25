@@ -64,6 +64,11 @@ interface SettingsRepository {
      */
     val sendspinCompressorLevel: Flow<Int>
     /**
+     * High-end output quantization for phone-as-speaker: noise-shaped TPDF dither
+     * at the float->int16 step (sync-safe, amplitude only). Default off.
+     */
+    val sendspinDither: Flow<Boolean>
+    /**
      * BT output devices the app has routed to at least once (route keys like
      * `bt:MINI45864`). Populates the "car audio" picker so the user can flag a
      * device without us enumerating bonded devices (no BLUETOOTH_CONNECT).
@@ -126,6 +131,7 @@ interface SettingsRepository {
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
     suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
     suspend fun setSendspinCompressorLevel(level: Int)
+    suspend fun setSendspinDither(enabled: Boolean)
     /** Record a BT route key as seen (idempotent), for the car-audio picker. */
     suspend fun recordKnownBtDevice(routeKey: String)
     /** Flag/unflag a BT route key as car audio (full volume on connect). */

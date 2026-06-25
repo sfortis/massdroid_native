@@ -484,6 +484,12 @@ class SendspinAudioController(
             }
         }
 
+        collectorJobs += scope.launch {
+            settingsRepository.sendspinDither.collect { enabled ->
+                sendspinManager.setDither(enabled)
+            }
+        }
+
         // Collector 1: Observe connection state. Updates `isStreaming` /
         // `isReady` via `recomputeAvailability()`, manages wake/wifi locks
         // and audio-focus acquisition on the streaming edge, and asks the

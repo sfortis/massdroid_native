@@ -69,6 +69,7 @@ class SendspinNativeOutput {
         // The native engine is recreated on every (re)open, so re-apply the
         // cached compressor level (default 0 = off needs no call).
         if (compressorLevel != 0) nativeSetCompressorLevel(created, compressorLevel)
+        if (ditherEnabled) nativeSetDither(created, true)
         return true
     }
 
@@ -158,6 +159,19 @@ class SendspinNativeOutput {
         if (p != 0L) nativeSetCompressorLevel(p, bounded)
     }
 
+    // Cached so it survives the native recreate on every (re)open (see start()).
+    @Volatile private var ditherEnabled = false
+
+    /**
+     * High-end output quantization: noise-shaped TPDF dither at the float->int16
+     * step. Amplitude-only (sample values), no effect on timing/latency/sync.
+     */
+    fun setDither(enabled: Boolean) {
+        ditherEnabled = enabled
+        val p = ptr
+        if (p != 0L) nativeSetDither(p, enabled)
+    }
+
     /**
      * Freeze (true) or resume (false) the consumer without dropping the ring.
      * Frozen = fade to silence then hold the read position, preserving the
@@ -208,6 +222,7 @@ class SendspinNativeOutput {
     private external fun nativeBufferedFrames(ptr: Long): Long
     private external fun nativeSetVolume(ptr: Long, volume: Float)
     private external fun nativeSetCompressorLevel(ptr: Long, level: Int)
+    private external fun nativeSetDither(ptr: Long, enabled: Boolean)
     private external fun nativeSetFrozen(ptr: Long, frozen: Boolean)
     private external fun nativePauseStream(ptr: Long)
     private external fun nativeResumeStream(ptr: Long)

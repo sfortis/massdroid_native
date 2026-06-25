@@ -150,6 +150,15 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.setSendspinCompressorLevel(level)
         }
     }
+
+    val sendspinDither = settingsRepository.sendspinDither
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setSendspinDither(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinDither(enabled)
+        }
+    }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val smartMixVariety = settingsRepository.smartMixVariety

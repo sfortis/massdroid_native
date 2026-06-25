@@ -460,6 +460,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         nativeOutput.setCompressorLevel(level)
     }
 
+    /**
+     * High-end output quantization: noise-shaped TPDF dither at the float->int16
+     * step. Amplitude-only; no effect on timing/sync. The native output caches it
+     * and re-applies across stream reopens.
+     */
+    fun setDither(enabled: Boolean) {
+        nativeOutput.setDither(enabled)
+    }
+
     private val startupMuteMs: Long get() = if (isSync) SYNC_STARTUP_MUTE_MS else DIRECT_STARTUP_MUTE_MS
 
     private fun applyOutputVolume() {
