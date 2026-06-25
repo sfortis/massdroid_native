@@ -1326,15 +1326,22 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
             headlineContent = { Text("DSP Effects") },
             supportingContent = { Text("Audio processing for phone-as-speaker (Sendspin) output.") }
         )
+        // Description goes BELOW the slider so a longer/shorter per-level text
+        // never shifts the slider up or down (the slider position stays fixed).
         LabeledSlider(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp),
             title = "Sound compressor",
-            description = compDescriptions[compressorLevel.coerceIn(0, 3)],
             value = compressorLevel.toFloat(),
             valueRange = 0f..3f,
             steps = 2,
             valueLabel = { compNames[it.roundToInt().coerceIn(0, 3)] },
             onValueChangeFinished = { viewModel.setSendspinCompressorLevel(it.roundToInt()) }
+        )
+        Text(
+            compDescriptions[compressorLevel.coerceIn(0, 3)],
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
         )
     }
 }
