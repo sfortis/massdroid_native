@@ -172,8 +172,10 @@ private:
     float appliedVolume_ = 0.0f;
     // Compressor level (0..3), set from Kotlin, read live by the callback.
     std::atomic<int> compressorLevel_{0};
-    // Peak envelope follower state (callback thread only); reset on ring reset.
-    float compEnv_ = 0.0f;
+    // Smoothed gain change in dB (callback thread only): + = downward cut above
+    // threshold, - = upward boost (leveler) below it. Smoothing the GAIN (not the
+    // level) in the log domain is what keeps it click/zipper-free. Reset on ring reset.
+    float compGsDb_ = 0.0f;
     std::atomic<bool> flushRequested_{false};
     std::atomic<bool> driftCorrection_{true};
     // Freeze: hold the read position (preserve the ring) across a transient

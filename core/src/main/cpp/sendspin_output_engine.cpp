@@ -61,25 +61,42 @@ constexpr int64_t LAT_SLEW_US = 1000;
 // instead of jumping mid-waveform (which clicks).
 constexpr float FADE_SEC = 0.02f;
 
-// Dynamic-range compressor presets (phone-as-speaker). Amplitude-only: applied
-// in the output callback alongside the volume gain, so it has NO effect on the
-// timeline/ring/latency (sync-safe). Index 0 = off (bypass). A soft-knee-free
-// static curve with a peak envelope follower; makeup raises the overall level so
-// quiet passages come up. Higher levels = lower threshold + higher ratio + more
-// makeup = smaller dynamic range (louder, denser).
+// Audiophile-grade dynamic-range processor (phone-as-speaker). Amplitude-only:
+// applied in the output callback alongside the volume gain, so it has NO effect
+// on the timeline/ring/latency (sync-safe), and ZERO look-ahead (look-ahead would
+// add latency and desync the group). Design (after Giannoulis et al. 2012, the
+// reference DRC topology):
+//   - feed-forward, log-domain detector (peak, stereo-linked).
+//   - SOFT KNEE around the threshold for a smooth, transparent onset.
+//   - DOWNWARD compression above threshold (tame peaks).
+//   - bounded UPWARD compression below threshold (leveler): lifts quiet passages
+//     and quietly-recorded tracks toward the threshold, capped at maxBoostDb and
+//     tapered off below the noise floor so silence/hiss is NOT amplified.
+//   - the GAIN (not the level) is smoothed with branching attack/release in the
+//     dB domain, which is what keeps it click/pump/zipper-free.
+//   - modest makeup; output soft-clamped as a safety net (rarely engaged).
+// Index 0 = off (bit-exact bypass). Higher levels = lower threshold, higher
+// ratios, more leveling = smaller dynamic range.
 struct CompPreset {
-    float thresholdDb;
-    float ratio;
-    float makeupDb;
+    float thresholdDb;   // downward knee centre
+    float ratio;         // downward ratio (>1)
+    float kneeDb;        // soft-knee width
+    float upwardRatio;   // upward (leveler) ratio (>1); 1 = no upward
+    float maxBoostDb;    // cap on upward boost
+    float makeupDb;      // static makeup
     float attackMs;
     float releaseMs;
 };
 constexpr CompPreset kCompPresets[4] = {
-    {0.0f, 1.0f, 0.0f, 0.0f, 0.0f},        // 0 off (unused, bypassed)
-    {-18.0f, 2.0f, 2.0f, 10.0f, 150.0f},   // 1 soft
-    {-24.0f, 3.0f, 4.0f, 8.0f, 150.0f},    // 2 medium
-    {-30.0f, 4.0f, 6.0f, 5.0f, 120.0f},    // 3 hard
+    {0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},          // 0 off (bypassed)
+    {-22.0f, 1.8f, 10.0f, 1.5f, 6.0f, 1.0f, 20.0f, 250.0f},    // 1 soft
+    {-24.0f, 2.5f, 8.0f, 2.0f, 9.0f, 2.0f, 15.0f, 250.0f},     // 2 medium
+    {-26.0f, 4.0f, 6.0f, 2.5f, 12.0f, 3.0f, 8.0f, 180.0f},     // 3 hard
 };
+// Upward compression stops below this input level and tapers out over the band
+// just under it, so the noise floor / silence is never lifted.
+constexpr float kCompFloorDb = -50.0f;
+constexpr float kCompFloorTaperDb = 8.0f;
 } // namespace
 
 SendspinOutputEngine::~SendspinOutputEngine() {
@@ -202,7 +219,7 @@ void SendspinOutputEngine::resetRing() {
     readPos_ = static_cast<double>(w);
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
-    compEnv_ = 0.0f;
+    compGsDb_ = 0.0f;
 }
 
 int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs) {
@@ -470,15 +487,23 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
 
     // --- Compressor coefficients (amplitude-only; sync-safe) -------------
     // Precomputed once per callback from the live level. OFF (level 0) leaves
-    // comp=false and the loop is an exact passthrough of the original behaviour.
+    // comp=false and the loop is a bit-exact passthrough of the original output.
     const int compLevel = compressorLevel_.load();
     const bool comp = compLevel >= 1 && compLevel <= 3;
-    float thrDb = 0.0f, ratio = 1.0f, makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
+    float thrDb = 0.0f, ratio = 1.0f, kneeDb = 0.0f, upRatio = 1.0f, maxBoostDb = 0.0f,
+          makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
+    float downSlope = 0.0f, upSlope = 0.0f, halfKnee = 0.0f;
     if (comp) {
         const CompPreset& p = kCompPresets[compLevel];
         thrDb = p.thresholdDb;
         ratio = p.ratio;
+        kneeDb = p.kneeDb;
+        upRatio = p.upwardRatio;
+        maxBoostDb = p.maxBoostDb;
         makeupDb = p.makeupDb;
+        downSlope = 1.0f - 1.0f / ratio;     // dB cut per dB over threshold
+        upSlope = 1.0f - 1.0f / upRatio;     // dB boost per dB under threshold
+        halfKnee = kneeDb * 0.5f;
         atkCoef = std::exp(-1.0f / (p.attackMs * 0.001f * static_cast<float>(sampleRate_)));
         relCoef = std::exp(-1.0f / (p.releaseMs * 0.001f * static_cast<float>(sampleRate_)));
     }
@@ -486,8 +511,10 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // --- Resampled fill with gain fade (+ optional compression) ----------
     // Linear interpolation between ring[i0] and ring[i0+1] at the fractional
     // position; advancing pos by `rate` per output frame is the resampler. The
-    // compressor (when on) derives a per-frame gain from a peak envelope and is
-    // multiplied into the volume gain; output is clamped (makeup can exceed FS).
+    // processor (when on) computes a per-frame gain from a soft-knee static curve
+    // (downward above threshold, bounded upward/leveler below), smooths that gain
+    // in the log domain with branching attack/release, applies makeup, multiplies
+    // into the volume gain, and clamps (safety net; rarely engaged).
     const float span = static_cast<float>(numFrames);
     int produced = 0;
     for (int f = 0; f < numFrames - silenceFront; ++f) {
@@ -508,13 +535,33 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         }
         float compGain = 1.0f;
         if (comp) {
-            const float in = peak * (1.0f / 32768.0f); // 0..1 full-scale
-            const float coef = (in > compEnv_) ? atkCoef : relCoef;
-            compEnv_ = in + coef * (compEnv_ - in);
-            const float envDb = 20.0f * std::log10(compEnv_ > 1e-6f ? compEnv_ : 1e-6f);
-            float grDb = 0.0f;
-            if (envDb > thrDb) grDb = (envDb - thrDb) * (1.0f - 1.0f / ratio);
-            compGain = std::pow(10.0f, (makeupDb - grDb) * (1.0f / 20.0f));
+            // Stereo-linked peak level in dBFS.
+            const float xDb = 20.0f * std::log10(peak > 1e-6f ? peak * (1.0f / 32768.0f) : 1e-6f);
+            // Static curve target gain change cDb: + = cut (downward), - = boost
+            // (upward leveler). Soft knee straddles the threshold.
+            const float over = xDb - thrDb;
+            float cDb;
+            if (over >= halfKnee) {
+                cDb = over * downSlope;                       // hard downward
+            } else if (over > -halfKnee) {
+                const float k = over + halfKnee;              // 0..kneeDb
+                cDb = downSlope * k * k / (2.0f * kneeDb);    // soft-knee downward
+            } else {
+                // Upward (leveler): boost grows as level drops below threshold,
+                // capped, then tapered to zero below the noise floor.
+                float boost = (-over) * upSlope;
+                if (boost > maxBoostDb) boost = maxBoostDb;
+                if (xDb < kCompFloorDb) {
+                    const float t = (xDb - (kCompFloorDb - kCompFloorTaperDb)) / kCompFloorTaperDb;
+                    boost *= t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                }
+                cDb = -boost;
+            }
+            // Smooth the GAIN (log domain), branching: fast when the cut increases
+            // (attack), slow when it relaxes / boost grows (release) to avoid pump.
+            const float coef = (cDb > compGsDb_) ? atkCoef : relCoef;
+            compGsDb_ = cDb + coef * (compGsDb_ - cDb);
+            compGain = std::pow(10.0f, (makeupDb - compGsDb_) * (1.0f / 20.0f));
         }
         const float gain = (g0 + (g1 - g0) * static_cast<float>(silenceFront + f) / span) * compGain;
         int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
