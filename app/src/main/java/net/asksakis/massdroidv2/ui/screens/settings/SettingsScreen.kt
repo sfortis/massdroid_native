@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
+import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -68,9 +69,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -365,6 +363,7 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
     ) {
         if (isConnected) {
             SendspinCard(viewModel = viewModel)
+            DspEffectsCard(viewModel = viewModel)
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1182,11 +1181,9 @@ private fun pairedBtAudioRouteKeys(context: Context): List<String> {
     }.getOrDefault(emptyList())
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SendspinCard(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
-    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
     val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
@@ -1302,44 +1299,43 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                     )
                 }
             }
-
-            // Output dynamic-range compressor (Off/Soft/Medium/Hard). Amplitude-only
-            // effect in the native output, so it never affects sync/timing. The
-            // description below updates with the selected level's use case.
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-            val compOptions = listOf("Off", "Soft", "Medium", "Hard")
-            val compDescriptions = listOf(
-                "Full original dynamics, untouched. Best sound quality (default).",
-                "Gently levels the sound: quiet parts and quietly-recorded tracks " +
-                    "come up a little, peaks ease down, most dynamics kept. Good for " +
-                    "relaxed listening at home.",
-                "Evens quiet and loud parts and lifts low recordings toward a steady " +
-                    "level. Good for casual or mixed playlists.",
-                "Strong leveling: brings up quiet or low-recorded tracks and tames " +
-                    "peaks for a steady, dense level. For noisy places like the car, " +
-                    "or late-night listening without loud peaks."
-            )
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Text("Sound compressor", style = MaterialTheme.typography.bodyLarge)
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                    compOptions.forEachIndexed { index, label ->
-                        SegmentedButton(
-                            selected = compressorLevel == index,
-                            onClick = { viewModel.setSendspinCompressorLevel(index) },
-                            shape = SegmentedButtonDefaults.itemShape(index, compOptions.size),
-                            // No check icon: the highlighted selection is enough.
-                            icon = {}
-                        ) { Text(label) }
-                    }
-                }
-                Text(
-                    compDescriptions[compressorLevel.coerceIn(0, 3)],
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
         }
+    }
+}
+
+@Composable
+private fun DspEffectsCard(viewModel: SettingsViewModel) {
+    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
+    val compNames = listOf("Off", "Soft", "Medium", "Hard")
+    val compDescriptions = listOf(
+        "Full original dynamics, untouched. Best sound quality.",
+        "Gently levels the sound: quiet parts and quietly-recorded tracks come up a " +
+            "little, peaks ease down, most dynamics kept. Good for relaxed listening at home.",
+        "Evens quiet and loud parts and lifts low recordings toward a steady level. " +
+            "Good for casual or mixed playlists.",
+        "Strong leveling: brings up quiet or low-recorded tracks and tames peaks for a " +
+            "steady, dense level. For noisy places like the car, or late-night listening."
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("DSP Effects") },
+            supportingContent = { Text("Audio processing for phone-as-speaker (Sendspin) output.") }
+        )
+        LabeledSlider(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            title = "Sound compressor",
+            description = compDescriptions[compressorLevel.coerceIn(0, 3)],
+            value = compressorLevel.toFloat(),
+            valueRange = 0f..3f,
+            steps = 2,
+            valueLabel = { compNames[it.roundToInt().coerceIn(0, 3)] },
+            onValueChangeFinished = { viewModel.setSendspinCompressorLevel(it.roundToInt()) }
+        )
     }
 }
 
