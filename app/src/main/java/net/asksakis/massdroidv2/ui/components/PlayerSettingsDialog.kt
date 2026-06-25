@@ -755,7 +755,13 @@ internal fun SyncDelayCard(
     onValueChange: (Int) -> Unit,
     label: String = "Sync delay",
     compact: Boolean = false,
+    minMs: Int = -1000,
+    maxMs: Int = 1000,
 ) {
+    // Signed (+/-) presentation + earlier/later hints only make sense for a
+    // bipolar range (sync delay); a positive-only range (static playback delay,
+    // 0..5000) shows a plain "X ms".
+    val signed = minMs < 0
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(
@@ -774,15 +780,15 @@ internal fun SyncDelayCard(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = if (valueMs > 0) "+$valueMs ms" else "$valueMs ms",
+                    text = if (signed && valueMs > 0) "+$valueMs ms" else "$valueMs ms",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
             Slider(
-                value = valueMs.toFloat().coerceIn(-1000f, 1000f),
+                value = valueMs.toFloat().coerceIn(minMs.toFloat(), maxMs.toFloat()),
                 onValueChange = { onValueChange(Math.round(it)) },
-                valueRange = -1000f..1000f,
+                valueRange = minMs.toFloat()..maxMs.toFloat(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(28.dp)
@@ -790,7 +796,7 @@ internal fun SyncDelayCard(
             // earlier/later hints are redundant in compact rows (the signed
             // value + steppers already convey direction); drop them to save
             // vertical space when many speakers are stacked.
-            if (!compact) {
+            if (!compact && signed) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -814,7 +820,7 @@ internal fun SyncDelayCard(
             ) {
                 RepeatingIconButton(
                     onClick = { onValueChange(valueMs - 1) },
-                    enabled = valueMs > -1000,
+                    enabled = valueMs > minMs,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
@@ -825,7 +831,7 @@ internal fun SyncDelayCard(
                 }
                 RepeatingIconButton(
                     onClick = { onValueChange(valueMs + 1) },
-                    enabled = valueMs < 1000,
+                    enabled = valueMs < maxMs,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
