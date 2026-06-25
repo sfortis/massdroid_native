@@ -1716,6 +1716,13 @@ class PlayerRepositoryImpl @Inject constructor(
             val syncDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_sync_delay") }
             val syncDelayEntry = syncDelayKey?.let { values[it] }
 
+            // Same as the sync-delay key: the static-delay key is plain on a plain
+            // player but protocol-wrapped (`<sub>||protocol||sendspin_static_delay`)
+            // on a protocol player, so match by suffix instead of an exact key (an
+            // exact "sendspin_static_delay" lookup missed wrapped players entirely).
+            val staticDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_static_delay") }
+            val staticDelayEntry = staticDelayKey?.let { values[it] }
+
             // Generic per-provider output codec (e.g. Sonos `output_codec`: flac/mp3/aac/wav).
             val outputCodecEntry = values?.get("output_codec")
             val outputCodecOptions = (outputCodecEntry as? JsonObject)?.get("options")
@@ -1743,7 +1750,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 sendspinFormatOptions = formatOptions,
                 outputCodec = outputCodecEntry?.configValue(),
                 outputCodecOptions = outputCodecOptions,
-                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt(),
+                sendspinStaticDelayMs = staticDelayEntry?.configInt(),
+                sendspinStaticDelayKey = staticDelayKey,
                 sendspinSyncDelayKey = syncDelayKey,
                 sendspinSyncDelayMs = syncDelayEntry?.configInt(),
                 sendspinSyncDelayDefault =

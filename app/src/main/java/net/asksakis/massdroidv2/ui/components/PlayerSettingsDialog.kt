@@ -134,6 +134,9 @@ fun PlayerSettingsDialog(
     // the load returns null and the row stays hidden.
     var staticDelayMs by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerStaticDelay by remember(player.playerId) { mutableStateOf(false) }
+    // Exact config key for the static delay (plain or protocol-wrapped), carried
+    // from the loaded config so the save lands on wrapped players too.
+    var staticDelayKey by remember(player.playerId) { mutableStateOf<String?>(null) }
     // Server-side per-player Sendspin sync delay (MA "Sync delay (ms)", range
     // -1000..1000, positive = play later). Tunable on REMOTE sendspin receivers
     // for acoustic alignment; the exact config key varies per player so it is
@@ -159,6 +162,7 @@ fun PlayerSettingsDialog(
             if (!isLocalPlayer && loadedStaticDelay != null) {
                 hasServerStaticDelay = true
                 staticDelayMs = loadedStaticDelay
+                staticDelayKey = loaded.sendspinStaticDelayKey
             }
             if (!isLocalPlayer && loaded.sendspinSyncDelayKey != null) {
                 hasServerSyncDelay = true
@@ -182,7 +186,9 @@ fun PlayerSettingsDialog(
                 .drop(1)
                 .debounce(250L)
                 .collect { v ->
-                    onSave(player.playerId, mapOf("sendspin_static_delay" to v))
+                    // Use the discovered key so the save lands on protocol-wrapped
+                    // players too; fall back to the plain key for safety.
+                    onSave(player.playerId, mapOf((staticDelayKey ?: "sendspin_static_delay") to v))
                 }
         }
     }

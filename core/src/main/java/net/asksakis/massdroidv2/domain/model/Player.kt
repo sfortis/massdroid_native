@@ -42,6 +42,12 @@ data class PlayerConfig(
     /** Server-side static delay in ms for remote sendspin players. Null when not applicable. */
     val sendspinStaticDelayMs: Int? = null,
     /**
+     * Config KEY for the static delay. Like the sync-delay key it can be plain
+     * (`sendspin_static_delay`) or protocol-wrapped (`<sub>||protocol||sendspin_static_delay`),
+     * so it is discovered by suffix at load and carried here for the save.
+     */
+    val sendspinStaticDelayKey: String? = null,
+    /**
      * Server-side per-player Sendspin sync delay (the MA "Sync delay (ms)"
      * config, range -1000..1000, positive = play later). The config KEY varies
      * by player (e.g. `sendspin_sync_delay` or `<sub>||protocol||sendspin_sync_delay`),
