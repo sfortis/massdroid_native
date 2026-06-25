@@ -57,6 +57,13 @@ interface SettingsRepository {
      */
     val sendspinSyncSystemVolume: Flow<Boolean>
     /**
+     * Phone-as-speaker output dynamic-range compressor level: 0 = off, 1 = soft,
+     * 2 = medium, 3 = hard. Amplitude-only effect in the native output (sync-safe).
+     * Higher levels reduce dynamic range (louder, denser) for noisy or late-night
+     * listening; 0 keeps the original dynamics. Default 0.
+     */
+    val sendspinCompressorLevel: Flow<Int>
+    /**
      * BT output devices the app has routed to at least once (route keys like
      * `bt:MINI45864`). Populates the "car audio" picker so the user can flag a
      * device without us enumerating bonded devices (no BLUETOOTH_CONNECT).
@@ -118,6 +125,7 @@ interface SettingsRepository {
     suspend fun setSendspinSyncDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
     suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
+    suspend fun setSendspinCompressorLevel(level: Int)
     /** Record a BT route key as seen (idempotent), for the car-audio picker. */
     suspend fun recordKnownBtDevice(routeKey: String)
     /** Flag/unflag a BT route key as car audio (full volume on connect). */

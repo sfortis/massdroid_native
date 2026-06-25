@@ -4,6 +4,7 @@
 #include <ctime>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 #define LOG_TAG "SendspinNative"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -59,6 +60,50 @@ constexpr int64_t LAT_SLEW_US = 1000;
 // Gain-ramp time: mute/unmute/volume changes reach the target over this long
 // instead of jumping mid-waveform (which clicks).
 constexpr float FADE_SEC = 0.02f;
+
+// Audiophile-grade dynamic-range processor (phone-as-speaker). Amplitude-only:
+// applied in the output callback alongside the volume gain, so it has NO effect
+// on the timeline/ring/latency (sync-safe), and ZERO look-ahead (look-ahead would
+// add latency and desync the group). Design (after Giannoulis et al. 2012, the
+// reference DRC topology):
+//   - feed-forward, log-domain detector (peak, stereo-linked).
+//   - SOFT KNEE around the threshold for a smooth, transparent onset.
+//   - DOWNWARD compression above threshold (tame peaks).
+//   - bounded UPWARD compression below threshold (leveler): lifts quiet passages
+//     and quietly-recorded tracks toward the threshold, capped at maxBoostDb and
+//     tapered off below the noise floor so silence/hiss is NOT amplified.
+//   - the GAIN (not the level) is smoothed with branching attack/release in the
+//     dB domain, which is what keeps it click/pump/zipper-free.
+//   - modest makeup; output soft-clamped as a safety net (rarely engaged).
+// Index 0 = off (bit-exact bypass). Higher levels = lower threshold, higher
+// ratios, more leveling = smaller dynamic range.
+// Two thresholds so the level does NOT drop as the strength rises: the DOWNWARD
+// threshold is high (it only tames true peaks, so total gain reduction stays
+// small and the makeup more than offsets it), while the UPWARD threshold is low
+// (lifts quiet passages / low recordings). Between the two the signal passes at
+// unity, so makeup raises the bulk of the programme -> higher settings are denser
+// and a touch LOUDER, not quieter.
+struct CompPreset {
+    float downThrDb;     // peak-taming threshold (high)
+    float ratio;         // downward ratio (>1)
+    float kneeDb;        // soft-knee width on the downward threshold
+    float upThrDb;       // leveler threshold (low); below it, boost
+    float upwardRatio;   // upward (leveler) ratio (>1); 1 = no upward
+    float maxBoostDb;    // cap on upward boost
+    float makeupDb;      // static makeup
+    float attackMs;
+    float releaseMs;
+};
+constexpr CompPreset kCompPresets[4] = {
+    {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},            // 0 off (bypassed)
+    {-10.0f, 2.0f, 6.0f, -30.0f, 1.5f, 6.0f, 1.5f, 20.0f, 250.0f},    // 1 soft
+    {-9.0f, 3.0f, 6.0f, -28.0f, 2.0f, 9.0f, 3.0f, 15.0f, 250.0f},     // 2 medium
+    {-8.0f, 4.0f, 5.0f, -26.0f, 2.5f, 12.0f, 5.0f, 8.0f, 180.0f},     // 3 hard
+};
+// Upward compression stops below this input level and tapers out over the band
+// just under it, so the noise floor / silence is never lifted.
+constexpr float kCompFloorDb = -50.0f;
+constexpr float kCompFloorTaperDb = 8.0f;
 } // namespace
 
 SendspinOutputEngine::~SendspinOutputEngine() {
@@ -181,6 +226,7 @@ void SendspinOutputEngine::resetRing() {
     readPos_ = static_cast<double>(w);
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
+    compGsDb_ = 0.0f;
 }
 
 int32_t SendspinOutputEngine::write(const int16_t* pcm, int32_t frames, int64_t presentationLocalUs) {
@@ -446,9 +492,35 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // Publish the applied rate for the quality readout (1e6 = 1.0 = locked).
     lastRateMicros_.store(static_cast<int64_t>(rate * 1000000.0));
 
-    // --- Resampled fill with gain fade ----------------------------------
+    // --- Compressor coefficients (amplitude-only; sync-safe) -------------
+    // Precomputed once per callback from the live level. OFF (level 0) leaves
+    // comp=false and the loop is a bit-exact passthrough of the original output.
+    const int compLevel = compressorLevel_.load();
+    const bool comp = compLevel >= 1 && compLevel <= 3;
+    float downThrDb = 0.0f, kneeDb = 0.0f, upThrDb = 0.0f, maxBoostDb = 0.0f,
+          makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
+    float downSlope = 0.0f, upSlope = 0.0f, halfKnee = 0.0f;
+    if (comp) {
+        const CompPreset& p = kCompPresets[compLevel];
+        downThrDb = p.downThrDb;
+        kneeDb = p.kneeDb;
+        upThrDb = p.upThrDb;
+        maxBoostDb = p.maxBoostDb;
+        makeupDb = p.makeupDb;
+        downSlope = 1.0f - 1.0f / p.ratio;        // dB cut per dB over downThr
+        upSlope = 1.0f - 1.0f / p.upwardRatio;    // dB boost per dB under upThr
+        halfKnee = kneeDb * 0.5f;
+        atkCoef = std::exp(-1.0f / (p.attackMs * 0.001f * static_cast<float>(sampleRate_)));
+        relCoef = std::exp(-1.0f / (p.releaseMs * 0.001f * static_cast<float>(sampleRate_)));
+    }
+
+    // --- Resampled fill with gain fade (+ optional compression) ----------
     // Linear interpolation between ring[i0] and ring[i0+1] at the fractional
-    // position; advancing pos by `rate` per output frame is the resampler.
+    // position; advancing pos by `rate` per output frame is the resampler. The
+    // processor (when on) computes a per-frame gain from a soft-knee static curve
+    // (downward above threshold, bounded upward/leveler below), smooths that gain
+    // in the log domain with branching attack/release, applies makeup, multiplies
+    // into the volume gain, and clamps (safety net; rarely engaged).
     const float span = static_cast<float>(numFrames);
     int produced = 0;
     for (int f = 0; f < numFrames - silenceFront; ++f) {
@@ -457,12 +529,56 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         const float frac = static_cast<float>(pos - static_cast<double>(i0));
         const int64_t s0 = (i0 % capacityFrames_) * ch;
         const int64_t s1 = ((i0 + 1) % capacityFrames_) * ch;
-        const float gain = g0 + (g1 - g0) * static_cast<float>(silenceFront + f) / span;
-        int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
+        float smp[2];
+        float peak = 0.0f;
         for (int c = 0; c < ch; ++c) {
             const float a = static_cast<float>(ring_[s0 + c]);
             const float b = static_cast<float>(ring_[s1 + c]);
-            dp[c] = static_cast<int16_t>((a + (b - a) * frac) * gain);
+            const float v = a + (b - a) * frac;
+            smp[c] = v;
+            const float av = v < 0.0f ? -v : v;
+            if (av > peak) peak = av;
+        }
+        float compGain = 1.0f;
+        if (comp) {
+            // Stereo-linked peak level in dBFS.
+            const float xDb = 20.0f * std::log10(peak > 1e-6f ? peak * (1.0f / 32768.0f) : 1e-6f);
+            // Static curve target gain change cDb: + = cut (downward, above the
+            // high peak threshold), - = boost (upward leveler, below the low
+            // threshold), 0 in between (unity; makeup then raises the bulk). The
+            // two thresholds never overlap, so at most one branch is non-zero.
+            float cDb = 0.0f;
+            const float over = xDb - downThrDb;
+            if (over >= halfKnee) {
+                cDb = over * downSlope;                       // hard downward
+            } else if (over > -halfKnee) {
+                const float k = over + halfKnee;              // 0..kneeDb
+                cDb = downSlope * k * k / (2.0f * kneeDb);    // soft-knee downward
+            }
+            if (xDb < upThrDb) {
+                // Upward (leveler): boost grows as level drops below the low
+                // threshold, capped, then tapered to zero below the noise floor.
+                float boost = (upThrDb - xDb) * upSlope;
+                if (boost > maxBoostDb) boost = maxBoostDb;
+                if (xDb < kCompFloorDb) {
+                    const float t = (xDb - (kCompFloorDb - kCompFloorTaperDb)) / kCompFloorTaperDb;
+                    boost *= t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                }
+                cDb -= boost;
+            }
+            // Smooth the GAIN (log domain), branching: fast when the cut increases
+            // (attack), slow when it relaxes / boost grows (release) to avoid pump.
+            const float coef = (cDb > compGsDb_) ? atkCoef : relCoef;
+            compGsDb_ = cDb + coef * (compGsDb_ - cDb);
+            compGain = std::pow(10.0f, (makeupDb - compGsDb_) * (1.0f / 20.0f));
+        }
+        const float gain = (g0 + (g1 - g0) * static_cast<float>(silenceFront + f) / span) * compGain;
+        int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
+        for (int c = 0; c < ch; ++c) {
+            float o = smp[c] * gain;
+            if (o > 32767.0f) o = 32767.0f;
+            else if (o < -32768.0f) o = -32768.0f;
+            dp[c] = static_cast<int16_t>(o);
         }
         pos += rate;
         ++produced;

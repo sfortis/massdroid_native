@@ -451,6 +451,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         applyOutputVolume()
     }
 
+    /**
+     * Output dynamic-range compressor level (0 off, 1 soft, 2 medium, 3 hard).
+     * Amplitude-only stage in the native callback; no effect on timing/sync. The
+     * native output caches it and re-applies across stream reopens.
+     */
+    fun setCompressorLevel(level: Int) {
+        nativeOutput.setCompressorLevel(level)
+    }
+
     private val startupMuteMs: Long get() = if (isSync) SYNC_STARTUP_MUTE_MS else DIRECT_STARTUP_MUTE_MS
 
     private fun applyOutputVolume() {

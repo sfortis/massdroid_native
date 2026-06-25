@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
+import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -36,6 +37,8 @@ import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
@@ -360,6 +363,7 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
     ) {
         if (isConnected) {
             SendspinCard(viewModel = viewModel)
+            DspEffectsCard(viewModel = viewModel)
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1226,60 +1230,119 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
         // does the attenuation) and its volume is left alone — never reset. Other
         // BT devices keep the normal phone-volume sync.
         if (sendspinEnabled) {
+            // Collapsed by default so the (potentially long) paired-device list
+            // does not dominate the screen; the header row expands it.
+            var carAudioExpanded by remember { mutableStateOf(false) }
+            val selectedCount = carAudioBtDevices.size
             ListItem(
+                modifier = Modifier.clickable { carAudioExpanded = !carAudioExpanded },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 headlineContent = { Text("Full volume on connect (car audio)") },
                 supportingContent = {
                     Text(
-                        "Pick Bluetooth devices whose own dial controls the volume (e.g. your " +
-                            "car). On connect the phone output is pinned to 100% so the head unit " +
-                            "handles attenuation, and the app never resets the level. Other devices " +
-                            "keep normal volume sync."
+                        if (selectedCount > 0) {
+                            "$selectedCount device${if (selectedCount == 1) "" else "s"} selected. " +
+                                "Tap to choose devices whose own dial controls the volume (e.g. your car)."
+                        } else {
+                            "Tap to choose Bluetooth devices whose own dial controls the volume " +
+                                "(e.g. your car); on connect the phone output is pinned to 100%."
+                        }
+                    )
+                },
+                trailingContent = {
+                    Icon(
+                        imageVector = if (carAudioExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (carAudioExpanded) "Collapse" else "Expand"
                     )
                 }
             )
-            // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
-            // ones the app has already routed to, plus anything already flagged.
-            val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
-            if (!hasBtPerm) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = { Text("Show paired Bluetooth devices") },
-                    supportingContent = {
-                        Text("Grant the Bluetooth permission to pick your car from the paired list.")
-                    },
-                    trailingContent = {
-                        MdFilledTonalButton(
-                            onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
-                        ) { Text("Allow") }
-                    }
-                )
-            }
-            displayDevices.forEach { key ->
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = { Text(key.removePrefix("bt:")) },
-                    trailingContent = {
-                        MdSwitch(
-                            checked = key in carAudioBtDevices,
-                            onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
-                        )
-                    }
-                )
-            }
-            if (hasBtPerm && displayDevices.isEmpty()) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = {
-                        Text(
-                            "No paired Bluetooth audio devices found.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                )
+            if (carAudioExpanded) {
+                // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
+                // ones the app has already routed to, plus anything already flagged.
+                val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
+                if (!hasBtPerm) {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("Show paired Bluetooth devices") },
+                        supportingContent = {
+                            Text("Grant the Bluetooth permission to pick your car from the paired list.")
+                        },
+                        trailingContent = {
+                            MdFilledTonalButton(
+                                onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
+                            ) { Text("Allow") }
+                        }
+                    )
+                }
+                displayDevices.forEach { key ->
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text(key.removePrefix("bt:")) },
+                        trailingContent = {
+                            MdSwitch(
+                                checked = key in carAudioBtDevices,
+                                onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
+                            )
+                        }
+                    )
+                }
+                if (hasBtPerm && displayDevices.isEmpty()) {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = {
+                            Text(
+                                "No paired Bluetooth audio devices found.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    )
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun DspEffectsCard(viewModel: SettingsViewModel) {
+    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
+    val compNames = listOf("Off", "Soft", "Medium", "Hard")
+    val compDescriptions = listOf(
+        "Full original dynamics, untouched. Best sound quality.",
+        "Gently levels the sound: quiet parts and quietly-recorded tracks come up a " +
+            "little, peaks ease down, most dynamics kept. Good for relaxed listening at home.",
+        "Evens quiet and loud parts and lifts low recordings toward a steady level. " +
+            "Good for casual or mixed playlists.",
+        "Strong leveling: brings up quiet or low-recorded tracks and tames peaks for a " +
+            "steady, dense level. For noisy places like the car, or late-night listening."
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("DSP Effects") },
+            supportingContent = { Text("Audio processing for phone-as-speaker (Sendspin) output.") }
+        )
+        // Description goes BELOW the slider so a longer/shorter per-level text
+        // never shifts the slider up or down (the slider position stays fixed).
+        LabeledSlider(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp),
+            title = "Sound compressor",
+            value = compressorLevel.toFloat(),
+            valueRange = 0f..3f,
+            steps = 2,
+            valueLabel = { compNames[it.roundToInt().coerceIn(0, 3)] },
+            onValueChangeFinished = { viewModel.setSendspinCompressorLevel(it.roundToInt()) }
+        )
+        Text(
+            compDescriptions[compressorLevel.coerceIn(0, 3)],
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+        )
     }
 }
 
