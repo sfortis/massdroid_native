@@ -1,3 +1,4 @@
+- New DSP Effects: a sound compressor for phone-as-speaker that evens out the volume, gently lifts quiet or low-recorded tracks and tames loud peaks. Pick Off, Soft, Medium or Hard (great for the car or late-night listening).
 - Car audio: choose which Bluetooth devices start at full volume on connect, so the car begins loud and its own dial takes over (Settings, Sendspin).
 - Car audio: the volume no longer drops or jumps when the track changes in the car.
 - Car audio: play, pause and skip stay on your phone in the car and never jump to a remote speaker.
@@ -5,5 +6,6 @@
 - Connection: the app reconnects on its own when the network comes back (after roaming, a Wi-Fi change, or a longer drop).
 - Follow Me: more reliable room detection, and it keeps working even when nothing is playing.
 - Recommendations: mixes feel more varied and less front-loaded with your own tracks.
+- Sync speakers: you can now set the playback delay for receivers that only expose it (e.g. the iOS Sendspin app), instead of a dead-end note.
 - Diagnostics: sharing logs no longer freezes the app.
 - More consistent Settings styling.
