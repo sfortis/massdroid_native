@@ -77,10 +77,17 @@ constexpr float FADE_SEC = 0.02f;
 //   - modest makeup; output soft-clamped as a safety net (rarely engaged).
 // Index 0 = off (bit-exact bypass). Higher levels = lower threshold, higher
 // ratios, more leveling = smaller dynamic range.
+// Two thresholds so the level does NOT drop as the strength rises: the DOWNWARD
+// threshold is high (it only tames true peaks, so total gain reduction stays
+// small and the makeup more than offsets it), while the UPWARD threshold is low
+// (lifts quiet passages / low recordings). Between the two the signal passes at
+// unity, so makeup raises the bulk of the programme -> higher settings are denser
+// and a touch LOUDER, not quieter.
 struct CompPreset {
-    float thresholdDb;   // downward knee centre
+    float downThrDb;     // peak-taming threshold (high)
     float ratio;         // downward ratio (>1)
-    float kneeDb;        // soft-knee width
+    float kneeDb;        // soft-knee width on the downward threshold
+    float upThrDb;       // leveler threshold (low); below it, boost
     float upwardRatio;   // upward (leveler) ratio (>1); 1 = no upward
     float maxBoostDb;    // cap on upward boost
     float makeupDb;      // static makeup
@@ -88,10 +95,10 @@ struct CompPreset {
     float releaseMs;
 };
 constexpr CompPreset kCompPresets[4] = {
-    {0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},          // 0 off (bypassed)
-    {-22.0f, 1.8f, 10.0f, 1.5f, 6.0f, 1.0f, 20.0f, 250.0f},    // 1 soft
-    {-24.0f, 2.5f, 8.0f, 2.0f, 9.0f, 2.0f, 15.0f, 250.0f},     // 2 medium
-    {-26.0f, 4.0f, 6.0f, 2.5f, 12.0f, 3.0f, 8.0f, 180.0f},     // 3 hard
+    {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},            // 0 off (bypassed)
+    {-10.0f, 2.0f, 6.0f, -30.0f, 1.5f, 6.0f, 1.5f, 20.0f, 250.0f},    // 1 soft
+    {-9.0f, 3.0f, 6.0f, -28.0f, 2.0f, 9.0f, 3.0f, 15.0f, 250.0f},     // 2 medium
+    {-8.0f, 4.0f, 5.0f, -26.0f, 2.5f, 12.0f, 5.0f, 8.0f, 180.0f},     // 3 hard
 };
 // Upward compression stops below this input level and tapers out over the band
 // just under it, so the noise floor / silence is never lifted.
@@ -490,19 +497,18 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // comp=false and the loop is a bit-exact passthrough of the original output.
     const int compLevel = compressorLevel_.load();
     const bool comp = compLevel >= 1 && compLevel <= 3;
-    float thrDb = 0.0f, ratio = 1.0f, kneeDb = 0.0f, upRatio = 1.0f, maxBoostDb = 0.0f,
+    float downThrDb = 0.0f, kneeDb = 0.0f, upThrDb = 0.0f, maxBoostDb = 0.0f,
           makeupDb = 0.0f, atkCoef = 0.0f, relCoef = 0.0f;
     float downSlope = 0.0f, upSlope = 0.0f, halfKnee = 0.0f;
     if (comp) {
         const CompPreset& p = kCompPresets[compLevel];
-        thrDb = p.thresholdDb;
-        ratio = p.ratio;
+        downThrDb = p.downThrDb;
         kneeDb = p.kneeDb;
-        upRatio = p.upwardRatio;
+        upThrDb = p.upThrDb;
         maxBoostDb = p.maxBoostDb;
         makeupDb = p.makeupDb;
-        downSlope = 1.0f - 1.0f / ratio;     // dB cut per dB over threshold
-        upSlope = 1.0f - 1.0f / upRatio;     // dB boost per dB under threshold
+        downSlope = 1.0f - 1.0f / p.ratio;        // dB cut per dB over downThr
+        upSlope = 1.0f - 1.0f / p.upwardRatio;    // dB boost per dB under upThr
         halfKnee = kneeDb * 0.5f;
         atkCoef = std::exp(-1.0f / (p.attackMs * 0.001f * static_cast<float>(sampleRate_)));
         relCoef = std::exp(-1.0f / (p.releaseMs * 0.001f * static_cast<float>(sampleRate_)));
@@ -537,25 +543,28 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         if (comp) {
             // Stereo-linked peak level in dBFS.
             const float xDb = 20.0f * std::log10(peak > 1e-6f ? peak * (1.0f / 32768.0f) : 1e-6f);
-            // Static curve target gain change cDb: + = cut (downward), - = boost
-            // (upward leveler). Soft knee straddles the threshold.
-            const float over = xDb - thrDb;
-            float cDb;
+            // Static curve target gain change cDb: + = cut (downward, above the
+            // high peak threshold), - = boost (upward leveler, below the low
+            // threshold), 0 in between (unity; makeup then raises the bulk). The
+            // two thresholds never overlap, so at most one branch is non-zero.
+            float cDb = 0.0f;
+            const float over = xDb - downThrDb;
             if (over >= halfKnee) {
                 cDb = over * downSlope;                       // hard downward
             } else if (over > -halfKnee) {
                 const float k = over + halfKnee;              // 0..kneeDb
                 cDb = downSlope * k * k / (2.0f * kneeDb);    // soft-knee downward
-            } else {
-                // Upward (leveler): boost grows as level drops below threshold,
-                // capped, then tapered to zero below the noise floor.
-                float boost = (-over) * upSlope;
+            }
+            if (xDb < upThrDb) {
+                // Upward (leveler): boost grows as level drops below the low
+                // threshold, capped, then tapered to zero below the noise floor.
+                float boost = (upThrDb - xDb) * upSlope;
                 if (boost > maxBoostDb) boost = maxBoostDb;
                 if (xDb < kCompFloorDb) {
                     const float t = (xDb - (kCompFloorDb - kCompFloorTaperDb)) / kCompFloorTaperDb;
                     boost *= t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
                 }
-                cDb = -boost;
+                cDb -= boost;
             }
             // Smooth the GAIN (log domain), branching: fast when the cut increases
             // (attack), slow when it relaxes / boost grows (release) to avoid pump.
