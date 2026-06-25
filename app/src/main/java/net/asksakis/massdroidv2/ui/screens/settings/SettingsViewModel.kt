@@ -159,6 +159,18 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.setSendspinDither(enabled)
         }
     }
+
+    // Phone-as-speaker output format (stored as the enum name). The controller
+    // applies it on the next (re)connect / network-format-apply, same as the
+    // per-player dialog's setter.
+    val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "SMART")
+
+    fun setSendspinAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinAudioFormat(format.name)
+        }
+    }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val smartMixVariety = settingsRepository.smartMixVariety

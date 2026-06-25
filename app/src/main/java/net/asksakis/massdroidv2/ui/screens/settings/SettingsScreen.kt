@@ -106,6 +106,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
@@ -365,8 +366,14 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
     ) {
         if (isConnected) {
             SendspinCard(viewModel = viewModel)
-            CarAudioCard(viewModel = viewModel)
-            DspEffectsCard(viewModel = viewModel)
+            // The sub-settings only affect the phone-as-speaker output, so show
+            // them only while it is enabled (consistent gating for all of them).
+            val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
+            if (sendspinEnabled) {
+                OutputQualityCard(viewModel = viewModel)
+                DspEffectsCard(viewModel = viewModel)
+                CarAudioCard(viewModel = viewModel)
+            }
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -1195,7 +1202,7 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
     ) {
         ListItem(
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Sendspin (Phone as Speaker)") },
+            headlineContent = { Text("Enable") },
             supportingContent = {
                 Text(
                     when (sendspinState) {
@@ -1229,8 +1236,6 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
  */
 @Composable
 private fun CarAudioCard(viewModel: SettingsViewModel) {
-    val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
-    if (!sendspinEnabled) return
     val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val context = LocalContext.current
@@ -1314,6 +1319,53 @@ private fun CarAudioCard(viewModel: SettingsViewModel) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun OutputQualityCard(viewModel: SettingsViewModel) {
+    val formatStr by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
+    val current = SendspinAudioFormat.fromStored(formatStr)
+    val options = listOf(
+        SendspinAudioFormat.SMART,
+        SendspinAudioFormat.FLAC,
+        SendspinAudioFormat.OPUS,
+        SendspinAudioFormat.PCM
+    )
+    val desc = when (current) {
+        SendspinAudioFormat.SMART -> "Adapts to your network: FLAC on Wi-Fi, Opus on mobile."
+        SendspinAudioFormat.FLAC -> "Lossless. Best quality, higher bandwidth."
+        SendspinAudioFormat.OPUS -> "Compressed. Lower bandwidth, good for mobile."
+        SendspinAudioFormat.PCM -> "Uncompressed, no codec step. Highest bandwidth."
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Output quality") },
+            supportingContent = {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        options.forEach { fmt ->
+                            androidx.compose.material3.FilterChip(
+                                selected = current == fmt,
+                                onClick = { viewModel.setSendspinAudioFormat(fmt) },
+                                label = { Text(fmt.label) }
+                            )
+                        }
+                    }
+                    Text(
+                        desc,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        )
     }
 }
 
