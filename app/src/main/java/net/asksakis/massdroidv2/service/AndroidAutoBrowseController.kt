@@ -49,6 +49,7 @@ class AndroidAutoBrowseController(
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
     private val onCustomCommand: (String) -> Boolean,
+    private val isConnected: () -> Boolean = { true },
 ) {
     // Keyed by the query that produced it: onGetSearchResult must never serve a
     // previous query's results when the host requests a newer one.
@@ -91,6 +92,21 @@ class AndroidAutoBrowseController(
                         AndroidAutoMediaCommands.buttons(context, isFavorite = false, shuffleEnabled = false)
                     )
                     .build()
+            }
+
+            override fun onPostConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ) {
+                // Car: a controller (the AAOS media center) just connected. If we are
+                // not signed in / connected to MA yet, surface the standard AAOS
+                // sign-in affordance as a non-fatal SessionError carrying a resolution
+                // PendingIntent. This is sent per-controller so a late-connecting car
+                // (cold start, before the WS is up) still gets it. The browse tree is
+                // left valid; the WS-connect invalidation refreshes it once signed in.
+                if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE && !isConnected()) {
+                    (session as? MediaLibraryService.MediaLibrarySession)?.sendError(controller, buildSignInError())
+                }
             }
 
             override fun onCustomCommand(
@@ -527,6 +543,37 @@ class AndroidAutoBrowseController(
     // Category icons: content:// PNG render on the car (the AAOS media center can't
     // decode a cross-package vector android.resource://), raw android.resource on phone/TV.
     private fun iconArtworkUri(iconResId: Int): android.net.Uri = carIconUri(context, iconResId)
+
+    // The AAOS sign-in affordance: a non-fatal SessionError whose resolution extras
+    // carry a "Sign in" label + a PendingIntent into the (parked) sign-in screen.
+    // The exported MainActivity can be started by this PendingIntent without a
+    // LAUNCHER filter, which is why the car build can drop its launcher icon.
+    private fun buildSignInError(): androidx.media3.session.SessionError {
+        val intent = Intent(context, net.asksakis.massdroidv2.ui.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val extras = Bundle().apply {
+            putString(
+                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
+                "Sign in"
+            )
+            putParcelable(
+                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,
+                pendingIntent
+            )
+        }
+        return androidx.media3.session.SessionError(
+            androidx.media3.session.SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED,
+            "Sign in to Music Assistant",
+            extras
+        )
+    }
 
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
         return musicRepository.getArtists(limit = pageSize, offset = page * pageSize, orderBy = "name")

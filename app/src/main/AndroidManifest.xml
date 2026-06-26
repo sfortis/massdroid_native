@@ -36,10 +36,6 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.MassDroidV2.Splash">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
             <!-- Music Assistant OAuth callback (Home Assistant SSO).
                  Uses the official MA mobile-app scheme because the MA server's
                  OAuth redirect allowlist accepts only this URI prefix today. -->
@@ -49,10 +45,28 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="musicassistant" android:host="auth" />
             </intent-filter>
+        </activity>
+
+        <!-- Launcher entry as an alias so the AAOS flavor can disable JUST the
+             home-screen icon (android:enabled=false in src/automotive) while the car
+             stays a single media-center tile. Google's AAOS media guidance forbids a
+             MAIN/LAUNCHER activity in a car app; there the parked sign-in/settings is
+             reached from the media center's settings (gear) affordance, which opens
+             MainActivity via ACTION_APPLICATION_PREFERENCES (verified on the AAOS-15
+             emulator). The alias targets MainActivity so phone/TV launch + app
+             shortcuts are unchanged. -->
+        <activity-alias
+            android:name=".ui.LauncherActivity"
+            android:exported="true"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
-        </activity>
+        </activity-alias>
 
         <service
             android:name=".service.PlaybackService"

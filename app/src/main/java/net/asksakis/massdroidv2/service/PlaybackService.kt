@@ -104,6 +104,7 @@ class PlaybackService : MediaLibraryService() {
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
             onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
+            isConnected = { wsClient.connectionState.value is ConnectionState.Connected },
         )
     }
 

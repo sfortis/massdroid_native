@@ -53,6 +53,28 @@
                 android:value="true" />
         </service>
 
+        <!-- Settings/sign-in affordance: declaring ACTION_APPLICATION_PREFERENCES on
+             MainActivity makes the AAOS media center show a settings (gear) icon that
+             opens MainActivity. This is a guaranteed, always-visible way into the
+             parked sign-in/settings screen - independent of any error rendering - so
+             the car reaches sign-in with no launcher icon (verified on AAOS-15). -->
+        <activity
+            android:name=".ui.MainActivity"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+            </intent-filter>
+        </activity>
+
+        <!-- One car entry only: disable the home-screen launcher icon. Google's AAOS
+             media guidance forbids a MAIN/LAUNCHER activity in a car app; the single
+             media-center tile is the app, and the gear affordance above is the way
+             into sign-in/settings. -->
+        <activity-alias
+            android:name=".ui.LauncherActivity"
+            android:enabled="false"
+            tools:node="merge" />
+
         <!-- Follow Me (room-detection proximity scanning) has no place in a car. -->
         <service
             android:name=".service.FollowMeService"
