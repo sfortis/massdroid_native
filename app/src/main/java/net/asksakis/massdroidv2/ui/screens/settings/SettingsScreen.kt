@@ -1333,10 +1333,10 @@ private fun OutputQualityCard(viewModel: SettingsViewModel) {
         SendspinAudioFormat.PCM
     )
     val desc = when (current) {
-        SendspinAudioFormat.SMART -> "Adapts to your network: FLAC on Wi-Fi, Opus on mobile."
-        SendspinAudioFormat.FLAC -> "Lossless. Best quality, higher bandwidth."
-        SendspinAudioFormat.OPUS -> "Compressed. Lower bandwidth, good for mobile."
-        SendspinAudioFormat.PCM -> "Uncompressed, no codec step. Highest bandwidth."
+        SendspinAudioFormat.SMART -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile."
+        SendspinAudioFormat.FLAC -> "Lossless. Highest fidelity, higher bandwidth."
+        SendspinAudioFormat.OPUS -> "Lossy and efficient. Ideal on mobile data."
+        SendspinAudioFormat.PCM -> "Uncompressed, no decode step. Highest bandwidth."
     }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1375,13 +1375,10 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
     val dither by viewModel.sendspinDither.collectAsStateWithLifecycle()
     val compNames = listOf("Off", "Soft", "Medium", "Hard")
     val compDescriptions = listOf(
-        "Full original dynamics, untouched. Best sound quality.",
-        "Gently levels the sound: quiet parts and quietly-recorded tracks come up a " +
-            "little, peaks ease down, most dynamics kept. Good for relaxed listening at home.",
-        "Evens quiet and loud parts and lifts low recordings toward a steady level. " +
-            "Good for casual or mixed playlists.",
-        "Strong leveling: brings up quiet or low-recorded tracks and tames peaks for a " +
-            "steady, dense level. For noisy places like the car, or late-night listening."
+        "No processing. Full original dynamic range.",
+        "Light leveling. Evens the volume and lifts quiet detail while keeping most dynamics.",
+        "Moderate leveling. A consistent level across quiet and loud passages.",
+        "Heavy leveling. A tight, dense level for noisy rooms or low-volume listening."
     )
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1391,7 +1388,7 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
         ListItem(
             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("DSP Effects") },
-            supportingContent = { Text("Audio processing for phone-as-speaker (Sendspin) output.") }
+            supportingContent = { Text("Processing applied to the phone's speaker output.") }
         )
         // Custom compact control (shared MdSlider) so the level name AND the
         // description update LIVE while dragging (LabeledSlider only commits on
@@ -1432,9 +1429,8 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
             headlineContent = { Text("Output dithering") },
             supportingContent = {
                 Text(
-                    "Noise-shaped dithering on the 16-bit output: reduces low-level " +
-                        "quantization noise, so quiet passages, fades and decays sound " +
-                        "smoother. Subtle, only at low levels. Tiny CPU cost."
+                    "Noise-shaped dither on the 16-bit output. Reduces quantization " +
+                        "noise for smoother quiet passages, fades and decays."
                 )
             },
             trailingContent = {
