@@ -15,6 +15,7 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -66,10 +67,33 @@ class PlaybackService : MediaLibraryService() {
         createAndroidAutoController()
         sendspinCoordinator.start()
         createSleepTimer()
+        autoConnectForCar()
         // Follow Me (room detection) now lives in its own FollowMeService with a connectedDevice
         // foreground service, so scanning survives without media. Bootstrap it here at launch; it
         // self-gates on config.enabled (goes foreground only while Follow Me is on, else stops).
         FollowMeService.start(this)
+    }
+
+    /**
+     * In the car (AAOS) the system media center binds this service WITHOUT ever
+     * launching an activity, so the UI-layer auto-connect (Home/Discover view models)
+     * never runs and the browse tree stays empty ("Media isn't available"). Mirror
+     * that token auto-connect here, service-side, for the automotive build only -
+     * phone/TV keep connecting from their UI as before (gated to avoid a double connect).
+     */
+    private fun autoConnectForCar() {
+        if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
+        scope.launch {
+            wsClient.startupReady.first { it }
+            if (wsClient.connectionState.value !is ConnectionState.Disconnected || wsClient.userDisconnected) {
+                return@launch
+            }
+            val url = settingsRepository.serverUrl.first()
+            val token = settingsRepository.authToken.first()
+            if (url.isNotBlank() && token.isNotBlank() && url.contains("://")) {
+                wsClient.connect(url, token)
+            }
+        }
     }
 
     private fun createAndroidAutoController() {
