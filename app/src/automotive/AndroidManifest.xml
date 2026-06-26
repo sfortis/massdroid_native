@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android Automotive OS (AAOS) flavor overlay. Merges into the :app manifest
+     ONLY for the `automotive` flavor, so the github/fdroid phone builds stay
+     free of automotive declarations. Entries verified against the AAOS-15
+     emulator + the car-app-quality media guidelines. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Optional AAOS support: required=false so the same module still builds a
+         phone-installable APK. The system pairs this with the com.android.automotive
+         meta-data below to list MassDroid in the car media center. -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+
+    <!-- appCategory=audio classifies the app for the car launcher / media surfaces. -->
+    <application android:appCategory="audio">
+
+        <!-- Declares MassDroid a media app to AAOS (res points at <uses name="media"/>).
+             This is the AAOS host; the projected Android Auto equivalent
+             (com.google.android.gms.car.application, contributed by :auto) is a
+             different host and intentionally left untouched. -->
+        <meta-data
+            android:name="com.android.automotive"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- The AAOS media center filters MediaBrowser/MediaLibrary services by
+             this opt-in flag; without it the service is logged as a non-template
+             app and never appears in the media quadrant. Merged into the service
+             declared in the main manifest (matched by android:name).
+             distractionOptimized is intentionally NOT set anywhere: it is only
+             valid for a Car App Library CarAppActivity and triggers a Play
+             rejection on a plain media UI activity. MainActivity stays parked-only. -->
+        <service
+            android:name=".service.PlaybackService"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.car.app.launchable"
+                android:value="true" />
+        </service>
+
+    </application>
+</manifest>

@@ -86,16 +86,27 @@ android {
     // github = default (in-app updater polls GitHub Releases, installs via
     // REQUEST_INSTALL_PACKAGES). fdroid = updater compiled out + the install
     // permission stripped via src/fdroid/AndroidManifest.xml; F-Droid updates
-    // through its own repository.
+    // through its own repository. automotive = Android Automotive OS build,
+    // distributed as a signed AAB on the Play Console automotive track; the
+    // AAOS manifest entries live in src/automotive/ so the phone flavors stay
+    // clean. IS_AUTOMOTIVE drives the car-only behaviour (Sendspin as the sole
+    // fixed player, no player selector / remote switching, media-center only).
     flavorDimensions += "distribution"
     productFlavors {
         create("github") {
             dimension = "distribution"
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
+            buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
         }
         create("fdroid") {
             dimension = "distribution"
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
+            buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
+        }
+        create("automotive") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
+            buildConfigField("boolean", "IS_AUTOMOTIVE", "true")
         }
     }
 
@@ -193,6 +204,8 @@ dependencies {
     // Modules
     implementation(project(":core"))
     implementation(project(":auto"))
+    // AAOS glue is only linked into the automotive flavor.
+    "automotiveImplementation"(project(":automotive"))
 }
 
 kapt {
