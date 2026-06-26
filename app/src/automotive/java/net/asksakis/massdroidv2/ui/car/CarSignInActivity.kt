@@ -67,7 +67,10 @@ class CarSignInActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MassDroidTheme {
+            // Force dark: the AAOS media center is always dark, but the car system can
+            // report day mode (isSystemInDarkTheme() = false), which would render this
+            // parked screen white and jarring next to the dark media UI (and at night).
+            MassDroidTheme(darkTheme = true) {
                 CarSignInScreen(onClose = { finish() })
             }
         }

@@ -63,7 +63,7 @@
         <activity
             android:name=".ui.car.CarSignInActivity"
             android:exported="true"
-            android:theme="@style/Theme.MassDroidV2">
+            android:theme="@style/Theme.MassDroidV2.Dark">
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
             </intent-filter>
