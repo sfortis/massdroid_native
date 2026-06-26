@@ -88,8 +88,12 @@ class SendspinCoordinator(
         volumeCoordinator.start(scope)
         // Car build: Sendspin is the sole output, so force it on. There is no
         // in-car UI to enable it, and the user setting is irrelevant here.
+        // Also lock the engine to DIRECT (solo): a car is never part of a
+        // multi-room sync group, so the group-detection heuristic must never be
+        // allowed to swap us into the getTimestamp-dependent SYNC engine.
         if (isAutomotive) {
             scope.launch { settingsRepository.setSendspinEnabled(true) }
+            sendspinManager.setForceSolo(true)
         }
         observePlayerId()
         observeEnabled()
@@ -133,7 +137,9 @@ class SendspinCoordinator(
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = volumeCoordinator,
-            clientName = clientName,
+            // Car build registers as a distinct MA player name so it is obvious which
+            // entry is the head unit (the phone/TV also register as "MassDroid").
+            clientName = if (isAutomotive) "$clientName AAOS" else clientName,
             onMetadataChanged = { onMetadata(it) },
             onStateChanged = { _, _, playing ->
                 onConnectionStateChanged()

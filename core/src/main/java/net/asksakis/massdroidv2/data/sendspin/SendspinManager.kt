@@ -28,6 +28,14 @@ class SendspinManager(
     @Volatile private var engine: SendspinAudioEngine = directEngine
     private val audio: SendspinAudioEngine get() = engine
     private var routingChangedCallback: (() -> Unit)? = null
+
+    // Car (AAOS) build: the head unit is the single, sole output - there is no
+    // multi-room grouping/sync scenario in a car. Lock the engine to DIRECT (pure
+    // FIFO) so a spurious group verdict can never swap us into the SYNC engine,
+    // whose getTimestamp-anchored timeline relies on an accurate audio HAL (the
+    // car has no peer to phase-lock to anyway). When true, setInSyncGroup() ignores
+    // the grouped argument.
+    @Volatile private var forceSolo: Boolean = false
     companion object {
         private const val TAG = "SendspinMgr"
         private const val HEARTBEAT_INTERVAL_MS = 2000L
@@ -512,9 +520,22 @@ class SendspinManager(
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
+    /**
+     * Car build only: permanently lock to the DIRECT (solo) engine. No grouping
+     * exists in a car, and DIRECT (pure FIFO) does not depend on the audio HAL's
+     * getTimestamp timeline, so it plays even where that HAL is unreliable.
+     */
+    fun setForceSolo(enabled: Boolean) {
+        if (forceSolo == enabled) return
+        forceSolo = enabled
+        Log.d(TAG, "forceSolo=$enabled (car: lock DIRECT, never SYNC)")
+        if (enabled) setInSyncGroup(false)
+    }
+
     fun setInSyncGroup(grouped: Boolean) {
-        val target: SendspinAudioEngine = if (grouped) syncEngine else directEngine
-        if (!grouped && timeSyncJob != null) {
+        val effectiveGrouped = grouped && !forceSolo
+        val target: SendspinAudioEngine = if (effectiveGrouped) syncEngine else directEngine
+        if (!effectiveGrouped && timeSyncJob != null) {
             // DIRECT (solo) is a pure FIFO with no peer to phase-lock to: it never
             // uses the clock (computeLocalPlan anchors locally on serverTs deltas).
             // Stop the periodic time-sync to save CPU + WS traffic while solo;
@@ -525,7 +546,7 @@ class SendspinManager(
         }
         if (engine === target) {
             // Already on the right engine. Keep the clock wired/running for sync.
-            if (grouped) {
+            if (effectiveGrouped) {
                 audio.clockSynchronizer = clockSynchronizer
                 if (timeSyncJob?.isActive != true && client.state.value != SendspinState.DISCONNECTED) {
                     startTimeSync()
