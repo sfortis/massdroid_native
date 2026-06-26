@@ -97,13 +97,26 @@ struct CompPreset {
 constexpr CompPreset kCompPresets[4] = {
     {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},            // 0 off (bypassed)
     {-10.0f, 2.0f, 6.0f, -30.0f, 1.5f, 6.0f, 1.5f, 20.0f, 250.0f},    // 1 soft
-    {-9.0f, 3.0f, 6.0f, -28.0f, 2.0f, 9.0f, 3.0f, 15.0f, 250.0f},     // 2 medium
-    {-8.0f, 4.0f, 5.0f, -26.0f, 2.5f, 12.0f, 5.0f, 8.0f, 180.0f},     // 3 hard
+    {-9.0f, 3.0f, 6.0f, -28.0f, 2.0f, 9.0f, 2.0f, 15.0f, 250.0f},     // 2 medium
+    {-8.0f, 4.0f, 5.0f, -26.0f, 2.5f, 12.0f, 3.0f, 8.0f, 180.0f},     // 3 hard
 };
 // Upward compression stops below this input level and tapers out over the band
 // just under it, so the noise floor / silence is never lifted.
 constexpr float kCompFloorDb = -50.0f;
 constexpr float kCompFloorTaperDb = 8.0f;
+
+// Gentle soft-clip ceiling for the compressor path. Linear (transparent) below
+// kSoftClipKnee, then a tanh knee to full-scale so makeup/attack overshoots round
+// off smoothly instead of hard-clipping. Only applied when the compressor is on.
+constexpr float kSoftClipKnee = 30000.0f;   // ~-0.8 dBFS
+inline float softClip(float x) {
+    const float a = x < 0.0f ? -x : x;
+    if (a <= kSoftClipKnee) return x;
+    const float ceil = 32767.0f;
+    const float sign = x < 0.0f ? -1.0f : 1.0f;
+    const float over = (a - kSoftClipKnee) / (ceil - kSoftClipKnee);
+    return sign * (kSoftClipKnee + (ceil - kSoftClipKnee) * std::tanh(over));
+}
 } // namespace
 
 SendspinOutputEngine::~SendspinOutputEngine() {
@@ -579,16 +592,25 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         int16_t* dp = out + static_cast<size_t>(silenceFront + f) * ch;
         for (int c = 0; c < ch; ++c) {
             float o = smp[c] * gain;
+            // Compressor makeup + attack overshoot can push transients past
+            // full-scale; a gentle soft-clip ceiling rounds those off instead of
+            // a harsh hard clip. Only when the compressor is active (otherwise the
+            // signal is <= FS already and the path stays bit-exact).
+            if (comp) o = softClip(o);
             if (dither) {
                 // First-order error-feedback noise shaping + TPDF dither (~1 LSB):
                 // decorrelates the 16-bit quantization noise and shapes it out of
                 // the most audible band, so quiet detail/fades are cleaner.
                 const float w = o + ditherError_[c];
                 const float y = w + nextTpdf();
-                float q = std::lrintf(y);
+                const float rounded = std::lrintf(y);
+                // Feed back the ROUNDING error (bounded ~0.5 LSB), NOT the clamped
+                // error: otherwise a clipped sample feeds a huge error forward and
+                // the shaper goes unstable, smearing the clip across later samples.
+                ditherError_[c] = y - rounded;
+                float q = rounded;
                 if (q > 32767.0f) q = 32767.0f;
                 else if (q < -32768.0f) q = -32768.0f;
-                ditherError_[c] = y - q;
                 dp[c] = static_cast<int16_t>(q);
             } else {
                 if (o > 32767.0f) o = 32767.0f;
