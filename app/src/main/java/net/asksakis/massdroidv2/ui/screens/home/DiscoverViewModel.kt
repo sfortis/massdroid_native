@@ -396,9 +396,13 @@ class DiscoverViewModel @Inject constructor(
         } catch (_: Exception) {
             emptyList()
         }
+        // Server recommendation folders (Recently Played / Added, favorites) are
+        // NOT cached on purpose: they are cheap and change constantly, so they are
+        // fetched live by the first-connect refresh. The cache only seeds the heavy
+        // discovery + genre sections instantly.
         _uiState.value = _uiState.value.copy(
             sections = sectionBuilder.buildSections(
-            serverFolders = cached.serverFolders,
+            serverFolders = emptyList(),
             suggestedArtists = cached.suggestedArtists,
             suggestedAlbums = cached.discoverAlbums,
             genreItems = genreItems,
@@ -406,8 +410,7 @@ class DiscoverViewModel @Inject constructor(
             ),
             isLoading = false
         )
-        val hasMissingImages = cached.discoverAlbums.any { it.imageUrl == null } ||
-            cached.serverFolders.any { f -> f.items.albums.any { it.imageUrl == null } }
+        val hasMissingImages = cached.discoverAlbums.any { it.imageUrl == null }
         cacheStale = discoverCache.isStale(cached) || hasMissingImages
     }
 
@@ -1286,8 +1289,7 @@ class DiscoverViewModel @Inject constructor(
                     DiscoverCache.CacheData(
                         suggestedArtists = suggested,
                         discoverAlbums = discover ?: emptyList(),
-                        topArtists = merged,
-                        serverFolders = content.enrichedFolders
+                        topArtists = merged
                     )
                 )
             } finally {

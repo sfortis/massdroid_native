@@ -9,7 +9,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
-import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,10 +23,13 @@ class DiscoverCache @Inject constructor(
 ) {
     @Serializable
     data class CacheData(
+        // Only the EXPENSIVE, slow-changing discovery is cached for instant launch
+        // display. Server recommendation folders (Recently Played / Added, favorites)
+        // are cheap to fetch and change constantly, so they are NOT cached: they are
+        // re-fetched live on launch (see DiscoverViewModel's first-connect refresh).
         val suggestedArtists: List<Artist> = emptyList(),
         val discoverAlbums: List<Album> = emptyList(),
         val topArtists: List<Artist> = emptyList(),
-        val serverFolders: List<RecommendationFolder> = emptyList(),
         val lastRefreshed: Long = 0L
     )
 
