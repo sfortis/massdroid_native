@@ -439,7 +439,7 @@ class AndroidAutoController(
             // Car only: give the AAOS media center a content:// artworkUri it can load
             // itself (it ignores artworkData). Phone/TV/AA stay on artworkData (null here).
             artworkUri = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-                imageUrl?.let { carArtworkUri(service, it) }
+                imageUrl?.let { carArtworkUri(service, it, CAR_ARTWORK_NOW_PLAYING_PX) }
             } else {
                 null
             },

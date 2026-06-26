@@ -56,7 +56,12 @@ class CarArtworkProvider : ContentProvider() {
     private fun openAsset(uri: Uri): AssetFileDescriptor? {
         val bytes = try {
             when (uri.lastPathSegment) {
-                "img" -> uri.getQueryParameter("url")?.takeIf { it.isNotBlank() }?.let { loadPng(it) }
+                "img" -> uri.getQueryParameter("url")?.takeIf { it.isNotBlank() }?.let {
+                    val sizePx = uri.getQueryParameter("size")?.toIntOrNull()
+                        ?.coerceIn(MIN_ARTWORK_SIZE_PX, MAX_ARTWORK_SIZE_PX)
+                        ?: ARTWORK_SIZE_PX
+                    loadPng(it, sizePx)
+                }
                 "res" -> uri.getQueryParameter("id")?.toIntOrNull()?.let { renderResource(it) }
                 else -> null
             }
@@ -75,15 +80,16 @@ class CarArtworkProvider : ContentProvider() {
         return AssetFileDescriptor(pipe[0], 0, bytes.size.toLong())
     }
 
-    private fun loadPng(url: String): ByteArray? {
+    private fun loadPng(url: String, sizePx: Int): ByteArray? {
         val ctx = context ?: return null
         // Coil's singleton loader (MassDroidApp.newImageLoader) reuses the mTLS
         // OkHttp + disk cache, so repeated browse requests hit the cache. allowHardware
-        // is off because we read pixels back to PNG-encode for the pipe; a modest
-        // cap keeps the streamed bytes small for browse rows.
+        // is off because we read pixels back to PNG-encode for the pipe. Browse rows ask
+        // for a modest edge; the now-playing screen asks for a larger one (the AAOS media
+        // center centers without upscaling, so a small source renders tiny there).
         val request = ImageRequest.Builder(ctx)
             .data(url)
-            .size(ARTWORK_SIZE_PX)
+            .size(sizePx)
             .allowHardware(false)
             .build()
         val drawable = (ctx.imageLoader.executeBlocking(request) as? SuccessResult)?.drawable
@@ -132,6 +138,8 @@ class CarArtworkProvider : ContentProvider() {
     private companion object {
         const val TAG = "CarArtwork"
         const val ARTWORK_SIZE_PX = 512
+        const val MIN_ARTWORK_SIZE_PX = 64
+        const val MAX_ARTWORK_SIZE_PX = 1024
         const val ICON_SIZE_PX = 192
         const val PNG_QUALITY = 100
     }

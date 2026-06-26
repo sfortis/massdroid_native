@@ -21,14 +21,28 @@ import net.asksakis.massdroidv2.BuildConfig
 
 private fun artworkAuthority(context: Context): String = context.packageName + ".artwork"
 
-/** Remote image URL -> content:// (car) or the raw URL (phone/TV/AA). */
-fun carArtworkUri(context: Context, rawUrl: String): Uri =
+/** Default decoded edge for browse-row artwork (modest, keeps streamed bytes small). */
+const val CAR_ARTWORK_BROWSE_PX = 512
+
+/**
+ * Larger decoded edge for the now-playing artwork. The AAOS media center centers
+ * (does not upscale) the now-playing image, so a modest source renders small on a
+ * high-density car display; Google recommends >=320dp. [CarArtworkProvider] clamps.
+ */
+const val CAR_ARTWORK_NOW_PLAYING_PX = 1024
+
+/**
+ * Remote image URL -> content:// (car) or the raw URL (phone/TV/AA). [sizePx] hints
+ * the decoded edge the car provider should produce (browse rows vs now-playing).
+ */
+fun carArtworkUri(context: Context, rawUrl: String, sizePx: Int = CAR_ARTWORK_BROWSE_PX): Uri =
     if (BuildConfig.IS_AUTOMOTIVE) {
         Uri.Builder()
             .scheme("content")
             .authority(artworkAuthority(context))
             .appendPath("img")
             .appendQueryParameter("url", rawUrl)
+            .appendQueryParameter("size", sizePx.toString())
             .build()
     } else {
         Uri.parse(rawUrl)
