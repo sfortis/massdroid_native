@@ -586,7 +586,14 @@ class SendspinAudioController(
                 .map { list ->
                     val ssId = sendspinPlayerId ?: return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
                     val self = list.find { it.playerId == ssId }
-                    val selfInGroup = self?.activeGroup != null || self?.groupChilds?.isNotEmpty() == true
+                    // Match the eager pre-connect check exactly. MA's group_childs
+                    // includes the parent ITSELF, and activeGroup is unreliable (can be
+                    // null when grouped, or transiently set for a solo player on the
+                    // Sendspin connect handshake). Using isNotEmpty()/activeGroup here
+                    // gave a FALSE-POSITIVE "grouped" verdict for a genuinely solo player
+                    // (server group_childs=[]), wrongly swapping the engine into SYNC.
+                    // The true test is "are there OTHER members besides me".
+                    val selfInGroup = self?.groupChilds?.any { it != ssId } == true
                     val childOfOther = list.any { it.playerId != ssId && ssId in it.groupChilds }
                     Pair(self, selfInGroup || childOfOther)
                 }
