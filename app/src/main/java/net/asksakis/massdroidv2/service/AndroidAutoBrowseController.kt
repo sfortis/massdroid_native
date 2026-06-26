@@ -545,11 +545,15 @@ class AndroidAutoBrowseController(
     private fun iconArtworkUri(iconResId: Int): android.net.Uri = carIconUri(context, iconResId)
 
     // The AAOS sign-in affordance: a non-fatal SessionError whose resolution extras
-    // carry a "Sign in" label + a PendingIntent into the (parked) sign-in screen.
-    // The exported MainActivity can be started by this PendingIntent without a
-    // LAUNCHER filter, which is why the car build can drop its launcher icon.
+    // carry a "Sign in" label + a PendingIntent into the parked car sign-in screen.
+    // Targets CarSignInActivity by class name (it lives only in the automotive flavor
+    // source set, so the shared main source set must not compile-reference it); this
+    // method is only reached on the IS_AUTOMOTIVE branch. The exported activity can be
+    // started by this PendingIntent without a LAUNCHER filter, which is why the car
+    // build can drop its launcher icon.
     private fun buildSignInError(): androidx.media3.session.SessionError {
-        val intent = Intent(context, net.asksakis.massdroidv2.ui.MainActivity::class.java).apply {
+        val intent = Intent().apply {
+            setClassName(context, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = android.app.PendingIntent.getActivity(

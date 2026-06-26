@@ -53,14 +53,17 @@
                 android:value="true" />
         </service>
 
-        <!-- Settings/sign-in affordance: declaring ACTION_APPLICATION_PREFERENCES on
-             MainActivity makes the AAOS media center show a settings (gear) icon that
-             opens MainActivity. This is a guaranteed, always-visible way into the
-             parked sign-in/settings screen - independent of any error rendering - so
-             the car reaches sign-in with no launcher icon (verified on AAOS-15). -->
+        <!-- Parked-only car sign-in / server-config screen. A small, dedicated
+             Compose activity (username/password + optional client certificate) so
+             the car never shows the full phone UI. ACTION_APPLICATION_PREFERENCES
+             makes the AAOS media center render a settings (gear) icon that opens it;
+             the signed-out SessionError resolution intent targets it too. This is the
+             guaranteed, always-visible way into sign-in with no launcher icon
+             (verified on AAOS-15). NOT distractionOptimized: parked, one-time setup. -->
         <activity
-            android:name=".ui.MainActivity"
-            tools:node="merge">
+            android:name=".ui.car.CarSignInActivity"
+            android:exported="true"
+            android:theme="@style/Theme.MassDroidV2">
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
             </intent-filter>
