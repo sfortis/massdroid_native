@@ -176,7 +176,12 @@ class AndroidAutoController(
 
     private fun updateSendspinSelectionLock(reason: String) {
         val target = sendspinPlayerId()
-        val shouldLock = isAaProjecting.value && isSendspinActive() && target != null
+        // Phone/TV: lock selection to Sendspin only while Android Auto is
+        // projecting (so car transport can't leak to a remote player). Car
+        // (AAOS native): there is no projection signal and Sendspin is the only
+        // player, so lock it permanently whenever it is active.
+        val shouldLock = (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE || isAaProjecting.value) &&
+            isSendspinActive() && target != null
         val currentLock = playerRepository.selectionLock.value
         when {
             shouldLock && currentLock?.playerId != target -> {

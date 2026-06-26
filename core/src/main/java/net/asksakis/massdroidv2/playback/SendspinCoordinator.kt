@@ -43,6 +43,12 @@ class SendspinCoordinator(
     private val shortcutDispatcher: ShortcutActionDispatcher,
     // Sendspin player name for this device; defaults to "MassDroid" (phone).
     private val clientName: String = "MassDroid",
+    // Android Automotive OS build: the device IS the car speaker, so Sendspin is
+    // the one and only player. Output is the built-in car audio HAL, NOT BT A2DP,
+    // so the BT-gated auto-select / routing used on the phone never fires in the
+    // car. In automotive we therefore force Sendspin enabled, auto-select it
+    // unconditionally, and route all transport to it regardless of BT state.
+    private val isAutomotive: Boolean = false,
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
     private val onActive: (reason: String) -> Unit,
@@ -80,6 +86,11 @@ class SendspinCoordinator(
     fun start() {
         createController()
         volumeCoordinator.start(scope)
+        // Car build: Sendspin is the sole output, so force it on. There is no
+        // in-car UI to enable it, and the user setting is irrelevant here.
+        if (isAutomotive) {
+            scope.launch { settingsRepository.setSendspinEnabled(true) }
+        }
         observePlayerId()
         observeEnabled()
         observeConnectionState()
@@ -101,8 +112,15 @@ class SendspinCoordinator(
     }
 
     fun shouldRouteToSendspin(): Boolean =
-        isBtA2dpActive() && isActive && playerId != null &&
-            playerRepository.selectedPlayer.value?.playerId != playerId
+        if (isAutomotive) {
+            // The car device is the speaker; whenever Sendspin is up, every
+            // transport command drives it directly (the proven BT-routed path),
+            // independent of which player is "selected" or any BT state.
+            isActive && playerId != null
+        } else {
+            isBtA2dpActive() && isActive && playerId != null &&
+                playerRepository.selectedPlayer.value?.playerId != playerId
+        }
 
     fun shouldBlockProximitySelectionForBt(): Boolean =
         isBtA2dpActive() && isActive && playerId != null
@@ -368,7 +386,10 @@ class SendspinCoordinator(
 
     private fun autoSelectSendspinForBt(reason: String, deviceName: CharSequence? = null) {
         scope.launch {
-            if (!isBtA2dpActive()) return@launch
+            // Phone/TV: only hijack selection when audio is actually going out
+            // over BT A2DP. Car: Sendspin is the only player, so always select it
+            // (the car's audio HAL is not a BT A2DP device).
+            if (!isAutomotive && !isBtA2dpActive()) return@launch
             val target = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
             val currentSelected = playerRepository.selectedPlayer.value?.playerId
             if (currentSelected == target) return@launch

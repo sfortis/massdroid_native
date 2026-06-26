@@ -117,6 +117,7 @@ class PlaybackService : MediaLibraryService() {
             wsClient = wsClient,
             volumeCoordinator = sendspinVolumeCoordinator,
             shortcutDispatcher = shortcutDispatcher,
+            isAutomotive = net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE,
             onConnectionStateChanged = { updateConnectionNotification() },
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },
             onActive = { reason -> androidAutoController.onSendspinActive(reason) },
