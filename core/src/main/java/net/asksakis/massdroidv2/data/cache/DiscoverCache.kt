@@ -7,8 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,12 +23,13 @@ class DiscoverCache @Inject constructor(
 ) {
     @Serializable
     data class CacheData(
-        // Only the EXPENSIVE, slow-changing discovery is cached for instant launch
-        // display. Server recommendation folders (Recently Played / Added, favorites)
-        // are cheap to fetch and change constantly, so they are NOT cached: they are
-        // re-fetched live on launch (see DiscoverViewModel's first-connect refresh).
-        val suggestedArtists: List<Artist> = emptyList(),
-        val discoverAlbums: List<Album> = emptyList(),
+        // The last rendered Discover screen, persisted as a stale-while-revalidate
+        // placeholder: shown instantly on launch (so the recent grids are never
+        // empty) and then revalidated by the first-connect refresh. WS media events
+        // re-save it so the placeholder stays in sync without a manual refresh.
+        val sections: List<DiscoverSection> = emptyList(),
+        // Not for display: seeds the in-memory genre maps so Smart Mix / Genre Radio
+        // work before the first full server load completes.
         val topArtists: List<Artist> = emptyList(),
         val lastRefreshed: Long = 0L
     )

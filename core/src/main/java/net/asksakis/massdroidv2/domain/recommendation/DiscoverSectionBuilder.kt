@@ -8,14 +8,23 @@ import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.GenreScore
+import kotlinx.serialization.Serializable
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// @Serializable so the rendered Discover screen can be persisted by DiscoverCache
+// (closed-polymorphism sealed hierarchy; kotlinx tags each subclass automatically).
+@Serializable
 sealed class DiscoverSection {
+    @Serializable
     data class ArtistSection(val title: String, val artists: List<Artist>) : DiscoverSection()
+    @Serializable
     data class AlbumSection(val title: String, val albums: List<Album>) : DiscoverSection()
+    @Serializable
     data class PlaylistSection(val title: String, val playlists: List<Playlist>) : DiscoverSection()
+    @Serializable
     data class TrackSection(val title: String, val tracks: List<Track>) : DiscoverSection()
+    @Serializable
     data class GenreRadioSection(val title: String, val genres: List<GenreItem>) : DiscoverSection()
 }
 
