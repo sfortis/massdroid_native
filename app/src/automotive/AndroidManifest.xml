@@ -13,6 +13,20 @@
         android:name="android.hardware.type.automotive"
         android:required="false" />
 
+    <!-- Strip phone-only capabilities the car build never uses, so the AAOS app
+         requests no driver-irrelevant or privacy-sensitive permissions (cleaner
+         Play review + no scary mic/location prompts in a car):
+         - Follow Me room detection (BLE scan + location + motion) is meaningless in a car
+         - acoustic calibration (mic) targets the phone-as-speaker BT path, not the car HAL
+         - the in-app GitHub updater is compiled out in this flavor (ENABLE_UPDATE_CHECK=false)
+         - battery-optimization exemption is pointless on an always-powered head unit. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
+
     <!-- appCategory=audio classifies the app for the car launcher / media surfaces. -->
     <application android:appCategory="audio">
 
@@ -38,6 +52,11 @@
                 android:name="androidx.car.app.launchable"
                 android:value="true" />
         </service>
+
+        <!-- Follow Me (room-detection proximity scanning) has no place in a car. -->
+        <service
+            android:name=".service.FollowMeService"
+            tools:node="remove" />
 
         <!-- Streams real artwork bytes to the AAOS media center over content://
              (the car process cannot fetch the mTLS/private MA image URLs itself).

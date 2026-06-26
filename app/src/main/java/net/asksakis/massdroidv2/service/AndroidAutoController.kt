@@ -421,6 +421,7 @@ class AndroidAutoController(
             player.state == PlaybackState.PLAYING
         }
         val volumeLevel = effectiveVolume(player.volumeLevel, volumeOv)
+        val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
         val playback = AutoPlaybackSnapshot(
             isPlaying = player.state == PlaybackState.PLAYING,
             audioFlowing = audioFlowing,
@@ -435,6 +436,13 @@ class AndroidAutoController(
                 ?: 0.0) * 1000).toLong(),
             currentIndex = currentIndex,
             artworkData = artwork,
+            // Car only: give the AAOS media center a content:// artworkUri it can load
+            // itself (it ignores artworkData). Phone/TV/AA stay on artworkData (null here).
+            artworkUri = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                imageUrl?.let { carArtworkUri(service, it) }
+            } else {
+                null
+            },
             volumeLevel = volumeLevel,
             isMuted = player.volumeMuted,
             isRemotePlayback = !isSendspinSelected,
@@ -445,7 +453,7 @@ class AndroidAutoController(
             queue = queueEntries,
             isFavorite = currentTrack?.favorite == true,
             shuffleEnabled = queue?.shuffleEnabled == true,
-            imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl,
+            imageUrl = imageUrl,
         )
     }
 
@@ -603,7 +611,7 @@ class AndroidAutoController(
                             artist = qi.track?.artistNames ?: "",
                             album = qi.track?.albumName ?: "",
                             durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
-                            artworkUri = art?.let { Uri.parse(it) },
+                            artworkUri = art?.let { carArtworkUri(service, it) },
                         )
                     }
                     // Feed the queue snapshot into the master combine.

@@ -76,6 +76,9 @@ data class AutoPlaybackSnapshot(
     val durationMs: Long,
     val currentIndex: Int,
     val artworkData: ByteArray?,
+    // Car (AAOS) only: a content:// artworkUri the car media center can load itself
+    // (it ignores artworkData bytes). Null on phone/TV/AA, which use artworkData.
+    val artworkUri: Uri? = null,
     val volumeLevel: Int,
     val isMuted: Boolean,
     val isRemotePlayback: Boolean,
@@ -96,6 +99,7 @@ data class AutoPlaybackSnapshot(
             album == other.album &&
             durationMs == other.durationMs &&
             currentIndex == other.currentIndex &&
+            artworkUri == other.artworkUri &&
             volumeLevel == other.volumeLevel &&
             isMuted == other.isMuted &&
             isRemotePlayback == other.isRemotePlayback &&
@@ -116,6 +120,7 @@ data class AutoPlaybackSnapshot(
         r = 31 * r + durationMs.hashCode()
         r = 31 * r + currentIndex
         r = 31 * r + (artworkData?.size ?: 0)
+        r = 31 * r + (artworkUri?.hashCode() ?: 0)
         r = 31 * r + volumeLevel
         r = 31 * r + isMuted.hashCode()
         r = 31 * r + isRemotePlayback.hashCode()
@@ -296,6 +301,8 @@ class RemoteControlPlayer(
             .setAlbumTitle(playback.album)
             .also { b ->
                 playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                // Car: the AAOS media center renders artworkUri, not the bytes.
+                playback.artworkUri?.let { b.setArtworkUri(it) }
             }
             .build()
 
@@ -316,7 +323,10 @@ class RemoteControlPlayer(
                 val meta = MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(playback.title.ifEmpty { null })
-                    .also { b -> playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) } }
+                    .also { b ->
+                        playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                        playback.artworkUri?.let { b.setArtworkUri(it) }
+                    }
                     .build()
                 val id = "${playback.trackUri.orEmpty()}#ch$i".toStableLongId()
                 val item = MediaItem.Builder().setMediaId(id.toString()).setMediaMetadata(meta).build()

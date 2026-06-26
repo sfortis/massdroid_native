@@ -5,11 +5,13 @@ import android.content.ContentValues
 import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.core.content.ContextCompat
 import coil.executeBlocking
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -52,11 +54,14 @@ class CarArtworkProvider : ContentProvider() {
         openAsset(uri)?.parcelFileDescriptor
 
     private fun openAsset(uri: Uri): AssetFileDescriptor? {
-        val url = uri.getQueryParameter("url")?.takeIf { it.isNotBlank() } ?: return null
         val bytes = try {
-            loadPng(url)
+            when (uri.lastPathSegment) {
+                "img" -> uri.getQueryParameter("url")?.takeIf { it.isNotBlank() }?.let { loadPng(it) }
+                "res" -> uri.getQueryParameter("id")?.toIntOrNull()?.let { renderResource(it) }
+                else -> null
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "artwork fetch failed for '$url': ${e.message}")
+            Log.w(TAG, "artwork render failed for $uri: ${e.message}")
             null
         } ?: return null
         val pipe = ParcelFileDescriptor.createPipe()
@@ -89,6 +94,22 @@ class CarArtworkProvider : ContentProvider() {
         }
     }
 
+    // Renders a (possibly vector) drawable resource to a PNG. The AAOS media center
+    // cannot decode a cross-package vector android.resource://, so category icons are
+    // served as rasterised bytes instead.
+    private fun renderResource(resId: Int): ByteArray? {
+        val ctx = context ?: return null
+        val drawable = ContextCompat.getDrawable(ctx, resId) ?: return null
+        val bitmap = Bitmap.createBitmap(ICON_SIZE_PX, ICON_SIZE_PX, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, ICON_SIZE_PX, ICON_SIZE_PX)
+        drawable.draw(canvas)
+        return ByteArrayOutputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)
+            out.toByteArray()
+        }
+    }
+
     override fun query(
         uri: Uri,
         projection: Array<out String>?,
@@ -111,6 +132,7 @@ class CarArtworkProvider : ContentProvider() {
     private companion object {
         const val TAG = "CarArtwork"
         const val ARTWORK_SIZE_PX = 512
+        const val ICON_SIZE_PX = 192
         const val PNG_QUALITY = 100
     }
 }
