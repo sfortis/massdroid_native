@@ -39,5 +39,15 @@
                 android:value="true" />
         </service>
 
+        <!-- Streams real artwork bytes to the AAOS media center over content://
+             (the car process cannot fetch the mTLS/private MA image URLs itself).
+             Exported + grantUriPermissions so the car's process can read the URIs
+             we hand out as MediaItem artworkUri hints. -->
+        <provider
+            android:name=".service.CarArtworkProvider"
+            android:authorities="${applicationId}.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
     </application>
 </manifest>

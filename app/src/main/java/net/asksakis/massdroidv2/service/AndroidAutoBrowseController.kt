@@ -428,7 +428,7 @@ class AndroidAutoBrowseController(
                 MediaMetadata.Builder()
                     .setTitle(name)
                     .setArtworkUri(
-                        imageUrl?.let { android.net.Uri.parse(it) }
+                        imageUrl?.let { carArtworkUri(it) }
                             ?: AutoBrowseExtras.placeholderArtworkUri(context, name)
                     )
                     .setIsBrowsable(isFolder)
@@ -531,6 +531,22 @@ class AndroidAutoBrowseController(
             .appendPath(iconResId.toString())
             .build()
 
+    // On the AAOS car build, route remote artwork through CarArtworkProvider so the
+    // separate car media-center process loads it via our authenticated content://
+    // stream (it cannot reach the mTLS / private image server itself). Phone/TV use
+    // the raw URL - their in-process loaders already have the cert + network access.
+    private fun carArtworkUri(rawUrl: String): android.net.Uri =
+        if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+            android.net.Uri.Builder()
+                .scheme("content")
+                .authority(context.packageName + ".artwork")
+                .appendPath("img")
+                .appendQueryParameter("url", rawUrl)
+                .build()
+        } else {
+            android.net.Uri.parse(rawUrl)
+        }
+
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
         return musicRepository.getArtists(limit = pageSize, offset = page * pageSize, orderBy = "name")
             .map { it.toBrowsableMediaItem() }
@@ -572,7 +588,7 @@ class AndroidAutoBrowseController(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
@@ -599,7 +615,7 @@ class AndroidAutoBrowseController(
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
@@ -614,7 +630,7 @@ class AndroidAutoBrowseController(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
@@ -631,7 +647,7 @@ class AndroidAutoBrowseController(
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
                 .setAlbumTitle(albumName.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
@@ -646,7 +662,7 @@ class AndroidAutoBrowseController(
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
