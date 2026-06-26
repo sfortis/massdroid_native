@@ -412,9 +412,15 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private suspend fun observeConnection() {
+        var firstConnect = true
         wsClient.connectionState.collect { state ->
             if (state is ConnectionState.Connected) {
-                loadFromServer()
+                // The disk cache is for INSTANT display on launch, not for skipping
+                // the launch refresh: force the first connect-driven load past the
+                // "cache fresh" gate so time-sensitive sections (Recently Played)
+                // are live. Later reconnects keep the dedup/cooldown behaviour.
+                loadFromServer(force = firstConnect)
+                firstConnect = false
             }
         }
     }
@@ -1163,7 +1169,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun loadFromServer(isManualRefresh: Boolean = false) {
+    private fun loadFromServer(isManualRefresh: Boolean = false, force: Boolean = false) {
         if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
             viewModelScope.launch {
                 try {
@@ -1172,7 +1178,7 @@ class DiscoverViewModel @Inject constructor(
                 } catch (_: Exception) { /* best-effort */ }
             }
         }
-        if (!isManualRefresh && !cacheStale && _uiState.value.sections.isNotEmpty()) {
+        if (!isManualRefresh && !force && !cacheStale && _uiState.value.sections.isNotEmpty()) {
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
         }
@@ -1180,7 +1186,7 @@ class DiscoverViewModel @Inject constructor(
             Log.d(TAG, "loadFromServer: skipped (in flight)")
             return
         }
-        if (!isManualRefresh && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS) {
+        if (!isManualRefresh && !force && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS) {
             Log.d(TAG, "loadFromServer: skipped (cooldown)")
             return
         }
