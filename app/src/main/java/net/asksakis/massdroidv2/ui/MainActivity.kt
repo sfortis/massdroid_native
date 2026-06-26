@@ -153,11 +153,19 @@ class MainActivity : ComponentActivity() {
         }
         if (savedInstanceState == null) {
             requestNotificationPermission()
-            requestFollowMePermissionsIfNeeded()
+            // Follow Me does not ship in the car build (its scan/location perms are
+            // stripped), so never prompt for it there.
+            if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                requestFollowMePermissionsIfNeeded()
+            }
         }
         // The activity may be (re)launched via the OAuth callback deep link.
         handleOAuthCallback(intent)
-        checkBatteryOptimization()
+        // No battery-optimization prompt on a car head unit (always powered, and the
+        // dialog is an unwanted distraction). The exemption permission is stripped too.
+        if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+            checkBatteryOptimization()
+        }
         handleShortcutIntent(intent)
 
         // Cache sendspin client ID for the local-player checks below. STREAM_MUSIC
