@@ -368,14 +368,14 @@ class AndroidAutoBrowseController(
             "Albums",
             MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_albums,
-            listItem = true
+            gridChildren = true
         ),
         browseFolder(
             "artists",
             "Artists",
             MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_artists,
-            listItem = true
+            gridChildren = true
         ),
         browseFolder(
             "audiobooks",
@@ -396,7 +396,7 @@ class AndroidAutoBrowseController(
             "Browse",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
-            listItem = true
+            gridChildren = true
         ),
         playableItem(
             "smart_mix",
@@ -450,7 +450,8 @@ class AndroidAutoBrowseController(
                     .setIsBrowsable(isFolder)
                     .setIsPlayable(!isFolder)
                     .setMediaType(resolvedMediaType)
-                    .setExtras(AutoBrowseExtras.listItemExtras())
+                    // Browse is a grid section: nested folders keep their children gridded too.
+                    .setExtras(AutoBrowseExtras.gridItemExtras())
                     .build()
             )
             .setRequestMetadata(
@@ -520,7 +521,8 @@ class AndroidAutoBrowseController(
         mediaType: Int,
         iconResId: Int? = null,
         groupTitle: String? = null,
-        listItem: Boolean = false
+        listItem: Boolean = false,
+        gridChildren: Boolean = false
     ): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
@@ -532,6 +534,9 @@ class AndroidAutoBrowseController(
         }
         when {
             groupTitle != null -> metadata.setExtras(AutoBrowseExtras.rootTileExtras(groupTitle))
+            // gridChildren wins over listItem: the visual categories (Albums, Artists,
+            // Browse) render their children as a cover/circle grid; everything else lists.
+            gridChildren -> metadata.setExtras(AutoBrowseExtras.gridItemExtras())
             listItem -> metadata.setExtras(AutoBrowseExtras.listItemExtras())
         }
         return MediaItem.Builder()
