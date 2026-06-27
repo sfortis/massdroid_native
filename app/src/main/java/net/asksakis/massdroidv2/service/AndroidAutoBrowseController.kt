@@ -276,6 +276,8 @@ class AndroidAutoBrowseController(
     private suspend fun children(parentId: String, page: Int, pageSize: Int): List<MediaItem> {
         return when (parentId) {
             ROOT -> buildRootCategories()
+            "library" -> buildLibraryCategories()
+            "smart_mix_folder" -> buildSmartMixItems()
             "recently_played" -> loadAlbums(page, pageSize, "last_played")
             "artists" -> loadArtists(page, pageSize)
             "albums" -> loadAlbums(page, pageSize)
@@ -352,10 +354,60 @@ class AndroidAutoBrowseController(
         return "$provider://$type/$itemId"
     }
 
-    // Flat root list in one logical order (no "More" folder): library content
-    // first, then the generators. Rendered as a list (see rootExtras) so every
-    // entry is visible without the gearhead grid's 4-tile cap + auto-"More".
+    // The AAOS media center renders root browsable children as TOP TABS and hard-caps
+    // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). So the root
+    // is exactly 4: a "Library" folder that nests the collection categories, plus the
+    // two generators and Browse, which the user wants reachable in one tap in the car.
+    // (Android Auto on the phone has no such cap; it renders these as a flat list fine.)
     private fun buildRootCategories(): List<MediaItem> = listOf(
+        browseFolder(
+            "library",
+            "Library",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_library,
+            listItem = true
+        ),
+        browseFolder(
+            "browse",
+            "Browse",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
+            gridChildren = true
+        ),
+        // Smart Mix is a one-tap PLAYABLE, but AAOS only turns BROWSABLE roots into
+        // tabs (a playable root just vanishes). So expose it as a folder tab whose
+        // single child is the playable Smart Mix - prominent tab, one extra tap to play.
+        browseFolder(
+            "smart_mix_folder",
+            "Smart Mix",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+            listItem = true
+        ),
+        browseFolder(
+            "genre_radio",
+            "Genre Radio",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genre_radio,
+            listItem = true
+        ),
+    )
+
+    // The "Smart Mix" tab's single playable entry. Tapping it carries mediaId
+    // "smart_mix", which handleAddMediaItem maps to ShortcutAction.SmartMix.
+    private fun buildSmartMixItems(): List<MediaItem> = listOf(
+        playableItem(
+            "smart_mix",
+            "Play Smart Mix",
+            MediaMetadata.MEDIA_TYPE_PLAYLIST,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+            listItem = true
+        ),
+    )
+
+    // The "Library" tab's children: the collection categories as a list (Albums and
+    // Artists keep their grid for their own children via gridChildren).
+    private fun buildLibraryCategories(): List<MediaItem> = listOf(
         browseFolder(
             "playlists",
             "Playlists",
@@ -378,10 +430,10 @@ class AndroidAutoBrowseController(
             gridChildren = true
         ),
         browseFolder(
-            "audiobooks",
-            "Audiobooks",
+            "tracks",
+            "Tracks",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_audiobooks,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_tracks,
             listItem = true
         ),
         browseFolder(
@@ -392,24 +444,10 @@ class AndroidAutoBrowseController(
             listItem = true
         ),
         browseFolder(
-            "browse",
-            "Browse",
+            "audiobooks",
+            "Audiobooks",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
-            gridChildren = true
-        ),
-        playableItem(
-            "smart_mix",
-            "Smart Mix",
-            MediaMetadata.MEDIA_TYPE_PLAYLIST,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
-            listItem = true
-        ),
-        browseFolder(
-            "genre_radio",
-            "Genre Radio",
-            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genre_radio,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_audiobooks,
             listItem = true
         ),
     )
