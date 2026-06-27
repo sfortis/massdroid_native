@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.screens.home
+package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -13,9 +13,6 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
-import net.asksakis.massdroidv2.domain.recommendation.RecommendationEngine
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import kotlin.math.ln

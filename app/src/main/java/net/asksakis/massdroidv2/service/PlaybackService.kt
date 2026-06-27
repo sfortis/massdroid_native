@@ -51,6 +51,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
     @Inject lateinit var genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
     @Inject lateinit var mixOrchestrator: net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
+    @Inject lateinit var discoverFeedOrchestrator: net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var sendspinCoordinator: SendspinCoordinator
@@ -124,6 +125,7 @@ class PlaybackService : MediaLibraryService() {
             musicRepository = musicRepository,
             playerRepository = playerRepository,
             genreRepository = genreRepository,
+            discoverFeedOrchestrator = discoverFeedOrchestrator,
             shortcutDispatcher = shortcutDispatcher,
             activeQueueId = { activePlayerId() ?: playerRepository.queueState.value?.queueId },
             isSendspinActive = { sendspinCoordinator.isActive },

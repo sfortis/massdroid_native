@@ -25,6 +25,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
 import net.asksakis.massdroidv2.domain.model.Album
@@ -32,6 +34,8 @@ import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.BrowseItem
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
@@ -44,6 +48,7 @@ class AndroidAutoBrowseController(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val discoverFeedOrchestrator: net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val activeQueueId: () -> String?,
     private val isSendspinActive: () -> Boolean,
@@ -66,8 +71,11 @@ class AndroidAutoBrowseController(
     /** Snapshot of parentIds the AA host has queried/subscribed to so far. */
     fun trackedParentIds(): Set<String> = knownParentIds.toSet()
 
-    /** Clear tracked subscriptions on session stop. */
-    fun clearTrackedParentIds() = knownParentIds.clear()
+    /** Clear tracked subscriptions + the cached Discover feed on session stop. */
+    fun clearTrackedParentIds() {
+        knownParentIds.clear()
+        cachedFeed = null
+    }
 
     val callback: MediaLibraryService.MediaLibrarySession.Callback =
         object : MediaLibraryService.MediaLibrarySession.Callback {
@@ -276,8 +284,9 @@ class AndroidAutoBrowseController(
     private suspend fun children(parentId: String, page: Int, pageSize: Int): List<MediaItem> {
         return when (parentId) {
             ROOT -> buildRootCategories()
+            "discover" -> buildDiscoverItems()
             "library" -> buildLibraryCategories()
-            "smart_mix_folder" -> buildSmartMixItems()
+            "smart_mixes" -> buildSmartMixesItems()
             "recently_played" -> loadAlbums(page, pageSize, "last_played")
             "artists" -> loadArtists(page, pageSize)
             "albums" -> loadAlbums(page, pageSize)
@@ -285,7 +294,6 @@ class AndroidAutoBrowseController(
             "tracks" -> loadTracks(page, pageSize)
             "audiobooks" -> loadAudiobooks(page, pageSize)
             "genres" -> buildGenreList()
-            "genre_radio" -> buildGenreRadioList()
             "browse" -> loadServerBrowse(null)
             else -> when {
                 parentId.startsWith("browse|") -> {
@@ -356,10 +364,21 @@ class AndroidAutoBrowseController(
 
     // The AAOS media center renders root browsable children as TOP TABS and hard-caps
     // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). So the root
-    // is exactly 4: a "Library" folder that nests the collection categories, plus the
-    // two generators and Browse, which the user wants reachable in one tap in the car.
-    // (Android Auto on the phone has no such cap; it renders these as a flat list fine.)
+    // is exactly 4: Discover (the engine-driven landing feed, like the phone app),
+    // Library (nests the collection categories), Browse (server browse) and Smart Mixes
+    // (Play Smart Mix + every genre radio in one tab). (Android Auto on the phone has no
+    // such cap; it renders these as a flat list fine.)
     private fun buildRootCategories(): List<MediaItem> = listOf(
+        // Discover children render as cover-art TILES (grid content style), so each
+        // feed section becomes a horizontally-scrollable row of tiles grouped under
+        // its title - the phone-app carousel look (the host lays the grid out).
+        browseFolder(
+            "discover",
+            "Discover",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_discover,
+            gridChildren = true
+        ),
         browseFolder(
             "library",
             "Library",
@@ -374,36 +393,92 @@ class AndroidAutoBrowseController(
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
             listItem = true
         ),
-        // Smart Mix is a one-tap PLAYABLE, but AAOS only turns BROWSABLE roots into
-        // tabs (a playable root just vanishes). So expose it as a folder tab whose
-        // single child is the playable Smart Mix - prominent tab, one extra tap to play.
         browseFolder(
-            "smart_mix_folder",
-            "Smart Mix",
+            "smart_mixes",
+            "Smart Mixes",
             MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
-            listItem = true
-        ),
-        browseFolder(
-            "genre_radio",
-            "Genre Radio",
-            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genre_radio,
             listItem = true
         ),
     )
 
-    // The "Smart Mix" tab's single playable entry. Tapping it carries mediaId
-    // "smart_mix", which handleAddMediaItem maps to ShortcutAction.SmartMix.
-    private fun buildSmartMixItems(): List<MediaItem> = listOf(
-        playableItem(
-            "smart_mix",
-            "Play Smart Mix",
-            MediaMetadata.MEDIA_TYPE_PLAYLIST,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
-            listItem = true
-        ),
-    )
+    // The "Smart Mixes" tab: the one-tap Smart Mix generator followed by a radio for
+    // every library genre. "smart_mix" -> ShortcutAction.SmartMix, "genre_radio|<g>" ->
+    // ShortcutAction.GenreRadio (both via handleAddMediaItem).
+    private suspend fun buildSmartMixesItems(): List<MediaItem> = buildList {
+        add(
+            playableItem(
+                "smart_mix",
+                "Play Smart Mix",
+                MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+                listItem = true
+            )
+        )
+        addAll(buildGenreRadioList())
+    }
+
+    // The "Discover" landing tab: the SAME engine-driven feed the phone app shows
+    // (recommended/discovery artists + albums, genre radios, recent), built by the
+    // shared :core DiscoverFeedOrchestrator and flattened into grouped rows (each
+    // DiscoverSection becomes a labeled group via its title).
+    private suspend fun buildDiscoverItems(): List<MediaItem> {
+        val feed = discoverFeed() ?: return emptyList()
+        return feed.sections.flatMap { section ->
+            when (section) {
+                is DiscoverSection.ArtistSection ->
+                    section.artists.map { it.toBrowsableMediaItem(section.title) }
+                is DiscoverSection.AlbumSection ->
+                    section.albums.map { it.toBrowsableMediaItem(section.title) }
+                is DiscoverSection.TrackSection ->
+                    section.tracks.map { it.toPlayableMediaItem(section.title) }
+                is DiscoverSection.PlaylistSection ->
+                    section.playlists.map { it.toBrowsableMediaItem(section.title) }
+                // Genre radios have their own "Smart Mixes" tab in the car, so they are
+                // not duplicated in Discover - which makes the album recommendations
+                // ("Albums You Might Like") the lead section.
+                is DiscoverSection.GenreRadioSection -> emptyList()
+            }
+        }
+    }
+
+    // Cache the built feed for the browse session: building it is a network-heavy
+    // library + discovery pass, so it must not run on every onGetChildren. Rebuilt
+    // after DISCOVER_FEED_TTL_MS or on session stop (clearTrackedParentIds).
+    @Volatile private var cachedFeed: DiscoverFeedOrchestrator.DiscoverFeed? = null
+    @Volatile private var cachedFeedAtMs = 0L
+    // Serialises the (network-heavy) feed build: the host can call onGetChildren from
+    // multiple threads, so without this two concurrent "discover" queries would each
+    // run a full buildFeed. Second caller waits and gets the fresh cache.
+    private val feedMutex = Mutex()
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun discoverFeed(): DiscoverFeedOrchestrator.DiscoverFeed? {
+        fun fresh(): DiscoverFeedOrchestrator.DiscoverFeed? =
+            cachedFeed?.takeIf { System.currentTimeMillis() - cachedFeedAtMs < DISCOVER_FEED_TTL_MS }
+        fresh()?.let { return it }
+        return feedMutex.withLock {
+            // Double-check: another caller may have built it while we waited.
+            fresh()?.let { return@withLock it }
+            try {
+                val feed = discoverFeedOrchestrator.buildFeed()
+                // Only cache a NON-EMPTY feed. A cold-start build before the WS has
+                // connected returns empty sections; caching that would survive the
+                // WS-connect invalidation re-query and leave Discover permanently blank.
+                // Leaving it uncached makes the connect refresh rebuild it once online.
+                if (feed.sections.isNotEmpty()) {
+                    cachedFeed = feed
+                    cachedFeedAtMs = System.currentTimeMillis()
+                }
+                feed
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Discover feed build failed: ${e.message}")
+                cachedFeed // serve stale if we have one
+            }
+        }
+    }
 
     // The "Library" tab's children: the collection categories as a list (Albums and
     // Artists keep their grid for their own children via gridChildren).
@@ -754,5 +829,6 @@ class AndroidAutoBrowseController(
         private const val TAG = "AndroidAutoBrowse"
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
+        private const val DISCOVER_FEED_TTL_MS = 10 * 60 * 1000L
     }
 }

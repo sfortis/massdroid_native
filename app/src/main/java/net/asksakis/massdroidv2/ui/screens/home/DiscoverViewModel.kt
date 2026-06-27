@@ -27,17 +27,13 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverContentLoader
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
-import net.asksakis.massdroidv2.domain.recommendation.DiscoverSectionBuilder
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
-import net.asksakis.massdroidv2.domain.recommendation.RecommendationEngine
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
-import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
-import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import javax.inject.Inject
@@ -79,21 +75,14 @@ class DiscoverViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val settingsRepository: SettingsRepository,
-    private val playHistoryRepository: PlayHistoryRepository,
-    private val smartListeningRepository: SmartListeningRepository,
     private val wsClient: MaWebSocketClient,
     private val discoverCache: DiscoverCache,
-    private val recommendationEngine: RecommendationEngine,
     private val mixOrchestrator: MixPlaybackOrchestrator,
-    private val sectionBuilder: DiscoverSectionBuilder,
-    private val lastFmSimilarResolver: net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver,
-    private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
-    private val lastFmGenreResolver: net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver,
+    private val discoverFeedOrchestrator: DiscoverFeedOrchestrator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val appUpdateChecker: net.asksakis.massdroidv2.data.update.AppUpdateChecker,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val sessionEventBus: SessionEventBus,
-    private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 ) : ViewModel() {
 
     private val sectionCoordinator = DiscoverSectionCoordinator(
@@ -101,15 +90,6 @@ class DiscoverViewModel @Inject constructor(
         recentFavoriteTracksTitle = RECENT_FAVORITE_TRACKS_TITLE
     )
     private val contentLoader = DiscoverContentLoader(musicRepository, genreRepository)
-    private val recommendationOrchestrator = DiscoverRecommendationOrchestrator(
-        musicRepository = musicRepository,
-        playHistoryRepository = playHistoryRepository,
-        genreRepository = genreRepository,
-        recommendationEngine = recommendationEngine,
-        lastFmSimilarResolver = lastFmSimilarResolver,
-        lastFmGenreResolver = lastFmGenreResolver,
-        providerHealthReporter = providerHealthReporter
-    )
     private val _uiState = MutableStateFlow(DiscoverUiState())
     val sections: StateFlow<List<DiscoverSection>> = _uiState.map { it.sections }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -140,8 +120,6 @@ class DiscoverViewModel @Inject constructor(
     private var connectionProbeJob: Job? = null
     private var loadGeneration = 0L
     private var artistByUri = emptyMap<String, Artist>()
-    private var excludedArtistUris = emptySet<String>()
-    private var excludedTrackUris = emptySet<String>()
     // Genre Radio UI debounce (the build itself lives in MixPlaybackOrchestrator).
     private var lastRadioStartAtMs = 0L
     private var lastRadioStartGenre: String? = null
@@ -187,8 +165,6 @@ class DiscoverViewModel @Inject constructor(
         genreArtists = emptyMap()
         strictGenreArtists = emptyMap()
         artistByUri = emptyMap()
-        excludedArtistUris = emptySet()
-        excludedTrackUris = emptySet()
         lastRadioStartAtMs = 0L
         lastRadioStartGenre = null
         cacheStale = true
@@ -505,82 +481,21 @@ class DiscoverViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isRefreshing = true)
             }
             try {
-                val content = contentLoader.load(excludedArtistUris = excludedArtistUris)
-                val merged = content.mergedArtists
-                artistByUri = merged.mapNotNull { artist ->
-                    artist.canonicalKey()?.let { it to artist }
-                }.toMap()
-                lastFmLibraryEnricher.enrichInBackground(merged)
-
-                val smartListeningEnabled = settingsRepository.smartListeningEnabled.first()
-                if (smartListeningEnabled) {
-                    val blocked = smartListeningRepository.getBlockedArtistUris()
-                    val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
-                    excludedArtistUris = blocked + suppressed
-                    excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
-                } else {
-                    excludedArtistUris = emptySet()
-                    excludedTrackUris = emptySet()
-                }
-                val smartFilteredArtists = if (excludedArtistUris.isEmpty()) {
-                    merged
-                } else {
-                    merged.filterNot { isArtistExcluded(it, excludedArtistUris) }
-                }
-                strictGenreArtists = content.strictGenreArtists
-                    .mapValues { (_, uris) ->
-                        uris.filterNot { uri ->
-                            val key = MediaIdentity.artistKeyFromUri(uri)
-                            key != null && key in excludedArtistUris
-                        }
-                    }
-                genreArtists = content.genreArtists
-                    .mapValues { (_, uris) ->
-                        uris.filterNot { uri ->
-                            val key = MediaIdentity.artistKeyFromUri(uri)
-                            key != null && key in excludedArtistUris
-                        }
-                    }
-                val genreItems = content.genreItems
-                    .filter { it.name in genreArtists.keys }
-
-                val discovery = try {
-                    recommendationOrchestrator.buildDiscovery(
-                        libraryArtists = merged,
-                        serverFolders = content.enrichedFolders,
-                        excludedArtistUris = excludedArtistUris
-                    )
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to build discovery", e)
-                    DiscoveryResult(emptyList(), emptyList())
-                }
-                val suggested = discovery.artists
-                val discover: List<Album>? = discovery.albums.ifEmpty { null }
-                Log.d(TAG, "Discovery artists: ${suggested.size}, albums: ${discovery.albums.size}")
-
-                val bllGenreScores = try {
-                    genreRepository.scoredGenres(days = 90, limit = 20)
-                } catch (_: Exception) {
-                    emptyList()
-                }
+                // The whole feed (library load + Last.fm/BLL discovery + sections) is
+                // built by the shared :core DiscoverFeedOrchestrator so the car renders
+                // the identical feed. The VM keeps the maps it hands to the mix paths.
+                val feed = discoverFeedOrchestrator.buildFeed()
                 if (generation != loadGeneration) return@launch
 
-                _uiState.value = _uiState.value.copy(
-                    sections = sectionBuilder.buildSections(
-                    serverFolders = content.enrichedFolders,
-                    suggestedArtists = suggested,
-                    suggestedAlbums = discover ?: emptyList(),
-                    genreItems = genreItems,
-                    bllGenreScores = bllGenreScores
-                    )
-                )
-                Log.d(TAG, "Built ${_uiState.value.sections.size} sections")
+                artistByUri = feed.artistByUri
+                genreArtists = feed.genreArtists
+                strictGenreArtists = feed.strictGenreArtists
+                cachedTopArtists = feed.topArtists
+                _uiState.value = _uiState.value.copy(sections = feed.sections)
+                Log.d(TAG, "Built ${feed.sections.size} sections")
 
                 cacheStale = false
                 lastSuccessfulLoadAt = System.currentTimeMillis()
-                cachedTopArtists = merged
                 persistDisplayedSections()
             } finally {
                 if (generation == loadGeneration) {
@@ -672,10 +587,5 @@ class DiscoverViewModel @Inject constructor(
                 Log.e(TAG, "Failed to play track", e)
             }
         }
-    }
-
-    private fun isArtistExcluded(artist: Artist, excludedKeys: Set<String>): Boolean {
-        val key = artist.canonicalKey()
-        return key != null && key in excludedKeys
     }
 }
