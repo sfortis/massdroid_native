@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
@@ -68,6 +69,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -82,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import kotlinx.coroutines.flow.distinctUntilChanged
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerType
 import net.asksakis.massdroidv2.domain.model.displayName
@@ -113,6 +116,8 @@ fun QueueSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val items by viewModel.queueItems.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val hasMore by viewModel.hasMore.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val currentQueueItemId by viewModel.currentQueueItemId.collectAsStateWithLifecycle()
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
@@ -200,7 +205,10 @@ fun QueueSheet(
                             } else ""
                             "${chapters.size} chapters$dur"
                         } else {
-                            "${items.size} tracks"
+                            when {
+                                hasMore -> "${items.size}+ tracks"
+                                else -> "${items.size} tracks"
+                            }
                         },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -249,6 +257,11 @@ fun QueueSheet(
                     onChapterClick = { viewModel.seekToChapter(it) }
                 )
             } else {
+                QueueInfiniteScrollHandler(
+                    listState = lazyListState,
+                    itemCount = effectiveItems.size,
+                    onLoadMore = { viewModel.loadMore() }
+                )
                 LazyColumn(
                     state = lazyListState,
                     modifier = Modifier
@@ -336,6 +349,18 @@ fun QueueSheet(
                                         )
                                     }
                                 )
+                            }
+                        }
+                    }
+                    if (isLoadingMore) {
+                        item(key = "queue_loading_more") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
                             }
                         }
                     }
@@ -607,6 +632,23 @@ private fun ChapterList(
                 }
             )
         }
+    }
+}
+
+@Composable
+private fun QueueInfiniteScrollHandler(
+    listState: LazyListState,
+    itemCount: Int,
+    onLoadMore: () -> Unit
+) {
+    LaunchedEffect(listState, itemCount) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .collect { lastVisible ->
+                if (itemCount > 0 && lastVisible >= itemCount - 5) {
+                    onLoadMore()
+                }
+            }
     }
 }
 
