@@ -50,6 +50,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
     @Inject lateinit var genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
+    @Inject lateinit var mixOrchestrator: net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var sendspinCoordinator: SendspinCoordinator
@@ -142,6 +143,7 @@ class PlaybackService : MediaLibraryService() {
             wsClient = wsClient,
             volumeCoordinator = sendspinVolumeCoordinator,
             shortcutDispatcher = shortcutDispatcher,
+            mixOrchestrator = mixOrchestrator,
             isAutomotive = net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE,
             onConnectionStateChanged = { updateConnectionNotification() },
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },

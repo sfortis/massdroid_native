@@ -28,10 +28,16 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -52,14 +58,18 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.domain.model.CrossfadeMode
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
+import kotlin.math.roundToInt
 
 /**
- * Parked-only car (AAOS) sign-in / server-config screen. Reached from the media
- * center's settings (gear, ACTION_APPLICATION_PREFERENCES) and from the signed-out
- * SessionError resolution intent. NOT a launcher activity and intentionally NOT
- * distractionOptimized: it is for a parked, one-time setup task, so the car drops
- * its launcher icon and never exposes the full phone UI while driving.
+ * Car (AAOS) sign-in / server-config + MassDroid-player audio settings screen.
+ * Reached from the media center's settings (gear, ACTION_APPLICATION_PREFERENCES)
+ * and from the signed-out SessionError resolution intent. NOT a launcher activity,
+ * so the car never exposes the full phone UI. Declared distractionOptimized in the
+ * automotive manifest (sideload-only app) so the player settings stay reachable
+ * while driving; controls are large and low-distraction.
  */
 @AndroidEntryPoint
 class CarSignInActivity : ComponentActivity() {
@@ -88,6 +98,10 @@ private fun CarSignInScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val certAlias by viewModel.certAlias.collectAsStateWithLifecycle()
     val prefill by viewModel.prefill.collectAsStateWithLifecycle()
+    val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
+    val compressorLevel by viewModel.compressorLevel.collectAsStateWithLifecycle()
+    val dither by viewModel.dither.collectAsStateWithLifecycle()
+    val crossfade by viewModel.crossfade.collectAsStateWithLifecycle()
 
     var url by rememberSaveable { mutableStateOf("https://") }
     var username by rememberSaveable { mutableStateOf("") }
@@ -259,8 +273,126 @@ private fun CarSignInScreen(
                             },
                         )
                     }
+
+                    Spacer(Modifier.height(28.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                    Spacer(Modifier.height(20.dp))
+                    CarPlayerSettings(
+                        audioFormat = audioFormat,
+                        onAudioFormat = viewModel::setAudioFormat,
+                        crossfade = crossfade,
+                        onCrossfade = viewModel::setCrossfade,
+                        compressorLevel = compressorLevel,
+                        onCompressorLevel = viewModel::setCompressorLevel,
+                        dither = dither,
+                        onDither = viewModel::setDither,
+                    )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Car-friendly MassDroid-player audio controls. The car IS the Sendspin player, so
+ * these tune its own output. Large segmented buttons / slider / switch for at-a-glance,
+ * low-distraction use. Audio format / compression / dithering are app-level; crossfade
+ * is the car's per-player MA config and stays disabled until the player config loads.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CarPlayerSettings(
+    audioFormat: SendspinAudioFormat,
+    onAudioFormat: (SendspinAudioFormat) -> Unit,
+    crossfade: CrossfadeMode?,
+    onCrossfade: (CrossfadeMode) -> Unit,
+    compressorLevel: Int,
+    onCompressorLevel: (Int) -> Unit,
+    dither: Boolean,
+    onDither: (Boolean) -> Unit,
+) {
+    val compNames = listOf("Off", "Soft", "Medium", "Hard")
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text("MassDroid player", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Audio output for this car. Compression and dithering apply live; " +
+                "format and crossfade take effect on the next track.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(20.dp))
+        Text("Audio format", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(8.dp))
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            SendspinAudioFormat.entries.forEachIndexed { index, format ->
+                SegmentedButton(
+                    selected = audioFormat == format,
+                    onClick = { onAudioFormat(format) },
+                    shape = SegmentedButtonDefaults.itemShape(index, SendspinAudioFormat.entries.size),
+                    modifier = Modifier.heightIn(min = 52.dp),
+                ) { Text(format.label) }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Text("Crossfade", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(8.dp))
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            CrossfadeMode.entries.forEachIndexed { index, mode ->
+                SegmentedButton(
+                    selected = crossfade == mode,
+                    onClick = { onCrossfade(mode) },
+                    enabled = crossfade != null,
+                    shape = SegmentedButtonDefaults.itemShape(index, CrossfadeMode.entries.size),
+                    modifier = Modifier.heightIn(min = 52.dp),
+                ) { Text(mode.label) }
+            }
+        }
+        if (crossfade == null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Connect to adjust crossfade.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Compression", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+            Text(
+                compNames[compressorLevel.coerceIn(0, 3)],
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        var compPos by rememberSaveable(compressorLevel) { mutableStateOf(compressorLevel.toFloat()) }
+        Slider(
+            value = compPos,
+            onValueChange = { compPos = it },
+            onValueChangeFinished = { onCompressorLevel(compPos.roundToInt()) },
+            valueRange = 0f..3f,
+            steps = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Output dithering", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "Smoother quiet passages on the 16-bit output.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = dither, onCheckedChange = onDither)
         }
     }
 }

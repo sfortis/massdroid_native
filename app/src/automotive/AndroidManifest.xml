@@ -53,17 +53,22 @@
                 android:value="true" />
         </service>
 
-        <!-- Parked-only car sign-in / server-config screen. A small, dedicated
-             Compose activity (username/password + optional client certificate) so
-             the car never shows the full phone UI. ACTION_APPLICATION_PREFERENCES
-             makes the AAOS media center render a settings (gear) icon that opens it;
-             the signed-out SessionError resolution intent targets it too. This is the
-             guaranteed, always-visible way into sign-in with no launcher icon
-             (verified on AAOS-15). NOT distractionOptimized: parked, one-time setup. -->
+        <!-- Car sign-in / server-config + MassDroid-player audio settings. A small,
+             dedicated Compose activity (username/password + optional client certificate
+             + audio format / crossfade / compression / dithering) so the car never shows
+             the full phone UI. ACTION_APPLICATION_PREFERENCES makes the AAOS media center
+             render a settings (gear) icon that opens it; the signed-out SessionError
+             resolution intent targets it too.
+             distractionOptimized=true: this app is sideloaded only (never Play-published,
+             where the flag is restricted to Car App Library activities), so the player
+             settings stay reachable while driving. Controls are large/low-distraction. -->
         <activity
             android:name=".ui.car.CarSignInActivity"
             android:exported="true"
             android:theme="@style/Theme.MassDroidV2.Dark">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
             </intent-filter>
@@ -75,6 +80,19 @@
              into sign-in/settings. -->
         <activity-alias
             android:name=".ui.LauncherActivity"
+            android:enabled="false"
+            tools:node="merge" />
+
+        <!-- Hard-disable the full phone UI on the head unit. Disabling the launcher
+             alias above only removes the icon + app shortcuts; MainActivity itself
+             stays exported (it carries the OAuth musicassistant://auth VIEW filter for
+             phones), so a stray explicit/implicit intent could still surface the phone
+             UI in the car. The car never needs it - sign-in is CarSignInActivity (gear)
+             and the app is the media-center tile - so switch it off entirely here. A
+             PendingIntent that still points at it (e.g. the min-importance connection
+             notification) simply no-ops on tap rather than opening the phone UI. -->
+        <activity
+            android:name=".ui.MainActivity"
             android:enabled="false"
             tools:node="merge" />
 

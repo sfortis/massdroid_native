@@ -27,6 +27,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
@@ -41,6 +42,9 @@ class SendspinCoordinator(
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: SendspinVolumeCoordinator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
+    // Shared Smart Mix / Genre Radio build+play engine. Only the headless car uses
+    // it (the phone/TV drive mixes from DiscoverViewModel); null where unused (TV).
+    private val mixOrchestrator: MixPlaybackOrchestrator? = null,
     // Sendspin player name for this device; defaults to "MassDroid" (phone).
     private val clientName: String = "MassDroid",
     // Android Automotive OS build: the device IS the car speaker, so Sendspin is
@@ -329,20 +333,54 @@ class SendspinCoordinator(
             shortcutDispatcher.pendingAction
                 .filterNotNull()
                 .collect { action ->
-                    if (action !is ShortcutAction.PlayNow) return@collect
-                    shortcutDispatcher.consume()
-                    Log.d(TAG, "PlayNow shortcut: sendspinActive=$isActive")
-                    val sendspinOn = settingsRepository.sendspinEnabled.first()
-                    if (!sendspinOn) {
-                        settingsRepository.setSendspinEnabled(true)
-                    } else {
-                        startIfConnected("shortcut_play_now")
-                    }
-                    val targetId = playerId ?: settingsRepository.sendspinClientId.first()
-                    if (targetId != null) {
-                        controller?.handlePlay()
+                    when (action) {
+                        is ShortcutAction.PlayNow -> {
+                            shortcutDispatcher.consume()
+                            Log.d(TAG, "PlayNow shortcut: sendspinActive=$isActive")
+                            val sendspinOn = settingsRepository.sendspinEnabled.first()
+                            if (!sendspinOn) {
+                                settingsRepository.setSendspinEnabled(true)
+                            } else {
+                                startIfConnected("shortcut_play_now")
+                            }
+                            val targetId = playerId ?: settingsRepository.sendspinClientId.first()
+                            if (targetId != null) {
+                                controller?.handlePlay()
+                            }
+                        }
+                        // Smart Mix / Genre Radio: on the phone/TV the DiscoverViewModel owns
+                        // these (and consumes them). In the headless car there is no Discover UI,
+                        // so the coordinator runs the same shared build+play orchestration itself.
+                        is ShortcutAction.SmartMix -> if (isAutomotive) {
+                            shortcutDispatcher.consume()
+                            buildCarMix(action)
+                        }
+                        is ShortcutAction.GenreRadio -> if (isAutomotive) {
+                            shortcutDispatcher.consume()
+                            buildCarMix(action)
+                        }
                     }
                 }
+        }
+    }
+
+    // Headless (car) Smart Mix / Genre Radio: resolve the Sendspin player id and
+    // delegate to the shared orchestrator, which builds the mix and replaces the
+    // queue (MA then plays it on the car). Launched off the collector so a slow
+    // build does not stall subsequent shortcut events; the orchestrator is
+    // single-flight internally.
+    private fun buildCarMix(action: ShortcutAction) {
+        val orchestrator = mixOrchestrator ?: return
+        scope.launch {
+            val sendspinOn = settingsRepository.sendspinEnabled.first()
+            if (!sendspinOn) settingsRepository.setSendspinEnabled(true)
+            val queueId = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
+            val result = when (action) {
+                is ShortcutAction.SmartMix -> orchestrator.playSmartMix(queueId)
+                is ShortcutAction.GenreRadio -> orchestrator.playGenreRadio(queueId, action.genre)
+                else -> return@launch
+            }
+            Log.d(TAG, "Car mix shortcut $action -> $result")
         }
     }
 

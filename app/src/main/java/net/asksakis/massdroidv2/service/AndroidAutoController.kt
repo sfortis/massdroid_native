@@ -310,12 +310,25 @@ class AndroidAutoController(
     }
 
     private fun createMediaSession(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
+        // The session activity is the "open the app" target the now-playing surface
+        // launches. On automotive MainActivity is disabled (the car never shows the
+        // full phone UI), so point it at the car sign-in/settings screen instead -
+        // by class name, since that activity only exists in the automotive flavor.
+        // Phone/TV keep MainActivity.
+        val sessionIntent = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+            Intent().apply {
+                setClassName(service, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        } else {
+            Intent(service, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        }
         val pendingIntent = PendingIntent.getActivity(
             service,
             0,
-            Intent(service, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
+            sessionIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         session = MediaLibraryService.MediaLibrarySession.Builder(service, remotePlayer!!, libraryCallback)
