@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
@@ -134,10 +135,12 @@ class RecommendationEngine @Inject constructor() {
         return reranked.map { it.album }
     }
 
-    private fun <T> mmrRerank(
+    @VisibleForTesting
+    internal fun <T> mmrRerank(
         items: List<T>,
         lambda: Double,
         count: Int,
+        random: Random = Random.Default,
         genreExtractor: (T) -> Set<String>
     ): List<T> where T : Any {
         if (items.isEmpty()) return emptyList()
@@ -159,10 +162,10 @@ class RecommendationEngine @Inject constructor() {
         val normalized = if (range > 0.0) {
             relevanceMap.mapValues { (_, v) ->
                 val base = (v - minRelevance) / range
-                (base + Random.nextDouble(-JITTER_AMOUNT, JITTER_AMOUNT)).coerceIn(0.0, 1.0)
+                (base + random.nextDouble(-JITTER_AMOUNT, JITTER_AMOUNT)).coerceIn(0.0, 1.0)
             }
         } else {
-            relevanceMap.mapValues { Random.nextDouble(0.5, 1.0) }
+            relevanceMap.mapValues { random.nextDouble(0.5, 1.0) }
         }
 
         val selected = mutableListOf<T>()
@@ -171,7 +174,10 @@ class RecommendationEngine @Inject constructor() {
 
         repeat(count.coerceAtMost(items.size)) {
             var bestItem: T? = null
-            var bestMmr = Double.MIN_VALUE
+            // -Double.MAX_VALUE, NOT Double.MIN_VALUE (which is the smallest POSITIVE
+            // double): MMR is legitimately negative when the diversity penalty exceeds
+            // relevance, and a positive sentinel left those rounds unselected (short mix).
+            var bestMmr = -Double.MAX_VALUE
 
             for (candidate in remaining) {
                 val rel = normalized[candidate] ?: 0.0
@@ -198,7 +204,8 @@ class RecommendationEngine @Inject constructor() {
         return selected
     }
 
-    private fun jaccardSimilarity(a: Set<String>, b: Set<String>): Double {
+    @VisibleForTesting
+    internal fun jaccardSimilarity(a: Set<String>, b: Set<String>): Double {
         if (a.isEmpty() && b.isEmpty()) return 0.0
         val intersection = a.intersect(b).size
         val union = a.union(b).size

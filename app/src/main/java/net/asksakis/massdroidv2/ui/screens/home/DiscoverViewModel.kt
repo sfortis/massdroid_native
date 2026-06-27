@@ -41,7 +41,6 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.QueueItem
-import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
@@ -241,6 +240,9 @@ class DiscoverViewModel @Inject constructor(
 
     private var genreArtists = mapOf<String, List<String>>()
     private var strictGenreArtists = mapOf<String, List<String>>()
+    // Last-known library artists, persisted alongside the rendered sections so the
+    // WS-event refreshers can re-save the cache without re-deriving them.
+    private var cachedTopArtists = emptyList<Artist>()
     private var cacheStale = true
     private var mediaEventJob: Job? = null
     private var fullLoadJob: Job? = null
@@ -379,6 +381,7 @@ class DiscoverViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = false)
             return
         }
+        cachedTopArtists = cached.topArtists
         artistByUri = cached.topArtists.mapNotNull { artist ->
             artist.canonicalKey()?.let { it to artist }
         }.toMap()
@@ -387,34 +390,36 @@ class DiscoverViewModel @Inject constructor(
         } catch (_: Exception) {
             emptyMap()
         }
-        val (genreItems, builtGenreArtists, builtStrictGenreArtists) =
+        // buildGenreData here is only to seed the in-memory genre maps that Smart Mix
+        // / Genre Radio consult before the first full load; the genre items shown on
+        // screen come from the cached sections, so the built items are discarded.
+        val (_, builtGenreArtists, builtStrictGenreArtists) =
             contentLoader.buildGenreData(cached.topArtists, historyGenreArtists, artistByUri)
         strictGenreArtists = builtStrictGenreArtists
         genreArtists = builtGenreArtists
-        val bllScores = try {
-            genreRepository.scoredGenres(days = 90, limit = 20)
-        } catch (_: Exception) {
-            emptyList()
-        }
+        // Stale-while-revalidate: show the last rendered screen instantly (recent
+        // grids included, as a placeholder) and let the first-connect refresh
+        // replace it with live data.
         _uiState.value = _uiState.value.copy(
-            sections = sectionBuilder.buildSections(
-            serverFolders = cached.serverFolders,
-            suggestedArtists = cached.suggestedArtists,
-            suggestedAlbums = cached.discoverAlbums,
-            genreItems = genreItems,
-            bllGenreScores = bllScores
-            ),
+            sections = cached.sections,
             isLoading = false
         )
-        val hasMissingImages = cached.discoverAlbums.any { it.imageUrl == null } ||
-            cached.serverFolders.any { f -> f.items.albums.any { it.imageUrl == null } }
+        val hasMissingImages = cached.sections.any { section ->
+            section is DiscoverSection.AlbumSection && section.albums.any { it.imageUrl == null }
+        }
         cacheStale = discoverCache.isStale(cached) || hasMissingImages
     }
 
     private suspend fun observeConnection() {
+        var firstConnect = true
         wsClient.connectionState.collect { state ->
             if (state is ConnectionState.Connected) {
-                loadFromServer()
+                // The disk cache is for INSTANT display on launch, not for skipping
+                // the launch refresh: force the first connect-driven load past the
+                // "cache fresh" gate so time-sensitive sections (Recently Played)
+                // are live. Later reconnects keep the dedup/cooldown behaviour.
+                loadFromServer(force = firstConnect)
+                firstConnect = false
             }
         }
     }
@@ -473,6 +478,7 @@ class DiscoverViewModel @Inject constructor(
                 tracks = freshTracks
             )
         )
+        persistDisplayedSections()
     }
 
     @Suppress("TooGenericExceptionCaught")
@@ -483,6 +489,19 @@ class DiscoverViewModel @Inject constructor(
             sections = sectionCoordinator.updateRecentFavoriteAlbums(
                 current = _uiState.value.sections,
                 albums = freshAlbums
+            )
+        )
+        persistDisplayedSections()
+    }
+
+    // Persist the currently rendered screen as the launch placeholder. Called after
+    // a full load and after each WS-event section refresh so the cache mirrors what
+    // the user last saw - the next launch shows it instantly, no manual refresh.
+    private suspend fun persistDisplayedSections() {
+        discoverCache.save(
+            DiscoverCache.CacheData(
+                sections = _uiState.value.sections,
+                topArtists = cachedTopArtists
             )
         )
     }
@@ -1163,7 +1182,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun loadFromServer(isManualRefresh: Boolean = false) {
+    private fun loadFromServer(isManualRefresh: Boolean = false, force: Boolean = false) {
         if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
             viewModelScope.launch {
                 try {
@@ -1172,7 +1191,7 @@ class DiscoverViewModel @Inject constructor(
                 } catch (_: Exception) { /* best-effort */ }
             }
         }
-        if (!isManualRefresh && !cacheStale && _uiState.value.sections.isNotEmpty()) {
+        if (!isManualRefresh && !force && !cacheStale && _uiState.value.sections.isNotEmpty()) {
             Log.d(TAG, "loadFromServer: skipped (cache fresh)")
             return
         }
@@ -1180,7 +1199,7 @@ class DiscoverViewModel @Inject constructor(
             Log.d(TAG, "loadFromServer: skipped (in flight)")
             return
         }
-        if (!isManualRefresh && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS) {
+        if (!isManualRefresh && !force && System.currentTimeMillis() - lastSuccessfulLoadAt < LOAD_COOLDOWN_MS) {
             Log.d(TAG, "loadFromServer: skipped (cooldown)")
             return
         }
@@ -1276,14 +1295,8 @@ class DiscoverViewModel @Inject constructor(
 
                 cacheStale = false
                 lastSuccessfulLoadAt = System.currentTimeMillis()
-                discoverCache.save(
-                    DiscoverCache.CacheData(
-                        suggestedArtists = suggested,
-                        discoverAlbums = discover ?: emptyList(),
-                        topArtists = merged,
-                        serverFolders = content.enrichedFolders
-                    )
-                )
+                cachedTopArtists = merged
+                persistDisplayedSections()
             } finally {
                 if (generation == loadGeneration) {
                     _uiState.value = _uiState.value.copy(

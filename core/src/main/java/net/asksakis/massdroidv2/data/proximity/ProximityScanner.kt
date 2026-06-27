@@ -146,11 +146,17 @@ class ProximityScanner @Inject constructor(
     ): AnchorIdentity {
         val normalizedName = normalizeAnchorName(name)
         val preferredNameKey = normalizedName?.let { "name:$it" }
+        // Key by name for anything whose MAC is NOT permanent (RANDOM_STATIC regenerates on a
+        // power-cycle/reset, RPA/NRPA rotate continuously) as long as it carries a stable, meaningful
+        // name - so a fixed sensor like the Govee (RANDOM_STATIC) or a watch anchor survives a reboot
+        // instead of silently dropping out until the next recalibration. PUBLIC addresses keep their
+        // permanent, globally-unique MAC as the key (more reliable than a possibly-shared name, e.g.
+        // the two heat-pump controllers both advertising as "net").
         val shouldUseName = category != DeviceCategory.MOBILE &&
             preferredNameKey != null &&
             (
                 preferredNameKey in preferredNameAnchors ||
-                    !isStableAddress(addressType)
+                    addressType != AddressType.PUBLIC
                 )
         if (shouldUseName) {
             return AnchorIdentity(
@@ -215,8 +221,14 @@ class ProximityScanner @Inject constructor(
         name: String?
     ): Boolean {
         if (category == DeviceCategory.MOBILE) return false
-        if (!hasMeaningfulAnchorName(name)) return false
+        // Stable addresses (PUBLIC / RANDOM_STATIC) are keyed by their permanent MAC, so they are
+        // valid anchors on their own - a human-readable name is NOT required. This keeps fixed
+        // infrastructure with short or blank names (e.g. routers / heat-pump controllers advertising
+        // as "net", 3 chars) that the old name-length gate wrongly discarded, even when perfectly
+        // stationary and strongly discriminative.
         if (isStableAddress(addressType)) return seenCount >= 2
+        // Unstable addresses (RPA / NRPA / AMBIGUOUS) rotate their MAC, so the name is the only stable
+        // identity - require a meaningful one and a higher seen bar.
         if (isUnstableAddress(addressType)) {
             return normalizeAnchorName(name) != null && seenCount >= 4
         }

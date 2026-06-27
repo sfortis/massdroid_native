@@ -1,6 +1,12 @@
-- Smart Mix: brand-new engine that builds each mix around the tracks you actually like, for more coherent and varied playlists.
-- Smart Mix: new "Strictness" slider to control how closely a mix sticks to your favourites (Settings, Recommendations).
-- Smart Mix: every mix now also includes some of your own loved tracks alongside fresh discoveries.
-- Genre Radio: now uses the same engine for more consistent, on-genre radios.
-- Blocked artists no longer show up in any mix or radio.
-- "Don't Stop the Music" no longer turns itself off after a Smart Mix or Genre Radio.
+- New DSP Effects: a sound compressor for phone-as-speaker that evens out the volume, gently lifts quiet or low-recorded tracks and tames loud peaks. Pick Off, Soft, Medium or Hard (great for the car or late-night listening).
+- DSP Effects: optional output dithering that reduces low-level quantization noise, for smoother quiet passages, fades and decays.
+- Car audio: choose which Bluetooth devices start at full volume on connect, so the car begins loud and its own dial takes over (Settings, Sendspin).
+- Car audio: the volume no longer drops or jumps when the track changes in the car.
+- Car audio: play, pause and skip stay on your phone in the car and never jump to a remote speaker.
+- Bluetooth volume: the volume keys now move in finer, more accurate steps.
+- Connection: the app reconnects on its own when the network comes back (after roaming, a Wi-Fi change, or a longer drop).
+- Follow Me: more reliable room detection, and it keeps working even when nothing is playing.
+- Recommendations: mixes feel more varied and less front-loaded with your own tracks.
+- Sync speakers: you can now set the playback delay for receivers that only expose it (e.g. the iOS Sendspin app), instead of a dead-end note.
+- Diagnostics: sharing logs no longer freezes the app.
+- More consistent Settings styling.

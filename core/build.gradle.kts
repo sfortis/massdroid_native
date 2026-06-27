@@ -49,6 +49,13 @@ android {
     buildFeatures {
         prefab = true
     }
+
+    testOptions {
+        // Most :core classes `import android.util.Log`; returning default values
+        // for unmocked android.jar stubs lets pure-logic JVM unit tests touch them
+        // without a "Method ... not mocked" crash (no Robolectric needed).
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -76,6 +83,14 @@ dependencies {
     // Hilt
     implementation("com.google.dagger:hilt-android:2.52")
     kapt("com.google.dagger:hilt-compiler:2.52")
+
+    // Unit tests (pure-JVM, no Robolectric). Kotlin/coroutines versions match the
+    // api() deps above; deps kept inline as the project has no version catalog.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlin:kotlin-test:2.0.21")
+    testImplementation("com.google.truth:truth:1.4.4")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("io.mockk:mockk:1.13.12")
 }
 
 kapt {

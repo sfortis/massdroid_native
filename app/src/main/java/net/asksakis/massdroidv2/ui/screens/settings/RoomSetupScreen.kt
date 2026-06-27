@@ -64,7 +64,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
+import net.asksakis.massdroidv2.ui.components.LabeledSlider
+import net.asksakis.massdroidv2.ui.components.MdSlider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.SnackbarHost
@@ -77,6 +78,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,9 +104,13 @@ fun RoomSetupScreen(
     val scope = rememberCoroutineScope()
 
     val existingRoom = config.rooms.find { it.id == roomId }
-    var roomName by remember { mutableStateOf("") }
-    var selectedPlayer by remember { mutableStateOf<Player?>(null) }
-    var initialized by remember { mutableStateOf(roomId == null) }
+    // rememberSaveable so the in-progress room setup (typed name, picked player) survives an Activity
+    // recreation such as a screen rotation. Player is not Parcelable, so the player is tracked by its
+    // stable id and the Player object is derived from the live list.
+    var roomName by rememberSaveable { mutableStateOf("") }
+    var selectedPlayerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var initialized by rememberSaveable { mutableStateOf(roomId == null) }
+    val selectedPlayer = players.find { it.playerId == selectedPlayerId }
     val missingStoredPlayerName = remember(existingRoom, selectedPlayer, players) {
         existingRoom?.takeIf {
             selectedPlayer == null && players.none { player -> player.playerId == it.playerId }
@@ -114,14 +120,14 @@ fun RoomSetupScreen(
     LaunchedEffect(existingRoom, players) {
         if (!initialized && existingRoom != null) {
             roomName = existingRoom.name
-            selectedPlayer = players.find { it.playerId == existingRoom.playerId }
-            if (selectedPlayer != null || players.isEmpty()) initialized = true
+            selectedPlayerId = existingRoom.playerId
+            if (players.any { it.playerId == existingRoom.playerId } || players.isEmpty()) initialized = true
         }
     }
 
-    LaunchedEffect(players, existingRoom) {
-        if (selectedPlayer == null && existingRoom != null) {
-            selectedPlayer = players.find { it.playerId == existingRoom.playerId }
+    LaunchedEffect(existingRoom) {
+        if (selectedPlayerId == null && existingRoom != null) {
+            selectedPlayerId = existingRoom.playerId
         }
     }
 
@@ -180,7 +186,7 @@ fun RoomSetupScreen(
                 players = players,
                 selected = selectedPlayer,
                 missingSelectedLabel = missingStoredPlayerName,
-                onSelect = { selectedPlayer = it },
+                onSelect = { selectedPlayerId = it.playerId },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
@@ -293,25 +299,15 @@ fun RoomSetupScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            "Sensitivity",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = if (wifiMode != null) MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.onSurface
-                        )
-                        Slider(
+                        LabeledSlider(
+                            title = "Sensitivity",
                             value = existingRoom.effectiveSensitivity(),
-                            onValueChange = { viewModel.updateRoomSensitivity(existingRoom.id, it) },
+                            onValueChangeFinished = { viewModel.updateRoomSensitivity(existingRoom.id, it) },
+                            description = "Left = stricter (fewer false matches), right = easier and faster to switch. " +
+                                "Raise it for rooms that are hard to tell apart.",
                             valueRange = SENSITIVITY_MIN..SENSITIVITY_MAX,
                             steps = 9,
                             enabled = wifiMode == null
-                        )
-                        Text(
-                            "Left = stricter (fewer false matches), right = easier and faster to switch. " +
-                                "Raise it for rooms that are hard to tell apart.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -926,7 +922,7 @@ private fun PlaybackConfigSection(
                     Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = null,
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Slider(
+                    MdSlider(
                         value = playbackConfig.volumeLevel.toFloat(),
                         onValueChange = {
                             viewModel.updateRoomPlayback(roomId, playbackConfig.copy(volumeLevel = it.toInt()))

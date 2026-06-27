@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.room.withTransaction
 import net.asksakis.massdroidv2.data.database.AlbumEntity
 import net.asksakis.massdroidv2.data.database.AppDatabase
@@ -443,19 +444,26 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         Log.w(TAG, "Recommendation DB data cleared by user action")
     }
 
-    private data class WeightedPlay(val playedAt: Long, val weight: Double)
+    @VisibleForTesting
+    internal data class WeightedPlay(val playedAt: Long, val weight: Double)
 
-    private fun completionWeight(listenedMs: Long?, durationSec: Double?): Double {
+    @VisibleForTesting
+    internal fun completionWeight(listenedMs: Long?, durationSec: Double?): Double {
         if (listenedMs == null || durationSec == null || durationSec <= 0.0) return 1.0
         val ratio = min((listenedMs / 1000.0) / durationSec, 1.0)
         return COMPLETION_FLOOR + COMPLETION_RANGE * ratio
     }
 
-    private fun computeWeightedBllScore(nowMs: Long, plays: List<WeightedPlay>): Double {
+    @VisibleForTesting
+    internal fun computeWeightedBllScore(nowMs: Long, plays: List<WeightedPlay>): Double {
         val sorted = plays.sortedBy { it.playedAt }
         var sessionCount = 0
         var prevTime = 0L
         val sum = sorted.sumOf { (playedAt, weight) ->
+            // The FIRST play always resets sessionCount (prevTime == 0L gate): it has
+            // no predecessor, so it is never an in-session repeat and keeps full
+            // weight (sessionFactor 0.7^0 = 1). Do NOT "simplify" away the prevTime>0
+            // guard - dropping it would dampen every mix's opening track.
             if (playedAt - prevTime < SESSION_GAP_MS && prevTime > 0) {
                 sessionCount++
             } else {

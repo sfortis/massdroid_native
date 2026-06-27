@@ -1,5 +1,9 @@
 package net.asksakis.massdroidv2.data.websocket
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -25,7 +29,11 @@ sealed class ConnectionState {
 class MaWebSocketClient(
     private val baseOkHttpClient: OkHttpClient,
     private val json: Json,
-    private val accountNoticeReporter: net.asksakis.massdroidv2.data.util.AccountNoticeReporter? = null
+    private val accountNoticeReporter: net.asksakis.massdroidv2.data.util.AccountNoticeReporter? = null,
+    // Application context for the default-network callback that auto-revives the
+    // WS when connectivity returns after the retry budget is exhausted. Nullable
+    // so non-Android callers/tests can construct the client without it.
+    private val appContext: Context? = null
 ) {
     companion object {
         private const val TAG = "MaWsClient"
@@ -35,6 +43,9 @@ class MaWebSocketClient(
         private const val PATIENT_RETRY_COUNT = 30
         private const val MAX_RETRY_COUNT = AGGRESSIVE_RETRY_COUNT + PATIENT_RETRY_COUNT
         private const val STABLE_CONNECTION_RESET_MS = 30_000L
+        // Coalesce the burst of network callbacks a single transition emits
+        // (onAvailable + repeated onLinkPropertiesChanged) into one revive.
+        private const val NETWORK_REVIVE_DEBOUNCE_MS = 1_000L
         private const val COMMAND_RETRY_DELAY_MS = 140L
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
         private const val ERROR_INSUFFICIENT_PERMISSIONS = 22
@@ -109,6 +120,8 @@ class MaWebSocketClient(
         private set
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var lastNetworkReviveMs = 0L
     @Volatile
     private var connectionGeneration = 0
     private var lastAuthenticatedAtMs = 0L
@@ -190,6 +203,7 @@ class MaWebSocketClient(
         authToken = token
         pendingLogin = null
         userDisconnected = false
+        ensureNetworkCallback()
         cancelReconnect()
         doConnect(url)
     }
@@ -214,6 +228,7 @@ class MaWebSocketClient(
         pendingLogin = username to password
         onTokenReceived = onToken
         userDisconnected = false
+        ensureNetworkCallback()
         cancelReconnect()
         doConnect(url)
     }
@@ -336,6 +351,64 @@ class MaWebSocketClient(
     fun handleTransportChange() {
         Log.d(TAG, "Transport change: evicting connection pool")
         okHttpClient.connectionPool.evictAll()
+    }
+
+    /**
+     * Register a process-lifetime default-network callback so the WS auto-revives
+     * when usable connectivity returns. The retry budget ([MAX_RETRY_COUNT]) is
+     * finite: a long outage (e.g. roaming onto an AP whose subnet can't route to
+     * the server) exhausts it, the client gives up into [ConnectionState.Error],
+     * and nothing else re-triggers it. This covers the missing wake-up:
+     *  - onAvailable: a new default network (WiFi<->mobile handover).
+     *  - onLinkPropertiesChanged: a same-network DHCP/subnet change (a roam that
+     *    swaps the local IP onto a subnet that can finally reach the server) —
+     *    this one fires no onAvailable, so it was previously invisible.
+     * Idempotent; a no-op when constructed without a Context.
+     */
+    private fun ensureNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = appContext?.getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onNetworkAvailable("available")
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) =
+                onNetworkAvailable("link-change")
+        }
+        networkCallback = cb
+        try {
+            cm.registerDefaultNetworkCallback(cb)
+            Log.d(TAG, "Network callback registered (auto-revive)")
+        } catch (e: Exception) {
+            Log.w(TAG, "registerDefaultNetworkCallback failed: ${e.message}")
+            networkCallback = null
+        }
+    }
+
+    /**
+     * Connectivity (re)appeared. Evict pooled connections bound to the old route,
+     * then revive the WS if it isn't live: reset the backoff to aggressive and
+     * reconnect, even out of the terminal Error state the exhausted retry budget
+     * left us in. No-op while connected/connecting, after a user disconnect, or
+     * before the first successful connection (don't auto-connect a never-connected
+     * client). Debounced so one transition's callback burst yields one revive.
+     */
+    private fun onNetworkAvailable(reason: String) {
+        scope.launch {
+            handleTransportChange()
+            if (userDisconnected || !hasConnectedSuccessfully) return@launch
+            val url = serverUrl ?: return@launch
+            val state = _connectionState.value
+            if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return@launch
+            val now = System.currentTimeMillis()
+            if (now - lastNetworkReviveMs < NETWORK_REVIVE_DEBOUNCE_MS) return@launch
+            lastNetworkReviveMs = now
+            resetReconnectBackoff()
+            if (reconnectJob?.isActive == true) {
+                Log.d(TAG, "Network $reason: backoff reset, retry already in flight")
+                return@launch
+            }
+            Log.d(TAG, "Network $reason: reviving WS connection")
+            doConnect(url)
+        }
     }
 
     private fun scheduleReconnect() {

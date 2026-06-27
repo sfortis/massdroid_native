@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,20 +53,32 @@ private const val STRICTNESS_MAX_SCORE = 0.5
 // If the strict score filter leaves too small a pool, relax to score >= 0 so a
 // mix can still be built (cold-start / lightly-rated libraries).
 private const val SEED_POOL_RELAX_MIN = 6
-// Loved-track injection (comfort anchor). Discovery drives the share: at
-// Discovery=0, up to MAX_FRACTION of the mix is the user's own loved tracks; at
-// Discovery=1, none. Only tracks scored >= MIN_SCORE qualify; they enter with a
-// top score so they survive the cap/interleave.
+// Loved-track injection (comfort anchor). Discovery drives the share, with NO
+// floor: at Discovery=0 up to MAX_FRACTION of the mix may be the user's own loved
+// tracks, and at high Discovery it tapers to zero (pure discovery). Only tracks
+// scored >= MIN_SCORE qualify.
 private const val OWN_INJECT_MAX_FRACTION = 0.4
-// Always anchor a few of the user's own loved tracks, even at max Discovery, so
-// a mix is never 100% strangers. Discovery scales additional injection above it.
-private const val OWN_INJECT_FLOOR = 4
 // "Liked" floor (0.1) rather than "loved" (0.5): once narrowed to the mix's
 // genre and deduped by artist, a 0.5 floor leaves too small an in-genre pool to
 // fill the quota. Score ordering still puts the most-loved in-genre tracks first.
 private const val LOVED_INJECT_MIN_SCORE = 0.1
 private const val LOVED_INJECT_POOL_LIMIT = 600
-private const val OWN_INJECT_SCORE = 1.0
+// Injected loved tracks enter with a MID-PACK relevance so they COMPETE with the
+// seed-similars instead of dominating the front of the mix. A top score (1.0) made
+// every mix front-loaded with familiar songs and killed the discovery feel; at
+// 0.5 they sit mid-distribution (Last.fm match scores span ~0..1), surfacing some
+// comfort without burying the discoveries.
+private const val OWN_INJECT_SCORE = 0.5
+
+/**
+ * Loved-track injection quota: Discovery tapers the share of the mix reserved
+ * for the user's own loved tracks. At Discovery=0 up to [OWN_INJECT_MAX_FRACTION]
+ * of [target]; at Discovery>=1 it is 0 (pure discovery). NO floor (the old
+ * always-4 floor made high-Discovery mixes never fully fresh). Never negative.
+ */
+@VisibleForTesting
+internal fun seedTrackInjectCount(discovery: Double, target: Int): Int =
+    ((1.0 - discovery) * OWN_INJECT_MAX_FRACTION * target).roundToInt().coerceAtLeast(0)
 
 /**
  * Track-level recommendation generator: recent (or in-genre) well-listened
@@ -231,12 +244,11 @@ class SeedTrackMixGenerator @Inject constructor(
         // Loved-track injection (comfort anchor): low Discovery reserves a slice
         // of the mix for the user's OWN loved tracks (not similars), genre-
         // coherent with the seeds so it never reintroduces off-genre bleed. High
-        // Discovery -> zero injection (pure discovery). The injected tracks carry
-        // a top score so they survive the cap/interleave (guaranteed presence),
-        // and are sampled per run so favourites rotate.
-        val injectCount = ((1.0 - tuning.discovery) * OWN_INJECT_MAX_FRACTION * target)
-            .roundToInt()
-            .coerceAtLeast(OWN_INJECT_FLOOR)
+        // Discovery tapers it to ZERO (pure discovery) — there is no floor. The
+        // injected tracks carry a mid-pack score so they COMPETE with the
+        // similars (no longer guaranteed/front-loaded), sampled per run so
+        // favourites rotate.
+        val injectCount = seedTrackInjectCount(tuning.discovery, target)
         val injected = if (injectCount > 0) {
             lovedInjection(coherentGenres, injectCount, mixSeed, recency)
         } else {
@@ -252,7 +264,8 @@ class SeedTrackMixGenerator @Inject constructor(
     // The user's OWN loved tracks (score >= LOVED_INJECT_MIN_SCORE) that are
     // genre-coherent with the mix, sampled and capped to [count]. These are real
     // played URIs, injected directly (not via similars) as comfort anchors with a
-    // top score. Excludes recent-mix tracks so the anchors rotate.
+    // mid-pack score so they compete with (not dominate) the similars. Excludes
+    // recent-mix tracks so the anchors rotate.
     private suspend fun lovedInjection(
         coherentGenres: Set<String>,
         count: Int,

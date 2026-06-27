@@ -133,11 +133,42 @@ class SettingsViewModel @Inject constructor(
     val sendspinState = sendspinManager.connectionState
     val sendspinEnabled = settingsRepository.sendspinEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-    val sendspinSyncSystemVolume = settingsRepository.sendspinSyncSystemVolume
+    val knownBtDevices = settingsRepository.knownBtDevices
+    val carAudioBtDevices = settingsRepository.carAudioBtDevices
 
-    fun setSendspinSyncSystemVolume(enabled: Boolean) {
+    fun setCarAudioBtDevice(routeKey: String, enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setSendspinSyncSystemVolume(enabled)
+            settingsRepository.setCarAudioBtDevice(routeKey, enabled)
+        }
+    }
+
+    val sendspinCompressorLevel = settingsRepository.sendspinCompressorLevel
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    fun setSendspinCompressorLevel(level: Int) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinCompressorLevel(level)
+        }
+    }
+
+    val sendspinDither = settingsRepository.sendspinDither
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setSendspinDither(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinDither(enabled)
+        }
+    }
+
+    // Phone-as-speaker output format (stored as the enum name). The controller
+    // applies it on the next (re)connect / network-format-apply, same as the
+    // per-player dialog's setter.
+    val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "SMART")
+
+    fun setSendspinAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
+        viewModelScope.launch {
+            settingsRepository.setSendspinAudioFormat(format.name)
         }
     }
     val smartListeningEnabled = settingsRepository.smartListeningEnabled

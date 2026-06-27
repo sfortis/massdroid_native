@@ -63,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -120,9 +121,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
     @Inject lateinit var acousticCalibrationCoordinator: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 
-    private val volumeStep = 2
+    private val volumeStep = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
     @Volatile private var cachedSsClientId: String? = null
-    @Volatile private var hwVolumeChangeUntilMs = 0L
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -133,8 +133,8 @@ class MainActivity : ComponentActivity() {
     ) { results ->
         if (results.values.all { it }) {
             startService(
-                Intent(this, net.asksakis.massdroidv2.service.PlaybackService::class.java)
-                    .setAction(net.asksakis.massdroidv2.service.PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                Intent(this, net.asksakis.massdroidv2.service.FollowMeService::class.java)
+                    .setAction(net.asksakis.massdroidv2.service.FollowMeService.PROXIMITY_REEVALUATE_ACTION)
             )
         }
     }
@@ -160,24 +160,15 @@ class MainActivity : ComponentActivity() {
         checkBatteryOptimization()
         handleShortcutIntent(intent)
 
-        // Cache sendspin client ID and sync phone volume for local player
+        // Cache sendspin client ID for the local-player checks below. STREAM_MUSIC
+        // mirroring of the Sendspin player volume is owned SOLELY by
+        // SendspinVolumeCoordinator, which respects the sync toggle and the
+        // car-audio decoupling. A second mirror used to live here (selectedPlayer
+        // volume -> STREAM_MUSIC) but it bypassed that gating and overrode the
+        // level on every selectedPlayer emission (e.g. snapping a car-pinned
+        // volume back down to a stale MA value on each track change).
         lifecycleScope.launch {
             settingsRepository.sendspinClientId.collect { cachedSsClientId = it }
-        }
-        lifecycleScope.launch {
-            var initialized = false
-            playerRepository.selectedPlayer.collect { player ->
-                val ssId = cachedSsClientId
-                if (player == null || ssId == null || player.playerId != ssId) return@collect
-                if (!initialized) {
-                    // Skip first emission (startup) to avoid overriding phone volume
-                    initialized = true
-                    return@collect
-                }
-                // Skip sync if change originated from HW buttons (avoid round-trip bounce)
-                if (System.currentTimeMillis() < hwVolumeChangeUntilMs) return@collect
-                syncPhoneVolume(player.volumeLevel)
-            }
         }
 
         setContent {
@@ -278,7 +269,6 @@ class MainActivity : ComponentActivity() {
                     // entry point for every STREAM_MUSIC mutation (HW keys,
                     // system bar, accessibility shortcuts, all the same).
                     if (event.action == KeyEvent.ACTION_DOWN) {
-                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                             AudioManager.ADJUST_RAISE
@@ -307,7 +297,6 @@ class MainActivity : ComponentActivity() {
                         // STREAM_MUSIC + UI overlay; the ContentObserver wakeup
                         // mirrors the new level to MA via onPhoneStreamVolumeChanged,
                         // so there is no need to push from here.
-                        hwVolumeChangeUntilMs = System.currentTimeMillis() + 1000
                         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                             AudioManager.ADJUST_RAISE
@@ -365,23 +354,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
-    }
-
-    private fun readPhoneVolumePercent(): Int {
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        return if (max > 0) ((current * 100f / max) + 0.5f).toInt() else 0
-    }
-
-    private fun syncPhoneVolume(maVolumePercent: Int) {
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val targetVol = ((maVolumePercent * maxVol / 100f) + 0.5f).toInt().coerceIn(0, maxVol)
-        val currentVol = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        if (targetVol != currentVol) {
-            audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-        }
     }
 
     private fun handleShortcutIntent(intent: Intent?) {
@@ -611,6 +583,18 @@ private fun MassDroidApp(
         0.dp
     }
 
+    // The NavHost is shared between the portrait and landscape layouts. Because those are two
+    // different composables, calling MassDroidNavHost inside each would place it at a different slot
+    // in the tree on every rotation, recreating the NavHost's internal SaveableStateHolder and
+    // dropping each screen's rememberSaveable state (selected settings category, open wizard, ...)
+    // even though the back-stack route survives on the shared NavController. movableContentOf keeps
+    // it as ONE instance that simply moves between the two layouts, preserving that state.
+    val navHostContent = remember(navController) {
+        movableContentOf<Modifier> { modifier ->
+            MassDroidNavHost(navController = navController, modifier = modifier)
+        }
+    }
+
     CompositionLocalProvider(
         LocalMiniPlayerPadding provides miniPlayerPadding,
         LocalIsConnected provides isConnected
@@ -625,7 +609,8 @@ private fun MassDroidApp(
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
                 extraBottomPadding = 0.dp,
-                onBottomBarHeightChanged = { bottomBarHeight = it }
+                onBottomBarHeightChanged = { bottomBarHeight = it },
+                navHost = navHostContent
             )
         } else {
             PortraitLayout(
@@ -636,7 +621,8 @@ private fun MassDroidApp(
                 miniPlayerViewModel = miniPlayerViewModel,
                 snackbarHostState = snackbarHostState,
                 extraBottomPadding = 0.dp,
-                onBottomBarHeightChanged = { bottomBarHeight = it }
+                onBottomBarHeightChanged = { bottomBarHeight = it },
+                navHost = navHostContent
             )
         }
 
@@ -661,7 +647,8 @@ private fun PortraitLayout(
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
     extraBottomPadding: Dp = 0.dp,
-    onBottomBarHeightChanged: (Dp) -> Unit = {}
+    onBottomBarHeightChanged: (Dp) -> Unit = {},
+    navHost: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
     Scaffold(
@@ -688,10 +675,7 @@ private fun PortraitLayout(
             }
         }
     ) { paddingValues ->
-        MassDroidNavHost(
-            navController = navController,
-            modifier = Modifier.padding(paddingValues)
-        )
+        navHost(Modifier.padding(paddingValues))
     }
 }
 
@@ -704,7 +688,8 @@ private fun LandscapeLayout(
     miniPlayerViewModel: MiniPlayerViewModel,
     snackbarHostState: SnackbarHostState,
     extraBottomPadding: Dp = 0.dp,
-    onBottomBarHeightChanged: (Dp) -> Unit = {}
+    onBottomBarHeightChanged: (Dp) -> Unit = {},
+    navHost: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
     Scaffold(
@@ -736,9 +721,8 @@ private fun LandscapeLayout(
             if (showNav) {
                 SideNavRail(navController, currentRoute)
             }
-            MassDroidNavHost(
-                navController = navController,
-                modifier = Modifier
+            navHost(
+                Modifier
                     .weight(1f)
                     .windowInsetsPadding(
                         WindowInsets.navigationBars.union(WindowInsets.displayCutout)

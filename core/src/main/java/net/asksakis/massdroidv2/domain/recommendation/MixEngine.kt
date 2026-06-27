@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
@@ -396,7 +397,8 @@ class MixEngine @Inject constructor() {
 
     // --- Shared scoring helpers ---
 
-    private fun compositeArtistScore(
+    @VisibleForTesting
+    internal fun compositeArtistScore(
         uri: String,
         artistScoreMap: Map<String, Double>,
         bllArtistScoreMap: Map<String, Double>,
@@ -413,17 +415,20 @@ class MixEngine @Inject constructor() {
         return artistScore + smart + recent + favoriteArtistBonus + daypart
     }
 
-    private fun compressPreferenceScore(raw: Double): Double =
+    @VisibleForTesting
+    internal fun compressPreferenceScore(raw: Double): Double =
         if (raw == 0.0) 0.0 else kotlin.math.sign(raw) * kotlin.math.sqrt(kotlin.math.abs(raw))
 
-    private fun daypartBonus(affinity: Double?): Double {
+    @VisibleForTesting
+    internal fun daypartBonus(affinity: Double?): Double {
         if (affinity == null) return 0.0
         return ((affinity - 0.35) * 1.8).coerceIn(-0.45, 0.95)
     }
 
     // --- Weighted sampling (SmartMix) ---
 
-    private fun weightedSampleArtists(
+    @VisibleForTesting
+    internal fun weightedSampleArtists(
         candidates: List<String>,
         scoreByUri: Map<String, Double>,
         limit: Int,
@@ -453,7 +458,8 @@ class MixEngine @Inject constructor() {
         return result
     }
 
-    private fun weightedOrderArtists(
+    @VisibleForTesting
+    internal fun weightedOrderArtists(
         candidates: List<String>,
         scoreByUri: Map<String, Double>,
         random: Random
@@ -532,7 +538,8 @@ class MixEngine @Inject constructor() {
         return result
     }
 
-    private fun canEmitArtist(
+    @VisibleForTesting
+    internal fun canEmitArtist(
         artistUri: String,
         emittedArtists: List<String>,
         emittedArtistCounts: Map<String, Int>,
@@ -548,7 +555,8 @@ class MixEngine @Inject constructor() {
 
     // --- Identity helpers ---
 
-    private fun trackDedupeKey(track: Track): String {
+    @VisibleForTesting
+    internal fun trackDedupeKey(track: Track): String {
         val artist = normalizeTrackText(track.artistNames.substringBefore(","))
         val name = normalizeTrackText(track.name)
         if (artist.isNotBlank() && name.isNotBlank()) return "$artist|$name"
@@ -568,7 +576,8 @@ class MixEngine @Inject constructor() {
     // at the floor (2) for maximum diversity; with a small genre pool it rises
     // (up to the ceiling) so a few deep-catalogue artists can still fill the
     // target instead of leaving the mix at a handful of tracks.
-    private fun dynamicMaxPerArtist(target: Int, usableArtists: Int): Int {
+    @VisibleForTesting
+    internal fun dynamicMaxPerArtist(target: Int, usableArtists: Int): Int {
         if (usableArtists <= 0) return MAX_PER_ARTIST_FLOOR
         val needed = ceil(target.toDouble() / usableArtists).toInt()
         return needed.coerceIn(MAX_PER_ARTIST_FLOOR, MAX_PER_ARTIST_CEIL)

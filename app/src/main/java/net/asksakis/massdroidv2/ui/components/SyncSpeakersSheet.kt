@@ -116,20 +116,37 @@ private fun SyncSpeakerRow(
     var defaultMs by remember(player.playerId) { mutableIntStateOf(0) }
     var loaded by remember(player.playerId) { mutableStateOf(false) }
     var hasDelay by remember(player.playerId) { mutableStateOf(false) }
+    // Some sendspin receivers (e.g. the iOS Sendspin app) expose no sync-delay
+    // key but DO expose the "Static playback delay" (0..5000), which is the knob
+    // MA's own web UI offers for them. Fall back to it so it is tunable here too
+    // instead of dead-ending on "set on the device".
+    var isStatic by remember(player.playerId) { mutableStateOf(false) }
 
     LaunchedEffect(player.playerId) {
         val config = onLoadConfig(player.playerId)
-        val loadedKey = config?.sendspinSyncDelayKey
-        if (loadedKey != null) {
-            key = loadedKey
-            value = config.sendspinSyncDelayMs ?: 0
-            defaultMs = config.sendspinSyncDelayDefault ?: 0
-            hasDelay = true
+        val syncKey = config?.sendspinSyncDelayKey
+        val staticKey = config?.sendspinStaticDelayKey
+        when {
+            syncKey != null -> {
+                key = syncKey
+                value = config.sendspinSyncDelayMs ?: 0
+                defaultMs = config.sendspinSyncDelayDefault ?: 0
+                hasDelay = true
+            }
+            staticKey != null -> {
+                key = staticKey
+                value = config.sendspinStaticDelayMs ?: 0
+                defaultMs = 0
+                isStatic = true
+                hasDelay = true
+            }
         }
         loaded = true
     }
 
     if (hasDelay) {
+        val minMs = if (isStatic) 0 else -1000
+        val maxMs = if (isStatic) 5000 else 1000
         LaunchedEffect(player.playerId, loaded) {
             if (!loaded) return@LaunchedEffect
             @OptIn(FlowPreview::class)
@@ -138,11 +155,13 @@ private fun SyncSpeakerRow(
             }
         }
         SyncDelayCard(
-            label = player.displayName,
+            label = if (isStatic) "${player.displayName} · static playback delay" else player.displayName,
             valueMs = value,
             defaultMs = defaultMs,
-            onValueChange = { value = it.coerceIn(-1000, 1000) },
-            compact = true
+            onValueChange = { value = it.coerceIn(minMs, maxMs) },
+            compact = true,
+            minMs = minMs,
+            maxMs = maxMs
         )
     } else if (loaded) {
         // Native sendspin client (e.g. a laptop running the app): it does its

@@ -15,7 +15,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 
 class ProximityPlaybackController(
-    private val service: PlaybackService,
+    private val service: android.app.Service,
     private val scope: CoroutineScope,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
@@ -97,27 +97,14 @@ class ProximityPlaybackController(
     fun isPendingRoom(roomId: String): Boolean =
         pendingProximityTransfer?.roomId == roomId
 
-    fun showRoomDetectedNotification(room: DetectedRoom) {
-        val notification = NotificationCompat.Builder(service, PROXIMITY_CHANNEL_ID)
-            .setContentTitle("Now in ${room.roomName}")
-            .setContentText("Follow Me detected ${room.roomName}")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setOnlyAlertOnce(true)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setTimeoutAfter(10_000)
-            .build()
-        notificationManager()?.notify(PROXIMITY_NOTIFICATION_ID, notification)
-    }
-
     fun showActionNotification(room: DetectedRoom, canTransfer: Boolean, sourcePlayerId: String?) {
         pendingProximityTransfer = room
         pendingTransferSourcePlayerId = sourcePlayerId
-        val transferIntent = Intent(PROXIMITY_TRANSFER_ACTION, null, service, PlaybackService::class.java)
+        val transferIntent = Intent(PROXIMITY_TRANSFER_ACTION, null, service, FollowMeService::class.java)
         val transferPending = PendingIntent.getService(
             service, 0, transferIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val playIntent = Intent(PROXIMITY_PLAY_ACTION, null, service, PlaybackService::class.java)
+        val playIntent = Intent(PROXIMITY_PLAY_ACTION, null, service, FollowMeService::class.java)
         val playPending = PendingIntent.getService(
             service, 1, playIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )

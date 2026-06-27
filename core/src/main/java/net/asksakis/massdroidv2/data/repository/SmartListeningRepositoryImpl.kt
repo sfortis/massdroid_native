@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
@@ -141,7 +142,8 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override suspend fun getSuppressedTrackUris(): Set<String> =
         dao.getSuppressedTrackUris().toSet()
 
-    private fun scaleSkipSignal(listenedMs: Long?, durationSec: Double?): Double {
+    @VisibleForTesting
+    internal fun scaleSkipSignal(listenedMs: Long?, durationSec: Double?): Double {
         if (listenedMs == null || durationSec == null || durationSec <= 0.0) return SKIP_ARTIST_SIGNAL
         val listenedSec = listenedMs / 1000.0
         val ratio = listenedSec / durationSec
@@ -155,7 +157,8 @@ class SmartListeningRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun scaleListenSignal(listenedMs: Long?, durationSec: Double?): Double {
+    @VisibleForTesting
+    internal fun scaleListenSignal(listenedMs: Long?, durationSec: Double?): Double {
         if (listenedMs == null || durationSec == null || durationSec <= 0.0) return LISTEN_ARTIST_SIGNAL
         val ratio = (listenedMs / 1000.0 / durationSec).coerceIn(0.0, 1.0)
         return when {

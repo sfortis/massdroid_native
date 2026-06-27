@@ -372,7 +372,7 @@ class PlayerRepositoryImpl @Inject constructor(
         blockedAutoSkipByQueue.clear()
         blockedQueueCleanupAtByQueue.clear()
         queueFilterModeByQueue.clear()
-        volumeOverrideUntilMs.clear()
+        volumeOverride.clear()
         suppressedArtistUrisSnapshot = emptySet()
     }
 
@@ -396,16 +396,38 @@ class PlayerRepositoryImpl @Inject constructor(
                     if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
                         Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
                     }
-                    // During volume cooldown for THIS specific player, preserve
-                    // local optimistic values. Other players' echoes still flow
-                    // through (needed when group volume fans out to children).
-                    if (volumeCooldownActive(player.playerId)) {
-                        val local = _players.value.firstOrNull { it.playerId == player.playerId }
-                        if (local != null) {
-                            player = player.copy(
-                                volumeLevel = local.volumeLevel,
-                                groupVolume = local.groupVolume ?: player.groupVolume
-                            )
+                    // Value-confirmation for THIS specific player's volume: while an
+                    // optimistic override is pending, preserve the local value until
+                    // the server echoes it back (then it has caught up - clear and
+                    // accept its events again). A non-matching echo is stale and is
+                    // suppressed regardless of how late it arrives. The cap clears a
+                    // never-confirmed override (server clamp/group average). Other
+                    // players' echoes still flow through (group fan-out to children).
+                    volumeOverride[player.playerId]?.let { ov ->
+                        val confirmed = player.volumeLevel == ov.value || player.groupVolume == ov.value
+                        when {
+                            // Cap reached: stop suppressing, accept the server value
+                            // (covers a genuine clamp/group-average that never echoes
+                            // the exact value).
+                            System.currentTimeMillis() >= ov.capMs ->
+                                volumeOverride.remove(player.playerId)
+                            // Non-sticky (normal slider/HW change): a matching echo
+                            // means the server caught up - clear and accept.
+                            confirmed && !ov.sticky ->
+                                volumeOverride.remove(player.playerId)
+                            // Sticky (car-audio restore) holds the value until the cap
+                            // even after a confirm, so a late/out-of-order stale echo
+                            // (the pinned 100%) on the now-idle player can't bounce it
+                            // back. Non-confirmed events are preserved regardless.
+                            else -> {
+                                val local = _players.value.firstOrNull { it.playerId == player.playerId }
+                                if (local != null) {
+                                    player = player.copy(
+                                        volumeLevel = local.volumeLevel,
+                                        groupVolume = local.groupVolume ?: player.groupVolume
+                                    )
+                                }
+                            }
                         }
                     }
                     _players.update { list ->
@@ -1523,22 +1545,35 @@ class PlayerRepositoryImpl @Inject constructor(
     // Per-player cooldowns so that an optimistic update on one player doesn't
     // suppress server echoes for OTHER players. Group volume fans out to
     // children — we need their echoes to arrive.
-    private val volumeOverrideUntilMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /**
+     * Pending optimistic volume for a player: the value we last pushed plus a
+     * hard expiry. The override holds until the server ECHOES BACK [value] (it has
+     * caught up — accept its events again), not for a fixed time window: a late
+     * stale echo can no longer outlast a short timer and yank the slider back to a
+     * value the user already moved past (the 50->30->50->30 flash). [capMs] is only
+     * a safety fallback for when the exact value never returns (server clamp, group
+     * averaging) so the override can't latch forever.
+     */
+    private data class VolumeOverride(val value: Int, val capMs: Long, val sticky: Boolean = false)
 
-    private fun volumeCooldownActive(playerId: String): Boolean =
-        System.currentTimeMillis() < (volumeOverrideUntilMs[playerId] ?: 0L)
+    private val volumeOverride = java.util.concurrent.ConcurrentHashMap<String, VolumeOverride>()
+
+    // Fallback cap: if the server never echoes the exact pushed value (clamp/group
+    // average), stop preserving the optimistic value after this long.
+    private val volumeOverrideCapMs = 2_000L
 
     /**
-     * Synchronous optimistic volume update + cooldown.
-     * Call from the UI thread BEFORE launching the async WS command
-     * to prevent PLAYER_UPDATED echoes from flickering the slider.
+     * Synchronous optimistic volume update. Call from the UI thread BEFORE
+     * launching the async WS command to prevent PLAYER_UPDATED echoes from
+     * flickering the slider; the override is cleared on server value confirmation.
      *
      * For group-type players we also update [Player.groupVolume] so that the
      * hardware rocker keeps incrementing from the new basis instead of the
      * stale server average.
      */
-    override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int) {
-        volumeOverrideUntilMs[playerId] = System.currentTimeMillis() + 800
+    override fun applyVolumeOptimistic(playerId: String, volumeLevel: Int, holdMs: Long, sticky: Boolean) {
+        val cap = System.currentTimeMillis() + (if (holdMs > 0L) holdMs else volumeOverrideCapMs)
+        volumeOverride[playerId] = VolumeOverride(volumeLevel, cap, sticky)
         _players.update { list ->
             list.map {
                 if (it.playerId != playerId) return@map it
@@ -1556,7 +1591,7 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setVolume(playerId: String, volumeLevel: Int) {
-        applyVolumeOptimistic(playerId, volumeLevel)
+        applyVolumeOptimistic(playerId, volumeLevel, holdMs = 0L, sticky = false)
         wsClient.sendCommand(
             MaCommands.Players.CMD_VOLUME_SET,
             VolumeSetArgs(playerId = playerId, volumeLevel = volumeLevel)
@@ -1567,7 +1602,7 @@ class PlayerRepositoryImpl @Inject constructor(
         // Delegate to the server-side group-volume command. It handles the fan-out
         // to members while preserving their current volume ratios, for both
         // proper group players (type=GROUP) and ad-hoc sync leaders.
-        applyVolumeOptimistic(parentId, volume)
+        applyVolumeOptimistic(parentId, volume, holdMs = 0L, sticky = false)
         wsClient.sendCommand(
             MaCommands.Players.CMD_GROUP_VOLUME,
             VolumeSetArgs(playerId = parentId, volumeLevel = volume)
@@ -1681,6 +1716,13 @@ class PlayerRepositoryImpl @Inject constructor(
             val syncDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_sync_delay") }
             val syncDelayEntry = syncDelayKey?.let { values[it] }
 
+            // Same as the sync-delay key: the static-delay key is plain on a plain
+            // player but protocol-wrapped (`<sub>||protocol||sendspin_static_delay`)
+            // on a protocol player, so match by suffix instead of an exact key (an
+            // exact "sendspin_static_delay" lookup missed wrapped players entirely).
+            val staticDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_static_delay") }
+            val staticDelayEntry = staticDelayKey?.let { values[it] }
+
             // Generic per-provider output codec (e.g. Sonos `output_codec`: flac/mp3/aac/wav).
             val outputCodecEntry = values?.get("output_codec")
             val outputCodecOptions = (outputCodecEntry as? JsonObject)?.get("options")
@@ -1708,7 +1750,8 @@ class PlayerRepositoryImpl @Inject constructor(
                 sendspinFormatOptions = formatOptions,
                 outputCodec = outputCodecEntry?.configValue(),
                 outputCodecOptions = outputCodecOptions,
-                sendspinStaticDelayMs = values?.get("sendspin_static_delay")?.configInt(),
+                sendspinStaticDelayMs = staticDelayEntry?.configInt(),
+                sendspinStaticDelayKey = staticDelayKey,
                 sendspinSyncDelayKey = syncDelayKey,
                 sendspinSyncDelayMs = syncDelayEntry?.configInt(),
                 sendspinSyncDelayDefault =
@@ -1910,7 +1953,12 @@ fun ServerPlayer.toDomain(
     },
     powered = powered,
     volumeLevel = volumeLevel,
-    groupVolume = groupVolume,
+    // Only expose group_volume for an ACTUAL group (a group player, or an ad-hoc
+    // sync leader with members). The server keeps sending a stale group_volume for
+    // solo players too; since the volume slider shows `groupVolume ?: volumeLevel`,
+    // a stale group_volume would make a solo player's slider display the wrong
+    // (lagging) value and never settle on what the user just set.
+    groupVolume = if (type == "group" || groupChilds.isNotEmpty()) groupVolume else null,
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
     syncedTo = syncedTo,

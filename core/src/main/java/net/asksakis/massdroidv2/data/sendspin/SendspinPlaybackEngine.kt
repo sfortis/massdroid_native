@@ -106,8 +106,16 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // [REOPEN_MAX_WAIT_MS] so continuous flapping or a genuine speaker-only route
         // still reopens. The producer parks on reopenInFlight meanwhile, so the ring
         // is held (bounded), not grown.
+        //
+        // REOPEN_MAX_WAIT_MS only governs the GIVE-UP-to-speaker fallthrough: the
+        // moment a real music sink (A2DP/BLE/wired/USB) appears the wait
+        // short-circuits and binds immediately, so a longer cap adds NO latency on
+        // a normal connect. It only delays falling back to the phone speaker when no
+        // external sink ever shows up. Voice-first BT (motorcycle intercoms / some
+        // helmets) can take several seconds to bring A2DP up after the SCO link, so
+        // 8 s gives slow stacks time to establish A2DP before we give up on it.
         private const val REOPEN_SETTLE_MS = 350L
-        private const val REOPEN_MAX_WAIT_MS = 4_000L
+        private const val REOPEN_MAX_WAIT_MS = 8_000L
     }
 
     // Holds the raw WS frame (header included) with an offset/length view of
@@ -441,6 +449,24 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     override fun setMuted(muted: Boolean) {
         this.muted = muted
         applyOutputVolume()
+    }
+
+    /**
+     * Output dynamic-range compressor level (0 off, 1 soft, 2 medium, 3 hard).
+     * Amplitude-only stage in the native callback; no effect on timing/sync. The
+     * native output caches it and re-applies across stream reopens.
+     */
+    fun setCompressorLevel(level: Int) {
+        nativeOutput.setCompressorLevel(level)
+    }
+
+    /**
+     * High-end output quantization: noise-shaped TPDF dither at the float->int16
+     * step. Amplitude-only; no effect on timing/sync. The native output caches it
+     * and re-applies across stream reopens.
+     */
+    fun setDither(enabled: Boolean) {
+        nativeOutput.setDither(enabled)
     }
 
     private val startupMuteMs: Long get() = if (isSync) SYNC_STARTUP_MUTE_MS else DIRECT_STARTUP_MUTE_MS
@@ -1147,18 +1173,29 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
-        val staticDelayUs = routeAcousticExtraUs.coerceAtLeast(0L)
         // Output (HAL) latency is handled natively; this value is only used by
         // the DIRECT anchor (to start ~now + latency) and for logging.
         val outputLatencyUs = nativeOutput.outputLatencyUs()
         val local = computeLocalPlan(serverTimestampUs, outputLatencyUs)
+        // Acoustic correction (routeAcousticExtraUs) and the unreported HAL/DAC
+        // gap exist ONLY to land our ACOUSTIC output on the shared GROUP timeline
+        // (serverTs + headroom), matching the official clients. In solo (DIRECT)
+        // there is no peer to phase-lock to, so neither applies — and the BT
+        // acoustic (~400 ms) would otherwise schedule the first frame in the PAST
+        // (lead < 0), making the native anchor chase a moving/past target. Solo is
+        // pure FIFO: present = local anchor + headroom (+ the client UX nudge).
+        val staticDelayUs = if (isSync) routeAcousticExtraUs.coerceAtLeast(0L) else 0L
         // The native dac0 alignment compensates only the HAL latency that
         // getTimestamp reports (outputLatencyUs). The real output path is longer
         // (DAC/analog); AudioManager.getOutputLatency gives the full value. Shift
         // playback earlier by that unreported gap so our ACOUSTIC output lands on
         // the group timeline (serverTs + headroom) — matching official clients
         // without a manual nudge.
-        val unreportedLatencyUs = (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
+        val unreportedLatencyUs = if (isSync) {
+            (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
         // Intended presentation time: timeline + headroom, shifted earlier by the
         // external acoustic/BT delay, the unreported HAL gap, and the UX nudge.
         val presentationUs = local.localOutputUs +

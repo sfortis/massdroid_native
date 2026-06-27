@@ -25,7 +25,6 @@ enum class WifiMatchMode { BSSID, SSID }
 enum class ProximityTransferMode { ASK, AUTO_TRANSFER, SELECT_ONLY }
 
 data class PolicyRules(
-    val allowWeakCalibration: Boolean,
     val minBleCoverage: Int,
     val minConfidence: Double,
     val minMargin: Double,
@@ -35,7 +34,6 @@ data class PolicyRules(
 
 fun DetectionPolicy.rules(): PolicyRules = when (this) {
     DetectionPolicy.STRICT -> PolicyRules(
-        allowWeakCalibration = false,
         minBleCoverage = 2,
         minConfidence = 0.6,
         minMargin = 4.0,
@@ -43,7 +41,6 @@ fun DetectionPolicy.rules(): PolicyRules = when (this) {
         minUsableProfiles = 3
     )
     DetectionPolicy.NORMAL -> PolicyRules(
-        allowWeakCalibration = true,
         minBleCoverage = 1,
         minConfidence = 0.4,
         minMargin = 2.0,
@@ -149,10 +146,20 @@ fun RoomConfig.effectiveSensitivity(): Float =
  */
 fun RoomConfig.confirmThresholds(): ConfirmThresholds {
     val s = (effectiveSensitivity() / SENSITIVITY_MAX).toDouble()  // 0..1
-    val minConfidence = 0.65 - s * 0.20   // 0.65 (strict) -> 0.45 (relaxed)
-    val minMargin = 2.0 - s * 1.6         // 2.0  (strict) -> 0.4  (relaxed)
+    var minConfidence = 0.65 - s * 0.20   // 0.65 (strict) -> 0.45 (relaxed)
+    var minMargin = 2.0 - s * 1.6         // 2.0  (strict) -> 0.4  (relaxed)
+    // Weakly-separable rooms (low self-recognition / a dominant confuser, see RoomSeparability) are
+    // still eligible but must clear a stiffer bar so an overlapping neighbour can't flap them. GOOD
+    // rooms keep the sensitivity-derived gates unchanged.
+    if (calibrationQuality != CalibrationQuality.GOOD) {
+        minConfidence += WEAK_ROOM_CONFIDENCE_PENALTY
+        minMargin += WEAK_ROOM_MARGIN_PENALTY
+    }
     return ConfirmThresholds(minConfidence = minConfidence, minMargin = minMargin)
 }
+
+private const val WEAK_ROOM_CONFIDENCE_PENALTY = 0.05
+private const val WEAK_ROOM_MARGIN_PENALTY = 0.5
 
 @Serializable
 data class RoomPlaybackConfig(

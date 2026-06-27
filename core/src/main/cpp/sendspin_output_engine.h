@@ -99,6 +99,16 @@ public:
 
     void setVolume(float v) { volume_.store(v); }
 
+    // Dynamic-range compressor level: 0 = off (bypass), 1 = soft, 2 = medium,
+    // 3 = hard. Amplitude-only (applied in the callback with the volume gain), so
+    // it does not touch the timeline/ring/latency. Read live by the callback.
+    void setCompressorLevel(int level) { compressorLevel_.store(level); }
+
+    // High-end output quantization: noise-shaped TPDF dither at the float->int16
+    // step. Amplitude-only (sample values), no timing effect. Read live by the
+    // callback; off = the original plain truncation.
+    void setDither(bool enabled) { dither_.store(enabled); }
+
     // Freeze/unfreeze the consumer WITHOUT dropping the ring (transient focus
     // loss in solo/DIRECT). While frozen the callback fades to silence and then
     // holds the read position, so the buffered audio survives and resumes
@@ -137,6 +147,16 @@ private:
 
     static int64_t monotonicNowUs();
 
+    // Triangular-PDF dither, ~1 LSB peak (two uniform randoms differenced).
+    // Callback thread only; cheap LCG, no atomics.
+    float nextTpdf() {
+        ditherRng_ = ditherRng_ * 1664525u + 1013904223u;
+        const float a = static_cast<float>(ditherRng_ >> 8) * (1.0f / 16777216.0f);
+        ditherRng_ = ditherRng_ * 1664525u + 1013904223u;
+        const float b = static_cast<float>(ditherRng_ >> 8) * (1.0f / 16777216.0f);
+        return a - b;
+    }
+
     std::shared_ptr<oboe::AudioStream> stream_;
     int32_t sampleRate_ = 48000;
     int32_t channels_ = 2;
@@ -165,6 +185,18 @@ private:
     // mid-waveform. appliedVolume_ is touched only by the callback thread.
     std::atomic<float> volume_{1.0f};
     float appliedVolume_ = 0.0f;
+    // Compressor level (0..3), set from Kotlin, read live by the callback.
+    std::atomic<int> compressorLevel_{0};
+    // Smoothed gain change in dB (callback thread only): + = downward cut above
+    // threshold, - = upward boost (leveler) below it. Smoothing the GAIN (not the
+    // level) in the log domain is what keeps it click/zipper-free. Reset on ring reset.
+    float compGsDb_ = 0.0f;
+    // Noise-shaped TPDF dither (callback thread only). dither_ is the live toggle;
+    // ditherError_ is the per-channel first-order error-feedback state; ditherRng_
+    // is a cheap LCG for the triangular dither.
+    std::atomic<bool> dither_{false};
+    float ditherError_[2] = {0.0f, 0.0f};
+    uint32_t ditherRng_ = 0x9E3779B9u;
     std::atomic<bool> flushRequested_{false};
     std::atomic<bool> driftCorrection_{true};
     // Freeze: hold the read position (preserve the ring) across a transient

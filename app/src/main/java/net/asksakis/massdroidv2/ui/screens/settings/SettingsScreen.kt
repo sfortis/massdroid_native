@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
+import net.asksakis.massdroidv2.ui.components.MdSlider
+import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -11,6 +13,7 @@ import net.asksakis.massdroidv2.ui.components.MdTextButton
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
@@ -35,6 +38,8 @@ import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
@@ -60,6 +65,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -70,6 +76,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -79,6 +86,14 @@ import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.Manifest
+import android.bluetooth.BluetoothClass
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextRange
@@ -91,6 +106,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
@@ -350,6 +366,14 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
     ) {
         if (isConnected) {
             SendspinCard(viewModel = viewModel)
+            // The sub-settings only affect the phone-as-speaker output, so show
+            // them only while it is enabled (consistent gating for all of them).
+            val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
+            if (sendspinEnabled) {
+                OutputQualityCard(viewModel = viewModel)
+                DspEffectsCard(viewModel = viewModel)
+                CarAudioCard(viewModel = viewModel)
+            }
         } else {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -482,7 +506,7 @@ private fun DiagnosticsCard() {
                 style = MaterialTheme.typography.titleMedium
             )
             Text(
-                "Bundle recent debug logs into a ZIP and send them through any share target. Useful when reporting a problem.",
+                "Share the most recent debug log lines as plain text through any share target. Useful when reporting a problem.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -896,6 +920,7 @@ private fun SmartListeningCard(viewModel: SettingsViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("Smart Listening") },
             supportingContent = { Text("Learns from skip/like/listen actions and improves recommendations.") },
             trailingContent = {
@@ -993,6 +1018,7 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             headlineContent = { Text("Recommendation Insights") },
             supportingContent = {
                 Column {
@@ -1143,19 +1169,40 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
     }
 }
 
+private fun hasBtConnectPermission(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+        PackageManager.PERMISSION_GRANTED
+
+/** Paired BT audio devices as route keys ("bt:NAME"), matching the runtime route key. */
+private fun pairedBtAudioRouteKeys(context: Context): List<String> {
+    if (!hasBtConnectPermission(context)) return emptyList()
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        ?: return emptyList()
+    return runCatching {
+        adapter.bondedDevices.orEmpty()
+            .filter {
+                val cls = it.bluetoothClass
+                cls != null && (
+                    cls.hasService(BluetoothClass.Service.AUDIO) ||
+                        cls.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO
+                    )
+            }
+            .mapNotNull { dev -> dev.name?.takeIf { it.isNotBlank() }?.let { "bt:$it" } }
+    }.getOrDefault(emptyList())
+}
+
 @Composable
 private fun SendspinCard(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
-    val syncSystemVolume by viewModel.sendspinSyncSystemVolume.collectAsStateWithLifecycle(initialValue = true)
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         ListItem(
-            headlineContent = { Text("Sendspin (Phone as Speaker)") },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Enable") },
             supportingContent = {
                 Text(
                     when (sendspinState) {
@@ -1178,31 +1225,218 @@ private fun SendspinCard(viewModel: SettingsViewModel) {
                 MdSwitch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
             }
         )
+    }
+}
 
-        // Sub-setting (sendspin gated). Decouples MA player volume from
-        // STREAM_MUSIC, useful in cars where the head unit attenuates
-        // further and STREAM_MUSIC should stay at 100% for full-fidelity BT
-        // codec transport.
-        if (sendspinEnabled) {
-            ListItem(
-                headlineContent = { Text("Sync system volume on Bluetooth") },
-                supportingContent = {
+/**
+ * Per-device "full volume on connect (car audio)" in its own card, separate from
+ * the main Sendspin enable toggle. Only relevant while phone-as-speaker is on, so
+ * the card is hidden when Sendspin is disabled. A flagged BT device is pinned to
+ * STREAM_MUSIC 100% on connect (its own dial does the attenuation) and left alone.
+ */
+@Composable
+private fun CarAudioCard(viewModel: SettingsViewModel) {
+    val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
+    val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
+    val context = LocalContext.current
+    var hasBtPerm by remember { mutableStateOf(hasBtConnectPermission(context)) }
+    val btPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasBtPerm = granted }
+    val pairedKeys = remember(hasBtPerm) { if (hasBtPerm) pairedBtAudioRouteKeys(context) else emptyList() }
+    var carAudioExpanded by remember { mutableStateOf(false) }
+    val selectedCount = carAudioBtDevices.size
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        // Collapsed by default so the (potentially long) paired-device list does
+        // not dominate the screen; the header row expands it.
+        ListItem(
+            modifier = Modifier.clickable { carAudioExpanded = !carAudioExpanded },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Full volume on connect (car audio)") },
+            supportingContent = {
+                Text(
+                    if (selectedCount > 0) {
+                        "$selectedCount device${if (selectedCount == 1) "" else "s"} selected. " +
+                            "Tap to choose devices whose own dial controls the volume (e.g. your car)."
+                    } else {
+                        "Tap to choose Bluetooth devices whose own dial controls the volume " +
+                            "(e.g. your car); on connect the phone output is pinned to 100%."
+                    }
+                )
+            },
+            trailingContent = {
+                Icon(
+                    imageVector = if (carAudioExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (carAudioExpanded) "Collapse" else "Expand"
+                )
+            }
+        )
+        if (carAudioExpanded) {
+            // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
+            // ones the app has already routed to, plus anything already flagged.
+            val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
+            if (!hasBtPerm) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text("Show paired Bluetooth devices") },
+                    supportingContent = {
+                        Text("Grant the Bluetooth permission to pick your car from the paired list.")
+                    },
+                    trailingContent = {
+                        MdFilledTonalButton(
+                            onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
+                        ) { Text("Allow") }
+                    }
+                )
+            }
+            displayDevices.forEach { key ->
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text(key.removePrefix("bt:")) },
+                    trailingContent = {
+                        MdSwitch(
+                            checked = key in carAudioBtDevices,
+                            onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
+                        )
+                    }
+                )
+            }
+            if (hasBtPerm && displayDevices.isEmpty()) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = {
+                        Text(
+                            "No paired Bluetooth audio devices found.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OutputQualityCard(viewModel: SettingsViewModel) {
+    val formatStr by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
+    val current = SendspinAudioFormat.fromStored(formatStr)
+    val options = listOf(
+        SendspinAudioFormat.SMART,
+        SendspinAudioFormat.FLAC,
+        SendspinAudioFormat.OPUS,
+        SendspinAudioFormat.PCM
+    )
+    val desc = when (current) {
+        SendspinAudioFormat.SMART -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile."
+        SendspinAudioFormat.FLAC -> "Lossless. Highest fidelity, higher bandwidth."
+        SendspinAudioFormat.OPUS -> "Lossy and efficient. Ideal on mobile data."
+        SendspinAudioFormat.PCM -> "Uncompressed, no decode step. Highest bandwidth."
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Output quality") },
+            supportingContent = {
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        options.forEach { fmt ->
+                            androidx.compose.material3.FilterChip(
+                                selected = current == fmt,
+                                onClick = { viewModel.setSendspinAudioFormat(fmt) },
+                                label = { Text(fmt.label) }
+                            )
+                        }
+                    }
                     Text(
-                        "When on Bluetooth, tie phone volume keys and slider to " +
-                            "the Sendspin player. Turn off in the car — the head " +
-                            "unit handles attenuation and the phone stream stays " +
-                            "at full level for best codec fidelity. Phone speaker, " +
-                            "wired, and USB always sync regardless of this setting."
-                    )
-                },
-                trailingContent = {
-                    MdSwitch(
-                        checked = syncSystemVolume,
-                        onCheckedChange = { viewModel.setSendspinSyncSystemVolume(it) }
+                        desc,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DspEffectsCard(viewModel: SettingsViewModel) {
+    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
+    val dither by viewModel.sendspinDither.collectAsStateWithLifecycle()
+    val compNames = listOf("Off", "Soft", "Medium", "Hard")
+    val compDescriptions = listOf(
+        "No processing. Full original dynamic range.",
+        "Light leveling. Evens the volume and lifts quiet detail while keeping most dynamics.",
+        "Moderate leveling. A consistent level across quiet and loud passages.",
+        "Heavy leveling. A tight, dense level for noisy rooms or low-volume listening."
+    )
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("DSP Effects") },
+            supportingContent = { Text("Processing applied to the phone's speaker output.") }
+        )
+        // Custom compact control (shared MdSlider) so the level name AND the
+        // description update LIVE while dragging (LabeledSlider only commits on
+        // release). Description sits below the slider so its length never shifts
+        // the slider position. Small text styles keep the card compact.
+        var sliderPos by remember(compressorLevel) { mutableFloatStateOf(compressorLevel.toFloat()) }
+        val liveLevel = sliderPos.roundToInt().coerceIn(0, 3)
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Sound compressor",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    compNames[liveLevel],
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            MdSlider(
+                value = sliderPos,
+                onValueChange = { sliderPos = it },
+                onValueChangeFinished = { viewModel.setSendspinCompressorLevel(sliderPos.roundToInt()) },
+                valueRange = 0f..3f,
+                steps = 2,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                compDescriptions[liveLevel],
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+        ListItem(
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Output dithering") },
+            supportingContent = {
+                Text(
+                    "Noise-shaped dither on the 16-bit output. Reduces quantization " +
+                        "noise for smoother quiet passages, fades and decays."
+                )
+            },
+            trailingContent = {
+                MdSwitch(checked = dither, onCheckedChange = { viewModel.setSendspinDither(it) })
+            }
+        )
     }
 }
 

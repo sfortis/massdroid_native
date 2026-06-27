@@ -475,6 +475,22 @@ class SendspinManager(
         currentVolume = volume
     }
 
+    /**
+     * Output dynamic-range compressor level (0 off, 1 soft, 2 medium, 3 hard).
+     * Applied to BOTH engines so it persists across a group join/leave swap (each
+     * engine owns its native output, which caches the level across reopens).
+     */
+    fun setCompressorLevel(level: Int) {
+        syncEngine.setCompressorLevel(level)
+        directEngine.setCompressorLevel(level)
+    }
+
+    /** Output noise-shaped dither toggle; applied to BOTH engines (see above). */
+    fun setDither(enabled: Boolean) {
+        syncEngine.setDither(enabled)
+        directEngine.setDither(enabled)
+    }
+
     fun duck() {
         // Transient AudioTrack attenuation. Keeps currentVolume unchanged so
         // restoreVolume() can bring us back to full gain.

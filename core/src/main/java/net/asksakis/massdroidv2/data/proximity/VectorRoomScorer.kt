@@ -36,6 +36,16 @@ private const val SOFTMAX_TEMPERATURE = 0.1
 private const val K_NEAREST = 3                 // use 3 closest fingerprints per room
 private const val ANCHOR_WEIGHT_FLOOR = 0.15    // weight for anchors without a calibrated profile
 
+// Per-scan attenuation compensation. Anchors co-observed in both the live scan and a calibration
+// sample share a common additive shift when global conditions change (phone in a pocket, body
+// blocking the radios, a different handset). Removing that shift makes the distance reflect the
+// relative RSSI *pattern* - which anchor is louder than which - so two rooms that share the same
+// beacons at different relative strength stay separable (Kitchen SHIELD>JBL vs Living JBL>SHIELD).
+// Strength < 1.0 keeps a little absolute-level sensitivity (a strong nearby anchor still pulls the
+// room) while still de-trending most of the global drift. Tuned against captured fingerprints.
+private const val CENTERING_STRENGTH = 0.8
+private const val MIN_ANCHORS_FOR_CENTERING = 3
+
 internal object VectorRoomScorer {
 
     /**
@@ -108,14 +118,29 @@ internal object VectorRoomScorer {
         roomAnchors: Set<String>,
         anchorWeights: Map<String, Double>
     ): Double {
+        // Estimate the global attenuation offset from anchors seen in BOTH the scan and this
+        // calibration sample, then de-trend the co-observed diffs by it (see CENTERING_STRENGTH).
+        val coObserved = roomAnchors.filter { current.containsKey(it) && calibration.containsKey(it) }
+        val offset = if (coObserved.size >= MIN_ANCHORS_FOR_CENTERING) {
+            CENTERING_STRENGTH * coObserved.sumOf {
+                (current.getValue(it) - calibration.getValue(it)).toDouble()
+            } / coObserved.size
+        } else {
+            0.0
+        }
+
         var weightedSumSquared = 0.0
         var totalWeight = 0.0
         for (anchor in roomAnchors) {
+            val seenInBoth = current.containsKey(anchor) && calibration.containsKey(anchor)
             val observed = current[anchor] ?: MISSING_RSSI
             val expected = calibration[anchor] ?: MISSING_RSSI
             // Weight: stronger calibrated signal AND more discriminative anchor = more important.
             val weight = signalWeight(expected) * (anchorWeights[anchor] ?: ANCHOR_WEIGHT_FLOOR)
-            val diff = (observed - expected).toDouble()
+            // Only de-trend anchors observed in both: a MISSING anchor's diff is a presence penalty,
+            // not a level reading, so the global offset must not be applied to it.
+            val rawDiff = (observed - expected).toDouble()
+            val diff = if (seenInBoth) rawDiff - offset else rawDiff
             weightedSumSquared += weight * diff * diff
             totalWeight += weight
         }

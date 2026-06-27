@@ -41,6 +41,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -53,9 +54,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -70,7 +73,7 @@ import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
 import net.asksakis.massdroidv2.domain.model.Player
-import net.asksakis.massdroidv2.service.PlaybackService
+import net.asksakis.massdroidv2.service.FollowMeService
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
 import net.asksakis.massdroidv2.ui.permissions.PermissionRationaleDialog
@@ -92,7 +95,10 @@ fun ProximitySettingsScreen(
         else config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
     }
     var deleteTarget by remember { mutableStateOf<RoomConfig?>(null) }
-    var showTuningWizard by remember { mutableStateOf(false) }
+    // rememberSaveable so the "Calibrate Rooms" wizard stays open across an Activity recreation
+    // (e.g. screen rotation). The scan/step state itself lives in the ViewModel and already survives;
+    // only this visibility flag was being reset to false, which closed the dialog mid-flow.
+    var showTuningWizard by rememberSaveable { mutableStateOf(false) }
     val tuningSnapshots by viewModel.tuningSnapshots.collectAsStateWithLifecycle()
     val tuningStep by viewModel.tuningStep.collectAsStateWithLifecycle()
     val autoProgress by viewModel.autoFingerprintProgress.collectAsStateWithLifecycle()
@@ -130,8 +136,8 @@ fun ProximitySettingsScreen(
                 viewModel.setEnabled(true)
             }
             context.startService(
-                android.content.Intent(context, PlaybackService::class.java)
-                    .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                android.content.Intent(context, FollowMeService::class.java)
+                    .setAction(FollowMeService.PROXIMITY_REEVALUATE_ACTION)
             )
         }
     }
@@ -148,36 +154,53 @@ fun ProximitySettingsScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             val btEnabled by viewModel.bluetoothEnabled.collectAsStateWithLifecycle()
-            ListItem(
-                headlineContent = { Text("Enable Follow Me") },
-                supportingContent = {
-                    Text(
-                        if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
-                        else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
-                        else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
-                        else "Detect room changes and control speaker hand-offs."
-                    )
-                },
-                trailingContent = {
-                    Switch(
-                        checked = config.enabled,
-                        enabled = btEnabled || config.enabled,
-                        onCheckedChange = { enabled ->
-                            if (!enabled) {
-                                viewModel.setEnabled(false)
-                            } else if (btEnabled) {
-                                if (hasAllFollowMePermissions) viewModel.setEnabled(true)
-                                else showFollowMePermissionDialog = true
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+            ) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    headlineContent = { Text("Enable Follow Me") },
+                    supportingContent = {
+                        Text(
+                            if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
+                            else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
+                            else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
+                            else "Detect room changes and control speaker hand-offs."
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = config.enabled,
+                            enabled = btEnabled || config.enabled,
+                            onCheckedChange = { enabled ->
+                                if (!enabled) {
+                                    viewModel.setEnabled(false)
+                                } else if (btEnabled) {
+                                    if (hasAllFollowMePermissions) viewModel.setEnabled(true)
+                                    else showFollowMePermissionDialog = true
+                                }
                             }
-                        }
-                    )
-                }
-            )
+                        )
+                    }
+                )
+            }
 
             if (config.enabled) {
-                HorizontalDivider()
-                ListItem(
-                    headlineContent = { Text("On room change") },
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                ) {
+                  Column {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("On room change") },
                     supportingContent = {
                         Column {
                             val mode = config.effectiveTransferMode()
@@ -221,11 +244,12 @@ fun ProximitySettingsScreen(
                     }
                 )
 
-                // Schedule
-                ListItem(
-                    headlineContent = { Text("Schedule") },
-                    supportingContent = {
-                        if (config.schedule.enabled) {
+                    // Schedule
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("Schedule") },
+                        supportingContent = {
+                            if (config.schedule.enabled) {
                             val dayNames = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
                             val activeDays = config.schedule.days.sorted().map { dayNames[it - 1] }.joinToString(", ")
                             Text(
@@ -244,11 +268,12 @@ fun ProximitySettingsScreen(
                     }
                 )
 
-                if (config.schedule.enabled) {
-                    ScheduleConfig(config.schedule, viewModel)
+                    if (config.schedule.enabled) {
+                        ScheduleConfig(config.schedule, viewModel)
+                    }
+                  }
                 }
 
-                HorizontalDivider()
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     "Rooms",
@@ -565,8 +590,8 @@ fun ProximitySettingsScreen(
                         viewModel.setEnabled(true)
                     }
                     context.startService(
-                        android.content.Intent(context, PlaybackService::class.java)
-                            .setAction(PlaybackService.PROXIMITY_REEVALUATE_ACTION)
+                        android.content.Intent(context, FollowMeService::class.java)
+                            .setAction(FollowMeService.PROXIMITY_REEVALUATE_ACTION)
                     )
                 }
             },

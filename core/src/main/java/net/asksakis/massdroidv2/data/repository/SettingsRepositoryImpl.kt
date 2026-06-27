@@ -62,6 +62,10 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
         private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
         private val KEY_SENDSPIN_SYNC_SYSTEM_VOLUME = stringPreferencesKey("sendspin_sync_system_volume")
+        private val KEY_SENDSPIN_COMPRESSOR_LEVEL = stringPreferencesKey("sendspin_compressor_level")
+        private val KEY_SENDSPIN_DITHER = stringPreferencesKey("sendspin_dither")
+        private val KEY_KNOWN_BT_DEVICES = stringPreferencesKey("known_bt_devices")
+        private val KEY_CAR_AUDIO_BT_DEVICES = stringPreferencesKey("car_audio_bt_devices")
         private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
         private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
@@ -301,6 +305,49 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinSyncSystemVolume(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SENDSPIN_SYNC_SYSTEM_VOLUME] = enabled.toString() }
+    }
+
+    override val sendspinCompressorLevel: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_COMPRESSOR_LEVEL]?.toIntOrNull()?.coerceIn(0, 3) ?: 0
+    }
+
+    override suspend fun setSendspinCompressorLevel(level: Int) {
+        context.dataStore.edit { it[KEY_SENDSPIN_COMPRESSOR_LEVEL] = level.coerceIn(0, 3).toString() }
+    }
+
+    override val sendspinDither: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_DITHER]?.toBooleanStrictOrNull() ?: false
+    }
+
+    override suspend fun setSendspinDither(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_SENDSPIN_DITHER] = enabled.toString() }
+    }
+
+    override val knownBtDevices: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_KNOWN_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    }
+
+    override suspend fun recordKnownBtDevice(routeKey: String) {
+        if (routeKey.isBlank()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_KNOWN_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toMutableSet()
+                ?: mutableSetOf()
+            if (current.add(routeKey)) prefs[KEY_KNOWN_BT_DEVICES] = current.joinToString("\n")
+        }
+    }
+
+    override val carAudioBtDevices: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_CAR_AUDIO_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    }
+
+    override suspend fun setCarAudioBtDevice(routeKey: String, enabled: Boolean) {
+        if (routeKey.isBlank()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_CAR_AUDIO_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toMutableSet()
+                ?: mutableSetOf()
+            val changed = if (enabled) current.add(routeKey) else current.remove(routeKey)
+            if (changed) prefs[KEY_CAR_AUDIO_BT_DEVICES] = current.joinToString("\n")
+        }
     }
 
     override val sendspinLastVolume: Flow<Int> = safeData.map { prefs ->

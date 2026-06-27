@@ -34,6 +34,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -137,6 +138,11 @@ class SendspinAudioController(
                 if (sendspinPlayerId == null) return
                 Log.d(TAG, "Audio becoming noisy -> clean pause")
                 volumeCoordinator.onOutputRouteChanging()
+                // Fast disconnect signal: starts the car-session exit debounce now,
+                // ~8s before the OS finally reports the route left BT (Android keeps
+                // the A2DP device "connected" long after audio stops). A reconnect
+                // cancels it, so a flap is still absorbed.
+                volumeCoordinator.onBtRouteLost()
                 ++routeChangeGeneration  // supersede any in-flight relock
                 pauseForRouteLoss()
             }
@@ -152,14 +158,12 @@ class SendspinAudioController(
         override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>) = checkRouteChange()
     }
 
-    private fun classifyDeviceType(type: Int): OutputRoute = when (type) {
-        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-        android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER -> OutputRoute.BT
-        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> OutputRoute.WIRED
-        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> OutputRoute.USB
+    private fun classifyDeviceType(type: Int): OutputRoute = when {
+        isBluetoothSink(type) -> OutputRoute.BT
+        type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+            type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> OutputRoute.WIRED
+        type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET ||
+            type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> OutputRoute.USB
         else -> OutputRoute.SPEAKER
     }
 
@@ -217,6 +221,7 @@ class SendspinAudioController(
                     sendspinManager.setRouteAcousticExtraUs(correctionUs)
                     sendspinManager.onOutputRouteChanged("bt:device-switch")
                     currentBtRouteKey = routeKey  // commit only after successful apply
+                    volumeCoordinator.onBtRouteConnected()
                 }
             }
         }
@@ -231,6 +236,7 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
             sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
+            if (newRoute == OutputRoute.BT) volumeCoordinator.onBtRouteConnected()
         }
     }
 
@@ -259,6 +265,9 @@ class SendspinAudioController(
         sendspinManager.pauseAudio()
         unfreezeOutput("route")
         sendspinManager.setMuted(false)
+        // Debounced release of any car-audio selection lock (a flap reconnect
+        // cancels it, so transport stays on the phone through the gap).
+        volumeCoordinator.onBtRouteLost()
         scope.launch { playerRepository.pause(id) }
     }
 
@@ -466,6 +475,18 @@ class SendspinAudioController(
         collectorJobs += scope.launch {
             settingsRepository.sendspinSyncDelayMs.collect { delayMs ->
                 sendspinManager.setSyncDelayMs(delayMs)
+            }
+        }
+
+        collectorJobs += scope.launch {
+            settingsRepository.sendspinCompressorLevel.collect { level ->
+                sendspinManager.setCompressorLevel(level)
+            }
+        }
+
+        collectorJobs += scope.launch {
+            settingsRepository.sendspinDither.collect { enabled ->
+                sendspinManager.setDither(enabled)
             }
         }
 

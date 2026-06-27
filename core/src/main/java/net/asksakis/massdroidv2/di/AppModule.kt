@@ -15,6 +15,8 @@ import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -80,8 +82,9 @@ object AppModule {
     fun provideMaWebSocketClient(
         okHttpClient: OkHttpClient,
         json: Json,
-        accountNoticeReporter: net.asksakis.massdroidv2.data.util.AccountNoticeReporter
-    ): MaWebSocketClient = MaWebSocketClient(okHttpClient, json, accountNoticeReporter)
+        accountNoticeReporter: net.asksakis.massdroidv2.data.util.AccountNoticeReporter,
+        @ApplicationContext ctx: Context
+    ): MaWebSocketClient = MaWebSocketClient(okHttpClient, json, accountNoticeReporter, ctx)
 
     @Provides
     @Singleton
@@ -147,6 +150,25 @@ object AppModule {
             persistLastVolume = { settingsRepository.setSendspinLastVolume(it) },
             playerRepository = playerRepository,
             currentOutputDeviceType = { sendspinManager.getRoutedDeviceType() },
+            // Resolve the BT route key. Prefer the Oboe-routed device name when it
+            // resolves to a BT sink: it is the device actually playing, so with
+            // multiple connected A2DP sinks it picks the right one (and matches the
+            // acoustic-calibration route key, which uses the same source). Fall back
+            // to the first connected BT sink while the Oboe stream is still settling
+            // on connect (its name lags -> would be null -> "bt:unknown", a missed
+            // car-audio match). If the routed device is known and NOT BT, no key.
+            currentBtRouteKey = {
+                val routedType = sendspinManager.getRoutedDeviceType()
+                val name = when {
+                    routedType == null -> am.soleBluetoothSinkName()
+                    isBluetoothSink(routedType) ->
+                        sendspinManager.getRoutedDeviceProductName() ?: am.soleBluetoothSinkName()
+                    else -> null
+                }
+                name?.let { "bt:$it" }
+            },
+            carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
+            recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },
         )
     }
 

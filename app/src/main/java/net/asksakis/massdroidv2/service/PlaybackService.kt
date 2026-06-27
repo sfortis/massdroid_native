@@ -23,10 +23,6 @@ import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
-import net.asksakis.massdroidv2.data.proximity.MotionGate
-import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
-import net.asksakis.massdroidv2.data.proximity.ProximityScanner
-import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -41,8 +37,6 @@ class PlaybackService : MediaLibraryService() {
         private const val TAG = "PlaybackSvc"
         private const val CONN_CHANNEL_ID = "massdroid_connection"
         private const val CONN_NOTIFICATION_ID = 3
-        const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
-        const val PROXIMITY_REEVALUATE_ACTION = "net.asksakis.massdroidv2.PROXIMITY_REEVALUATE"
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -55,16 +49,11 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
     @Inject lateinit var genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
-    @Inject lateinit var proximityConfigStore: ProximityConfigStore
-    @Inject lateinit var proximityScanner: ProximityScanner
-    @Inject lateinit var roomDetector: RoomDetector
-    @Inject lateinit var motionGate: MotionGate
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var sendspinCoordinator: SendspinCoordinator
     private lateinit var androidAutoController: AndroidAutoController
     private lateinit var androidAutoBrowseController: AndroidAutoBrowseController
-    private lateinit var proximityController: ProximityController
     private lateinit var sleepTimerManager: SleepTimerManager
     private val sleepTimerOriginalVolumes = mutableMapOf<String, Int>()
 
@@ -75,10 +64,12 @@ class PlaybackService : MediaLibraryService() {
         createSendspinCoordinator()
         createAndroidAutoBrowseController()
         createAndroidAutoController()
-        createProximityController()
         sendspinCoordinator.start()
         createSleepTimer()
-        proximityController.start()
+        // Follow Me (room detection) now lives in its own FollowMeService with a connectedDevice
+        // foreground service, so scanning survives without media. Bootstrap it here at launch; it
+        // self-gates on config.enabled (goes foreground only while Follow Me is on, else stops).
+        FollowMeService.start(this)
     }
 
     private fun createAndroidAutoController() {
@@ -95,7 +86,7 @@ class PlaybackService : MediaLibraryService() {
             shouldRouteToSendspin = { sendspinCoordinator.shouldRouteToSendspin() },
             activePlayerId = { activePlayerId() },
             sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
-            onPlaybackStopped = { reason -> proximityController.cancelNoRoomStopTimer(reason) },
+            onPlaybackStopped = { /* Follow Me's no-room-stop timer self-guards on playback state (now in FollowMeService) */ },
             trackedBrowsePaths = { androidAutoBrowseController.trackedParentIds() },
         )
         androidAutoController.start(androidAutoBrowseController.callback)
@@ -116,11 +107,6 @@ class PlaybackService : MediaLibraryService() {
         )
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        proximityController.handleStartCommand(intent)
-        return super.onStartCommand(intent, flags, startId)
-    }
-
     private fun createSendspinCoordinator() {
         sendspinCoordinator = SendspinCoordinator(
             context = this,
@@ -135,22 +121,7 @@ class PlaybackService : MediaLibraryService() {
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },
             onActive = { reason -> androidAutoController.onSendspinActive(reason) },
             onInactive = { reason -> androidAutoController.onSendspinInactive(reason) },
-            onWifiConnected = { reason -> proximityController.resetAwayMode(reason) },
-        )
-    }
-
-    private fun createProximityController() {
-        proximityController = ProximityController(
-            service = this,
-            scope = scope,
-            playerRepository = playerRepository,
-            musicRepository = musicRepository,
-            proximityConfigStore = proximityConfigStore,
-            proximityScanner = proximityScanner,
-            roomDetector = roomDetector,
-            motionGate = motionGate,
-            shouldBlockProximitySelectionForBt = { sendspinCoordinator.shouldBlockProximitySelectionForBt() },
-            sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
+            onWifiConnected = { /* Follow Me has its own Wi-Fi monitor in ProximityScanner (now in FollowMeService) */ },
         )
     }
 
@@ -295,7 +266,6 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
-        proximityController.stop()
         try { unregisterReceiver(sleepTimerCancelReceiver) } catch (_: Exception) { }
         sendspinCoordinator.destroy()
         val manager = getSystemService(NotificationManager::class.java)

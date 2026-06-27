@@ -26,7 +26,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 
 class ProximityController(
-    private val service: PlaybackService,
+    private val service: android.app.Service,
     private val scope: CoroutineScope,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
@@ -830,8 +830,6 @@ class ProximityController(
             Log.w(TAG, "Proximity transfer source ambiguous for ${detected.roomName}: [$names]")
         }
 
-        playbackController.showRoomDetectedNotification(detected)
-
         val transferMode = config.effectiveTransferMode()
         if (transferMode == ProximityTransferMode.SELECT_ONLY) {
             // Quietly hand the user the room's controls (mini player, volume rocker); no move, no prompt.
@@ -851,18 +849,24 @@ class ProximityController(
             return
         }
 
-        if (transferMode == ProximityTransferMode.AUTO_TRANSFER &&
-            sourcePlayerId != null && sourcePlayerId != detected.playerId
-        ) {
-            playbackController.applyRoomVolume(detected)
-            playbackController.performProximityTransfer(sourcePlayerId, detected)
-        } else {
-            playbackController.showActionNotification(
-                room = detected,
-                canTransfer = sourcePlayerId != null && sourcePlayerId != detected.playerId,
-                sourcePlayerId = sourcePlayerId
-            )
+        if (transferMode == ProximityTransferMode.AUTO_TRANSFER) {
+            // Move-here: transfer silently if there is something playing to move, otherwise just hand
+            // over the room's controls. Never notify - notifications are an ASK-only concept.
+            if (sourcePlayerId != null && sourcePlayerId != detected.playerId) {
+                playbackController.applyRoomVolume(detected)
+                playbackController.performProximityTransfer(sourcePlayerId, detected)
+            } else {
+                selectProximityPlayer(detected, "auto-transfer-no-source")
+            }
+            return
         }
+
+        // ASK is the only mode that notifies: prompt the user to confirm the move/play.
+        playbackController.showActionNotification(
+            room = detected,
+            canTransfer = sourcePlayerId != null && sourcePlayerId != detected.playerId,
+            sourcePlayerId = sourcePlayerId
+        )
     }
 
     /** Select the room's player (respecting the BT-A2DP/Sendspin guard and availability). */

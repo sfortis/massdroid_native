@@ -134,6 +134,9 @@ fun PlayerSettingsDialog(
     // the load returns null and the row stays hidden.
     var staticDelayMs by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerStaticDelay by remember(player.playerId) { mutableStateOf(false) }
+    // Exact config key for the static delay (plain or protocol-wrapped), carried
+    // from the loaded config so the save lands on wrapped players too.
+    var staticDelayKey by remember(player.playerId) { mutableStateOf<String?>(null) }
     // Server-side per-player Sendspin sync delay (MA "Sync delay (ms)", range
     // -1000..1000, positive = play later). Tunable on REMOTE sendspin receivers
     // for acoustic alignment; the exact config key varies per player so it is
@@ -159,6 +162,7 @@ fun PlayerSettingsDialog(
             if (!isLocalPlayer && loadedStaticDelay != null) {
                 hasServerStaticDelay = true
                 staticDelayMs = loadedStaticDelay
+                staticDelayKey = loaded.sendspinStaticDelayKey
             }
             if (!isLocalPlayer && loaded.sendspinSyncDelayKey != null) {
                 hasServerSyncDelay = true
@@ -182,7 +186,9 @@ fun PlayerSettingsDialog(
                 .drop(1)
                 .debounce(250L)
                 .collect { v ->
-                    onSave(player.playerId, mapOf("sendspin_static_delay" to v))
+                    // Use the discovered key so the save lands on protocol-wrapped
+                    // players too; fall back to the plain key for safety.
+                    onSave(player.playerId, mapOf((staticDelayKey ?: "sendspin_static_delay") to v))
                 }
         }
     }
@@ -749,7 +755,13 @@ internal fun SyncDelayCard(
     onValueChange: (Int) -> Unit,
     label: String = "Sync delay",
     compact: Boolean = false,
+    minMs: Int = -1000,
+    maxMs: Int = 1000,
 ) {
+    // Signed (+/-) presentation + earlier/later hints only make sense for a
+    // bipolar range (sync delay); a positive-only range (static playback delay,
+    // 0..5000) shows a plain "X ms".
+    val signed = minMs < 0
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(
@@ -768,15 +780,15 @@ internal fun SyncDelayCard(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = if (valueMs > 0) "+$valueMs ms" else "$valueMs ms",
+                    text = if (signed && valueMs > 0) "+$valueMs ms" else "$valueMs ms",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
             Slider(
-                value = valueMs.toFloat().coerceIn(-1000f, 1000f),
+                value = valueMs.toFloat().coerceIn(minMs.toFloat(), maxMs.toFloat()),
                 onValueChange = { onValueChange(Math.round(it)) },
-                valueRange = -1000f..1000f,
+                valueRange = minMs.toFloat()..maxMs.toFloat(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(28.dp)
@@ -784,7 +796,7 @@ internal fun SyncDelayCard(
             // earlier/later hints are redundant in compact rows (the signed
             // value + steppers already convey direction); drop them to save
             // vertical space when many speakers are stacked.
-            if (!compact) {
+            if (!compact && signed) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -808,7 +820,7 @@ internal fun SyncDelayCard(
             ) {
                 RepeatingIconButton(
                     onClick = { onValueChange(valueMs - 1) },
-                    enabled = valueMs > -1000,
+                    enabled = valueMs > minMs,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
@@ -819,7 +831,7 @@ internal fun SyncDelayCard(
                 }
                 RepeatingIconButton(
                     onClick = { onValueChange(valueMs + 1) },
-                    enabled = valueMs < 1000,
+                    enabled = valueMs < maxMs,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
