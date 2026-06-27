@@ -86,8 +86,10 @@ object AutoBrowseExtras {
 
     /**
      * Marks a browsable node so its CHILDREN render as a GRID of square/visual tiles
-     * (covers, artist circles) rather than a text list - used for the visually-rich
-     * categories (Albums, Artists, Browse). Mirrors the phone Library's grid look.
+     * (covers, artist circles) - used for Albums/Artists, whose contents are visual.
+     * SINGLE_ITEM is LIST on purpose: the category itself stays a normal list ROW in
+     * its parent (the Library tab), so the Library list looks uniform; only the
+     * children (the actual albums/artists) become a grid when you open the category.
      */
     fun gridItemExtras(): Bundle = Bundle().apply {
         putInt(
@@ -100,7 +102,7 @@ object AutoBrowseExtras {
         )
         putInt(
             MediaConstants.DESCRIPTION_EXTRAS_KEY_CONTENT_STYLE_SINGLE_ITEM,
-            MediaConstants.DESCRIPTION_EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+            MediaConstants.DESCRIPTION_EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM,
         )
     }
 }

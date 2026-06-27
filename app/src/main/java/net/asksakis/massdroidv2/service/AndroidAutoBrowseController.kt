@@ -372,7 +372,7 @@ class AndroidAutoBrowseController(
             "Browse",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
-            gridChildren = true
+            listItem = true
         ),
         // Smart Mix is a one-tap PLAYABLE, but AAOS only turns BROWSABLE roots into
         // tabs (a playable root just vanishes). So expose it as a folder tab whose
@@ -488,8 +488,8 @@ class AndroidAutoBrowseController(
                     .setIsBrowsable(isFolder)
                     .setIsPlayable(!isFolder)
                     .setMediaType(resolvedMediaType)
-                    // Browse is a grid section: nested folders keep their children gridded too.
-                    .setExtras(AutoBrowseExtras.gridItemExtras())
+                    // Browse is a plain list (provider folders + tracks), top to bottom.
+                    .setExtras(AutoBrowseExtras.listItemExtras())
                     .build()
             )
             .setRequestMetadata(
@@ -523,10 +523,13 @@ class AndroidAutoBrowseController(
     }
 
     private suspend fun buildGenreRadioList(): List<MediaItem> {
-        return genreRepository.topGenres(days = 60, limit = 20).map { genreScore ->
+        // Offer a radio for EVERY library genre (same full set as the Genres browse
+        // tab), not just the handful of recently-played top genres - the car user
+        // should be able to start a radio for any genre they own.
+        return genreRepository.libraryGenres().map { genre ->
             playableItem(
-                "genre_radio|${genreScore.genre}",
-                genreScore.genre.replaceFirstChar { it.uppercase() },
+                "genre_radio|$genre",
+                genre.replaceFirstChar { it.uppercase() },
                 MediaMetadata.MEDIA_TYPE_PLAYLIST,
                 listItem = true
             )
