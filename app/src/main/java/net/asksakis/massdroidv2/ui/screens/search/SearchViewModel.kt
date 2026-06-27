@@ -138,6 +138,18 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    fun enqueueNext(uri: String) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                musicRepository.playMedia(queueId, uri, option = "next")
+            } catch (e: Exception) {
+                Log.w(TAG, "enqueueNext failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
+        }
+    }
+
     fun startRadio(uri: String) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         viewModelScope.launch {
