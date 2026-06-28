@@ -153,4 +153,59 @@ class MixEngineHelpersTest {
         assertThat(engine.compositeArtistScore("u", empty, empty, empty, empty, setOf("u"), empty))
             .isWithin(1e-9).of(0.8)
     }
+
+    // --- buildFromCandidates: discovery-weighted selection order ---
+
+    // Distinct-artist candidates with strictly decreasing scores, so the
+    // per-artist cap never drops any and selection order is purely the
+    // discovery-weighted sampling.
+    private fun decreasingCandidates(n: Int = 20): List<CandidateTrack> =
+        (0 until n).map { i ->
+            CandidateTrack(track("n$i", "a$i", uri = "t$i"), score = 1.0 - i * 0.04)
+        }
+
+    private fun unionOverRuns(cands: List<CandidateTrack>, target: Int, discovery: Double): Set<String> {
+        val seen = mutableSetOf<String>()
+        for (seed in 0 until 40L) {
+            seen += engine.buildFromCandidates(cands, target, randomSeed = seed, discovery = discovery)
+                .map { it.uri }
+        }
+        return seen
+    }
+
+    private fun topTrackFrequency(cands: List<CandidateTrack>, target: Int, discovery: Double): Int =
+        (0 until 50L).count { seed ->
+            "t0" in engine.buildFromCandidates(cands, target, randomSeed = seed, discovery = discovery)
+                .map { it.uri }
+        }
+
+    @Test
+    fun `low discovery concentrates on the top candidates more than high discovery`() {
+        val cands = decreasingCandidates()
+        // The highest-match track surfaces in far more low-discovery mixes than
+        // high-discovery ones: low = comfort/greedy, high = spreads to the tail.
+        val low = topTrackFrequency(cands, target = 5, discovery = 0.0)
+        val high = topTrackFrequency(cands, target = 5, discovery = 1.0)
+        assertThat(low).isGreaterThan(high)
+    }
+
+    @Test
+    fun `higher discovery widens the selection across runs`() {
+        val cands = decreasingCandidates()
+        val low = unionOverRuns(cands, target = 5, discovery = 0.0)
+        val high = unionOverRuns(cands, target = 5, discovery = 1.0)
+        // high discovery must reach materially more of the catalogue...
+        assertThat(high.size).isGreaterThan(low.size)
+        // ...including lower-match tail tracks the greedy cut never surfaces.
+        assertThat(high.any { it in setOf("t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19") })
+            .isTrue()
+    }
+
+    @Test
+    fun `buildFromCandidates fills up to target with deduped identities`() {
+        val cands = decreasingCandidates(n = 20)
+        val mix = engine.buildFromCandidates(cands, target = 10, randomSeed = 1L, discovery = 0.5)
+        assertThat(mix).hasSize(10)
+        assertThat(mix.map { it.uri }.toSet()).hasSize(10)
+    }
 }

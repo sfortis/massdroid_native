@@ -97,6 +97,8 @@ interface PlayHistoryRepository {
      * 0 = any non-disliked recent track, higher = only your more-loved tracks.
      */
     suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrack>
+    /** Recently-played well-listened tracks ordered by recency (no score floor). */
+    suspend fun getRecentSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

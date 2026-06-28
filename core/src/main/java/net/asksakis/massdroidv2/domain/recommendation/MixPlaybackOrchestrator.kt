@@ -60,7 +60,12 @@ private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
 private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
-private const val SMART_MIX_HISTORY_DEPTH = 3
+// How many recent mixes' tracks feed the cross-mix cool-down. Raised 3 -> 12
+// after offline tuning: at depth 3 a track fell out of the cool-down after only
+// 3 mixes and cycled straight back, so >50% of each mix was already-heard
+// tracks. Depth 12 (with the stronger SeedTrack penalties) roughly halves that.
+// In-memory only for now; a process restart still resets it (persistence TODO).
+private const val SMART_MIX_HISTORY_DEPTH = 12
 private const val SMART_MIX_LASTFM_EXPANSION = 12
 private const val SMART_MIX_LASTFM_SEED_LIMIT = 5
 private const val SMART_MIX_LASTFM_SIMILARS_PER_SEED = 20

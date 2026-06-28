@@ -10,6 +10,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
+import net.asksakis.massdroidv2.data.database.SeedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
@@ -353,16 +354,23 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         minScore: Double,
         limit: Int
     ): List<SeedTrack> =
-        dao.getSeedTracks(sinceMs, minListenedMs, minScore, limit).map {
-            SeedTrack(
-                trackUri = it.trackUri,
-                trackName = it.trackName,
-                artistName = it.artistName,
-                lastPlayedAt = it.lastPlayedAt,
-                score = it.score,
-                genres = it.genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
-            )
-        }
+        dao.getSeedTracks(sinceMs, minListenedMs, minScore, limit).map { it.toSeedTrack() }
+
+    override suspend fun getRecentSeedTracks(
+        sinceMs: Long,
+        minListenedMs: Long,
+        limit: Int
+    ): List<SeedTrack> =
+        dao.getRecentSeedTracks(sinceMs, minListenedMs, limit).map { it.toSeedTrack() }
+
+    private fun SeedTrackRow.toSeedTrack() = SeedTrack(
+        trackUri = trackUri,
+        trackName = trackName,
+        artistName = artistName,
+        lastPlayedAt = lastPlayedAt,
+        score = score,
+        genres = genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
+    )
 
     override suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>) {
         val now = System.currentTimeMillis()

@@ -30,10 +30,12 @@ private const val TAG = "SeedTrackMix"
 
 private const val SEED_COUNT = 8
 private const val SEED_ANCHOR_MAX = 3
-private const val VARIETY_FULL_ROTATION_THRESHOLD = 0.66
 private const val SEED_LOOKBACK_DAYS = 30
 private const val SEED_MIN_LISTENED_MS = 30_000L
-private const val SEED_POOL_QUERY_LIMIT = 60
+// Recency-ordered candidate pool that Strictness re-ranks toward score. Larger
+// than the old top-by-score limit so low Strictness has genuinely-recent (not
+// just top-scored) tracks to draw from.
+private const val RECENCY_POOL_LIMIT = 150
 private const val GENRE_SEED_LOOKBACK_DAYS = 365
 private const val GENRE_SEED_POOL_LIMIT = 250
 private const val SEED_SIMILARS_MIN = 15
@@ -44,8 +46,14 @@ private const val SEED_TRACK_SEARCH_LIMIT = 5
 private const val SEED_SEARCH_TIMEOUT_MS = 4000L
 private const val SEED_PREFETCH_CONCURRENCY = 2
 private const val RESOLVED_TRACK_TTL_MS = 30L * 24 * 60 * 60 * 1000
-private const val SEED_RECENT_ARTIST_PENALTY = 0.2
-private const val SEED_RECENT_TRACK_PENALTY = 0.5
+// Recent-mix cool-down penalties (subtracted from a candidate's score when the
+// track / its artist appeared in recent mixes). Raised from 0.2/0.5 after
+// offline tuning on the real library: with weighted-sampling selection the
+// stronger penalties meaningfully cut cross-mix repetition (a 0.5 track penalty
+// was too small to dislodge a ~0.9-match recent track). Paired with the deeper
+// SMART_MIX_HISTORY_DEPTH in MixPlaybackOrchestrator.
+private const val SEED_RECENT_ARTIST_PENALTY = 0.4
+private const val SEED_RECENT_TRACK_PENALTY = 1.5
 private const val MIN_SEEDS = 2
 // Strictness knob -> minimum tracks.score a seed must have. At 1.0 only "loved"
 // tracks (score > 0.5) qualify; at 0.0 any non-disliked track (score >= 0).
@@ -79,6 +87,40 @@ private const val OWN_INJECT_SCORE = 0.5
 @VisibleForTesting
 internal fun seedTrackInjectCount(discovery: Double, target: Int): Int =
     ((1.0 - discovery) * OWN_INJECT_MAX_FRACTION * target).roundToInt().coerceAtLeast(0)
+
+/**
+ * Strictness re-ranks a RECENCY-ordered seed pool between recency (low = anything
+ * recently played) and score (high = only most-loved):
+ *   priority = strictness*scoreNorm + (1 - strictness)*recencyNorm
+ * Replaces the old score-FLOOR, which did nothing on a well-rated library:
+ * `ORDER BY score DESC LIMIT n` returned the same top-scored seeds at every
+ * floor, so low and high Strictness produced identical mixes. [pool] must be
+ * recency-descending (index 0 = most recent).
+ */
+@VisibleForTesting
+internal fun strictnessRankedPool(pool: List<SeedTrack>, strictness: Double): List<SeedTrack> {
+    if (pool.size <= 1) return pool
+    val maxScore = pool.maxOf { it.score }
+    val minScore = pool.minOf { it.score }
+    val range = (maxScore - minScore).takeIf { it > 0.0 } ?: 1.0
+    val lastIndex = (pool.size - 1).toDouble()
+    val s = strictness.coerceIn(0.0, 1.0)
+    return pool.withIndex().sortedByDescending { (index, seed) ->
+        val scoreNorm = (seed.score - minScore) / range
+        val recencyNorm = 1.0 - index / lastIndex
+        s * scoreNorm + (1.0 - s) * recencyNorm
+    }.map { it.value }
+}
+
+/**
+ * Variety window (count of top-ranked seeds the primary is drawn from) with NO
+ * plateau: spans the whole tagged pool across 0..1 so the upper half of the
+ * slider keeps changing the result (the old 0.66 full-rotation threshold made
+ * every value >= 0.66 identical). variety 0 -> 1 (steadiest), 1 -> n (widest).
+ */
+@VisibleForTesting
+internal fun varietyWindow(variety: Double, n: Int): Int =
+    (1.0 + variety.coerceIn(0.0, 1.0) * (n - 1)).roundToInt().coerceIn(1, n)
 
 /**
  * Track-level recommendation generator: recent (or in-genre) well-listened
@@ -256,7 +298,7 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         val allCandidates = injected + candidates
 
-        val mix = mixEngine.buildFromCandidates(allCandidates, target, mixSeed)
+        val mix = mixEngine.buildFromCandidates(allCandidates, target, mixSeed, tuning.discovery)
         Log.d(TAG, "built ${mix.size} tracks (target $target) from ${candidates.size} discovery + ${injected.size} loved-injected")
         return mix
     }
@@ -326,7 +368,7 @@ class SeedTrackMixGenerator @Inject constructor(
 
     private suspend fun selectSeedTracks(tuning: Tuning, random: kotlin.random.Random): SeedSelection {
         val since = System.currentTimeMillis() - SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
-        val pool = fetchSeedPool(since, SEED_POOL_QUERY_LIMIT, tuning) { it }
+        val pool = strictnessRankedPool(queryRecentSeedTracks(since, RECENCY_POOL_LIMIT), tuning.strictness)
         val byArtist = dedupeByArtist(pool)
         if (byArtist.size <= SEED_COUNT) return SeedSelection(byArtist, emptySet())
 
@@ -338,14 +380,9 @@ class SeedTrackMixGenerator @Inject constructor(
             return SeedSelection(anchors + sampled, emptySet())
         }
         // Variety biases WHICH primary we anchor on: low variety restricts it to
-        // the most-recent tagged seeds (steadier); high variety draws from the
-        // whole tagged pool (full rotation).
-        val primaryPool = if (tuning.variety >= VARIETY_FULL_ROTATION_THRESHOLD) {
-            tagged
-        } else {
-            val window = (SEED_ANCHOR_MAX + tuning.variety * tagged.size).toInt().coerceIn(1, tagged.size)
-            tagged.take(window)
-        }
+        // the top-ranked seeds (steadier), high variety draws from the whole
+        // tagged pool. varietyWindow spans the full 0..1 range (no plateau).
+        val primaryPool = tagged.take(varietyWindow(tuning.variety, tagged.size))
         val primary = primaryPool.shuffled(random).first()
         val primaryGenres = primary.genres.map { normalizeGenre(it) }.toSet()
         val cluster = byArtist.filter { seed ->
@@ -360,6 +397,14 @@ class SeedTrackMixGenerator @Inject constructor(
         // union of every seed's tags, so it never pulls in off-cluster favourites.
         return SeedSelection(result, primaryGenres)
     }
+
+    private suspend fun queryRecentSeedTracks(sinceMs: Long, limit: Int): List<SeedTrack> =
+        try {
+            playHistoryRepository.getRecentSeedTracks(sinceMs, SEED_MIN_LISTENED_MS, limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "getRecentSeedTracks failed: ${e.message}")
+            emptyList()
+        }
 
     // Seeds for Genre Radio: the user's own well-listened tracks tagged with the
     // chosen genre (longer lookback, since the user may not have played it
