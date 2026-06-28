@@ -224,6 +224,10 @@ fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
 data class ProviderMapping(
     @SerialName("provider_domain") val providerDomain: String,
     @SerialName("provider_instance") val providerInstance: String = "",
+    // The artist's id WITHIN this provider (e.g. the Deezer artist id), needed to query that
+    // provider's discography. A library artist's own item_id is the library id, not the
+    // provider's, so artist_albums must be asked of the mapping's item_id + provider.
+    @SerialName("item_id") val itemId: String = "",
     val available: Boolean = true
 )
 

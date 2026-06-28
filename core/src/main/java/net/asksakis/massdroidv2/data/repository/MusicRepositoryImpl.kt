@@ -134,6 +134,36 @@ class MusicRepositoryImpl @Inject constructor(
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }
 
+    override suspend fun getArtistDiscography(itemId: String, provider: String): List<Album> {
+        // A provider artist: its own (item_id, provider) already IS the provider catalogue.
+        if (!provider.equals("library", ignoreCase = true) && !provider.equals("builtin", ignoreCase = true)) {
+            return getArtistAlbums(itemId, provider)
+        }
+        // A library artist: artist_albums(library) returns only in-library albums (often none on
+        // MA 2.9+). Resolve the default provider mapping the way the MA web UI does - dedupe by
+        // provider instance, drop unavailable / library / builtin, sort by provider for a stable
+        // default - then query that provider's discography.
+        val raw = wsClient.sendCommand(
+            MaCommands.Music.ARTISTS_GET,
+            ItemRefLazyArgs(itemId = itemId, provider = provider, lazy = false)
+        ) ?: return emptyList()
+        val server = try {
+            json.decodeFromJsonElement<ServerMediaItem>(raw)
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        val mapping = server.providerMappings
+            .filter {
+                it.available && it.itemId.isNotBlank() &&
+                    !it.providerDomain.equals("library", ignoreCase = true) &&
+                    !it.providerDomain.equals("builtin", ignoreCase = true)
+            }
+            .distinctBy { it.providerInstance.ifEmpty { it.providerDomain } }
+            .minByOrNull { it.providerInstance.ifEmpty { it.providerDomain } }
+            ?: return emptyList()
+        return getArtistAlbums(mapping.itemId, mapping.providerInstance.ifEmpty { mapping.providerDomain })
+    }
+
     override suspend fun getArtistTracks(itemId: String, provider: String): List<Track> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ARTIST_TRACKS,

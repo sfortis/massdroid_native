@@ -31,6 +31,9 @@ private const val TAG = "LibraryVM"
  * a single slow/throttled provider can hang the call for minutes. We cap it short and degrade.
  */
 private const val SIMILAR_RESOLVE_TIMEOUT_MS = 7_000L
+// "Top Tracks" is a highlights section, not the full catalogue: cap it (artist_tracks can return
+// hundreds). The artist's albums/discography cover the rest. Play-all uses this same capped set.
+private const val ARTIST_TOP_TRACKS_LIMIT = 20
 
 @HiltViewModel
 class ArtistDetailViewModel @Inject constructor(
@@ -54,8 +57,15 @@ class ArtistDetailViewModel @Inject constructor(
     private val _artistInLibrary = MutableStateFlow(false)
     val artistInLibrary: StateFlow<Boolean> = _artistInLibrary.asStateFlow()
 
+    // Albums actually in the user's library for this artist (library:// items). Often empty on
+    // MA 2.9+ for an artist added via favourites/plays without whole albums saved.
     private val _albums = MutableStateFlow<List<Album>>(emptyList())
     val albums: StateFlow<List<Album>> = _albums.asStateFlow()
+
+    // The artist's full discography from the default provider (the MA web UI's "All albums").
+    // Shown as a separate section so the user can tell library albums apart from the catalogue.
+    private val _discographyAlbums = MutableStateFlow<List<Album>>(emptyList())
+    val discographyAlbums: StateFlow<List<Album>> = _discographyAlbums.asStateFlow()
 
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
@@ -110,7 +120,13 @@ class ArtistDetailViewModel @Inject constructor(
             }
             _artist.value = artist
             _albums.value = musicRepository.getArtistAlbums(itemId, provider)
-            _tracks.value = musicRepository.getArtistTracks(itemId, provider)
+            _tracks.value = musicRepository.getArtistTracks(itemId, provider).take(ARTIST_TOP_TRACKS_LIMIT)
+            // For a library artist the list above is only the in-library albums (often empty on
+            // MA 2.9+); load the full provider discography as a separate "Discography" section.
+            // A provider artist's list above is already its full catalogue, so skip the dup.
+            if (provider.equals("library", ignoreCase = true)) {
+                _discographyAlbums.value = musicRepository.getArtistDiscography(itemId, provider)
+            }
 
             _artist.value?.let { a ->
                 if (a.name.isNotBlank()) _artistName.value = a.name

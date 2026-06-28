@@ -68,6 +68,7 @@ fun ArtistDetailScreen(
 ) {
     val artist by viewModel.artist.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
+    val discographyAlbums by viewModel.discographyAlbums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val similarArtists by viewModel.similarArtists.collectAsStateWithLifecycle()
     val artistName by viewModel.artistName.collectAsStateWithLifecycle()
@@ -185,6 +186,7 @@ fun ArtistDetailScreen(
                     ArtistContentItems(
                         similarArtists = similarArtists,
                         albums = albums,
+                        discographyAlbums = discographyAlbums,
                         tracks = tracks,
                         artist = artist,
                         artistName = artistName,
@@ -220,6 +222,7 @@ fun ArtistDetailScreen(
                 ArtistContentItems(
                     similarArtists = similarArtists,
                     albums = albums,
+                    discographyAlbums = discographyAlbums,
                     tracks = tracks,
                     artist = artist,
                     artistName = artistName,
@@ -380,6 +383,7 @@ private fun ArtistHeader(
 private fun LazyListScope.ArtistContentItems(
     similarArtists: List<Artist>,
     albums: List<Album>,
+    discographyAlbums: List<Album>,
     tracks: List<Track>,
     artist: Artist?,
     artistName: String,
@@ -432,46 +436,12 @@ private fun LazyListScope.ArtistContentItems(
         }
     }
 
-    if (albums.isNotEmpty()) {
-        item {
-            Text(
-                "Albums",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(16.dp)
-            )
-        }
-        items(albums, key = { it.uri }) { album ->
-            val subtitle = listOfNotNull(
-                formatAlbumTypeYear(album.albumType, album.year).ifBlank { null },
-                album.version?.ifEmpty { null }
-            ).joinToString(" \u00b7 ")
-            MediaItemRow(
-                title = album.name,
-                subtitle = subtitle,
-                imageUrl = album.imageUrl,
-                onClick = { onAlbumClick(album) },
-                favorite = album.favorite,
-                inLibrary = album.uri.startsWith("library://"),
-                onLongClick = {
-                    onAction(
-                        ActionSheetItem(
-                            title = album.name,
-                            subtitle = "",
-                            uri = album.uri,
-                            imageUrl = album.imageUrl,
-                            favorite = album.favorite,
-                            mediaType = MediaType.ALBUM,
-                            itemId = album.itemId,
-                            inLibrary = album.uri.startsWith("library://"),
-                            primaryArtistUri = album.artists.firstOrNull()?.uri ?: artist?.uri,
-                            primaryArtistName = album.artists.firstOrNull()?.name ?: artistName
-                        )
-                    )
-                },
-                onPlayClick = { viewModel.quickPlay(album.uri) }
-            )
-        }
-    }
+    // Two sections so the user can tell their library apart from the catalogue (mirrors the MA
+    // web UI): in-library albums first, then the full provider discography. For a provider artist
+    // discographyAlbums is empty and `albums` is already the catalogue, so it shows as one list.
+    val libraryAlbumsTitle = if (discographyAlbums.isNotEmpty() && albums.isNotEmpty()) "In Library" else "Albums"
+    artistAlbumSection(libraryAlbumsTitle, albums, artist, artistName, onAlbumClick, viewModel, onAction)
+    artistAlbumSection("Discography", discographyAlbums, artist, artistName, onAlbumClick, viewModel, onAction)
 
     if (tracks.isNotEmpty()) {
         item {
@@ -518,6 +488,56 @@ private fun LazyListScope.ArtistContentItems(
                 }
             )
         }
+    }
+}
+
+private fun LazyListScope.artistAlbumSection(
+    title: String,
+    albums: List<Album>,
+    artist: Artist?,
+    artistName: String,
+    onAlbumClick: (Album) -> Unit,
+    viewModel: ArtistDetailViewModel,
+    onAction: (ActionSheetItem) -> Unit
+) {
+    if (albums.isEmpty()) return
+    item {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(16.dp)
+        )
+    }
+    items(albums, key = { it.uri }) { album ->
+        val subtitle = listOfNotNull(
+            formatAlbumTypeYear(album.albumType, album.year).ifBlank { null },
+            album.version?.ifEmpty { null }
+        ).joinToString(" · ")
+        MediaItemRow(
+            title = album.name,
+            subtitle = subtitle,
+            imageUrl = album.imageUrl,
+            onClick = { onAlbumClick(album) },
+            favorite = album.favorite,
+            inLibrary = album.uri.startsWith("library://"),
+            onLongClick = {
+                onAction(
+                    ActionSheetItem(
+                        title = album.name,
+                        subtitle = "",
+                        uri = album.uri,
+                        imageUrl = album.imageUrl,
+                        favorite = album.favorite,
+                        mediaType = MediaType.ALBUM,
+                        itemId = album.itemId,
+                        inLibrary = album.uri.startsWith("library://"),
+                        primaryArtistUri = album.artists.firstOrNull()?.uri ?: artist?.uri,
+                        primaryArtistName = album.artists.firstOrNull()?.name ?: artistName
+                    )
+                )
+            },
+            onPlayClick = { viewModel.quickPlay(album.uri) }
+        )
     }
 }
 

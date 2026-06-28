@@ -769,7 +769,9 @@ class AndroidAutoBrowseController(
         if (parts.size != 3) return emptyList()
         val (type, provider, itemId) = parts
         return when (type) {
-            "artist" -> musicRepository.getArtistAlbums(itemId, provider).map { it.toBrowsableMediaItem() }
+            // Discography (provider catalogue), not getArtistAlbums: a library artist's
+            // artist_albums(library) is ~empty on MA 2.9+, so the car would show no albums.
+            "artist" -> musicRepository.getArtistDiscography(itemId, provider).map { it.toBrowsableMediaItem() }
             "album" -> musicRepository.getAlbumTracks(itemId, provider).map { it.toPlayableMediaItem() }
             "playlist" -> musicRepository.getPlaylistTracks(itemId, provider).map { it.toPlayableMediaItem() }
             else -> emptyList()

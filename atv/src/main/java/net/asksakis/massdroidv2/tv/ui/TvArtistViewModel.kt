@@ -38,7 +38,9 @@ class TvArtistViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { musicRepository.getArtist(itemId, provider) }.getOrNull()
                 ?.let { _name.value = it.name }
-            runCatching { musicRepository.getArtistAlbums(itemId, provider) }
+            // Discography (provider catalogue): a library artist's artist_albums(library) is
+            // ~empty on MA 2.9+, so the TV artist screen would otherwise show no albums.
+            runCatching { musicRepository.getArtistDiscography(itemId, provider) }
                 .onSuccess { list -> _albums.value = list.sortedBy { it.name.lowercase() } }
         }
     }

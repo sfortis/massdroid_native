@@ -211,11 +211,13 @@ class DiscoverRecommendationOrchestrator(
         recentAlbumKeys: Set<String>
     ): Album? {
         val albums = try {
-            musicRepository.getArtistAlbums(artist.itemId, artist.provider)
+            // Discography (provider catalogue), not getArtistAlbums: a library artist's
+            // artist_albums(library) is ~empty on MA 2.9+, which would starve album suggestions.
+            musicRepository.getArtistDiscography(artist.itemId, artist.provider)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(ORCHESTRATOR_TAG, "getArtistAlbums failed for ${artist.name}: ${e.message}")
+            Log.w(ORCHESTRATOR_TAG, "getArtistDiscography failed for ${artist.name}: ${e.message}")
             return null
         }
 
