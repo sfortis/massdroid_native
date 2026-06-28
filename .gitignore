@@ -28,6 +28,9 @@ build/
 !docs/**/*.md
 /internal_docs/
 
+# Local agent memory (multi-user, never committed)
+/memory/
+
 # Claude Code
 .claude/
 .codex
