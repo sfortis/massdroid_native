@@ -616,14 +616,6 @@ class MusicRepositoryImpl @Inject constructor(
         if (result == null) return emptyList()
         return when (result) {
             is JsonArray -> {
-                if (result.isNotEmpty()) {
-                    // Log first item for debugging
-                    val firstObj = result[0].jsonObject
-                    Log.d(TAG, "Media item keys: ${firstObj.keys}")
-                    val imageField = firstObj["image"]?.toString()?.take(200) ?: "null"
-                    val metadataImages = firstObj["metadata"]?.jsonObject?.get("images")?.toString()?.take(200) ?: "null"
-                    Log.d(TAG, "image=$imageField metadata.images=$metadataImages")
-                }
                 result.mapNotNull {
                     try { json.decodeFromJsonElement<ServerMediaItem>(it) } catch (_: Exception) { null }
                 }
