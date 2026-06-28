@@ -54,7 +54,7 @@ class AndroidAutoBrowseController(
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
     private val onCustomCommand: (String) -> Boolean,
-    private val isConnected: () -> Boolean = { true },
+    private val hasStoredCredentials: suspend () -> Boolean = { true },
 ) {
     // Keyed by the query that produced it: onGetSearchResult must never serve a
     // previous query's results when the host requests a newer one.
@@ -106,14 +106,27 @@ class AndroidAutoBrowseController(
                 session: MediaSession,
                 controller: MediaSession.ControllerInfo
             ) {
-                // Car: a controller (the AAOS media center) just connected. If we are
-                // not signed in / connected to MA yet, surface the standard AAOS
-                // sign-in affordance as a non-fatal SessionError carrying a resolution
-                // PendingIntent. This is sent per-controller so a late-connecting car
-                // (cold start, before the WS is up) still gets it. The browse tree is
-                // left valid; the WS-connect invalidation refreshes it once signed in.
-                if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE && !isConnected()) {
-                    (session as? MediaLibraryService.MediaLibrarySession)?.sendError(controller, buildSignInError())
+                // Car: a controller (the AAOS media center) just connected. Surface the
+                // standard AAOS sign-in affordance (a non-fatal SessionError carrying a
+                // resolution PendingIntent) ONLY when the user genuinely has no stored
+                // credentials. We must NOT key this off the live connection state: on a
+                // cold start the car binds before the WS has finished connecting, so a
+                // signed-in user would get the sign-in error - and the AAOS media center
+                // then stays stuck on a blank, tab-less sign-in screen even after the WS
+                // comes up (nothing dismisses it). With credentials present the browse
+                // tree (static tabs) renders immediately and content fills in once the
+                // WS-connect invalidation re-queries.
+                //
+                // The credentials read is suspending (DataStore), so launch it: onPostConnect
+                // returns void and the error is sent asynchronously once the real saved state
+                // is known. This also avoids a startup race against the first DataStore emission.
+                if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                    scope.launch {
+                        if (!hasStoredCredentials()) {
+                            (session as? MediaLibraryService.MediaLibrarySession)
+                                ?.sendError(controller, buildSignInError())
+                        }
+                    }
                 }
             }
 

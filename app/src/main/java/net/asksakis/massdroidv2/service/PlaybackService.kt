@@ -77,6 +77,22 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
+     * Whether the user has saved auth: a server URL plus either a token or a username/password
+     * pair (the WS auth flow tries the token first, then falls back to credentials). The car
+     * sign-in affordance keys off THIS, not the live connection state - a signed-in car must
+     * not be shown the "Sign in" error just because the WS is still connecting on a cold start
+     * (that left the AAOS media center stuck on a blank, tab-less sign-in screen). Read fresh
+     * (suspending) per query so there is no startup race against the first DataStore emission.
+     */
+    private suspend fun hasStoredCredentials(): Boolean {
+        val url = settingsRepository.serverUrl.first()
+        val token = settingsRepository.authToken.first()
+        val user = settingsRepository.username.first()
+        val pass = settingsRepository.password.first()
+        return url.isNotBlank() && (token.isNotBlank() || (user.isNotBlank() && pass.isNotBlank()))
+    }
+
+    /**
      * In the car (AAOS) the system media center binds this service WITHOUT ever
      * launching an activity, so the UI-layer auto-connect (Home/Discover view models)
      * never runs and the browse tree stays empty ("Media isn't available"). Mirror
@@ -131,7 +147,7 @@ class PlaybackService : MediaLibraryService() {
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
             onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
-            isConnected = { wsClient.connectionState.value is ConnectionState.Connected },
+            hasStoredCredentials = { hasStoredCredentials() },
         )
     }
 
