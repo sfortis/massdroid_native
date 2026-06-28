@@ -30,13 +30,20 @@
     <!-- appCategory=audio classifies the app for the car launcher / media surfaces. -->
     <application android:appCategory="audio">
 
-        <!-- Declares MassDroid a media app to AAOS (res points at <uses name="media"/>).
-             This is the AAOS host; the projected Android Auto equivalent
-             (com.google.android.gms.car.application, contributed by :auto) is a
-             different host and intentionally left untouched. -->
+        <!-- Declares MassDroid a media app to AAOS (res points at <uses name="media"/>). -->
         <meta-data
             android:name="com.android.automotive"
             android:resource="@xml/automotive_app_desc" />
+
+        <!-- Strip the projected Android Auto host declaration that :auto contributes
+             to every flavor. Google Play rejects a single bundle that declares BOTH
+             the AAOS media app (com.android.automotive, above) AND the projected
+             Android Auto app (com.google.android.gms.car.application) - the
+             automotive track is AAOS-only. Remove it here so the published .aab is
+             AAOS-only; the phone (github/fdroid) flavors keep AA via :auto. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            tools:node="remove" />
 
         <!-- The AAOS media center filters MediaBrowser/MediaLibrary services by
              this opt-in flag; without it the service is logged as a non-template
