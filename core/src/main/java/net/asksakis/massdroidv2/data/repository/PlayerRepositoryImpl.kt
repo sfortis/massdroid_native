@@ -6,6 +6,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
+import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
@@ -25,6 +26,7 @@ import javax.inject.Singleton
 @Singleton
 class PlayerRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
+    private val imageResolver: net.asksakis.massdroidv2.data.image.ImageUrlResolver,
     private val json: Json,
     private val playHistoryRepository: PlayHistoryRepository,
     private val settingsRepository: SettingsRepository,
@@ -392,7 +394,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     val trackImg = queueTracking[serverPlayer.playerId]
                         ?.takeIf { it.track.uri == serverPlayer.currentMedia?.uri }
                         ?.track?.imageUrl
-                    var player = serverPlayer.toDomain(wsClient, trackImg)
+                    var player = serverPlayer.toDomain(imageResolver, trackImg)
                     if (player.activeGroup != null || player.groupChilds.isNotEmpty()) {
                         Log.d(TAG, "Player ${player.displayName} group: activeGroup=${player.activeGroup} childs=${player.groupChilds}")
                     }
@@ -479,7 +481,7 @@ class PlayerRepositoryImpl @Inject constructor(
                     val serverPlayer = event.data?.let {
                         json.decodeFromJsonElement<ServerPlayer>(it)
                     } ?: return@collect
-                    val player = serverPlayer.toDomain(wsClient)
+                    val player = serverPlayer.toDomain(imageResolver)
                     Log.d(TAG, "PLAYER_ADDED: ${player.displayName} (${player.playerId})")
                     _players.update { list ->
                         if (list.any { it.playerId == player.playerId }) {
@@ -529,7 +531,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         val previousState = _queueState.value
                         var domainState = preserveCurrentAudioFormat(
                             previous = previousState,
-                            incoming = serverQueue.toDomain(wsClient)
+                            incoming = serverQueue.toDomain(imageResolver)
                         )
                         val currentItemChanged = hasCurrentItemChanged(previousState, domainState)
                         // Apply favorite override if current track matches
@@ -667,7 +669,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 duration = mediaItem.duration,
                 artistNames = mediaItem.artists?.joinToString(", ") { it.name } ?: "",
                 albumName = mediaItem.album?.name ?: "",
-                imageUrl = mediaItem.resolveImageWithAlbumFallback(wsClient),
+                imageUrl = imageResolver.resolveItemWithAlbumFallback(mediaItem),
                 artistItemId = mediaItem.artists?.firstOrNull()?.itemId,
                 artistProvider = mediaItem.artists?.firstOrNull()?.provider,
                 albumItemId = mediaItem.album?.itemId,
@@ -1238,7 +1240,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 val trackImg = queueTracking[sp.playerId]
                     ?.takeIf { it.track.uri == sp.currentMedia?.uri }
                     ?.track?.imageUrl
-                sp.toDomain(wsClient, trackImg)
+                sp.toDomain(imageResolver, trackImg)
             }
             // Merge: server snapshot + recently event-added players not yet in snapshot
             val serverIds = fromServer.map { it.playerId }.toSet()
@@ -1372,7 +1374,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 ActiveQueueArgs(playerId = playerId)
             )
             val serverQueue = result?.let { json.decodeFromJsonElement<ServerQueue>(it) }
-            _queueState.value = serverQueue?.toDomain(wsClient)
+            _queueState.value = serverQueue?.toDomain(imageResolver)
             if (serverQueue != null) {
                 trackDuration = serverQueue.currentItem?.duration ?: 0.0
                 // Re-sync the playing flag from the freshly-known player state so the
@@ -1934,7 +1936,7 @@ class PlayerRepositoryImpl @Inject constructor(
 }
 
 fun ServerPlayer.toDomain(
-    wsClient: MaWebSocketClient,
+    imageResolver: ImageUrlResolver,
     queueTrackImageUrl: String? = null
 ): Player = Player(
     playerId = playerId,
@@ -1973,8 +1975,8 @@ fun ServerPlayer.toDomain(
             artist = it.artist ?: "",
             album = it.album ?: "",
             imageUrl = queueTrackImageUrl
-                ?: it.imageUrl?.let { url -> wsClient.rewriteImageProxyUrl(url) }
-                ?: it.image?.resolveUrl(wsClient),
+                ?: it.imageUrl?.let { url -> imageResolver.rewritePrebuilt(url) }
+                ?: it.image?.let { img -> imageResolver.resolve(img) },
             duration = it.duration ?: 0.0,
             elapsedTime = it.elapsedTime ?: 0.0,
             uri = it.uri
@@ -1982,7 +1984,7 @@ fun ServerPlayer.toDomain(
     },
     icon = icon?.let { value ->
         when {
-            value.startsWith("/") -> wsClient.getImageUrl(value)
+            value.startsWith("/") -> imageResolver.fromPath(value)
             value.contains("://") -> value
             else -> value // MDI name, pass through
         }
@@ -2003,7 +2005,7 @@ fun ServerMediaItem.toChapters(): List<Chapter> =
         ?.sortedBy { it.start }
         ?: emptyList()
 
-fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
+fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueState(
     queueId = queueId,
     shuffleEnabled = shuffleEnabled,
     repeatMode = RepeatMode.fromApi(repeatMode),
@@ -2024,7 +2026,7 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                     duration = mi.duration,
                     artistNames = mi.artists?.joinToString(", ") { it.name } ?: "",
                     albumName = mi.album?.name ?: "",
-                    imageUrl = mi.resolveImageWithAlbumFallback(wsClient),
+                    imageUrl = imageResolver.resolveItemWithAlbumFallback(mi),
                     favorite = mi.favorite,
                     artistItemId = mi.artists?.firstOrNull()?.itemId,
                     artistProvider = mi.artists?.firstOrNull()?.provider,
@@ -2054,8 +2056,8 @@ fun ServerQueue.toDomain(wsClient: MaWebSocketClient): QueueState = QueueState(
                     narrators = mi.narrators ?: emptyList()
                 )
             },
-            imageUrl = item.mediaItem?.resolveImageUrl(wsClient)
-                ?: item.image?.resolveUrl(wsClient),
+            imageUrl = item.mediaItem?.let { imageResolver.resolveItem(it) }
+                ?: item.image?.let { img -> imageResolver.resolve(img) },
             audioFormat = item.streamdetails?.audioFormat?.let { format ->
                 AudioFormatInfo(
                     contentType = format.contentType,

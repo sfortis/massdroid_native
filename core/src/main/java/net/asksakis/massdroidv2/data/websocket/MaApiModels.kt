@@ -136,29 +136,7 @@ data class ServerMediaItem(
     @SerialName("translation_key") val translationKey: String? = null,
     @SerialName("date_added") val dateAdded: String? = null,
     @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
-) {
-    /** Get the best image: direct image field, or first thumb from metadata.images. */
-    fun resolveImageUrl(wsClient: MaWebSocketClient): String? {
-        // 1. Direct image field
-        image?.resolveUrl(wsClient)?.let { return it }
-        // 2. From metadata.images - prefer thumb type
-        val images = metadata?.images ?: return null
-        val thumb = images.firstOrNull { it.type.equals("thumb", ignoreCase = true) }
-            ?: images.firstOrNull()
-            ?: return null
-        return thumb.resolveUrl(wsClient)
-    }
-
-    /** Image with album fallback (for tracks). */
-    fun resolveImageWithAlbumFallback(wsClient: MaWebSocketClient): String? =
-        resolveImageUrl(wsClient) ?: album?.resolveImageUrl(wsClient)
-
-    /** Image with album fallback, then URI-based imageproxy as last resort. */
-    fun resolveImageWithUriFallback(wsClient: MaWebSocketClient): String? =
-        resolveImageUrl(wsClient)
-            ?: album?.resolveImageUrl(wsClient)
-            ?: wsClient.getImageUrl(uri)
-}
+)
 
 @Serializable
 data class MediaItemMetadata(
@@ -197,28 +175,8 @@ data class MediaItemImage(
     @SerialName("proxy_id") val proxyId: String? = null
 )
 
-fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
-    val p = path.trim()
-    if (p.isEmpty()) return null
-    if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
-    // MA 2.9+ hands every non-public image an opaque proxy_id. Fetch it via the canonical
-    // /imageproxy/<proxy_id> route on our own (external) server URL: the server resolves the
-    // real path internally, so it is SSRF-safe and is the ONLY way LAN/local provider art
-    // (Jellyfin, filesystem, Plex, subsonic) loads. The legacy path-based /imageproxy now
-    // rejects private/LAN URLs with HTTP 400, which is the cause of the "missing images" reports.
-    proxyId?.let { id -> wsClient.imageProxyIdUrl(id)?.let { return it } }
-    if (remotelyAccessible) {
-        // Public URL: use directly. On a pre-2.9 server a LAN-only "remotely accessible" host
-        // still needs the legacy proxy off-LAN (cellular / remote / VPN endpoint).
-        val host = runCatching { java.net.URI(p).host }.getOrNull()
-        if (host != null && wsClient.isOffLanImageHost(host)) {
-            return wsClient.getImageUrl(p, provider = imageProvider) ?: p
-        }
-        return p
-    }
-    // Pre-2.9 server (no proxy_id): legacy path-based proxy.
-    return wsClient.getImageUrl(p, provider = imageProvider) ?: p
-}
+// Image URL resolution lives in ImageUrlResolver (data/image). The MediaItemImage / ServerMediaItem
+// models stay pure data; callers resolve through the injected resolver.
 
 @Serializable
 data class ProviderMapping(

@@ -702,27 +702,12 @@ class MaWebSocketClient(
         partialResults.clear()
     }
 
-    // MA 2.9.0 (imageproxy hardening, server PR #3960) enforces a size whitelist on the legacy
-    // /imageproxy endpoint: {0, 80, 160, 256, 512, 1024}. A non-whitelisted size (the old 500)
-    // is now rejected, so every proxied cover fails. 512 is the nearest whitelisted value and is
-    // accepted by older servers too (they took any size), so it is safe across versions.
-    fun getImageUrl(imagePath: String, size: Int = 512, provider: String? = null): String? {
-        // Use the user-configured server URL (external), not the internal base_url
-        val base = serverUrl?.trimEnd('/') ?: return null
-        val encodedPath = java.net.URLEncoder.encode(imagePath, "UTF-8")
-        val providerParam = if (!provider.isNullOrEmpty()) "&provider=$provider" else ""
-        return "${base}/imageproxy?path=$encodedPath&size=$size$providerParam"
-    }
+    // Image URL building (proxy_id route, legacy form, host rewrite) now lives in ImageUrlResolver.
+    // The WS client only exposes the connection-context it owns: the external server URL and the
+    // off-LAN host check, both of which depend on the live serverUrl set during connect.
 
-    // MA 2.9+ canonical image route: /imageproxy/<proxy_id>?size=. The proxy_id is an opaque
-    // server-side handle (sha256 of provider+path) the server resolves internally, so it is
-    // SSRF-safe and works for LAN/local providers the legacy path form now rejects. Built on
-    // the user-configured external server URL, NOT the server's internal base_url. The size is
-    // taken from MA's whitelist {0, 80, 160, 256, 512, 1024}; 512 matches getImageUrl's default.
-    fun imageProxyIdUrl(proxyId: String, size: Int = 512): String? {
-        val base = serverUrl?.trimEnd('/') ?: return null
-        return "${base}/imageproxy/$proxyId?size=$size"
-    }
+    /** The user-configured external server URL (not the server's internal base_url). */
+    fun externalServerUrl(): String? = serverUrl
 
     /**
      * True when [host] is a private/LAN address that is NOT the host we reach the server through.
@@ -734,20 +719,6 @@ class MaWebSocketClient(
         if (!isPrivateHost(host)) return false
         val serverHost = runCatching { java.net.URI(serverUrl).host }.getOrNull()
         return serverHost == null || !host.equals(serverHost, ignoreCase = true)
-    }
-
-    fun rewriteImageProxyUrl(url: String): String {
-        // Server-pre-built image_url strings (e.g. player current_media.image_url) carry the
-        // server's INTERNAL base_url host. Rewrite that host to the user-configured external
-        // server URL so the art loads off-LAN. Handles BOTH the legacy "/imageproxy?path=..."
-        // form and the canonical MA 2.9 "/imageproxy/<proxy_id>" form (the latter is what MA
-        // 2.9 now emits, so the old "?"-only match silently passed the internal host through).
-        val idx = url.indexOf("/imageproxy")
-        if (idx < 0) return url
-        val after = url.getOrNull(idx + "/imageproxy".length)
-        if (after != '/' && after != '?') return url
-        val base = serverUrl?.trimEnd('/') ?: return url
-        return base + url.substring(idx)
     }
 
     /** Expose current OkHttpClient so Coil can use same mTLS config */

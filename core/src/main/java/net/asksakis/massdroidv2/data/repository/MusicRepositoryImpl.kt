@@ -23,6 +23,7 @@ import javax.inject.Singleton
 @Singleton
 class MusicRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
+    private val imageResolver: net.asksakis.massdroidv2.data.image.ImageUrlResolver,
     private val json: Json,
     private val playerRepository: dagger.Lazy<PlayerRepository>
 ) : MusicRepository {
@@ -421,7 +422,7 @@ class MusicRepositoryImpl @Inject constructor(
         name = name.ifBlank { translationKey?.replaceFirstChar { it.uppercase() } ?: itemId },
         uri = uri,
         path = path ?: uri.ifBlank { null },
-        imageUrl = resolveImageUrl(wsClient),
+        imageUrl = imageResolver.resolveItem(this),
         isFolder = mediaType == "folder",
         mediaType = mediaType,
         isPlayable = ! (mediaType == "folder") && isPlayable == true
@@ -641,7 +642,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList(),
@@ -657,7 +658,7 @@ class MusicRepositoryImpl @Inject constructor(
             name = name,
             uri = uri,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             version = version,
             year = sanitizeYear(year),
@@ -686,7 +687,7 @@ class MusicRepositoryImpl @Inject constructor(
             duration = duration,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
             albumName = album?.name ?: "",
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             position = position,
             artistItemId = artists?.firstOrNull()?.itemId,
@@ -727,7 +728,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             isEditable = isEditable != false,
             providerDomains = extractProviderDomains()
@@ -741,7 +742,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             providerDomains = extractProviderDomains()
         )
@@ -759,8 +760,8 @@ class MusicRepositoryImpl @Inject constructor(
         name = name,
         duration = duration,
         track = mediaItem?.toTrack(),
-        imageUrl = mediaItem?.resolveImageUrl(wsClient)
-            ?: image?.resolveUrl(wsClient)
+        imageUrl = mediaItem?.let { imageResolver.resolveItem(it) }
+            ?: image?.let { imageResolver.resolve(it) }
     )
 
     private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }
