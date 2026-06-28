@@ -191,22 +191,32 @@ data class MediaItemImage(
     val type: String = "",
     val path: String = "",
     @SerialName("provider") val imageProvider: String = "builtin",
-    @SerialName("remotely_accessible") val remotelyAccessible: Boolean = false
+    @SerialName("remotely_accessible") val remotelyAccessible: Boolean = false,
+    // MA 2.9+ (API schema 31, server PR #3960): an opaque server-side imageproxy id, populated
+    // only for non-publicly-accessible images. The canonical, SSRF-safe way to fetch the art.
+    @SerialName("proxy_id") val proxyId: String? = null
 )
 
 fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
     val p = path.trim()
     if (p.isEmpty()) return null
     if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
+    // MA 2.9+ hands every non-public image an opaque proxy_id. Fetch it via the canonical
+    // /imageproxy/<proxy_id> route on our own (external) server URL: the server resolves the
+    // real path internally, so it is SSRF-safe and is the ONLY way LAN/local provider art
+    // (Jellyfin, filesystem, Plex, subsonic) loads. The legacy path-based /imageproxy now
+    // rejects private/LAN URLs with HTTP 400, which is the cause of the "missing images" reports.
+    proxyId?.let { id -> wsClient.imageProxyIdUrl(id)?.let { return it } }
     if (remotelyAccessible) {
-        // "Remotely accessible" art on a private/LAN host only works on that LAN; off-LAN (cellular)
-        // or via a remote/VPN endpoint, route it through the server imageproxy so it loads anywhere.
+        // Public URL: use directly. On a pre-2.9 server a LAN-only "remotely accessible" host
+        // still needs the legacy proxy off-LAN (cellular / remote / VPN endpoint).
         val host = runCatching { java.net.URI(p).host }.getOrNull()
         if (host != null && wsClient.isOffLanImageHost(host)) {
             return wsClient.getImageUrl(p, provider = imageProvider) ?: p
         }
         return p
     }
+    // Pre-2.9 server (no proxy_id): legacy path-based proxy.
     return wsClient.getImageUrl(p, provider = imageProvider) ?: p
 }
 

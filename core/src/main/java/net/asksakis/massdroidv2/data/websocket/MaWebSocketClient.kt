@@ -714,6 +714,16 @@ class MaWebSocketClient(
         return "${base}/imageproxy?path=$encodedPath&size=$size$providerParam"
     }
 
+    // MA 2.9+ canonical image route: /imageproxy/<proxy_id>?size=. The proxy_id is an opaque
+    // server-side handle (sha256 of provider+path) the server resolves internally, so it is
+    // SSRF-safe and works for LAN/local providers the legacy path form now rejects. Built on
+    // the user-configured external server URL, NOT the server's internal base_url. The size is
+    // taken from MA's whitelist {0, 80, 160, 256, 512, 1024}; 512 matches getImageUrl's default.
+    fun imageProxyIdUrl(proxyId: String, size: Int = 512): String? {
+        val base = serverUrl?.trimEnd('/') ?: return null
+        return "${base}/imageproxy/$proxyId?size=$size"
+    }
+
     /**
      * True when [host] is a private/LAN address that is NOT the host we reach the server through.
      * A "remotely accessible" image on such a host is only reachable on that LAN, so off-LAN
@@ -727,10 +737,17 @@ class MaWebSocketClient(
     }
 
     fun rewriteImageProxyUrl(url: String): String {
-        val proxyIdx = url.indexOf("/imageproxy?")
-        if (proxyIdx < 0) return url
+        // Server-pre-built image_url strings (e.g. player current_media.image_url) carry the
+        // server's INTERNAL base_url host. Rewrite that host to the user-configured external
+        // server URL so the art loads off-LAN. Handles BOTH the legacy "/imageproxy?path=..."
+        // form and the canonical MA 2.9 "/imageproxy/<proxy_id>" form (the latter is what MA
+        // 2.9 now emits, so the old "?"-only match silently passed the internal host through).
+        val idx = url.indexOf("/imageproxy")
+        if (idx < 0) return url
+        val after = url.getOrNull(idx + "/imageproxy".length)
+        if (after != '/' && after != '?') return url
         val base = serverUrl?.trimEnd('/') ?: return url
-        return base + url.substring(proxyIdx)
+        return base + url.substring(idx)
     }
 
     /** Expose current OkHttpClient so Coil can use same mTLS config */
