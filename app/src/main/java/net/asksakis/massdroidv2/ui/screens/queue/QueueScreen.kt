@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Radio
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -425,6 +426,21 @@ fun QueueSheet(
                         actionSheetItem = null
                     }
                 )
+
+                // Offer "Play Next" only for items below the slot that already
+                // plays next (i.e. strictly after currentIndex + 1).
+                val playingIndex = items.indexOfFirst { it.queueItemId == currentQueueItemId }
+                if (item.index > playingIndex + 1) {
+                    ListItem(
+                        colors = SheetDefaults.listItemColors(),
+                        headlineContent = { Text("Play Next") },
+                        leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                        modifier = Modifier.clickable {
+                            viewModel.playNext(item.queueItemId)
+                            actionSheetItem = null
+                        }
+                    )
+                }
 
                 if (item.index > 0) {
                     ListItem(

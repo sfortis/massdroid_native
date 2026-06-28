@@ -7,6 +7,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
@@ -43,6 +45,13 @@ class QueueViewModel @Inject constructor(
 
     /** True once the user (or save flow) has loaded pages beyond the coordinator snapshot. */
     private var paginatedBeyond = false
+
+    /**
+     * Serializes page fetches so the on-scroll [loadMore] and the
+     * save-all [fetchAllRemainingPages] paths can't read the same
+     * `offset` concurrently and waste a duplicate RPC.
+     */
+    private val pageMutex = Mutex()
 
     val isPlaying: StateFlow<Boolean> = playerRepository.selectedPlayer
         .map { it?.state == PlaybackState.PLAYING }
@@ -171,19 +180,23 @@ class QueueViewModel @Inject constructor(
     }
 
     private suspend fun appendNextPage(queueId: String) {
-        val offset = _queueItems.value.size
-        val page = musicRepository.getQueueItems(queueId, limit = PAGE_SIZE, offset = offset)
-        if (page.isEmpty()) {
-            _hasMore.value = false
-            return
+        pageMutex.withLock {
+            // Read offset and append under the lock so a concurrent caller
+            // never fetches the same page twice.
+            val offset = _queueItems.value.size
+            val page = musicRepository.getQueueItems(queueId, limit = PAGE_SIZE, offset = offset)
+            if (page.isEmpty()) {
+                _hasMore.value = false
+                return
+            }
+            val existingIds = _queueItems.value.map { it.queueItemId }.toSet()
+            val newItems = page.filter { it.queueItemId !in existingIds }
+            if (newItems.isNotEmpty()) {
+                paginatedBeyond = true
+                _queueItems.value = _queueItems.value + newItems
+            }
+            _hasMore.value = page.size == PAGE_SIZE
         }
-        val existingIds = _queueItems.value.map { it.queueItemId }.toSet()
-        val newItems = page.filter { it.queueItemId !in existingIds }
-        if (newItems.isNotEmpty()) {
-            paginatedBeyond = true
-            _queueItems.value = _queueItems.value + newItems
-        }
-        _hasMore.value = page.size == PAGE_SIZE
     }
 
     private suspend fun fetchAllRemainingPages() {
@@ -307,15 +320,49 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    fun playNext(queueItemId: String, currentIndex: Int) {
+    /**
+     * Move an item that is already in the queue so it plays right after the
+     * currently playing track.
+     *
+     * The server's `move_item` takes a *relative* `pos_shift`, so the target
+     * slot is `currentPlayingIndex + 1`, not absolute index 1: in a queue where
+     * tracks have already played the current item sits at `current_index > 0`,
+     * and shifting to index 1 would bury the item in the already-played region
+     * above the cursor (where it never plays next). This mirrors the same
+     * `toIndex - fromIndex` convention used by drag-reorder ([moveItem]).
+     */
+    fun playNext(queueItemId: String) {
         val id = queueId ?: return
+        val items = _queueItems.value
+        val sourceIndex = items.indexOfFirst { it.queueItemId == queueItemId }
+        if (sourceIndex < 0) return
+
+        val currentItemId = playerRepository.queueState.value?.currentItem?.queueItemId
+        val currentIndex = items.indexOfFirst { it.queueItemId == currentItemId }
+            .takeIf { it >= 0 }
+            ?: playerRepository.queueState.value?.currentIndex
+            ?: 0
+        val targetIndex = (currentIndex + 1).coerceAtMost(items.size - 1)
+        val posShift = targetIndex - sourceIndex
+        if (posShift == 0) return
+
         viewModelScope.launch {
             try {
-                musicRepository.moveQueueItem(id, queueItemId, -(currentIndex - 1))
+                musicRepository.moveQueueItem(id, queueItemId, posShift)
+                // Optimistic reorder so the row jumps immediately; the
+                // coordinator refresh below reconciles with the server.
+                val list = _queueItems.value.toMutableList()
+                val from = list.indexOfFirst { it.queueItemId == queueItemId }
+                if (from >= 0) {
+                    val moved = list.removeAt(from)
+                    list.add(targetIndex.coerceIn(0, list.size), moved)
+                    _queueItems.value = list
+                }
                 loadQueue()
             } catch (e: Exception) {
                 Log.w(TAG, "playNext failed: ${e.message}", e)
                 _error.tryEmit(parseQueueError(e))
+                loadQueue()
             }
         }
     }
