@@ -239,18 +239,15 @@ class AndroidAutoController(
             },
             onVolumeUp = {
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                val newVolume = (currentVolumeBase(player.volumeLevel) + VOLUME_STEP)
-                    .coerceAtMost(RemoteControlPlayer.MAX_VOLUME)
-                pushVolume(player.playerId, newVolume)
+                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) + VOLUME_STEP)
             },
             onVolumeDown = {
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                val newVolume = (currentVolumeBase(player.volumeLevel) - VOLUME_STEP).coerceAtLeast(0)
-                pushVolume(player.playerId, newVolume)
+                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) - VOLUME_STEP)
             },
             onVolumeSet = { volume ->
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                pushVolume(player.playerId, volume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME))
+                pushPlayerVolume(player, volume)
             }
         )
     }
@@ -260,13 +257,30 @@ class AndroidAutoController(
         return if (System.currentTimeMillis() < override.second) override.first else serverVolume
     }
 
-    private fun pushVolume(playerId: String, volume: Int) {
-        // Optimistic AA-side update: bump the override flow so the master
-        // combine emits with the new value and AA sees its volume slider
-        // settle immediately. The actual MA echo arrives via PLAYER_UPDATED
-        // and overwrites the override once it expires.
+    /** Volume the rocker/AA slider works from: the group volume for a group, else the own level. */
+    private fun baseVolume(player: net.asksakis.massdroidv2.domain.model.Player): Int =
+        player.groupVolume ?: player.volumeLevel
+
+    /** A group-type parent (has members other than itself). Mirrors MainActivity's HW-key path. */
+    private fun isGroupPlayer(player: net.asksakis.massdroidv2.domain.model.Player): Boolean =
+        player.groupChilds.any { it != player.playerId }
+
+    private fun pushPlayerVolume(player: net.asksakis.massdroidv2.domain.model.Player, rawVolume: Int) {
+        val volume = rawVolume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME)
+        // Optimistic AA-side update: bump the override flow so the master combine
+        // emits with the new value and AA/MediaSession device-volume settles
+        // immediately. The actual MA echo arrives via PLAYER_UPDATED and overwrites
+        // the override once it expires.
         volumeOverride.value = volume to (System.currentTimeMillis() + VOLUME_OVERRIDE_MS)
-        sendVolumeCommand(playerId, volume)
+        if (isGroupPlayer(player)) {
+            // A group player reports volume_level=null and is driven via MA's
+            // cmd/group_volume (which fans out to members). `volume_set` on the
+            // group id is a no-op, which is why the hardware rocker did nothing
+            // when a group was selected (the in-app slider already used group_volume).
+            scope.launch { runCatching { playerRepository.setGroupVolume(player.playerId, volume) } }
+        } else {
+            sendVolumeCommand(player.playerId, volume)
+        }
     }
 
     private fun playQueueIndex(index: Int, reason: String) {
@@ -433,7 +447,9 @@ class AndroidAutoController(
         } else {
             player.state == PlaybackState.PLAYING
         }
-        val volumeLevel = effectiveVolume(player.volumeLevel, volumeOv)
+        // Report the group volume for a group (its own volume_level is null), so the
+        // MediaSession/AA device-volume reads and the rocker base off the right value.
+        val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
         val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
         val playback = AutoPlaybackSnapshot(
             isPlaying = player.state == PlaybackState.PLAYING,
