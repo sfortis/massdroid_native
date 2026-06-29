@@ -155,19 +155,31 @@ class PlayerRepositoryImpl @Inject constructor(
     @Volatile private var selectedPlayerId: String? = null
 
     /**
+     * The id of the queue whose events/items belong to the selected player.
+     *
      * When the selected player is a synced group member, the authoritative
-     * queue/time events arrive under the GROUP LEADER's id, not the member's,
-     * and the member's OWN queue is stale (often stuck at end-of-track -> the
-     * seek bar pins to the end). MA frequently leaves `active_group` null on
-     * children, so resolve in order: synced_to (the leader = the group queue id)
-     * -> active_group -> own id. The leader itself has synced_to/active_group
-     * null and correctly resolves to its own id.
+     * queue/time events arrive under the GROUP queue id, not the member's, and
+     * the member's OWN queue is stale (often stuck at end-of-track -> the seek
+     * bar pins to the end, or a single leftover track shows instead of the
+     * group's list).
+     *
+     * `active_source` is the authoritative field here: for a solo player it
+     * equals its own id, and for a grouped member it is the active GROUP queue
+     * id (verified against the server for both cast and ad-hoc sync groups).
+     *
+     * Fallback order matters. After `active_source`, prefer `active_group` (the
+     * group-player id, which OWNS the active queue) over `synced_to`: in a cast/
+     * universal group `synced_to` points at a member sync-LEADER whose OWN queue
+     * is NOT the group queue, so using it would surface the wrong (often stale,
+     * single-track) queue. `synced_to` is kept last as the ad-hoc-sync fallback
+     * (there the leader's own queue IS the shared queue), and `id` covers solo.
      */
-    private fun effectiveQueueId(): String? {
-        val id = selectedPlayerId ?: return null
+    private fun effectiveQueueId(playerId: String? = selectedPlayerId): String? {
+        val id = playerId ?: return null
         val player = _players.value.find { it.playerId == id }
-        return player?.syncedTo?.takeIf { it.isNotEmpty() }
+        return player?.activeSource?.takeIf { it.isNotEmpty() }
             ?: player?.activeGroup?.takeIf { it.isNotEmpty() }
+            ?: player?.syncedTo?.takeIf { it.isNotEmpty() }
             ?: id
     }
     @Volatile private var pendingRestoredPlayerId: String? = null
@@ -249,17 +261,21 @@ class PlayerRepositoryImpl @Inject constructor(
         scope.launch {
             smartListeningRepository.blockedArtistUris.collect { blocked ->
                 blockedArtistUrisSnapshot = blocked
-                selectedPlayerId?.let { selectedId ->
-                    val currentTrack = queueTracking[selectedId]?.track
-                    val artistUris = queueTracking[selectedId]?.artists?.map { it.first }.orEmpty()
-                    maybeAutoSkipBlockedTrack(
-                        queueId = selectedId,
-                        track = currentTrack,
-                        artistUris = artistUris,
-                        trigger = "blocked_update"
-                    )
-                    scheduleBlockedQueueCleanup(selectedId, reason = "blocked_update")
-                }
+                // Operate on the ACTIVE queue id. For a synced group member that
+                // is the group queue, and `queueTracking` is keyed by it too;
+                // using the member's own id here found nothing, so blocking an
+                // artist while it played on a group never skipped the current
+                // track (the queue purge below still cleaned the rest).
+                val activeQueueId = effectiveQueueId() ?: return@collect
+                val currentTrack = queueTracking[activeQueueId]?.track
+                val artistUris = queueTracking[activeQueueId]?.artists?.map { it.first }.orEmpty()
+                maybeAutoSkipBlockedTrack(
+                    queueId = activeQueueId,
+                    track = currentTrack,
+                    artistUris = artistUris,
+                    trigger = "blocked_update"
+                )
+                scheduleBlockedQueueCleanup(activeQueueId, reason = "blocked_update")
             }
         }
         scope.launch {
@@ -904,7 +920,10 @@ class PlayerRepositoryImpl @Inject constructor(
         artistUris: List<String>,
         trigger: String
     ) {
-        if (queueId != selectedPlayerId) return
+        // Accept the selected player id OR its active (group) queue id: for a
+        // synced member the caller passes the group queue, and `next` is sent to
+        // that queue/group player, which advances the shared playback.
+        if (queueId != selectedPlayerId && queueId != effectiveQueueId()) return
         val currentTrack = track ?: return
         if (currentTrack.uri.isBlank()) return
         val filteredArtists = currentFilteredArtists(queueId)
@@ -932,8 +951,17 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun scheduleBlockedQueueCleanup(queueId: String, reason: String, force: Boolean = false) {
-        if (queueId != selectedPlayerId) return
+    private fun scheduleBlockedQueueCleanup(requestedId: String, reason: String, force: Boolean = false) {
+        // Normalise to the selected player's ACTIVE queue id. For a synced group
+        // member that is the GROUP queue (e.g. syncgroup_*), not the member's own
+        // id. Callers pass either the selected player id (select / filter /
+        // blocked-update) or an event queue id; both are accepted but the cleanup
+        // and its forced coordinator refresh always run against the canonical
+        // queue. Keying the shared coordinator snapshot by a member id (the old
+        // behaviour) raced the debounced trigger snapshot and left the Queue
+        // screen stuck on the spinner / showing a stale member queue.
+        val queueId = effectiveQueueId() ?: return
+        if (requestedId != selectedPlayerId && requestedId != queueId) return
         val now = System.currentTimeMillis()
         val lastAt = blockedQueueCleanupAtByQueue[queueId] ?: 0L
         if (!force && now - lastAt < BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS) return
@@ -1356,9 +1384,16 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override fun setQueueFilterMode(playerId: String, mode: PlayerRepository.QueueFilterMode) {
-        queueFilterModeByQueue[playerId] = mode
+        // Key the filter mode by the player's ACTIVE queue id, the same id the
+        // cleanup/auto-skip read paths use (`effectiveQueueId()`). For a synced
+        // group member that is the group queue, not the member's own id; storing
+        // under the own id (the old behaviour) meant the grouped read missed and
+        // Smart Mix / Genre Radio suppressed-artist filtering silently fell back
+        // to NORMAL on a sync group. Solo is unchanged (active queue id == own id).
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        queueFilterModeByQueue[queueId] = mode
         if (playerId == selectedPlayerId) {
-            scheduleBlockedQueueCleanup(playerId, reason = "queue_filter_mode", force = true)
+            scheduleBlockedQueueCleanup(queueId, reason = "queue_filter_mode", force = true)
         }
     }
 
@@ -1963,6 +1998,7 @@ fun ServerPlayer.toDomain(
     groupVolume = if (type == "group" || groupChilds.isNotEmpty()) groupVolume else null,
     volumeMuted = volumeMuted,
     activeGroup = activeGroup,
+    activeSource = activeSource,
     syncedTo = syncedTo,
     groupChilds = groupChilds,
     staticGroupMembers = staticGroupMembers,
