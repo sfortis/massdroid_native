@@ -78,6 +78,20 @@
             </intent-filter>
         </service>
 
+        <!-- Registers MassDroid as a media-button target so the OS routes hardware
+             media/volume keys (wired/BT headset buttons, and Samsung's "media key
+             app" picker) to the Media3 session, and wakes the service when a button
+             arrives while it is dead. Without this the app was absent from Samsung
+             Settings > Sound > Media key app, so the keys fell to whichever other
+             media app currently held the session (the intermittent volume routing). -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".service.FollowMeService"
             android:exported="false"
