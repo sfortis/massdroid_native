@@ -30,7 +30,9 @@ jobs:
         # github flavor = primary asset for users side-loading from GitHub (keeps
         # the in-app updater). fdroid flavor = reproducibility target for F-Droid;
         # the Binaries URL in fdroiddata points at the fdroid-flavored APK.
-        run: ./gradlew app:assembleGithubRelease app:assembleFdroidRelease atv:assembleRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        # automotive flavor = AAOS: a sideload APK (head units / emulator) plus an
+        # AAB for the Play Store automotive track.
+        run: ./gradlew app:assembleGithubRelease app:assembleFdroidRelease atv:assembleRelease app:assembleAutomotiveRelease app:bundleAutomotiveRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
         env:
           RELEASE_STORE_FILE: ${{ github.workspace }}/release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -46,9 +48,13 @@ jobs:
           GH_APK=$(find build-output/app/outputs/apk/github/release -name "*.apk" | head -1)
           FD_APK=$(find build-output/app/outputs/apk/fdroid/release -name "*.apk" | head -1)
           TV_APK=$(find build-output/atv/outputs/apk/release -name "*.apk" | head -1)
+          AAOS_APK=$(find build-output/app/outputs/apk/automotive/release -name "*.apk" | head -1)
+          AAOS_AAB=$(find build-output/app/outputs/bundle/automotiveRelease -name "*.aab" | head -1)
           mv "$GH_APK" "build-output/massdroid-${{ steps.version.outputs.version }}.apk"
           mv "$FD_APK" "build-output/massdroid-fdroid-${{ steps.version.outputs.version }}.apk"
           mv "$TV_APK" "build-output/massdroid-tv-${{ steps.version.outputs.version }}.apk"
+          mv "$AAOS_APK" "build-output/massdroid-automotive-${{ steps.version.outputs.version }}.apk"
+          mv "$AAOS_AAB" "build-output/massdroid-automotive-${{ steps.version.outputs.version }}.aab"
 
       - name: Create GitHub Release
         run: |
@@ -56,6 +62,8 @@ jobs:
             "build-output/massdroid-${{ steps.version.outputs.version }}.apk" \
             "build-output/massdroid-fdroid-${{ steps.version.outputs.version }}.apk" \
             "build-output/massdroid-tv-${{ steps.version.outputs.version }}.apk" \
+            "build-output/massdroid-automotive-${{ steps.version.outputs.version }}.apk" \
+            "build-output/massdroid-automotive-${{ steps.version.outputs.version }}.aab" \
             --title "${{ steps.version.outputs.version }}" \
             --notes-file WHATSNEW.md
         env:
