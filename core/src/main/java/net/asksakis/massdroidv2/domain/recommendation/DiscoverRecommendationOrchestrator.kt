@@ -46,7 +46,6 @@ class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    @Suppress("unused") private val recommendationEngine: RecommendationEngine,
     private val lastFmSimilarResolver: LastFmSimilarResolver,
     private val lastFmGenreResolver: LastFmGenreResolver,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter

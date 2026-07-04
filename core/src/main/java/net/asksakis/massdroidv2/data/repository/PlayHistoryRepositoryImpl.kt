@@ -369,7 +369,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         artistName = artistName,
         lastPlayedAt = lastPlayedAt,
         score = score,
-        genres = genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
+        genres = genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList(),
+        artistGenres = artistGenres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
     )
 
     override suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>) {

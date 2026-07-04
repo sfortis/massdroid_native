@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.lastfm.LastFmTrackSimilarResolver
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
@@ -123,6 +124,68 @@ internal fun varietyWindow(variety: Double, n: Int): Int =
     (1.0 + variety.coerceIn(0.0, 1.0) * (n - 1)).roundToInt().coerceIn(1, n)
 
 /**
+ * Cluster membership: a seed joins the primary's cluster with at least one
+ * shared (normalized) ARTIST genre, vetoed when the two sides' mapped genre
+ * FAMILIES are known and disjoint. Replayed against the real library: requiring
+ * 2 shared tags on the clean 3-tag artist genres collapsed a valid cluster to
+ * the primary alone, while 1 shared tag on the old noisy TRACK tags let a
+ * techno seed bridge into an indie cluster (the family veto + artist-level tags
+ * close that hole; the seed had 0 shared artist tags).
+ */
+@VisibleForTesting
+internal fun clusterOverlapSatisfied(seedGenres: Set<String>, primaryGenres: Set<String>): Boolean {
+    if (seedGenres.none { it in primaryGenres }) return false
+    val seedFamilies = genreFamilies(seedGenres)
+    val primaryFamilies = genreFamilies(primaryGenres)
+    if (seedFamilies.isEmpty() || primaryFamilies.isEmpty()) return true
+    return seedFamilies.any { it in primaryFamilies }
+}
+
+/**
+ * Word-level genre tokens for the LOOSE candidate gate ("indie rock" -> indie,
+ * rock). Short tokens ("of", "nu") and connectors ("and": "drum and bass" must
+ * not match "rhythm and blues") are noise and dropped.
+ */
+@VisibleForTesting
+internal fun genreTokens(genres: Iterable<String>): Set<String> =
+    genres.flatMap { normalizeGenre(it).split(' ', '-') }
+        .filter { it.length > 2 && it != "and" && it != "the" }
+        .toSet()
+
+/**
+ * Loose token overlap for gating candidates against the seed cluster's genre
+ * envelope: any shared or containing token passes ("tech house" vs "house",
+ * "electro" vs "electronic"). Deliberately permissive: this is a safety net
+ * against a whole foreign family (techno in an indie mix), not a strict filter.
+ */
+@VisibleForTesting
+internal fun genresOverlapLoose(candidateGenres: Iterable<String>, envelopeTokens: Set<String>): Boolean {
+    if (envelopeTokens.isEmpty()) return true
+    return genreTokens(candidateGenres).any { c ->
+        envelopeTokens.any { e -> c == e || c.contains(e) || e.contains(c) }
+    }
+}
+
+/**
+ * Candidate genre gate decision: deterministic family comparison (the static
+ * [genreFamilies] map) whenever both the candidate and the envelope carry
+ * mapped tags; the loose token overlap only covers unmapped tags. A candidate
+ * whose known families are all foreign to the cluster is dropped.
+ */
+@VisibleForTesting
+internal fun genreGatePasses(
+    candidateGenres: List<String>,
+    envelopeFamilies: Set<String>,
+    envelopeTokens: Set<String>
+): Boolean {
+    val candidateFamilies = genreFamilies(candidateGenres)
+    if (candidateFamilies.isNotEmpty() && envelopeFamilies.isNotEmpty()) {
+        return candidateFamilies.any { it in envelopeFamilies }
+    }
+    return genresOverlapLoose(candidateGenres, envelopeTokens)
+}
+
+/**
  * Track-level recommendation generator: recent (or in-genre) well-listened
  * tracks seed Last.fm `track.getSimilar`, producing a coherent candidate pool
  * that is resolved to playable provider URIs (cache-first + bounded search +
@@ -138,6 +201,7 @@ class SeedTrackMixGenerator @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val musicRepository: MusicRepository,
     private val lastFmTrackSimilarResolver: LastFmTrackSimilarResolver,
+    private val lastFmGenreResolver: LastFmGenreResolver,
     private val settingsRepository: SettingsRepository,
     private val mixEngine: MixEngine
 ) {
@@ -154,8 +218,18 @@ class SeedTrackMixGenerator @Inject constructor(
         val recentArtistCounts: Map<String, Int>,
         val recentMixTrackUris: Set<String>,
         /** Raw names of blocked artists; the generator normalizes and excludes them from seeds, candidates and injection. */
-        val blockedArtistNames: Set<String> = emptySet()
+        val blockedArtistNames: Set<String> = emptySet(),
+        /**
+         * Normalized cluster genres of the last few smart mixes. The next
+         * primary seed prefers a genre family OUTSIDE this set, so consecutive
+         * mixes rotate across everything the user listens to instead of
+         * re-anchoring on the dominant genre every time.
+         */
+        val recentClusterGenres: Set<String> = emptySet()
     )
+
+    /** A built mix plus the primary-cluster genres it anchored on (for the caller's rotation cool-down). */
+    data class SeedMixResult(val tracks: List<Track>, val clusterGenres: Set<String>)
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var prefetchJob: Job? = null
@@ -171,18 +245,21 @@ class SeedTrackMixGenerator @Inject constructor(
      * Smart Mix: seed from a genre-coherent cluster of recent tracks (rotated per
      * run for variety). Empty if there are too few seeds or candidates.
      */
-    suspend fun buildSmartMix(tuning: Tuning, target: Int, recency: Recency): List<Track> {
-        if (!hasLastFmKey()) return emptyList()
+    suspend fun buildSmartMix(tuning: Tuning, target: Int, recency: Recency): SeedMixResult {
+        if (!hasLastFmKey()) return SeedMixResult(emptyList(), emptySet())
         val mixSeed = System.currentTimeMillis()
         val random = kotlin.random.Random(mixSeed)
-        val selection = selectSeedTracks(tuning, random)
+        val selection = selectSeedTracks(tuning, random, recency)
         val seeds = selection.seeds
         if (seeds.size < MIN_SEEDS) {
             Log.d(TAG, "only ${seeds.size} seeds, skipping")
-            return emptyList()
+            return SeedMixResult(emptyList(), emptySet())
         }
         Log.d(TAG, "${seeds.size} seeds -> ${seeds.joinToString { "${it.artistName} - ${it.trackName}" }}")
-        return assembleSeedTrackMix(seeds, tuning, target, mixSeed, recency, selection.coherentGenres)
+        val tracks = assembleSeedTrackMix(
+            seeds, tuning, target, mixSeed, recency, selection.coherentGenres, selection.envelope
+        )
+        return SeedMixResult(tracks, selection.coherentGenres)
     }
 
     /**
@@ -201,7 +278,8 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         Log.d(TAG, "genre '$genre': ${seeds.size} seeds -> ${seeds.joinToString { it.artistName }}")
         // Tight coherence: inject only loved tracks tagged with the chosen genre.
-        return assembleSeedTrackMix(seeds, tuning, target, mixSeed, recency, setOf(normalizeGenre(genre)))
+        val genreSet = setOf(normalizeGenre(genre))
+        return assembleSeedTrackMix(seeds, tuning, target, mixSeed, recency, genreSet, genreSet)
     }
 
     private suspend fun hasLastFmKey(): Boolean =
@@ -211,16 +289,19 @@ class SeedTrackMixGenerator @Inject constructor(
             false
         }
 
-    // Shared core: gather a deduped track.getSimilar candidate pool, resolve to
-    // playable tracks (cache-first + bounded search + background prefetch), apply
-    // the recent-mix cool-down, and run the diversity/interleave.
+    // Shared core: gather a deduped track.getSimilar candidate pool, gate it
+    // against the cluster's genre envelope, resolve to playable tracks
+    // (cache-first + bounded search + background prefetch), apply the
+    // recent-mix cool-down, and run the diversity/interleave.
+    @Suppress("LongParameterList")
     private suspend fun assembleSeedTrackMix(
         seeds: List<SeedTrack>,
         tuning: Tuning,
         target: Int,
         mixSeed: Long,
         recency: Recency,
-        coherentGenres: Set<String>
+        coherentGenres: Set<String>,
+        genreEnvelope: Set<String>
     ): List<Track> {
         // Blocked artists are excluded everywhere: as seeds, as similar
         // candidates, and from loved injection. Matched by normalized name.
@@ -265,9 +346,16 @@ class SeedTrackMixGenerator @Inject constructor(
         val ordered = bestByKey.values.sortedByDescending { it.matchScore }
         Log.d(TAG, "${ordered.size} unique candidates from track.getSimilar")
 
-        val resolved = resolveSeedCandidates(ordered)
-        // Warm the cache for everything we could not resolve inline so the next
-        // mix is fuller and instant.
+        // Candidate genre gate (cache-only): a candidate whose CACHED artist
+        // tags share no token with the cluster envelope is a foreign family
+        // (similars of a rogue seed, or genuine similar-drift) and is dropped.
+        // Unknown artists pass: the prefetch warms their tags for future runs,
+        // so the gate tightens as the cache fills without starving cold mixes.
+        val gated = gateCandidatesByGenre(ordered, genreEnvelope)
+
+        val resolved = resolveSeedCandidates(gated)
+        // Warm the caches (track URI resolution + artist tags) for everything we
+        // could not use inline so the next mix is fuller and better gated.
         scheduleSeedPrefetch(ordered)
 
         // Recent-mix cool-down: tracks that appeared in the last few mixes, and
@@ -361,18 +449,36 @@ class SeedTrackMixGenerator @Inject constructor(
     // which cluster is chosen (a different random primary seed); consistency
     // within a mix is preserved by only adding seeds whose genres overlap the
     // primary's EXACT genres (no adjacency widening, which bridged distant
-    // families). Falls back to a plain sampled rotation when there is no genre
-    // data to anchor a cluster.
-    /** Chosen seeds plus the tight genre envelope (primary cluster genres) used to keep loved injection coherent. */
-    private data class SeedSelection(val seeds: List<SeedTrack>, val coherentGenres: Set<String>)
+    // families). Coherence uses ARTIST-level genres (track tags are crowd-noisy
+    // and once bridged a techno artist into an indie cluster). Falls back to a
+    // plain sampled rotation when there is no genre data to anchor a cluster.
+    /**
+     * Chosen seeds plus the tight genre envelope (primary cluster genres, keeps
+     * loved injection coherent) and the wider seed-union [envelope] the
+     * candidate genre gate checks against.
+     */
+    private data class SeedSelection(
+        val seeds: List<SeedTrack>,
+        val coherentGenres: Set<String>,
+        val envelope: Set<String> = emptySet()
+    )
 
-    private suspend fun selectSeedTracks(tuning: Tuning, random: kotlin.random.Random): SeedSelection {
+    // Cluster coherence genres: clean artist tags first, track tags only as a
+    // fallback for artists the enricher has not covered.
+    private fun coherenceGenres(seed: SeedTrack): Set<String> =
+        seed.artistGenres.ifEmpty { seed.genres }.map { normalizeGenre(it) }.toSet()
+
+    private suspend fun selectSeedTracks(
+        tuning: Tuning,
+        random: kotlin.random.Random,
+        recency: Recency
+    ): SeedSelection {
         val since = System.currentTimeMillis() - SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
         val pool = strictnessRankedPool(queryRecentSeedTracks(since, RECENCY_POOL_LIMIT), tuning.strictness)
         val byArtist = dedupeByArtist(pool)
         if (byArtist.size <= SEED_COUNT) return SeedSelection(byArtist, emptySet())
 
-        val tagged = byArtist.filter { it.genres.isNotEmpty() }
+        val tagged = byArtist.filter { coherenceGenres(it).isNotEmpty() }
         if (tagged.isEmpty()) {
             val anchorCount = seedAnchorCount(tuning)
             val anchors = byArtist.take(anchorCount)
@@ -383,19 +489,37 @@ class SeedTrackMixGenerator @Inject constructor(
         // the top-ranked seeds (steadier), high variety draws from the whole
         // tagged pool. varietyWindow spans the full 0..1 range (no plateau).
         val primaryPool = tagged.take(varietyWindow(tuning.variety, tagged.size))
-        val primary = primaryPool.shuffled(random).first()
-        val primaryGenres = primary.genres.map { normalizeGenre(it) }.toSet()
+        // Genre rotation: prefer a primary whose FAMILY was not the anchor of
+        // the last few mixes (strongest hop across the user's genres), then one
+        // whose exact genres are at least new, then the full window when
+        // everything recent is in the same family.
+        val recentFamilies = genreFamilies(recency.recentClusterGenres)
+        val exactFresh = primaryPool.filter { seed ->
+            coherenceGenres(seed).none { it in recency.recentClusterGenres }
+        }
+        val familyFresh = exactFresh.filter { seed ->
+            genreFamilies(coherenceGenres(seed)).none { it in recentFamilies }
+        }
+        val freshPool = familyFresh.ifEmpty { exactFresh }
+        val primary = freshPool.ifEmpty { primaryPool }.shuffled(random).first()
+        val primaryGenres = coherenceGenres(primary)
         val cluster = byArtist.filter { seed ->
             seed.trackUri == primary.trackUri ||
-                seed.genres.any { normalizeGenre(it) in primaryGenres }
+                clusterOverlapSatisfied(coherenceGenres(seed), primaryGenres)
         }
         val ordered = listOf(primary) +
             cluster.filter { it.trackUri != primary.trackUri }.shuffled(random)
         val result = ordered.take(SEED_COUNT)
-        Log.d(TAG, "cluster around '${primary.artistName}' (${primaryGenres.joinToString("/")}): ${result.size} seeds")
+        Log.d(
+            TAG,
+            "cluster around '${primary.artistName}' (${primaryGenres.joinToString("/")}): " +
+                "${result.size} seeds (freshPool=${freshPool.size}/${primaryPool.size})"
+        )
         // Loved injection is gated on the PRIMARY genres (tight), not the broad
         // union of every seed's tags, so it never pulls in off-cluster favourites.
-        return SeedSelection(result, primaryGenres)
+        // The candidate gate uses the seed-union envelope (wider, fewer false drops).
+        val envelope = result.flatMap { coherenceGenres(it) }.toSet()
+        return SeedSelection(result, primaryGenres, envelope)
     }
 
     private suspend fun queryRecentSeedTracks(sinceMs: Long, limit: Int): List<SeedTrack> =
@@ -459,6 +583,38 @@ class SeedTrackMixGenerator @Inject constructor(
             byArtist += row
         }
         return byArtist
+    }
+
+    // Cache-only genre gate: drop candidates whose cached artist tags share no
+    // token with the cluster envelope. Artists with no fresh cache entry (or a
+    // known-empty tag list) pass; the prefetch warms them for the next run.
+    private suspend fun gateCandidatesByGenre(
+        ordered: List<SeedCandidate>,
+        envelope: Set<String>
+    ): List<SeedCandidate> {
+        if (envelope.isEmpty()) return ordered
+        val envelopeTokens = genreTokens(envelope)
+        if (envelopeTokens.isEmpty()) return ordered
+        val envelopeFamilies = genreFamilies(envelope)
+        val tagsByArtist = HashMap<String, List<String>?>()
+        val kept = ordered.filter { cand ->
+            val tags = tagsByArtist.getOrPut(cand.artist) {
+                try {
+                    lastFmGenreResolver.cachedGenres(cand.artist)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            tags.isNullOrEmpty() || genreGatePasses(tags, envelopeFamilies, envelopeTokens)
+        }
+        if (kept.size != ordered.size) {
+            Log.d(
+                TAG,
+                "genre gate: dropped ${ordered.size - kept.size}/${ordered.size} off-cluster " +
+                    "candidates (envelope=${envelope.joinToString("/")})"
+            )
+        }
+        return kept
     }
 
     // Resolve candidate names to playable tracks: cache-first (instant), then a
@@ -535,7 +691,8 @@ class SeedTrackMixGenerator @Inject constructor(
     }
 
     // Single-flight background job that warms the resolution cache for every
-    // candidate not resolved inline, so the next mix is fuller and instant.
+    // candidate not resolved inline, plus the artist-tag cache the genre gate
+    // reads, so the next mix is fuller and better gated.
     private fun scheduleSeedPrefetch(ordered: List<SeedCandidate>) {
         if (prefetchJob?.isActive == true) return
         prefetchJob = prefetchScope.launch {
@@ -554,10 +711,28 @@ class SeedTrackMixGenerator @Inject constructor(
                         }
                     }.awaitAll()
                 }
-                Log.d(TAG, "prefetch: warmed ${warmed.get()} resolutions")
+                val warmedTags = warmCandidateArtistTags(ordered)
+                Log.d(TAG, "prefetch: warmed ${warmed.get()} resolutions, $warmedTags artist tags")
             } catch (e: Exception) {
                 Log.w(TAG, "prefetch failed: ${e.message}")
             }
         }
+    }
+
+    // Sequentially resolve missing artist tags (the global Last.fm rate limiter
+    // paces the calls); resolve() writes to the same cache cachedGenres() reads.
+    private suspend fun warmCandidateArtistTags(ordered: List<SeedCandidate>): Int {
+        var warmedTags = 0
+        for (name in ordered.map { it.artist }.distinct()) {
+            try {
+                if (lastFmGenreResolver.cachedGenres(name) == null) {
+                    lastFmGenreResolver.resolve(name)
+                    warmedTags++
+                }
+            } catch (_: Exception) {
+                // best-effort warming; the gate treats misses as unknown
+            }
+        }
+        return warmedTags
     }
 }

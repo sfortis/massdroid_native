@@ -397,7 +397,9 @@ interface PlayHistoryDao {
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
-               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
+               (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
+                WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
         FROM play_history ph
         JOIN tracks t ON t.uri = ph.track_uri
         JOIN track_artists ta ON ta.track_uri = t.uri
@@ -418,7 +420,9 @@ interface PlayHistoryDao {
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
-               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
+               (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
+                WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
         FROM play_history ph
         JOIN tracks t ON t.uri = ph.track_uri
         JOIN track_artists ta ON ta.track_uri = t.uri
@@ -756,7 +760,8 @@ data class SeedTrackRow(
     @ColumnInfo(name = "artistName") val artistName: String,
     @ColumnInfo(name = "lastPlayedAt") val lastPlayedAt: Long,
     @ColumnInfo(name = "score") val score: Double,
-    @ColumnInfo(name = "genres") val genres: String?
+    @ColumnInfo(name = "genres") val genres: String?,
+    @ColumnInfo(name = "artistGenres") val artistGenres: String?
 )
 
 data class GenrePlayTimestamp(

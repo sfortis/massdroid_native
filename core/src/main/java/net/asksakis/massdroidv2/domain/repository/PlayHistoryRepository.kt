@@ -22,7 +22,12 @@ data class SeedTrack(
     val artistName: String,
     val lastPlayedAt: Long,
     val score: Double = 0.0,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    /**
+     * Artist-level genres (whitelisted Last.fm top tags, max 3). Cleaner than
+     * the crowd-noisy track tags, so cluster coherence checks prefer these.
+     */
+    val artistGenres: List<String> = emptyList()
 )
 
 data class ArtistScore(

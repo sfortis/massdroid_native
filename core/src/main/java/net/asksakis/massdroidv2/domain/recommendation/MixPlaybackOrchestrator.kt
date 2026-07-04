@@ -178,6 +178,9 @@ class MixPlaybackOrchestrator @Inject constructor(
     private val recentSmartMixHistory: ArrayDeque<Set<String>> = ArrayDeque()
     private val recentSmartMixArtists: ArrayDeque<Set<String>> = ArrayDeque()
     private val recentSmartMixGenres: ArrayDeque<String> = ArrayDeque()
+    // Cluster genres of the last few SEED-TRACK smart mixes: the generator's
+    // primary-seed pick avoids these so consecutive mixes rotate genre families.
+    private val recentSeedClusterGenres: ArrayDeque<Set<String>> = ArrayDeque()
 
     // ---- Tuning knobs (read fresh from settings per build) ----
     private var smartMixVariety = 0.5
@@ -217,6 +220,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         recentSmartMixHistory.clear()
         recentSmartMixArtists.clear()
         recentSmartMixGenres.clear()
+        recentSeedClusterGenres.clear()
     }
 
     // ---------------------------------------------------------------------------
@@ -455,11 +459,18 @@ class MixPlaybackOrchestrator @Inject constructor(
     private fun smartMixTrackTarget(): Int =
         (SMART_MIX_TARGET_MIN + smartMixLength * SMART_MIX_TARGET_SPAN).toInt()
 
-    private suspend fun buildSeedTrackMix(): SmartMixResult =
-        SmartMixResult(
-            seedTrackMixGenerator.buildSmartMix(seedTuning(), smartMixTrackTarget(), currentRecency()),
-            null
-        )
+    private suspend fun buildSeedTrackMix(): SmartMixResult {
+        val result = seedTrackMixGenerator.buildSmartMix(seedTuning(), smartMixTrackTarget(), currentRecency())
+        // Record the cluster's genres only for a mix that will actually be used,
+        // so a failed/short attempt does not burn a rotation slot.
+        if (result.tracks.size >= SMART_MIX_MIN_TRACKS && result.clusterGenres.isNotEmpty()) {
+            recentSeedClusterGenres.addLast(result.clusterGenres)
+            while (recentSeedClusterGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) {
+                recentSeedClusterGenres.removeFirst()
+            }
+        }
+        return SmartMixResult(result.tracks, null)
+    }
 
     private suspend fun buildGenreRadioSeedMix(genre: String): List<Track> =
         seedTrackMixGenerator.buildGenreRadio(genre, seedTuning(), smartMixTrackTarget(), currentRecency())
@@ -471,7 +482,8 @@ class MixPlaybackOrchestrator @Inject constructor(
         excludedTrackUris = excludedTrackUris,
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
-        blockedArtistNames = blockedArtistNames
+        blockedArtistNames = blockedArtistNames,
+        recentClusterGenres = recentSeedClusterGenres.flatten().toSet()
     )
 
     private suspend fun buildSmartMixTracks(): SmartMixResult {

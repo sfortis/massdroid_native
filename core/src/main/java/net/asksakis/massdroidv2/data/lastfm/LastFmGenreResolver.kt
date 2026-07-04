@@ -86,16 +86,24 @@ class LastFmGenreResolver @Inject constructor(
         val apiKey = settingsRepository.lastFmApiKey.first()
         if (apiKey.isBlank()) return emptyList()
 
-        val cached = dao.getLastFmTags(artistName)
-        if (cached != null) {
-            val age = System.currentTimeMillis() - cached.fetchedAt
-            val ttl = if (cached.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
-            if (age < ttl) {
-                return cached.tags.split(",").filter { it.isNotBlank() }
-            }
-        }
+        cachedGenres(artistName)?.let { return it }
 
         return fetchFromApi(apiKey, artistName)
+    }
+
+    /**
+     * Cache-only tag lookup, never hits the network. Returns null when the
+     * artist has no fresh cache entry: callers must treat null as "unknown",
+     * NOT as "no genres". An empty list means Last.fm knows the artist has no
+     * whitelisted tags.
+     */
+    suspend fun cachedGenres(artistName: String): List<String>? {
+        if (artistName.isBlank()) return null
+        val cached = dao.getLastFmTags(artistName) ?: return null
+        val age = System.currentTimeMillis() - cached.fetchedAt
+        val ttl = if (cached.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
+        if (age >= ttl) return null
+        return cached.tags.split(",").filter { it.isNotBlank() }
     }
 
     /**
