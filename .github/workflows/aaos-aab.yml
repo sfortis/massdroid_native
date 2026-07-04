@@ -50,7 +50,9 @@ jobs:
           echo "Building versionName=${VERSION_NAME} versionCode=${VERSION_CODE}"
 
       - name: Build release AAB
-        run: ./gradlew app:bundleRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        # automotive flavor only: bundleRelease would build every flavor's bundle
+        # (and land them under bundle/<flavor>Release, not bundle/release).
+        run: ./gradlew app:bundleAutomotiveRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
         env:
           RELEASE_STORE_FILE: ${{ github.workspace }}/release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
@@ -60,9 +62,9 @@ jobs:
       - name: Rename AAB
         id: aab
         run: |
-          SRC=$(find build-output/app/outputs/bundle/release -name "*.aab" | head -1)
+          SRC=$(find build-output/app/outputs/bundle/automotiveRelease -name "*.aab" | head -1)
           if [ -z "$SRC" ]; then
-            echo "No .aab produced under build-output/app/outputs/bundle/release"
+            echo "No .aab produced under build-output/app/outputs/bundle/automotiveRelease"
             exit 1
           fi
           DEST="build-output/massdroid-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}-${{ inputs.notes }}.aab"
