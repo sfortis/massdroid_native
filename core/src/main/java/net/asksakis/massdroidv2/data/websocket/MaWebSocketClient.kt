@@ -47,6 +47,14 @@ class MaWebSocketClient(
         // (onAvailable + repeated onLinkPropertiesChanged) into one revive.
         private const val NETWORK_REVIVE_DEBOUNCE_MS = 1_000L
         private const val COMMAND_RETRY_DELAY_MS = 140L
+        /**
+         * Backstop for a socket that opens but never sends the `server_id`
+         * handshake. Generous enough to cover a slow (up to 10 s connectTimeout)
+         * TCP + upgrade plus the handshake that follows, short enough that a
+         * permanently stalled server surfaces a clear error instead of an
+         * indefinite "Connecting...".
+         */
+        private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
         private const val ERROR_INSUFFICIENT_PERMISSIONS = 22
     }
@@ -120,6 +128,15 @@ class MaWebSocketClient(
         private set
     private var reconnectJob: Job? = null
     private var reconnectAttempts = 0
+    /**
+     * Guards the window between opening the socket and receiving the server
+     * handshake (`server_id`). OkHttp's connectTimeout only covers the TCP +
+     * WebSocket upgrade; once the socket is open, a server that never sends its
+     * handshake would leave us in [ConnectionState.Connecting] forever with no
+     * error. Cancelled the moment the handshake arrives (auth then governs via
+     * its own per-command timeout).
+     */
+    private var handshakeWatchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var lastNetworkReviveMs = 0L
     @Volatile
@@ -248,6 +265,7 @@ class MaWebSocketClient(
 
         val gen = ++connectionGeneration
         _connectionState.value = ConnectionState.Connecting
+        startHandshakeWatchdog(gen)
         val wsUrl = url.trimEnd('/')
             .replace("http://", "ws://")
             .replace("https://", "wss://") + "/ws"
@@ -294,6 +312,7 @@ class MaWebSocketClient(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (gen != connectionGeneration) return
                 Log.d(TAG, "WebSocket closed: $code $reason")
+                cancelHandshakeWatchdog()
                 this@MaWebSocketClient.webSocket = null
                 _connectionState.value = ConnectionState.Disconnected
                 maybeResetBackoffForStableConnection()
@@ -304,6 +323,7 @@ class MaWebSocketClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (gen != connectionGeneration) return
                 Log.e(TAG, "WebSocket failure: ${t.message}")
+                cancelHandshakeWatchdog()
                 this@MaWebSocketClient.webSocket = null
                 failAllPending("Connection lost")
 
@@ -322,10 +342,42 @@ class MaWebSocketClient(
         })
     }
 
+    /**
+     * Fail an attempt that opened the socket but never received the server
+     * handshake. Only fires while this attempt is still the current generation
+     * and still [ConnectionState.Connecting]; a completed handshake cancels it
+     * ([cancelHandshakeWatchdog]), so it never preempts a slow auth. Mirrors the
+     * [onFailure] path (surface an error, then let [scheduleReconnect]'s
+     * `hasConnectedSuccessfully` guard decide whether to retry).
+     */
+    private fun startHandshakeWatchdog(gen: Int) {
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = scope.launch {
+            delay(HANDSHAKE_TIMEOUT_MS)
+            if (gen != connectionGeneration) return@launch
+            if (_connectionState.value !is ConnectionState.Connecting) return@launch
+            Log.e(TAG, "Handshake timeout: no server response within ${HANDSHAKE_TIMEOUT_MS}ms")
+            webSocket?.close(1000, "handshake timeout")
+            webSocket = null
+            failAllPending("Handshake timeout")
+            _connectionState.value = ConnectionState.Error(
+                "Server not responding. Check the address and that Music Assistant is reachable on this network."
+            )
+            maybeResetBackoffForStableConnection()
+            scheduleReconnect()
+        }
+    }
+
+    private fun cancelHandshakeWatchdog() {
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = null
+    }
+
     fun disconnect() {
         userDisconnected = true
         hasConnectedSuccessfully = false
         cancelReconnect()
+        cancelHandshakeWatchdog()
         webSocket?.close(1000, "User disconnect")
         webSocket = null
         _connectionState.value = ConnectionState.Disconnected
@@ -456,6 +508,8 @@ class MaWebSocketClient(
 
             when {
                 "server_id" in obj -> {
+                    // Handshake arrived: auth now governs its own bounded timeout.
+                    cancelHandshakeWatchdog()
                     serverInfo = json.decodeFromJsonElement<ServerInfo>(obj)
                     Log.d(TAG, "Server: ${serverInfo?.serverVersion}")
                     authenticate()
