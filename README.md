@@ -54,7 +54,6 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - New DSP Effects: a sound compressor for phone-as-speaker that evens out the volume, gently lifts quiet or low-recorded tracks and tames loud peaks. Pick Off, Soft, Medium or Hard (great for the car or late-night listening).
 - DSP Effects: optional output dithering that reduces low-level quantization noise, for smoother quiet passages, fades and decays.
 - Android TV: fixed sign-in on some TVs where the Connect button or error message could sit off-screen; the form now scrolls and takes focus right away.
-- Android Automotive (AAOS): MassDroid now runs as a built-in car app on Automotive head units, browsing your library and playing through the car, with a parked sign-in screen and a media-center layout.
 - Android Auto: browse shows cover-art grids, the up-next and chapter lists are titled, and the car screen no longer starts blank.
 - Cover art: local and network sources now load their artwork on Music Assistant 2.9.
 - Artist pages: library artists now show their full discography.
