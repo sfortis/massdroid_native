@@ -371,26 +371,37 @@ class QueueViewModel @Inject constructor(
         val sourceIndex = items.indexOfFirst { it.queueItemId == queueItemId }
         if (sourceIndex < 0) return
 
+        // Absolute index of the current track. Loaded-list indices are absolute
+        // (page 1 is fetched at offset 0), so a found index is usable directly;
+        // otherwise fall back to the server's currentIndex, which can point PAST
+        // the loaded window on a queue larger than one page.
         val currentItemId = playerRepository.queueState.value?.currentItem?.queueItemId
-        val currentIndex = items.indexOfFirst { it.queueItemId == currentItemId }
-            .takeIf { it >= 0 }
+        val loadedCurrentIndex = items.indexOfFirst { it.queueItemId == currentItemId }
+        val currentIndex = loadedCurrentIndex.takeIf { it >= 0 }
             ?: playerRepository.queueState.value?.currentIndex
             ?: 0
-        val targetIndex = (currentIndex + 1).coerceAtMost(items.size - 1)
+        // The server move is a RELATIVE pos_shift over the ABSOLUTE queue. Do NOT
+        // clamp the target to the loaded window: when the cursor sits past the
+        // loaded pages, clamping would shift the item into the already-played
+        // region above it, where it never plays next.
+        val targetIndex = currentIndex + 1
         val posShift = targetIndex - sourceIndex
         if (posShift == 0) return
 
         viewModelScope.launch {
             try {
                 musicRepository.moveQueueItem(id, queueItemId, posShift)
-                // Optimistic reorder so the row jumps immediately; the
-                // coordinator refresh below reconciles with the server.
-                val list = _queueItems.value.toMutableList()
-                val from = list.indexOfFirst { it.queueItemId == queueItemId }
-                if (from >= 0) {
-                    val moved = list.removeAt(from)
-                    list.add(targetIndex.coerceIn(0, list.size), moved)
-                    _queueItems.value = list
+                // Optimistic reorder only when the destination lands inside the
+                // loaded window; if the cursor is beyond the loaded pages, skip
+                // the local guess and let loadQueue() reconcile from the server.
+                if (targetIndex <= items.size) {
+                    val list = _queueItems.value.toMutableList()
+                    val from = list.indexOfFirst { it.queueItemId == queueItemId }
+                    if (from >= 0) {
+                        val moved = list.removeAt(from)
+                        list.add(targetIndex.coerceIn(0, list.size), moved)
+                        _queueItems.value = list
+                    }
                 }
                 loadQueue()
             } catch (e: Exception) {
