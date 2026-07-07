@@ -7,18 +7,22 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.QueueItem
+import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 private const val TAG = "QueueVM"
+private const val PAGE_SIZE = 500
 
 @HiltViewModel
 class QueueViewModel @Inject constructor(
@@ -32,6 +36,22 @@ class QueueViewModel @Inject constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private val _hasMore = MutableStateFlow(false)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    /** True once the user (or save flow) has loaded pages beyond the coordinator snapshot. */
+    private var paginatedBeyond = false
+
+    /**
+     * Serializes page fetches so the on-scroll [loadMore] and the
+     * save-all [fetchAllRemainingPages] paths can't read the same
+     * `offset` concurrently and waste a duplicate RPC.
+     */
+    private val pageMutex = Mutex()
 
     val isPlaying: StateFlow<Boolean> = playerRepository.selectedPlayer
         .map { it?.state == PlaybackState.PLAYING }
@@ -114,23 +134,24 @@ class QueueViewModel @Inject constructor(
                     if (qId == null) {
                         shownQueueId = null
                         _queueItems.value = emptyList()
+                        _hasMore.value = false
+                        paginatedBeyond = false
                         _isLoading.value = false
                         return@collect
                     }
                     if (qId != shownQueueId) {
                         shownQueueId = qId
                         _queueItems.value = emptyList()
+                        _hasMore.value = false
+                        paginatedBeyond = false
                         _isLoading.value = true
                     }
                     // Wait for the snapshot keyed by THIS active queue. Until then
                     // we stay in the loading state for the new queue.
                     if (snapshot == null || snapshot.queueId != qId) return@collect
-                    // Replace only on a real change so an in-flight optimistic
-                    // move/remove survives until the server echo reorders ids.
-                    val newIds = snapshot.items.map { it.queueItemId }
-                    if (_queueItems.value.map { it.queueItemId } != newIds) {
-                        _queueItems.value = snapshot.items
-                    }
+                    // First page comes from the shared coordinator snapshot;
+                    // additional pages are fetched on demand via [loadMore].
+                    applySnapshot(snapshot)
                     _isLoading.value = false
                 }
         }
@@ -145,6 +166,77 @@ class QueueViewModel @Inject constructor(
                 .filterNotNull()
                 .distinctUntilChanged()
                 .collect { qId -> runCatching { playerRepository.refreshQueueItems(qId) } }
+        }
+    }
+
+    /**
+     * Merge a coordinator refresh into the locally paginated list. When the
+     * user has scrolled beyond the first page, keep the tail as long as the
+     * first-page item ids still match; otherwise reset to the snapshot only.
+     */
+    private fun applySnapshot(snapshot: QueueItemsSnapshot) {
+        val firstPage = snapshot.items
+        val current = _queueItems.value
+        if (!paginatedBeyond || current.size <= firstPage.size) {
+            // Not scrolled beyond page 1: replace only on a real id change so an
+            // in-flight optimistic move/remove survives until the server echo lands.
+            if (current.map { it.queueItemId } != firstPage.map { it.queueItemId }) {
+                _queueItems.value = firstPage
+            }
+            paginatedBeyond = false
+        } else {
+            val snapshotPrefix = firstPage.map { it.queueItemId }
+            val currentPrefix = current.take(firstPage.size).map { it.queueItemId }
+            if (snapshotPrefix == currentPrefix) {
+                _queueItems.value = firstPage + current.drop(firstPage.size)
+            } else {
+                _queueItems.value = firstPage
+                paginatedBeyond = false
+            }
+        }
+        _hasMore.value = firstPage.size == PAGE_SIZE
+    }
+
+    /** Load the next page when the user scrolls near the end of the list. */
+    fun loadMore() {
+        val id = queueId ?: return
+        if (_isLoadingMore.value || !_hasMore.value) return
+        viewModelScope.launch {
+            _isLoadingMore.value = true
+            try {
+                appendNextPage(id)
+            } catch (e: Exception) {
+                Log.w(TAG, "loadMore failed: ${e.message}")
+            } finally {
+                _isLoadingMore.value = false
+            }
+        }
+    }
+
+    private suspend fun appendNextPage(queueId: String) {
+        pageMutex.withLock {
+            // Read offset and append under the lock so a concurrent caller
+            // never fetches the same page twice.
+            val offset = _queueItems.value.size
+            val page = musicRepository.getQueueItems(queueId, limit = PAGE_SIZE, offset = offset)
+            if (page.isEmpty()) {
+                _hasMore.value = false
+                return
+            }
+            val existingIds = _queueItems.value.map { it.queueItemId }.toSet()
+            val newItems = page.filter { it.queueItemId !in existingIds }
+            if (newItems.isNotEmpty()) {
+                paginatedBeyond = true
+                _queueItems.value = _queueItems.value + newItems
+            }
+            _hasMore.value = page.size == PAGE_SIZE
+        }
+    }
+
+    private suspend fun fetchAllRemainingPages() {
+        val id = queueId ?: return
+        while (_hasMore.value) {
+            appendNextPage(id)
         }
     }
 
@@ -262,15 +354,60 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    fun playNext(queueItemId: String, currentIndex: Int) {
+    /**
+     * Move an item that is already in the queue so it plays right after the
+     * currently playing track.
+     *
+     * The server's `move_item` takes a *relative* `pos_shift`, so the target
+     * slot is `currentPlayingIndex + 1`, not absolute index 1: in a queue where
+     * tracks have already played the current item sits at `current_index > 0`,
+     * and shifting to index 1 would bury the item in the already-played region
+     * above the cursor (where it never plays next). This mirrors the same
+     * `toIndex - fromIndex` convention used by drag-reorder ([moveItem]).
+     */
+    fun playNext(queueItemId: String) {
         val id = queueId ?: return
+        val items = _queueItems.value
+        val sourceIndex = items.indexOfFirst { it.queueItemId == queueItemId }
+        if (sourceIndex < 0) return
+
+        // Absolute index of the current track. Loaded-list indices are absolute
+        // (page 1 is fetched at offset 0), so a found index is usable directly;
+        // otherwise fall back to the server's currentIndex, which can point PAST
+        // the loaded window on a queue larger than one page.
+        val currentItemId = playerRepository.queueState.value?.currentItem?.queueItemId
+        val loadedCurrentIndex = items.indexOfFirst { it.queueItemId == currentItemId }
+        val currentIndex = loadedCurrentIndex.takeIf { it >= 0 }
+            ?: playerRepository.queueState.value?.currentIndex
+            ?: 0
+        // The server move is a RELATIVE pos_shift over the ABSOLUTE queue. Do NOT
+        // clamp the target to the loaded window: when the cursor sits past the
+        // loaded pages, clamping would shift the item into the already-played
+        // region above it, where it never plays next.
+        val targetIndex = currentIndex + 1
+        val posShift = targetIndex - sourceIndex
+        if (posShift == 0) return
+
         viewModelScope.launch {
             try {
-                musicRepository.moveQueueItem(id, queueItemId, -(currentIndex - 1))
+                musicRepository.moveQueueItem(id, queueItemId, posShift)
+                // Optimistic reorder only when the destination lands inside the
+                // loaded window; if the cursor is beyond the loaded pages, skip
+                // the local guess and let loadQueue() reconcile from the server.
+                if (targetIndex <= items.size) {
+                    val list = _queueItems.value.toMutableList()
+                    val from = list.indexOfFirst { it.queueItemId == queueItemId }
+                    if (from >= 0) {
+                        val moved = list.removeAt(from)
+                        list.add(targetIndex.coerceIn(0, list.size), moved)
+                        _queueItems.value = list
+                    }
+                }
                 loadQueue()
             } catch (e: Exception) {
                 Log.w(TAG, "playNext failed: ${e.message}", e)
                 _error.tryEmit(parseQueueError(e))
+                loadQueue()
             }
         }
     }
@@ -281,6 +418,8 @@ class QueueViewModel @Inject constructor(
             try {
                 musicRepository.clearQueue(id)
                 _queueItems.value = emptyList()
+                _hasMore.value = false
+                paginatedBeyond = false
             } catch (e: Exception) {
                 Log.w(TAG, "clearQueue failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -322,11 +461,13 @@ class QueueViewModel @Inject constructor(
     val playlists: StateFlow<List<net.asksakis.massdroidv2.domain.model.Playlist>> = _playlists.asStateFlow()
 
     fun saveQueueToPlaylist(playlist: net.asksakis.massdroidv2.domain.model.Playlist) {
-        val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
-        if (trackUris.isEmpty()) return
+        if (_queueItems.value.isEmpty() && !_hasMore.value) return
         viewModelScope.launch {
             var added = 0
             try {
+                fetchAllRemainingPages()
+                val trackUris = _queueItems.value.mapNotNull { it.track?.uri }.distinct()
+                if (trackUris.isEmpty()) return@launch
                 // Get existing tracks to avoid duplicates
                 val existing = try {
                     musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider).map { it.uri }.toSet()
@@ -343,9 +484,10 @@ class QueueViewModel @Inject constructor(
                 _error.tryEmit(msg)
             } catch (e: Exception) {
                 Log.w(TAG, "saveQueueToPlaylist failed: ${e.message}")
+                val trackCount = _queueItems.value.mapNotNull { it.track?.uri }.distinct().size
                 _error.tryEmit(
                     if (added > 0) {
-                        "Added $added of ${trackUris.size} tracks to ${playlist.name}, then failed"
+                        "Added $added of $trackCount tracks to ${playlist.name}, then failed"
                     } else {
                         "Failed to save queue: ${e.message}"
                     }

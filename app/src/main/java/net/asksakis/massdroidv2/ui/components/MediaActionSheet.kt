@@ -58,6 +58,7 @@ fun MediaActionSheet(
     onViewInfo: (() -> Unit)? = null,
     onPlayNow: () -> Unit,
     onPlayOnPlayer: (Player) -> Unit,
+    onPlayNext: (() -> Unit)? = null,
     onAddToQueue: () -> Unit,
     onStartRadio: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
@@ -167,6 +168,20 @@ fun MediaActionSheet(
                         )
                     }
                 }
+            }
+
+            // Play Next
+            if (onPlayNext != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Play Next") },
+                    supportingContent = { Text("Insert after current track") },
+                    leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        onPlayNext()
+                        onDismiss()
+                    }
+                )
             }
 
             // Add to Queue

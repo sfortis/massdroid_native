@@ -358,6 +358,7 @@ fun SearchScreen(
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
+            onPlayNext = { viewModel.enqueueNext(target.uri) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
             onStartRadio = if (target.mediaType == MediaType.RADIO) null else {
                 { viewModel.startRadio(target.uri) }
