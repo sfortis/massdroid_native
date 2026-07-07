@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android Automotive OS (AAOS) flavor overlay. Merges into the :app manifest
+     ONLY for the `automotive` flavor, so the github/fdroid phone builds stay
+     free of automotive declarations. Entries verified against the AAOS-15
+     emulator + the car-app-quality media guidelines. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Optional AAOS support: required=false so the same module still builds a
+         phone-installable APK. The system pairs this with the com.android.automotive
+         meta-data below to list MassDroid in the car media center. -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+
+    <!-- Strip phone-only capabilities the car build never uses, so the AAOS app
+         requests no driver-irrelevant or privacy-sensitive permissions (cleaner
+         Play review + no scary mic/location prompts in a car):
+         - Follow Me room detection (BLE scan + location + motion) is meaningless in a car
+         - acoustic calibration (mic) targets the phone-as-speaker BT path, not the car HAL
+         - the in-app GitHub updater is compiled out in this flavor (ENABLE_UPDATE_CHECK=false)
+         - battery-optimization exemption is pointless on an always-powered head unit. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
+
+    <!-- appCategory=audio classifies the app for the car launcher / media surfaces. -->
+    <application android:appCategory="audio">
+
+        <!-- Declares MassDroid a media app to AAOS (res points at <uses name="media"/>). -->
+        <meta-data
+            android:name="com.android.automotive"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- Strip the projected Android Auto host declaration that :auto contributes
+             to every flavor. Google Play rejects a single bundle that declares BOTH
+             the AAOS media app (com.android.automotive, above) AND the projected
+             Android Auto app (com.google.android.gms.car.application) - the
+             automotive track is AAOS-only. Remove it here so the published .aab is
+             AAOS-only; the phone (github/fdroid) flavors keep AA via :auto. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            tools:node="remove" />
+
+        <!-- The AAOS media center filters MediaBrowser/MediaLibrary services by
+             this opt-in flag; without it the service is logged as a non-template
+             app and never appears in the media quadrant. Merged into the service
+             declared in the main manifest (matched by android:name).
+             distractionOptimized is intentionally NOT set anywhere: it is only
+             valid for a Car App Library CarAppActivity and triggers a Play
+             rejection on a plain media UI activity. MainActivity stays parked-only. -->
+        <service
+            android:name=".service.PlaybackService"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.car.app.launchable"
+                android:value="true" />
+        </service>
+
+        <!-- Car sign-in / server-config + MassDroid-player audio settings. A small,
+             dedicated Compose activity (username/password + optional client certificate
+             + audio format / crossfade / compression / dithering) so the car never shows
+             the full phone UI. ACTION_APPLICATION_PREFERENCES makes the AAOS media center
+             render a settings (gear) icon that opens it; the signed-out SessionError
+             resolution intent targets it too.
+             distractionOptimized=true: this app is sideloaded only (never Play-published,
+             where the flag is restricted to Car App Library activities), so the player
+             settings stay reachable while driving. Controls are large/low-distraction. -->
+        <activity
+            android:name=".ui.car.CarSignInActivity"
+            android:exported="true"
+            android:theme="@style/Theme.MassDroidV2.Dark">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+            </intent-filter>
+        </activity>
+
+        <!-- One car entry only: disable the home-screen launcher icon. Google's AAOS
+             media guidance forbids a MAIN/LAUNCHER activity in a car app; the single
+             media-center tile is the app, and the gear affordance above is the way
+             into sign-in/settings. -->
+        <activity-alias
+            android:name=".ui.LauncherActivity"
+            android:enabled="false"
+            tools:node="merge" />
+
+        <!-- Hard-disable the full phone UI on the head unit. Disabling the launcher
+             alias above only removes the icon + app shortcuts; MainActivity itself
+             stays exported (it carries the OAuth musicassistant://auth VIEW filter for
+             phones), so a stray explicit/implicit intent could still surface the phone
+             UI in the car. The car never needs it - sign-in is CarSignInActivity (gear)
+             and the app is the media-center tile - so switch it off entirely here. A
+             PendingIntent that still points at it (e.g. the min-importance connection
+             notification) simply no-ops on tap rather than opening the phone UI. -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:enabled="false"
+            tools:node="merge" />
+
+        <!-- Follow Me (room-detection proximity scanning) has no place in a car. -->
+        <service
+            android:name=".service.FollowMeService"
+            tools:node="remove" />
+
+        <!-- Streams real artwork bytes to the AAOS media center over content://
+             (the car process cannot fetch the mTLS/private MA image URLs itself).
+             Exported + grantUriPermissions so the car's process can read the URIs
+             we hand out as MediaItem artworkUri hints. -->
+        <provider
+            android:name=".service.CarArtworkProvider"
+            android:authorities="${applicationId}.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+    </application>
+</manifest>

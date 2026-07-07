@@ -22,7 +22,12 @@ data class SeedTrack(
     val artistName: String,
     val lastPlayedAt: Long,
     val score: Double = 0.0,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    /**
+     * Artist-level genres (whitelisted Last.fm top tags, max 3). Cleaner than
+     * the crowd-noisy track tags, so cluster coherence checks prefer these.
+     */
+    val artistGenres: List<String> = emptyList()
 )
 
 data class ArtistScore(
@@ -97,6 +102,8 @@ interface PlayHistoryRepository {
      * 0 = any non-disliked recent track, higher = only your more-loved tracks.
      */
     suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrack>
+    /** Recently-played well-listened tracks ordered by recency (no score floor). */
+    suspend fun getRecentSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

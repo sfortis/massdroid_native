@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Flavor-specific manifest overrides for the play (Google Play) build. Merged
+    with the main AndroidManifest by the build system; tools:node="remove" strips
+    the in-app updater's install permission, which Google Play forbids (apps may
+    not download/install APKs from outside Play). The updater code itself is
+    compiled out via BuildConfig.ENABLE_UPDATE_CHECK=false. Android Auto support
+    (the :auto projected host) is intentionally kept - it is allowed on Play.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+</manifest>

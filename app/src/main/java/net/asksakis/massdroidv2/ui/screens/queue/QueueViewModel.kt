@@ -100,42 +100,72 @@ class QueueViewModel @Inject constructor(
 
     val selectedPlayerId: String?
         get() = playerRepository.selectedPlayer.value?.playerId
+
+    /**
+     * The active queue id to render and operate on. For a solo player this is
+     * its own id, but for a synced group member it is the GROUP queue id (the
+     * key the coordinator snapshot is built under). Matching/operating on the
+     * raw [selectedPlayerId] showed the member's stale own queue (or spun
+     * forever when the snapshot never matched). Falls back to the player id
+     * before the first queue state arrives.
+     */
     private val queueId: String?
-        get() = selectedPlayerId
+        get() = playerRepository.queueState.value?.queueId ?: selectedPlayerId
 
     init {
-        // Clear the local list whenever the selected player changes so
-        // the screen briefly shows the loading state instead of the
-        // previous player's queue while the coordinator catches up.
+        // Single source of truth for the displayed list + loading flag, derived
+        // race-free from (canonical snapshot, active queue id). Two independent
+        // collectors writing _isLoading could interleave so the loading reset ran
+        // after the populate, leaving the spinner stuck on a warm snapshot.
+        //
+        // The active queue id is queueState.queueId (the group queue for a synced
+        // member, the own id for a solo), NOT selectedPlayer.playerId: two members
+        // of one group share a single queue, so switching between them keeps the
+        // same queueId and must keep the list rather than flip to a never-clearing
+        // loading state. [shownQueueId] tracks what the list currently represents;
+        // when it changes we clear + show loading until a matching snapshot lands.
         viewModelScope.launch {
-            playerRepository.selectedPlayer
-                .map { it?.playerId }
-                .distinctUntilChanged()
-                .collect {
-                    _queueItems.value = emptyList()
-                    _hasMore.value = false
-                    paginatedBeyond = false
-                    _isLoading.value = true
-                }
-        }
-        // First page comes from the shared coordinator snapshot; additional
-        // pages are fetched on demand via [loadMore] when the user scrolls.
-        viewModelScope.launch {
-            playerRepository.queueItems.collect { snapshot ->
-                val currentQueueId = queueId
-                if (snapshot == null || currentQueueId == null) {
-                    if (currentQueueId == null) {
+            var shownQueueId: String? = null
+            combine(
+                playerRepository.queueItems,
+                playerRepository.queueState.map { it?.queueId }.distinctUntilChanged()
+            ) { snapshot, qId -> qId to snapshot }
+                .collect { (qId, snapshot) ->
+                    if (qId == null) {
+                        shownQueueId = null
                         _queueItems.value = emptyList()
                         _hasMore.value = false
                         paginatedBeyond = false
                         _isLoading.value = false
+                        return@collect
                     }
-                    return@collect
+                    if (qId != shownQueueId) {
+                        shownQueueId = qId
+                        _queueItems.value = emptyList()
+                        _hasMore.value = false
+                        paginatedBeyond = false
+                        _isLoading.value = true
+                    }
+                    // Wait for the snapshot keyed by THIS active queue. Until then
+                    // we stay in the loading state for the new queue.
+                    if (snapshot == null || snapshot.queueId != qId) return@collect
+                    // First page comes from the shared coordinator snapshot;
+                    // additional pages are fetched on demand via [loadMore].
+                    applySnapshot(snapshot)
+                    _isLoading.value = false
                 }
-                if (snapshot.queueId != currentQueueId) return@collect
-                applySnapshot(snapshot)
-                _isLoading.value = false
-            }
+        }
+        // Force the coordinator to (re)fetch on every active-queue change so a
+        // missing or stale shared snapshot self-heals on open instead of leaving
+        // the screen spinning. The coordinator single-flights + dedups, so this
+        // collapses with its own debounced trigger into one RPC. Mirrors the TV
+        // queue VM, which already followed this pattern.
+        viewModelScope.launch {
+            playerRepository.queueState
+                .map { it?.queueId }
+                .filterNotNull()
+                .distinctUntilChanged()
+                .collect { qId -> runCatching { playerRepository.refreshQueueItems(qId) } }
         }
     }
 
@@ -148,7 +178,11 @@ class QueueViewModel @Inject constructor(
         val firstPage = snapshot.items
         val current = _queueItems.value
         if (!paginatedBeyond || current.size <= firstPage.size) {
-            _queueItems.value = firstPage
+            // Not scrolled beyond page 1: replace only on a real id change so an
+            // in-flight optimistic move/remove survives until the server echo lands.
+            if (current.map { it.queueItemId } != firstPage.map { it.queueItemId }) {
+                _queueItems.value = firstPage
+            }
             paginatedBeyond = false
         } else {
             val snapshotPrefix = firstPage.map { it.queueItemId }

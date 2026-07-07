@@ -1248,7 +1248,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         lastTimingLogMs = nowMs
         Log.d(
             TAG,
-            "Timing/write chunk#$writtenChunkCount codec=$activeCodec serverTs=${serverTimestampUs / 1000}ms " +
+            "Timing/write chunk#$writtenChunkCount mode=$correctionMode codec=$activeCodec serverTs=${serverTimestampUs / 1000}ms " +
                 timingSummary(plan, nowUsValue) +
                 " err=${"%.2f".format(smoothedSyncErrorMs)}ms fed=${written}B frames=$frames " +
                 "frameDur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms " +

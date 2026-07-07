@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AAOS reads this (via the com.android.automotive meta-data) to surface
+     MassDroid as a media source in the car's media center. -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

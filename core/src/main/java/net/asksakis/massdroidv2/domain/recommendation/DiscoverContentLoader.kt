@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.screens.home
+package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import kotlinx.coroutines.async
@@ -8,11 +8,7 @@ import net.asksakis.massdroidv2.domain.model.GenreItem
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
-import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
-import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 
 private const val LOADER_TAG = "DiscoverLoader"
 private const val MIN_DISCOVER_SECTION_ITEMS = 3

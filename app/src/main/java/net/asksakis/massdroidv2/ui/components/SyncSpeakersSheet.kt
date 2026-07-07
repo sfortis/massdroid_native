@@ -60,7 +60,7 @@ internal fun SyncSpeakersSheet(
         ) {
             SheetDefaults.HeaderTitle(text = "Sync speakers")
             Text(
-                "Tune each speaker to line the group up by ear.",
+                "Set a static playback delay per speaker to line the group up by ear.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -155,7 +155,7 @@ private fun SyncSpeakerRow(
             }
         }
         SyncDelayCard(
-            label = if (isStatic) "${player.displayName} · static playback delay" else player.displayName,
+            label = player.displayName,
             valueMs = value,
             defaultMs = defaultMs,
             onValueChange = { value = it.coerceIn(minMs, maxMs) },

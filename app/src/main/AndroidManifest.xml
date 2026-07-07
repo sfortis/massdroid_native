@@ -36,10 +36,6 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.MassDroidV2.Splash">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
             <!-- Music Assistant OAuth callback (Home Assistant SSO).
                  Uses the official MA mobile-app scheme because the MA server's
                  OAuth redirect allowlist accepts only this URI prefix today. -->
@@ -49,10 +45,28 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="musicassistant" android:host="auth" />
             </intent-filter>
+        </activity>
+
+        <!-- Launcher entry as an alias so the AAOS flavor can disable JUST the
+             home-screen icon (android:enabled=false in src/automotive) while the car
+             stays a single media-center tile. Google's AAOS media guidance forbids a
+             MAIN/LAUNCHER activity in a car app; there the parked sign-in/settings is
+             reached from the media center's settings (gear) affordance, which opens
+             MainActivity via ACTION_APPLICATION_PREFERENCES (verified on the AAOS-15
+             emulator). The alias targets MainActivity so phone/TV launch + app
+             shortcuts are unchanged. -->
+        <activity-alias
+            android:name=".ui.LauncherActivity"
+            android:exported="true"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
-        </activity>
+        </activity-alias>
 
         <service
             android:name=".service.PlaybackService"
@@ -63,6 +77,20 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Registers MassDroid as a media-button target so the OS routes hardware
+             media/volume keys (wired/BT headset buttons, and Samsung's "media key
+             app" picker) to the Media3 session, and wakes the service when a button
+             arrives while it is dead. Without this the app was absent from Samsung
+             Settings > Sound > Media key app, so the keys fell to whichever other
+             media app currently held the session (the intermittent volume routing). -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".service.FollowMeService"

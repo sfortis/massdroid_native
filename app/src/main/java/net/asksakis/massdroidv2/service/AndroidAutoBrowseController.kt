@@ -25,6 +25,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
 import net.asksakis.massdroidv2.domain.model.Album
@@ -32,6 +34,8 @@ import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.BrowseItem
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
@@ -44,11 +48,13 @@ class AndroidAutoBrowseController(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val discoverFeedOrchestrator: net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     private val activeQueueId: () -> String?,
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
     private val onCustomCommand: (String) -> Boolean,
+    private val hasStoredCredentials: suspend () -> Boolean = { true },
 ) {
     // Keyed by the query that produced it: onGetSearchResult must never serve a
     // previous query's results when the host requests a newer one.
@@ -65,8 +71,11 @@ class AndroidAutoBrowseController(
     /** Snapshot of parentIds the AA host has queried/subscribed to so far. */
     fun trackedParentIds(): Set<String> = knownParentIds.toSet()
 
-    /** Clear tracked subscriptions on session stop. */
-    fun clearTrackedParentIds() = knownParentIds.clear()
+    /** Clear tracked subscriptions + the cached Discover feed on session stop. */
+    fun clearTrackedParentIds() {
+        knownParentIds.clear()
+        cachedFeed = null
+    }
 
     val callback: MediaLibraryService.MediaLibrarySession.Callback =
         object : MediaLibraryService.MediaLibrarySession.Callback {
@@ -91,6 +100,34 @@ class AndroidAutoBrowseController(
                         AndroidAutoMediaCommands.buttons(context, isFavorite = false, shuffleEnabled = false)
                     )
                     .build()
+            }
+
+            override fun onPostConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ) {
+                // Car: a controller (the AAOS media center) just connected. Surface the
+                // standard AAOS sign-in affordance (a non-fatal SessionError carrying a
+                // resolution PendingIntent) ONLY when the user genuinely has no stored
+                // credentials. We must NOT key this off the live connection state: on a
+                // cold start the car binds before the WS has finished connecting, so a
+                // signed-in user would get the sign-in error - and the AAOS media center
+                // then stays stuck on a blank, tab-less sign-in screen even after the WS
+                // comes up (nothing dismisses it). With credentials present the browse
+                // tree (static tabs) renders immediately and content fills in once the
+                // WS-connect invalidation re-queries.
+                //
+                // The credentials read is suspending (DataStore), so launch it: onPostConnect
+                // returns void and the error is sent asynchronously once the real saved state
+                // is known. This also avoids a startup race against the first DataStore emission.
+                if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                    scope.launch {
+                        if (!hasStoredCredentials()) {
+                            (session as? MediaLibraryService.MediaLibrarySession)
+                                ?.sendError(controller, buildSignInError())
+                        }
+                    }
+                }
             }
 
             override fun onCustomCommand(
@@ -260,6 +297,9 @@ class AndroidAutoBrowseController(
     private suspend fun children(parentId: String, page: Int, pageSize: Int): List<MediaItem> {
         return when (parentId) {
             ROOT -> buildRootCategories()
+            "discover" -> buildDiscoverItems()
+            "library" -> buildLibraryCategories()
+            "smart_mixes" -> buildSmartMixesItems()
             "recently_played" -> loadAlbums(page, pageSize, "last_played")
             "artists" -> loadArtists(page, pageSize)
             "albums" -> loadAlbums(page, pageSize)
@@ -267,7 +307,6 @@ class AndroidAutoBrowseController(
             "tracks" -> loadTracks(page, pageSize)
             "audiobooks" -> loadAudiobooks(page, pageSize)
             "genres" -> buildGenreList()
-            "genre_radio" -> buildGenreRadioList()
             "browse" -> loadServerBrowse(null)
             else -> when {
                 parentId.startsWith("browse|") -> {
@@ -336,10 +375,127 @@ class AndroidAutoBrowseController(
         return "$provider://$type/$itemId"
     }
 
-    // Flat root list in one logical order (no "More" folder): library content
-    // first, then the generators. Rendered as a list (see rootExtras) so every
-    // entry is visible without the gearhead grid's 4-tile cap + auto-"More".
+    // The AAOS media center renders root browsable children as TOP TABS and hard-caps
+    // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). So the root
+    // is exactly 4: Discover (the engine-driven landing feed, like the phone app),
+    // Library (nests the collection categories), Browse (server browse) and Smart Mixes
+    // (Play Smart Mix + every genre radio in one tab). (Android Auto on the phone has no
+    // such cap; it renders these as a flat list fine.)
     private fun buildRootCategories(): List<MediaItem> = listOf(
+        // Discover children render as cover-art TILES (grid content style), so each
+        // feed section becomes a horizontally-scrollable row of tiles grouped under
+        // its title - the phone-app carousel look (the host lays the grid out).
+        browseFolder(
+            "discover",
+            "Discover",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_discover,
+            gridChildren = true
+        ),
+        browseFolder(
+            "library",
+            "Library",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_library,
+            listItem = true
+        ),
+        browseFolder(
+            "browse",
+            "Browse",
+            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
+            listItem = true
+        ),
+        browseFolder(
+            "smart_mixes",
+            "Smart Mixes",
+            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+            listItem = true
+        ),
+    )
+
+    // The "Smart Mixes" tab: the one-tap Smart Mix generator followed by a radio for
+    // every library genre. "smart_mix" -> ShortcutAction.SmartMix, "genre_radio|<g>" ->
+    // ShortcutAction.GenreRadio (both via handleAddMediaItem).
+    private suspend fun buildSmartMixesItems(): List<MediaItem> = buildList {
+        add(
+            playableItem(
+                "smart_mix",
+                "Play Smart Mix",
+                MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
+                listItem = true
+            )
+        )
+        addAll(buildGenreRadioList())
+    }
+
+    // The "Discover" landing tab: the SAME engine-driven feed the phone app shows
+    // (recommended/discovery artists + albums, genre radios, recent), built by the
+    // shared :core DiscoverFeedOrchestrator and flattened into grouped rows (each
+    // DiscoverSection becomes a labeled group via its title).
+    private suspend fun buildDiscoverItems(): List<MediaItem> {
+        val feed = discoverFeed() ?: return emptyList()
+        return feed.sections.flatMap { section ->
+            when (section) {
+                is DiscoverSection.ArtistSection ->
+                    section.artists.map { it.toBrowsableMediaItem(section.title) }
+                is DiscoverSection.AlbumSection ->
+                    section.albums.map { it.toBrowsableMediaItem(section.title) }
+                is DiscoverSection.TrackSection ->
+                    section.tracks.map { it.toPlayableMediaItem(section.title) }
+                is DiscoverSection.PlaylistSection ->
+                    section.playlists.map { it.toBrowsableMediaItem(section.title) }
+                // Genre radios have their own "Smart Mixes" tab in the car, so they are
+                // not duplicated in Discover - which makes the album recommendations
+                // ("Albums You Might Like") the lead section.
+                is DiscoverSection.GenreRadioSection -> emptyList()
+            }
+        }
+    }
+
+    // Cache the built feed for the browse session: building it is a network-heavy
+    // library + discovery pass, so it must not run on every onGetChildren. Rebuilt
+    // after DISCOVER_FEED_TTL_MS or on session stop (clearTrackedParentIds).
+    @Volatile private var cachedFeed: DiscoverFeedOrchestrator.DiscoverFeed? = null
+    @Volatile private var cachedFeedAtMs = 0L
+    // Serialises the (network-heavy) feed build: the host can call onGetChildren from
+    // multiple threads, so without this two concurrent "discover" queries would each
+    // run a full buildFeed. Second caller waits and gets the fresh cache.
+    private val feedMutex = Mutex()
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun discoverFeed(): DiscoverFeedOrchestrator.DiscoverFeed? {
+        fun fresh(): DiscoverFeedOrchestrator.DiscoverFeed? =
+            cachedFeed?.takeIf { System.currentTimeMillis() - cachedFeedAtMs < DISCOVER_FEED_TTL_MS }
+        fresh()?.let { return it }
+        return feedMutex.withLock {
+            // Double-check: another caller may have built it while we waited.
+            fresh()?.let { return@withLock it }
+            try {
+                val feed = discoverFeedOrchestrator.buildFeed()
+                // Only cache a NON-EMPTY feed. A cold-start build before the WS has
+                // connected returns empty sections; caching that would survive the
+                // WS-connect invalidation re-query and leave Discover permanently blank.
+                // Leaving it uncached makes the connect refresh rebuild it once online.
+                if (feed.sections.isNotEmpty()) {
+                    cachedFeed = feed
+                    cachedFeedAtMs = System.currentTimeMillis()
+                }
+                feed
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Discover feed build failed: ${e.message}")
+                cachedFeed // serve stale if we have one
+            }
+        }
+    }
+
+    // The "Library" tab's children: the collection categories as a list (Albums and
+    // Artists keep their grid for their own children via gridChildren).
+    private fun buildLibraryCategories(): List<MediaItem> = listOf(
         browseFolder(
             "playlists",
             "Playlists",
@@ -352,20 +508,20 @@ class AndroidAutoBrowseController(
             "Albums",
             MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_albums,
-            listItem = true
+            gridChildren = true
         ),
         browseFolder(
             "artists",
             "Artists",
             MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_artists,
-            listItem = true
+            gridChildren = true
         ),
         browseFolder(
-            "audiobooks",
-            "Audiobooks",
+            "tracks",
+            "Tracks",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_audiobooks,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_tracks,
             listItem = true
         ),
         browseFolder(
@@ -376,24 +532,10 @@ class AndroidAutoBrowseController(
             listItem = true
         ),
         browseFolder(
-            "browse",
-            "Browse",
+            "audiobooks",
+            "Audiobooks",
             MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
-            listItem = true
-        ),
-        playableItem(
-            "smart_mix",
-            "Smart Mix",
-            MediaMetadata.MEDIA_TYPE_PLAYLIST,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
-            listItem = true
-        ),
-        browseFolder(
-            "genre_radio",
-            "Genre Radio",
-            MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_genre_radio,
+            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_audiobooks,
             listItem = true
         ),
     )
@@ -428,12 +570,13 @@ class AndroidAutoBrowseController(
                 MediaMetadata.Builder()
                     .setTitle(name)
                     .setArtworkUri(
-                        imageUrl?.let { android.net.Uri.parse(it) }
+                        imageUrl?.let { carArtworkUri(context, it) }
                             ?: AutoBrowseExtras.placeholderArtworkUri(context, name)
                     )
                     .setIsBrowsable(isFolder)
                     .setIsPlayable(!isFolder)
                     .setMediaType(resolvedMediaType)
+                    // Browse is a plain list (provider folders + tracks), top to bottom.
                     .setExtras(AutoBrowseExtras.listItemExtras())
                     .build()
             )
@@ -468,10 +611,13 @@ class AndroidAutoBrowseController(
     }
 
     private suspend fun buildGenreRadioList(): List<MediaItem> {
-        return genreRepository.topGenres(days = 60, limit = 20).map { genreScore ->
+        // Offer a radio for EVERY library genre (same full set as the Genres browse
+        // tab), not just the handful of recently-played top genres - the car user
+        // should be able to start a radio for any genre they own.
+        return genreRepository.libraryGenres().map { genre ->
             playableItem(
-                "genre_radio|${genreScore.genre}",
-                genreScore.genre.replaceFirstChar { it.uppercase() },
+                "genre_radio|$genre",
+                genre.replaceFirstChar { it.uppercase() },
                 MediaMetadata.MEDIA_TYPE_PLAYLIST,
                 listItem = true
             )
@@ -504,7 +650,8 @@ class AndroidAutoBrowseController(
         mediaType: Int,
         iconResId: Int? = null,
         groupTitle: String? = null,
-        listItem: Boolean = false
+        listItem: Boolean = false,
+        gridChildren: Boolean = false
     ): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(title)
@@ -516,6 +663,9 @@ class AndroidAutoBrowseController(
         }
         when {
             groupTitle != null -> metadata.setExtras(AutoBrowseExtras.rootTileExtras(groupTitle))
+            // gridChildren wins over listItem: the visual categories (Albums, Artists,
+            // Browse) render their children as a cover/circle grid; everything else lists.
+            gridChildren -> metadata.setExtras(AutoBrowseExtras.gridItemExtras())
             listItem -> metadata.setExtras(AutoBrowseExtras.listItemExtras())
         }
         return MediaItem.Builder()
@@ -524,12 +674,44 @@ class AndroidAutoBrowseController(
             .build()
     }
 
-    private fun iconArtworkUri(iconResId: Int): android.net.Uri =
-        android.net.Uri.Builder()
-            .scheme("android.resource")
-            .authority(context.packageName)
-            .appendPath(iconResId.toString())
-            .build()
+    // Category icons: content:// PNG render on the car (the AAOS media center can't
+    // decode a cross-package vector android.resource://), raw android.resource on phone/TV.
+    private fun iconArtworkUri(iconResId: Int): android.net.Uri = carIconUri(context, iconResId)
+
+    // The AAOS sign-in affordance: a non-fatal SessionError whose resolution extras
+    // carry a "Sign in" label + a PendingIntent into the parked car sign-in screen.
+    // Targets CarSignInActivity by class name (it lives only in the automotive flavor
+    // source set, so the shared main source set must not compile-reference it); this
+    // method is only reached on the IS_AUTOMOTIVE branch. The exported activity can be
+    // started by this PendingIntent without a LAUNCHER filter, which is why the car
+    // build can drop its launcher icon.
+    private fun buildSignInError(): androidx.media3.session.SessionError {
+        val intent = Intent().apply {
+            setClassName(context, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val extras = Bundle().apply {
+            putString(
+                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT,
+                "Sign in"
+            )
+            putParcelable(
+                androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT,
+                pendingIntent
+            )
+        }
+        return androidx.media3.session.SessionError(
+            androidx.media3.session.SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED,
+            "Sign in to Music Assistant",
+            extras
+        )
+    }
 
     private suspend fun loadArtists(page: Int, pageSize: Int): List<MediaItem> {
         return musicRepository.getArtists(limit = pageSize, offset = page * pageSize, orderBy = "name")
@@ -572,7 +754,7 @@ class AndroidAutoBrowseController(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(context, it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK)
@@ -587,7 +769,9 @@ class AndroidAutoBrowseController(
         if (parts.size != 3) return emptyList()
         val (type, provider, itemId) = parts
         return when (type) {
-            "artist" -> musicRepository.getArtistAlbums(itemId, provider).map { it.toBrowsableMediaItem() }
+            // Discography (provider catalogue), not getArtistAlbums: a library artist's
+            // artist_albums(library) is ~empty on MA 2.9+, so the car would show no albums.
+            "artist" -> musicRepository.getArtistDiscography(itemId, provider).map { it.toBrowsableMediaItem() }
             "album" -> musicRepository.getAlbumTracks(itemId, provider).map { it.toPlayableMediaItem() }
             "playlist" -> musicRepository.getPlaylistTracks(itemId, provider).map { it.toPlayableMediaItem() }
             else -> emptyList()
@@ -599,7 +783,7 @@ class AndroidAutoBrowseController(
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(context, it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ARTIST)
@@ -614,7 +798,7 @@ class AndroidAutoBrowseController(
             MediaMetadata.Builder()
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(context, it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_ALBUM)
@@ -631,7 +815,7 @@ class AndroidAutoBrowseController(
                 .setTitle(name)
                 .setArtist(artistNames.ifEmpty { null })
                 .setAlbumTitle(albumName.ifEmpty { null })
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(context, it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(false)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
@@ -646,7 +830,7 @@ class AndroidAutoBrowseController(
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
-                .setArtworkUri(imageUrl?.let { android.net.Uri.parse(it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
+                .setArtworkUri(imageUrl?.let { carArtworkUri(context, it) } ?: AutoBrowseExtras.placeholderArtworkUri(context, name))
                 .setIsBrowsable(true)
                 .setIsPlayable(true)
                 .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
@@ -660,5 +844,6 @@ class AndroidAutoBrowseController(
         private const val TAG = "AndroidAutoBrowse"
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
+        private const val DISCOVER_FEED_TTL_MS = 10 * 60 * 1000L
     }
 }

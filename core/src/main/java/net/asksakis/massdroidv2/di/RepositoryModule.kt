@@ -58,6 +58,7 @@ object RepositoryModule {
     @Singleton
     fun providePlayerRepository(
         wsClient: MaWebSocketClient,
+        imageResolver: net.asksakis.massdroidv2.data.image.ImageUrlResolver,
         json: Json,
         playHistoryRepository: PlayHistoryRepository,
         settingsRepository: SettingsRepository,
@@ -67,6 +68,7 @@ object RepositoryModule {
         queueItemsCoordinator: QueueItemsCoordinator,
     ): PlayerRepository = PlayerRepositoryImpl(
         wsClient = wsClient,
+        imageResolver = imageResolver,
         json = json,
         playHistoryRepository = playHistoryRepository,
         settingsRepository = settingsRepository,
@@ -80,9 +82,10 @@ object RepositoryModule {
     @Singleton
     fun provideMusicRepository(
         wsClient: MaWebSocketClient,
+        imageResolver: net.asksakis.massdroidv2.data.image.ImageUrlResolver,
         json: Json,
         playerRepository: dagger.Lazy<PlayerRepository>
-    ): MusicRepository = MusicRepositoryImpl(wsClient, json, playerRepository)
+    ): MusicRepository = MusicRepositoryImpl(wsClient, imageResolver, json, playerRepository)
 
     @Provides
     @Singleton

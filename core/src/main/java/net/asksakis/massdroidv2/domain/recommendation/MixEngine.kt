@@ -52,6 +52,14 @@ private const val DISCOVERY_COMFORT_MIN = 1
 // Discovery -> exploration artist pool target (familiar-leaning .. wide).
 private const val DISCOVERY_EXPLORE_MIN = 14
 private const val DISCOVERY_EXPLORE_SPAN = 24
+// Discovery -> softmax temperature for the seed-track candidate sampling order
+// (see buildFromCandidates / discoveryWeightedOrder). Low temp ~= greedy
+// (top matchScore, the old behaviour); high temp flattens the weights so the
+// lower-match "tail" gets a real chance to be picked. Tuned offline against the
+// real library: at discovery 1.0 this roughly halves cross-mix repetition and
+// lifts the reachable track universe instead of recycling the same top matches.
+private const val DISCOVERY_SAMPLE_TEMP_BASE = 0.08
+private const val DISCOVERY_SAMPLE_TEMP_SPAN = 0.6
 
 sealed class MixMode {
     data class SmartMix(
@@ -243,11 +251,20 @@ class MixEngine @Inject constructor() {
     fun buildFromCandidates(
         candidates: List<CandidateTrack>,
         target: Int,
-        randomSeed: Long = System.currentTimeMillis()
+        randomSeed: Long = System.currentTimeMillis(),
+        // User "discovery" knob in [0,1]. It sets the sampling temperature for
+        // the candidate ORDER: low = near-greedy (top matchScore, the legacy
+        // deterministic cut), high = reach deeper into the lower-match tail so
+        // back-to-back mixes diverge and the Discovery slider actually widens
+        // what surfaces. Per-artist/album caps and the interleave are unchanged.
+        discovery: Double = DEFAULT_DISCOVERY
     ): List<Track> {
         if (target <= 0 || candidates.isEmpty()) return emptyList()
         val random = Random(randomSeed)
-        val scored = candidates
+        // Dedupe to the best-scored track per identity (sort desc + distinctBy),
+        // then re-order by discovery-weighted sampling so selection is not a
+        // fixed top-by-score cut.
+        val deduped = candidates
             .filter { it.track.uri.isNotBlank() }
             .map { c ->
                 val key = artistNameKey(c.track)
@@ -261,7 +278,8 @@ class MixEngine @Inject constructor() {
             }
             .sortedByDescending { it.score }
             .distinctBy { trackDedupeKey(it.track) }
-        if (scored.isEmpty()) return emptyList()
+        if (deduped.isEmpty()) return emptyList()
+        val scored = discoveryWeightedOrder(deduped, discovery, random)
 
         val usableArtists = scored.map { it.artistKey }.distinct().size
         val maxPerArtist = dynamicMaxPerArtist(target, usableArtists)
@@ -486,6 +504,39 @@ class MixEngine @Inject constructor() {
             result += pool.removeAt(pickedIndex)
         }
         return result
+    }
+
+    // Discovery-weighted sampling-without-replacement order for the seed-track
+    // candidate list. weight(i) = exp((score_i - maxScore) / temp); temp grows
+    // with discovery so low discovery stays near-greedy (top matchScore first,
+    // the legacy order) and high discovery flattens the weights, giving the
+    // lower-match tail a real chance. Items are already deduped + sorted desc.
+    private fun discoveryWeightedOrder(
+        items: List<ScoredTrack>,
+        discovery: Double,
+        random: Random
+    ): List<ScoredTrack> {
+        if (items.size <= 1) return items
+        val temp = DISCOVERY_SAMPLE_TEMP_BASE +
+            discovery.coerceIn(0.0, 1.0) * DISCOVERY_SAMPLE_TEMP_SPAN
+        val pool = items.toMutableList()
+        val out = ArrayList<ScoredTrack>(items.size)
+        while (pool.isNotEmpty()) {
+            val maxScore = pool.maxOf { it.score }
+            val weights = pool.map { kotlin.math.exp((it.score - maxScore) / temp) }
+            val total = weights.sum()
+            var pick = random.nextDouble() * total
+            var picked = pool.lastIndex
+            for (index in pool.indices) {
+                pick -= weights[index]
+                if (pick <= 0.0) {
+                    picked = index
+                    break
+                }
+            }
+            out += pool.removeAt(picked)
+        }
+        return out
     }
 
     // --- Interleaving ---

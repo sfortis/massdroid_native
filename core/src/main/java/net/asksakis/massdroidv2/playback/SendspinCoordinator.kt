@@ -27,6 +27,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
@@ -41,8 +42,17 @@ class SendspinCoordinator(
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: SendspinVolumeCoordinator,
     private val shortcutDispatcher: ShortcutActionDispatcher,
+    // Shared Smart Mix / Genre Radio build+play engine. Only the headless car uses
+    // it (the phone/TV drive mixes from DiscoverViewModel); null where unused (TV).
+    private val mixOrchestrator: MixPlaybackOrchestrator? = null,
     // Sendspin player name for this device; defaults to "MassDroid" (phone).
     private val clientName: String = "MassDroid",
+    // Android Automotive OS build: the device IS the car speaker, so Sendspin is
+    // the one and only player. Output is the built-in car audio HAL, NOT BT A2DP,
+    // so the BT-gated auto-select / routing used on the phone never fires in the
+    // car. In automotive we therefore force Sendspin enabled, auto-select it
+    // unconditionally, and route all transport to it regardless of BT state.
+    private val isAutomotive: Boolean = false,
     private val onConnectionStateChanged: () -> Unit,
     private val onTargetChanged: (reason: String) -> Unit,
     private val onActive: (reason: String) -> Unit,
@@ -80,6 +90,15 @@ class SendspinCoordinator(
     fun start() {
         createController()
         volumeCoordinator.start(scope)
+        // Car build: Sendspin is the sole output, so force it on. There is no
+        // in-car UI to enable it, and the user setting is irrelevant here.
+        // Also lock the engine to DIRECT (solo): a car is never part of a
+        // multi-room sync group, so the group-detection heuristic must never be
+        // allowed to swap us into the getTimestamp-dependent SYNC engine.
+        if (isAutomotive) {
+            scope.launch { settingsRepository.setSendspinEnabled(true) }
+            sendspinManager.setForceSolo(true)
+        }
         observePlayerId()
         observeEnabled()
         observeConnectionState()
@@ -101,8 +120,15 @@ class SendspinCoordinator(
     }
 
     fun shouldRouteToSendspin(): Boolean =
-        isBtA2dpActive() && isActive && playerId != null &&
-            playerRepository.selectedPlayer.value?.playerId != playerId
+        if (isAutomotive) {
+            // The car device is the speaker; whenever Sendspin is up, every
+            // transport command drives it directly (the proven BT-routed path),
+            // independent of which player is "selected" or any BT state.
+            isActive && playerId != null
+        } else {
+            isBtA2dpActive() && isActive && playerId != null &&
+                playerRepository.selectedPlayer.value?.playerId != playerId
+        }
 
     fun shouldBlockProximitySelectionForBt(): Boolean =
         isBtA2dpActive() && isActive && playerId != null
@@ -115,7 +141,9 @@ class SendspinCoordinator(
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = volumeCoordinator,
-            clientName = clientName,
+            // Car build registers as a distinct MA player name so it is obvious which
+            // entry is the head unit (the phone/TV also register as "MassDroid").
+            clientName = if (isAutomotive) "$clientName AAOS" else clientName,
             onMetadataChanged = { onMetadata(it) },
             onStateChanged = { _, _, playing ->
                 onConnectionStateChanged()
@@ -305,20 +333,54 @@ class SendspinCoordinator(
             shortcutDispatcher.pendingAction
                 .filterNotNull()
                 .collect { action ->
-                    if (action !is ShortcutAction.PlayNow) return@collect
-                    shortcutDispatcher.consume()
-                    Log.d(TAG, "PlayNow shortcut: sendspinActive=$isActive")
-                    val sendspinOn = settingsRepository.sendspinEnabled.first()
-                    if (!sendspinOn) {
-                        settingsRepository.setSendspinEnabled(true)
-                    } else {
-                        startIfConnected("shortcut_play_now")
-                    }
-                    val targetId = playerId ?: settingsRepository.sendspinClientId.first()
-                    if (targetId != null) {
-                        controller?.handlePlay()
+                    when (action) {
+                        is ShortcutAction.PlayNow -> {
+                            shortcutDispatcher.consume()
+                            Log.d(TAG, "PlayNow shortcut: sendspinActive=$isActive")
+                            val sendspinOn = settingsRepository.sendspinEnabled.first()
+                            if (!sendspinOn) {
+                                settingsRepository.setSendspinEnabled(true)
+                            } else {
+                                startIfConnected("shortcut_play_now")
+                            }
+                            val targetId = playerId ?: settingsRepository.sendspinClientId.first()
+                            if (targetId != null) {
+                                controller?.handlePlay()
+                            }
+                        }
+                        // Smart Mix / Genre Radio: on the phone/TV the DiscoverViewModel owns
+                        // these (and consumes them). In the headless car there is no Discover UI,
+                        // so the coordinator runs the same shared build+play orchestration itself.
+                        is ShortcutAction.SmartMix -> if (isAutomotive) {
+                            shortcutDispatcher.consume()
+                            buildCarMix(action)
+                        }
+                        is ShortcutAction.GenreRadio -> if (isAutomotive) {
+                            shortcutDispatcher.consume()
+                            buildCarMix(action)
+                        }
                     }
                 }
+        }
+    }
+
+    // Headless (car) Smart Mix / Genre Radio: resolve the Sendspin player id and
+    // delegate to the shared orchestrator, which builds the mix and replaces the
+    // queue (MA then plays it on the car). Launched off the collector so a slow
+    // build does not stall subsequent shortcut events; the orchestrator is
+    // single-flight internally.
+    private fun buildCarMix(action: ShortcutAction) {
+        val orchestrator = mixOrchestrator ?: return
+        scope.launch {
+            val sendspinOn = settingsRepository.sendspinEnabled.first()
+            if (!sendspinOn) settingsRepository.setSendspinEnabled(true)
+            val queueId = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
+            val result = when (action) {
+                is ShortcutAction.SmartMix -> orchestrator.playSmartMix(queueId)
+                is ShortcutAction.GenreRadio -> orchestrator.playGenreRadio(queueId, action.genre)
+                else -> return@launch
+            }
+            Log.d(TAG, "Car mix shortcut $action -> $result")
         }
     }
 
@@ -368,7 +430,10 @@ class SendspinCoordinator(
 
     private fun autoSelectSendspinForBt(reason: String, deviceName: CharSequence? = null) {
         scope.launch {
-            if (!isBtA2dpActive()) return@launch
+            // Phone/TV: only hijack selection when audio is actually going out
+            // over BT A2DP. Car: Sendspin is the only player, so always select it
+            // (the car's audio HAL is not a BT A2DP device).
+            if (!isAutomotive && !isBtA2dpActive()) return@launch
             val target = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
             val currentSelected = playerRepository.selectedPlayer.value?.playerId
             if (currentSelected == target) return@launch

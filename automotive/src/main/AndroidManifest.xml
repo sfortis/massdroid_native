@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AAOS glue library. Linked only into the :app `automotive` flavor via
+     automotiveImplementation, so anything declared here merges into the car
+     build alone (mirrors how :auto contributes the Android Auto glue). Car
+     components (ArtworkContentProvider, native-connection detection) land here
+     in a later phase; for now the module is the build seam for IS_AUTOMOTIVE. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application />
+
+</manifest>

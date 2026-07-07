@@ -136,29 +136,7 @@ data class ServerMediaItem(
     @SerialName("translation_key") val translationKey: String? = null,
     @SerialName("date_added") val dateAdded: String? = null,
     @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
-) {
-    /** Get the best image: direct image field, or first thumb from metadata.images. */
-    fun resolveImageUrl(wsClient: MaWebSocketClient): String? {
-        // 1. Direct image field
-        image?.resolveUrl(wsClient)?.let { return it }
-        // 2. From metadata.images - prefer thumb type
-        val images = metadata?.images ?: return null
-        val thumb = images.firstOrNull { it.type.equals("thumb", ignoreCase = true) }
-            ?: images.firstOrNull()
-            ?: return null
-        return thumb.resolveUrl(wsClient)
-    }
-
-    /** Image with album fallback (for tracks). */
-    fun resolveImageWithAlbumFallback(wsClient: MaWebSocketClient): String? =
-        resolveImageUrl(wsClient) ?: album?.resolveImageUrl(wsClient)
-
-    /** Image with album fallback, then URI-based imageproxy as last resort. */
-    fun resolveImageWithUriFallback(wsClient: MaWebSocketClient): String? =
-        resolveImageUrl(wsClient)
-            ?: album?.resolveImageUrl(wsClient)
-            ?: wsClient.getImageUrl(uri)
-}
+)
 
 @Serializable
 data class MediaItemMetadata(
@@ -191,29 +169,23 @@ data class MediaItemImage(
     val type: String = "",
     val path: String = "",
     @SerialName("provider") val imageProvider: String = "builtin",
-    @SerialName("remotely_accessible") val remotelyAccessible: Boolean = false
+    @SerialName("remotely_accessible") val remotelyAccessible: Boolean = false,
+    // MA 2.9+ (API schema 31, server PR #3960): an opaque server-side imageproxy id, populated
+    // only for non-publicly-accessible images. The canonical, SSRF-safe way to fetch the art.
+    @SerialName("proxy_id") val proxyId: String? = null
 )
 
-fun MediaItemImage.resolveUrl(wsClient: MaWebSocketClient): String? {
-    val p = path.trim()
-    if (p.isEmpty()) return null
-    if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
-    if (remotelyAccessible) {
-        // "Remotely accessible" art on a private/LAN host only works on that LAN; off-LAN (cellular)
-        // or via a remote/VPN endpoint, route it through the server imageproxy so it loads anywhere.
-        val host = runCatching { java.net.URI(p).host }.getOrNull()
-        if (host != null && wsClient.isOffLanImageHost(host)) {
-            return wsClient.getImageUrl(p, provider = imageProvider) ?: p
-        }
-        return p
-    }
-    return wsClient.getImageUrl(p, provider = imageProvider) ?: p
-}
+// Image URL resolution lives in ImageUrlResolver (data/image). The MediaItemImage / ServerMediaItem
+// models stay pure data; callers resolve through the injected resolver.
 
 @Serializable
 data class ProviderMapping(
     @SerialName("provider_domain") val providerDomain: String,
     @SerialName("provider_instance") val providerInstance: String = "",
+    // The artist's id WITHIN this provider (e.g. the Deezer artist id), needed to query that
+    // provider's discography. A library artist's own item_id is the library id, not the
+    // provider's, so artist_albums must be asked of the mapping's item_id + provider.
+    @SerialName("item_id") val itemId: String = "",
     val available: Boolean = true
 )
 

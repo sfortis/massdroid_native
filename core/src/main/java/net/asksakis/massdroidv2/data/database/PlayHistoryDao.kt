@@ -397,7 +397,9 @@ interface PlayHistoryDao {
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
-               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
+               (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
+                WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
         FROM play_history ph
         JOIN tracks t ON t.uri = ph.track_uri
         JOIN track_artists ta ON ta.track_uri = t.uri
@@ -410,6 +412,28 @@ interface PlayHistoryDao {
         """
     )
     suspend fun getSeedTracks(since: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrackRow>
+
+    // Recency-ordered seed pool (no score floor): the Smart Mix Strictness knob
+    // re-ranks this toward score in code, so low Strictness keeps genuinely
+    // recent tracks instead of always the top-scored ones.
+    @Query(
+        """
+        SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
+               MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
+               (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
+                WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        JOIN artists a ON a.uri = ta.artist_uri
+        WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
+        GROUP BY t.uri
+        ORDER BY lastPlayedAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getRecentSeedTracks(since: Long, minListenedMs: Long, limit: Int): List<SeedTrackRow>
 
     // Genre play timestamps for BLL scoring (track_genres + artist_genres)
     @Query(
@@ -736,7 +760,8 @@ data class SeedTrackRow(
     @ColumnInfo(name = "artistName") val artistName: String,
     @ColumnInfo(name = "lastPlayedAt") val lastPlayedAt: Long,
     @ColumnInfo(name = "score") val score: Double,
-    @ColumnInfo(name = "genres") val genres: String?
+    @ColumnInfo(name = "genres") val genres: String?,
+    @ColumnInfo(name = "artistGenres") val artistGenres: String?
 )
 
 data class GenrePlayTimestamp(

@@ -28,6 +28,12 @@ build/
 !docs/**/*.md
 /internal_docs/
 
+# Local agent memory (multi-user, never committed)
+/memory/
+
+# Local scratchpad (pulled DBs, live-data artifacts, secrets - never committed)
+/scratchpad/
+
 # Claude Code
 .claude/
 .codex

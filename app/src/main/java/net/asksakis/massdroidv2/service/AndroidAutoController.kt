@@ -176,7 +176,12 @@ class AndroidAutoController(
 
     private fun updateSendspinSelectionLock(reason: String) {
         val target = sendspinPlayerId()
-        val shouldLock = isAaProjecting.value && isSendspinActive() && target != null
+        // Phone/TV: lock selection to Sendspin only while Android Auto is
+        // projecting (so car transport can't leak to a remote player). Car
+        // (AAOS native): there is no projection signal and Sendspin is the only
+        // player, so lock it permanently whenever it is active.
+        val shouldLock = (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE || isAaProjecting.value) &&
+            isSendspinActive() && target != null
         val currentLock = playerRepository.selectionLock.value
         when {
             shouldLock && currentLock?.playerId != target -> {
@@ -234,18 +239,15 @@ class AndroidAutoController(
             },
             onVolumeUp = {
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                val newVolume = (currentVolumeBase(player.volumeLevel) + VOLUME_STEP)
-                    .coerceAtMost(RemoteControlPlayer.MAX_VOLUME)
-                pushVolume(player.playerId, newVolume)
+                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) + VOLUME_STEP)
             },
             onVolumeDown = {
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                val newVolume = (currentVolumeBase(player.volumeLevel) - VOLUME_STEP).coerceAtLeast(0)
-                pushVolume(player.playerId, newVolume)
+                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) - VOLUME_STEP)
             },
             onVolumeSet = { volume ->
                 val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                pushVolume(player.playerId, volume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME))
+                pushPlayerVolume(player, volume)
             }
         )
     }
@@ -255,13 +257,30 @@ class AndroidAutoController(
         return if (System.currentTimeMillis() < override.second) override.first else serverVolume
     }
 
-    private fun pushVolume(playerId: String, volume: Int) {
-        // Optimistic AA-side update: bump the override flow so the master
-        // combine emits with the new value and AA sees its volume slider
-        // settle immediately. The actual MA echo arrives via PLAYER_UPDATED
-        // and overwrites the override once it expires.
+    /** Volume the rocker/AA slider works from: the group volume for a group, else the own level. */
+    private fun baseVolume(player: net.asksakis.massdroidv2.domain.model.Player): Int =
+        player.groupVolume ?: player.volumeLevel
+
+    /** A group-type parent (has members other than itself). Mirrors MainActivity's HW-key path. */
+    private fun isGroupPlayer(player: net.asksakis.massdroidv2.domain.model.Player): Boolean =
+        player.groupChilds.any { it != player.playerId }
+
+    private fun pushPlayerVolume(player: net.asksakis.massdroidv2.domain.model.Player, rawVolume: Int) {
+        val volume = rawVolume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME)
+        // Optimistic AA-side update: bump the override flow so the master combine
+        // emits with the new value and AA/MediaSession device-volume settles
+        // immediately. The actual MA echo arrives via PLAYER_UPDATED and overwrites
+        // the override once it expires.
         volumeOverride.value = volume to (System.currentTimeMillis() + VOLUME_OVERRIDE_MS)
-        sendVolumeCommand(playerId, volume)
+        if (isGroupPlayer(player)) {
+            // A group player reports volume_level=null and is driven via MA's
+            // cmd/group_volume (which fans out to members). `volume_set` on the
+            // group id is a no-op, which is why the hardware rocker did nothing
+            // when a group was selected (the in-app slider already used group_volume).
+            scope.launch { runCatching { playerRepository.setGroupVolume(player.playerId, volume) } }
+        } else {
+            sendVolumeCommand(player.playerId, volume)
+        }
     }
 
     private fun playQueueIndex(index: Int, reason: String) {
@@ -305,12 +324,25 @@ class AndroidAutoController(
     }
 
     private fun createMediaSession(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
+        // The session activity is the "open the app" target the now-playing surface
+        // launches. On automotive MainActivity is disabled (the car never shows the
+        // full phone UI), so point it at the car sign-in/settings screen instead -
+        // by class name, since that activity only exists in the automotive flavor.
+        // Phone/TV keep MainActivity.
+        val sessionIntent = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+            Intent().apply {
+                setClassName(service, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        } else {
+            Intent(service, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        }
         val pendingIntent = PendingIntent.getActivity(
             service,
             0,
-            Intent(service, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
+            sessionIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         session = MediaLibraryService.MediaLibrarySession.Builder(service, remotePlayer!!, libraryCallback)
@@ -415,7 +447,10 @@ class AndroidAutoController(
         } else {
             player.state == PlaybackState.PLAYING
         }
-        val volumeLevel = effectiveVolume(player.volumeLevel, volumeOv)
+        // Report the group volume for a group (its own volume_level is null), so the
+        // MediaSession/AA device-volume reads and the rocker base off the right value.
+        val volumeLevel = effectiveVolume(player.groupVolume ?: player.volumeLevel, volumeOv)
+        val imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl
         val playback = AutoPlaybackSnapshot(
             isPlaying = player.state == PlaybackState.PLAYING,
             audioFlowing = audioFlowing,
@@ -430,6 +465,13 @@ class AndroidAutoController(
                 ?: 0.0) * 1000).toLong(),
             currentIndex = currentIndex,
             artworkData = artwork,
+            // Car only: give the AAOS media center a content:// artworkUri it can load
+            // itself (it ignores artworkData). Phone/TV/AA stay on artworkData (null here).
+            artworkUri = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                imageUrl?.let { carArtworkUri(service, it, CAR_ARTWORK_NOW_PLAYING_PX) }
+            } else {
+                null
+            },
             volumeLevel = volumeLevel,
             isMuted = player.volumeMuted,
             isRemotePlayback = !isSendspinSelected,
@@ -440,7 +482,7 @@ class AndroidAutoController(
             queue = queueEntries,
             isFavorite = currentTrack?.favorite == true,
             shuffleEnabled = queue?.shuffleEnabled == true,
-            imageUrl = currentTrack?.imageUrl ?: queue?.currentItem?.imageUrl ?: player.currentMedia?.imageUrl,
+            imageUrl = imageUrl,
         )
     }
 
@@ -598,7 +640,7 @@ class AndroidAutoController(
                             artist = qi.track?.artistNames ?: "",
                             album = qi.track?.albumName ?: "",
                             durationMs = ((qi.track?.duration ?: qi.duration) * 1000).toLong(),
-                            artworkUri = art?.let { Uri.parse(it) },
+                            artworkUri = art?.let { carArtworkUri(service, it) },
                         )
                     }
                     // Feed the queue snapshot into the master combine.

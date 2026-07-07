@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.screens.home
+package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -13,9 +13,6 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
-import net.asksakis.massdroidv2.domain.recommendation.RecommendationEngine
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import kotlin.math.ln
@@ -49,7 +46,6 @@ class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    @Suppress("unused") private val recommendationEngine: RecommendationEngine,
     private val lastFmSimilarResolver: LastFmSimilarResolver,
     private val lastFmGenreResolver: LastFmGenreResolver,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
@@ -214,11 +210,13 @@ class DiscoverRecommendationOrchestrator(
         recentAlbumKeys: Set<String>
     ): Album? {
         val albums = try {
-            musicRepository.getArtistAlbums(artist.itemId, artist.provider)
+            // Discography (provider catalogue), not getArtistAlbums: a library artist's
+            // artist_albums(library) is ~empty on MA 2.9+, which would starve album suggestions.
+            musicRepository.getArtistDiscography(artist.itemId, artist.provider)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(ORCHESTRATOR_TAG, "getArtistAlbums failed for ${artist.name}: ${e.message}")
+            Log.w(ORCHESTRATOR_TAG, "getArtistDiscography failed for ${artist.name}: ${e.message}")
             return null
         }
 

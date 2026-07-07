@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -56,11 +57,6 @@ import androidx.compose.ui.layout.ContentScale
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import coil.compose.SubcomposeAsyncImage
-
-private data class PlayerGroupInfo(
-    val isParent: Boolean = false,
-    val childPlayers: List<Player> = emptyList()
-)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,49 +85,35 @@ fun PlayersScreen(
     val playerRoomIdMap = remember(proximityConfig) {
         proximityConfig.rooms.associate { it.playerId to it.id }
     }
-    // MA includes the parent itself in group_childs. Actual children = childs minus self.
-    val groupData = remember(players) {
-        val available = players.filter { it.available }
-        val parentMap = mutableMapOf<String, List<String>>()
-        for (p in available) {
-            val actualChilds = p.groupChilds.filter { it != p.playerId }
-            if (actualChilds.isNotEmpty()) parentMap[p.playerId] = actualChilds
-        }
-        val childIds = parentMap.values.flatten().toSet()
-        Triple(available, parentMap, childIds)
-    }
-    val availablePlayers = remember(groupData) {
-        val (available, _, childIds) = groupData
-        available.filter { it.playerId !in childIds }
+    // The MA UI lists BOTH the group and its individual players, and every player
+    // stays independently playable. We mirror that: individual players and groups go
+    // into two labelled sections and nothing is ever hidden. We used to drop any
+    // player that appeared in some parent's group_childs, which permanently hid
+    // Cast/sync-group members so you could not play to them on their own (#55).
+    // group_childs is now used only to label a group card with its member names.
+    val available = remember(players) { players.filter { it.available } }
+    val playerCards = remember(available) {
+        available.filter { it.type != PlayerType.GROUP }
             .sortedBy { it.displayName.lowercase() }
     }
-    val groupInfoMap = remember(groupData) {
-        val (available, parentMap, _) = groupData
-        val playerMap = available.associateBy { it.playerId }
-        buildMap {
-            for ((parentId, childIds) in parentMap) {
-                val parent = playerMap[parentId]
-                // A real speaker acting as sync leader (type=PLAYER) participates in
-                // playback, so we list it among members. A virtual sync_group player
-                // (type=GROUP) is just a container; listing it inside itself creates
-                // the duplicate "test -> test" card the user reported.
-                val includeParent = parent?.type == PlayerType.PLAYER
-                val allMembers = buildList {
-                    if (includeParent) add(parent)
-                    addAll(childIds.mapNotNull { playerMap[it] })
-                }.sortedBy { it.displayName.lowercase() }
-                put(parentId, PlayerGroupInfo(
-                    isParent = true,
-                    childPlayers = allMembers
-                ))
-            }
+    val groupCards = remember(available) {
+        available.filter { it.type == PlayerType.GROUP }
+            .sortedBy { it.displayName.lowercase() }
+    }
+    val groupMembers = remember(available) {
+        val playerById = available.associateBy { it.playerId }
+        available.filter { it.type == PlayerType.GROUP }.associate { group ->
+            group.playerId to group.groupChilds
+                .filter { it != group.playerId }
+                .mapNotNull { playerById[it] }
+                .sortedBy { it.displayName.lowercase() }
         }
     }
-    val activePlayerCount = remember(availablePlayers) {
-        availablePlayers.count { it.state == PlaybackState.PLAYING }
+    val activePlayerCount = remember(available) {
+        available.count { it.state == PlaybackState.PLAYING }
     }
-    val assignedRoomCount = remember(availablePlayers, playerRoomMap) {
-        availablePlayers.flatMap { playerRoomMap[it.playerId].orEmpty() }.distinct().size
+    val assignedRoomCount = remember(playerCards, playerRoomMap) {
+        playerCards.flatMap { playerRoomMap[it.playerId].orEmpty() }.distinct().size
     }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -169,12 +151,11 @@ fun PlayersScreen(
                             .sortedBy { it.displayName.lowercase() }
                     }
 
-                    val groupCount = remember(groupData) { groupData.second.size }
                     PlayersHeader(
-                        totalPlayers = availablePlayers.size,
+                        totalPlayers = playerCards.size,
                         activePlayers = activePlayerCount,
                         assignedRooms = assignedRoomCount,
-                        groups = groupCount,
+                        groups = groupCards.size,
                         onCreateGroup = if (groupCandidates.size >= 2) {
                             { showCreateGroup = true }
                         } else null
@@ -184,44 +165,55 @@ fun PlayersScreen(
                         modifier = Modifier.weight(1f).fadingEdges(),
                         contentPadding = PaddingValues(start = 0.dp, top = 6.dp, end = 0.dp, bottom = LocalMiniPlayerPadding.current)
                     ) {
-                        items(
-                            availablePlayers,
-                            key = { it.playerId }
-                        ) { player ->
-                            val groupInfo = groupInfoMap[player.playerId] ?: PlayerGroupInfo()
-                            PlayerListItem(
-                                player = player,
-                                isSelected = player.playerId == selectedPlayer?.playerId,
-                                isLocalPlayer = sendspinClientId != null && player.playerId == sendspinClientId,
-                                isAndroidAutoPlayer = isAaProjecting &&
-                                    sendspinClientId != null &&
-                                    player.playerId == sendspinClientId,
-                                isFollowMeSelected = proximityConfig.enabled &&
-                                    currentDetectedRoom?.playerId == player.playerId,
-                                hasSleepTimer = sleepTimerTargetPlayerId == player.playerId,
-                                roomNames = playerRoomMap[player.playerId] ?: emptyList(),
-                                groupInfo = groupInfo,
-                                onClick = { viewModel.selectPlayer(player) },
-                                onIconLongPress = { iconPickerPlayer = player },
-                                onQueueMenuClick = { queueMenuPlayer = player },
-                                onVolumeChange = { volume ->
-                                    if (groupInfo.isParent) {
-                                        viewModel.setGroupVolume(player.playerId, volume)
-                                    } else {
-                                        viewModel.setVolume(player.playerId, volume)
+                        if (playerCards.isNotEmpty()) {
+                            item(key = "header_players") {
+                                PlayersSectionHeader("PLAYERS")
+                            }
+                            items(playerCards, key = { it.playerId }) { player ->
+                                PlayerListItem(
+                                    player = player,
+                                    isSelected = player.playerId == selectedPlayer?.playerId,
+                                    isLocalPlayer = sendspinClientId != null &&
+                                        player.playerId == sendspinClientId,
+                                    isAndroidAutoPlayer = isAaProjecting &&
+                                        sendspinClientId != null &&
+                                        player.playerId == sendspinClientId,
+                                    isFollowMeSelected = proximityConfig.enabled &&
+                                        currentDetectedRoom?.playerId == player.playerId,
+                                    hasSleepTimer = sleepTimerTargetPlayerId == player.playerId,
+                                    roomNames = playerRoomMap[player.playerId] ?: emptyList(),
+                                    onClick = { viewModel.selectPlayer(player) },
+                                    onIconLongPress = { iconPickerPlayer = player },
+                                    onQueueMenuClick = { queueMenuPlayer = player },
+                                    onVolumeChange = { viewModel.setVolume(player.playerId, it) }
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+                        }
+                        if (groupCards.isNotEmpty()) {
+                            item(key = "header_groups") {
+                                PlayersSectionHeader("GROUPS")
+                            }
+                            items(groupCards, key = { it.playerId }) { group ->
+                                PlayerListItem(
+                                    player = group,
+                                    isSelected = group.playerId == selectedPlayer?.playerId,
+                                    isFollowMeSelected = proximityConfig.enabled &&
+                                        currentDetectedRoom?.playerId == group.playerId,
+                                    hasSleepTimer = sleepTimerTargetPlayerId == group.playerId,
+                                    roomNames = playerRoomMap[group.playerId] ?: emptyList(),
+                                    isGroup = true,
+                                    members = groupMembers[group.playerId].orEmpty(),
+                                    onClick = { viewModel.selectPlayer(group) },
+                                    onIconLongPress = { iconPickerPlayer = group },
+                                    onQueueMenuClick = { queueMenuPlayer = group },
+                                    onVolumeChange = { viewModel.setGroupVolume(group.playerId, it) },
+                                    onMemberVolumeChange = { memberId, volume ->
+                                        viewModel.onMemberVolumeChanged(group.playerId, memberId, volume)
                                     }
-                                },
-                                onMemberVolumeChange = { memberId, volume ->
-                                    viewModel.onMemberVolumeChanged(player.playerId, memberId, volume)
-                                },
-                                onMemberClick = { member ->
-                                    viewModel.selectPlayer(member)
-                                },
-                                onMemberMenuClick = { member ->
-                                    queueMenuPlayer = member
-                                }
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
                         }
                     }
 
@@ -452,14 +444,13 @@ private fun PlayerListItem(
     isFollowMeSelected: Boolean = false,
     hasSleepTimer: Boolean = false,
     roomNames: List<String> = emptyList(),
-    groupInfo: PlayerGroupInfo = PlayerGroupInfo(),
+    isGroup: Boolean = false,
+    members: List<Player> = emptyList(),
     onClick: () -> Unit,
     onIconLongPress: () -> Unit,
     onQueueMenuClick: () -> Unit,
     onVolumeChange: (Int) -> Unit,
-    onMemberVolumeChange: (String, Int) -> Unit = { _, _ -> },
-    onMemberClick: (Player) -> Unit = {},
-    onMemberMenuClick: (Player) -> Unit = {}
+    onMemberVolumeChange: (String, Int) -> Unit = { _, _ -> }
 ) {
     // For group players the server maintains a separate `group_volume` (average of
     // children). Plain players use their own volume_level.
@@ -548,7 +539,7 @@ private fun PlayerListItem(
                             isFollowMePlayer = isFollowMeSelected,
                             fontWeight = FontWeight.Bold
                         )
-                        if (groupInfo.isParent) {
+                        if (isGroup) {
                             Icon(
                                 Icons.Default.Link,
                                 contentDescription = null,
@@ -661,34 +652,33 @@ private fun PlayerListItem(
                 )
             }
 
-                if (groupInfo.isParent && groupInfo.childPlayers.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .height(0.5.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+            // Per-member volume right inside the group card (handy for balancing the
+            // group). The members are also their own cards in the PLAYERS section, so
+            // these rows are volume-only - no per-member menu or select.
+            if (isGroup && members.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .height(0.5.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                )
+                members.forEach { member ->
+                    GroupMemberVolumeRow(
+                        member = member,
+                        onVolumeChange = { onMemberVolumeChange(member.playerId, it) }
                     )
-                    groupInfo.childPlayers.forEach { member ->
-                        GroupMemberRow(
-                            member = member,
-                            onVolumeChange = { onMemberVolumeChange(member.playerId, it) },
-                            onClick = { onMemberClick(member) },
-                            onMenuClick = { onMemberMenuClick(member) }
-                        )
-                    }
                 }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GroupMemberRow(
+private fun GroupMemberVolumeRow(
     member: Player,
-    onVolumeChange: (Int) -> Unit,
-    onClick: () -> Unit,
-    onMenuClick: () -> Unit
+    onVolumeChange: (Int) -> Unit
 ) {
     var volume by remember { mutableFloatStateOf(member.volumeLevel.toFloat()) }
     LaunchedEffect(member.volumeLevel) { volume = member.volumeLevel.toFloat() }
@@ -696,7 +686,6 @@ private fun GroupMemberRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -712,9 +701,9 @@ private fun GroupMemberRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(80.dp)
+            modifier = Modifier.width(96.dp)
         )
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(6.dp))
         Slider(
             value = volume,
             onValueChange = { volume = it },
@@ -745,22 +734,26 @@ private fun GroupMemberRow(
                 }
             }
         )
-        Spacer(modifier = Modifier.width(6.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = "${volume.toInt()}%",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.End
         )
-        MdIconButton(onClick = onMenuClick, modifier = Modifier.size(24.dp)) {
-            Icon(
-                Icons.Default.MoreVert,
-                contentDescription = "Member options",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(14.dp)
-            )
-        }
     }
+}
+
+@Composable
+private fun PlayersSectionHeader(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 6.dp)
+    )
 }
 
 @Composable

@@ -23,6 +23,7 @@ import javax.inject.Singleton
 @Singleton
 class MusicRepositoryImpl @Inject constructor(
     private val wsClient: MaWebSocketClient,
+    private val imageResolver: net.asksakis.massdroidv2.data.image.ImageUrlResolver,
     private val json: Json,
     private val playerRepository: dagger.Lazy<PlayerRepository>
 ) : MusicRepository {
@@ -132,6 +133,36 @@ class MusicRepositoryImpl @Inject constructor(
             ItemRefArgs(itemId = itemId, provider = provider)
         )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
+    }
+
+    override suspend fun getArtistDiscography(itemId: String, provider: String): List<Album> {
+        // A provider artist: its own (item_id, provider) already IS the provider catalogue.
+        if (!provider.equals("library", ignoreCase = true) && !provider.equals("builtin", ignoreCase = true)) {
+            return getArtistAlbums(itemId, provider)
+        }
+        // A library artist: artist_albums(library) returns only in-library albums (often none on
+        // MA 2.9+). Resolve the default provider mapping the way the MA web UI does - dedupe by
+        // provider instance, drop unavailable / library / builtin, sort by provider for a stable
+        // default - then query that provider's discography.
+        val raw = wsClient.sendCommand(
+            MaCommands.Music.ARTISTS_GET,
+            ItemRefLazyArgs(itemId = itemId, provider = provider, lazy = false)
+        ) ?: return emptyList()
+        val server = try {
+            json.decodeFromJsonElement<ServerMediaItem>(raw)
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        val mapping = server.providerMappings
+            .filter {
+                it.available && it.itemId.isNotBlank() &&
+                    !it.providerDomain.equals("library", ignoreCase = true) &&
+                    !it.providerDomain.equals("builtin", ignoreCase = true)
+            }
+            .distinctBy { it.providerInstance.ifEmpty { it.providerDomain } }
+            .minByOrNull { it.providerInstance.ifEmpty { it.providerDomain } }
+            ?: return emptyList()
+        return getArtistAlbums(mapping.itemId, mapping.providerInstance.ifEmpty { mapping.providerDomain })
     }
 
     override suspend fun getArtistTracks(itemId: String, provider: String): List<Track> {
@@ -391,7 +422,7 @@ class MusicRepositoryImpl @Inject constructor(
         name = name.ifBlank { translationKey?.replaceFirstChar { it.uppercase() } ?: itemId },
         uri = uri,
         path = path ?: uri.ifBlank { null },
-        imageUrl = resolveImageUrl(wsClient),
+        imageUrl = imageResolver.resolveItem(this),
         isFolder = mediaType == "folder",
         mediaType = mediaType,
         isPlayable = ! (mediaType == "folder") && isPlayable == true
@@ -585,14 +616,6 @@ class MusicRepositoryImpl @Inject constructor(
         if (result == null) return emptyList()
         return when (result) {
             is JsonArray -> {
-                if (result.isNotEmpty()) {
-                    // Log first item for debugging
-                    val firstObj = result[0].jsonObject
-                    Log.d(TAG, "Media item keys: ${firstObj.keys}")
-                    val imageField = firstObj["image"]?.toString()?.take(200) ?: "null"
-                    val metadataImages = firstObj["metadata"]?.jsonObject?.get("images")?.toString()?.take(200) ?: "null"
-                    Log.d(TAG, "image=$imageField metadata.images=$metadataImages")
-                }
                 result.mapNotNull {
                     try { json.decodeFromJsonElement<ServerMediaItem>(it) } catch (_: Exception) { null }
                 }
@@ -611,7 +634,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList(),
@@ -627,7 +650,7 @@ class MusicRepositoryImpl @Inject constructor(
             name = name,
             uri = uri,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             version = version,
             year = sanitizeYear(year),
@@ -656,7 +679,7 @@ class MusicRepositoryImpl @Inject constructor(
             duration = duration,
             artistNames = artists?.joinToString(", ") { it.name } ?: "",
             albumName = album?.name ?: "",
-            imageUrl = resolveImageWithUriFallback(wsClient),
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             position = position,
             artistItemId = artists?.firstOrNull()?.itemId,
@@ -697,7 +720,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             isEditable = isEditable != false,
             providerDomains = extractProviderDomains()
@@ -711,7 +734,7 @@ class MusicRepositoryImpl @Inject constructor(
             provider = provider,
             name = name,
             uri = uri,
-            imageUrl = resolveImageUrl(wsClient),
+            imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             providerDomains = extractProviderDomains()
         )
@@ -729,8 +752,8 @@ class MusicRepositoryImpl @Inject constructor(
         name = name,
         duration = duration,
         track = mediaItem?.toTrack(),
-        imageUrl = mediaItem?.resolveImageUrl(wsClient)
-            ?: image?.resolveUrl(wsClient)
+        imageUrl = mediaItem?.let { imageResolver.resolveItem(it) }
+            ?: image?.let { imageResolver.resolve(it) }
     )
 
     private fun sanitizeYear(year: Int?): Int? = year?.takeIf { it > 0 }

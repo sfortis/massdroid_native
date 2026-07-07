@@ -22,6 +22,15 @@ interface MusicRepository {
     suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean = true): Album?
 
     suspend fun getArtistAlbums(itemId: String, provider: String): List<Album>
+
+    /**
+     * The artist's full discography from a single provider (the MA web UI behaviour), as opposed
+     * to [getArtistAlbums] which, for a `library` artist, returns only the albums actually in the
+     * library (often none on MA 2.9+). For a library artist this resolves the default provider
+     * mapping (first available real provider) and queries its catalogue; for a provider artist it
+     * is that provider's catalogue directly. Empty when the artist has no usable provider mapping.
+     */
+    suspend fun getArtistDiscography(itemId: String, provider: String): List<Album>
     suspend fun getArtistTracks(itemId: String, provider: String): List<Track>
     suspend fun getAlbumTracks(itemId: String, provider: String): List<Track>
     suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track>

@@ -13,6 +13,14 @@ data class Player(
     val groupVolume: Int? = null,
     val volumeMuted: Boolean = false,
     val activeGroup: String? = null,
+    /**
+     * The queue/source currently active on this player (MA `active_source`).
+     * For a solo player this equals its own id; for a synced group member it is
+     * the active GROUP queue id (e.g. `syncgroup_*`). Authoritative for resolving
+     * which queue's events/items belong to the selected player, unlike
+     * [syncedTo]/[activeGroup] which can point at the sync leader or be null.
+     */
+    val activeSource: String? = null,
     /** Player this one is currently synced to at protocol level, if any. */
     val syncedTo: String? = null,
     val groupChilds: List<String> = emptyList(),

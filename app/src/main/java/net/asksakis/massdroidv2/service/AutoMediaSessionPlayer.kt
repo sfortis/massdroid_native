@@ -76,6 +76,9 @@ data class AutoPlaybackSnapshot(
     val durationMs: Long,
     val currentIndex: Int,
     val artworkData: ByteArray?,
+    // Car (AAOS) only: a content:// artworkUri the car media center can load itself
+    // (it ignores artworkData bytes). Null on phone/TV/AA, which use artworkData.
+    val artworkUri: Uri? = null,
     val volumeLevel: Int,
     val isMuted: Boolean,
     val isRemotePlayback: Boolean,
@@ -96,6 +99,7 @@ data class AutoPlaybackSnapshot(
             album == other.album &&
             durationMs == other.durationMs &&
             currentIndex == other.currentIndex &&
+            artworkUri == other.artworkUri &&
             volumeLevel == other.volumeLevel &&
             isMuted == other.isMuted &&
             isRemotePlayback == other.isRemotePlayback &&
@@ -116,6 +120,7 @@ data class AutoPlaybackSnapshot(
         r = 31 * r + durationMs.hashCode()
         r = 31 * r + currentIndex
         r = 31 * r + (artworkData?.size ?: 0)
+        r = 31 * r + (artworkUri?.hashCode() ?: 0)
         r = 31 * r + volumeLevel
         r = 31 * r + isMuted.hashCode()
         r = 31 * r + isRemotePlayback.hashCode()
@@ -269,12 +274,25 @@ class RemoteControlPlayer(
             playback.isPlaying && !playback.audioFlowing -> STATE_BUFFERING
             else -> STATE_READY
         }
+        // Title the queue/timeline. Media3 maps the player's playlist metadata title to the
+        // legacy MediaSessionCompat queue title, which heads the "now playing queue" list and,
+        // on some head units (e.g. car MediaController UIs), is what makes the queue button
+        // appear at all. The AAOS media center shows the button regardless, but a null title
+        // left the queue list unlabelled. Chaptered audiobooks list chapters, not a track queue.
+        val playlistMetadata = if (playlist.isEmpty()) {
+            MediaMetadata.EMPTY
+        } else {
+            MediaMetadata.Builder()
+                .setTitle(if (chaptered) CHAPTERS_TITLE else UP_NEXT_TITLE)
+                .build()
+        }
         return State.Builder()
             .setAvailableCommands(commandsBuilder.build())
             .setPlayWhenReady(playback.isPlaying, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(effectiveState)
             .setContentPositionMs(contentPosition)
             .setPlaylist(playlist)
+            .setPlaylistMetadata(playlistMetadata)
             .setCurrentMediaItemIndex(effectiveIndex)
             // 1:1 with the MA player volume (0..100): the device-volume scale IS the
             // MA scale, so every value round-trips exactly with no integer-division
@@ -296,6 +314,8 @@ class RemoteControlPlayer(
             .setAlbumTitle(playback.album)
             .also { b ->
                 playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                // Car: the AAOS media center renders artworkUri, not the bytes.
+                playback.artworkUri?.let { b.setArtworkUri(it) }
             }
             .build()
 
@@ -316,7 +336,10 @@ class RemoteControlPlayer(
                 val meta = MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(playback.title.ifEmpty { null })
-                    .also { b -> playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) } }
+                    .also { b ->
+                        playback.artworkData?.let { b.setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+                        playback.artworkUri?.let { b.setArtworkUri(it) }
+                    }
                     .build()
                 val id = "${playback.trackUri.orEmpty()}#ch$i".toStableLongId()
                 val item = MediaItem.Builder().setMediaId(id.toString()).setMediaMetadata(meta).build()
@@ -456,6 +479,9 @@ class RemoteControlPlayer(
     companion object {
         private const val C_TIME_UNSET = Long.MIN_VALUE + 1
         internal const val MAX_VOLUME = 100
+        // Queue (timeline) titles surfaced to the car as the playlist metadata title.
+        private const val UP_NEXT_TITLE = "Up next"
+        private const val CHAPTERS_TITLE = "Chapters"
         // Tolerance so a position sampled at a chapter boundary resolves to that
         // chapter, not the one before it.
         private const val CHAPTER_EPSILON_S = 0.001

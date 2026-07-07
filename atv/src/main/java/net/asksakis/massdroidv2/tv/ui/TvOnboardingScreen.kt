@@ -11,15 +11,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -40,22 +45,35 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val attempting by viewModel.attempting.collectAsStateWithLifecycle()
 
     var url by remember { mutableStateOf("https://") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
 
-    val connecting = connection is ConnectionState.Connecting
     val statusMessage = error
         ?: (connection as? ConnectionState.Error)?.message
-        ?: if (connecting) "Connecting..." else null
+        ?: if (attempting) "Connecting..." else null
+    val isError = error != null || connection is ConnectionState.Error
+
+    // First field grabs focus on entry so the D-pad has an anchor immediately;
+    // without this the leanback remote has nothing to move from and the screen
+    // reads as "frozen".
+    val firstFieldFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { firstFieldFocus.requestFocus() } }
 
     Surface(modifier = Modifier.fillMaxSize()) {
+        // Scrollable + top-aligned: the form is taller than a 1080p TV viewport
+        // once overscan is accounted for, so a centered non-scrolling column
+        // clipped the Connect button and the status/error text off-screen. The
+        // scroll container also brings whatever child holds focus into view, so
+        // D-pad focus on the button auto-scrolls it into sight.
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 120.dp, vertical = 64.dp),
-            verticalArrangement = Arrangement.Center
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 80.dp, vertical = 48.dp),
+            verticalArrangement = Arrangement.Top
         ) {
             Text("Connect to Music Assistant", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(8.dp))
@@ -66,7 +84,7 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
             )
             Spacer(Modifier.height(32.dp))
 
-            TvField("Server URL", url, KeyboardType.Uri) { url = it }
+            TvField("Server URL", url, KeyboardType.Uri, focusRequester = firstFieldFocus) { url = it }
             Spacer(Modifier.height(16.dp))
             TvField("Username", username, KeyboardType.Text) { username = it }
             Spacer(Modifier.height(16.dp))
@@ -75,9 +93,9 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
             Spacer(Modifier.height(28.dp))
             Button(
                 onClick = { viewModel.login(url, username, password) },
-                enabled = !connecting
+                enabled = !attempting
             ) {
-                Text(if (connecting) "Connecting..." else "Connect")
+                Text(if (attempting) "Connecting..." else "Connect")
             }
 
             if (statusMessage != null) {
@@ -85,7 +103,7 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
                 Text(
                     statusMessage,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (error != null || connection is ConnectionState.Error) {
+                    color = if (isError) {
                         MaterialTheme.colorScheme.error
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -102,6 +120,7 @@ private fun TvField(
     value: String,
     keyboardType: KeyboardType,
     password: Boolean = false,
+    focusRequester: FocusRequester? = null,
     onValueChange: (String) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -134,6 +153,7 @@ private fun TvField(
                 visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                     .onFocusChanged { focused = it.isFocused }
             )
         }
