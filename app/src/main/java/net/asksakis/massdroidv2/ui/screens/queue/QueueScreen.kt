@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
@@ -176,7 +177,9 @@ fun QueueSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // Cap the sheet just short of full height so the top never rides up under
+        // the status bar / camera cutout on a fully-expanded sheet.
+        Column(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f)) {
             // Header
             Row(
                 modifier = Modifier
