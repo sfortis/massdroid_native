@@ -38,6 +38,11 @@ class SendspinManager(
     @Volatile private var forceSolo: Boolean = false
     companion object {
         private const val TAG = "SendspinMgr"
+        // Native output gain applied on a transient audio-focus loss (nav prompt,
+        // notification). -20dB: a deep, clearly-audible duck under a loud prompt.
+        // The transition is not abrupt because the native ramp fades to it over
+        // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
+        private const val DUCK_GAIN = 0.1f
         private const val HEARTBEAT_INTERVAL_MS = 2000L
     }
 
@@ -500,10 +505,14 @@ class SendspinManager(
     }
 
     fun duck() {
-        // Transient AudioTrack attenuation. Keeps currentVolume unchanged so
-        // restoreVolume() can bring us back to full gain.
-        if (!muted) audio.setVolume(0.5f)
-        Log.d(TAG, "Duck -> 0.5 AudioTrack gain")
+        // Transient focus-loss attenuation on OUR OWN native output gain (not the
+        // shared STREAM_MUSIC), so a nav prompt / notification from another app
+        // ducks only MassDroid's music and never that app's audio. 0.5 (-6dB) was
+        // too shallow to notice under a loud prompt; DUCK_GAIN (~-14dB) matches
+        // the platform's own auto-duck depth. currentVolume is left unchanged so
+        // restoreVolume() brings us back to full gain on AUDIOFOCUS_GAIN.
+        if (!muted) audio.setVolume(DUCK_GAIN)
+        Log.d(TAG, "Duck -> $DUCK_GAIN gain")
     }
 
     fun restoreVolume() {

@@ -57,9 +57,12 @@ constexpr int64_t MAX_SLEW_US = 1000;
 // change is rare and re-anchored by a flush/relock anyway.
 constexpr int64_t LAT_SLEW_US = 1000;
 
-// Gain-ramp time: mute/unmute/volume changes reach the target over this long
-// instead of jumping mid-waveform (which clicks).
+// Gain-ramp time: a change reaches its target over this long instead of jumping
+// mid-waveform (which clicks). Two rates: toward SILENCE (mute/freeze) stays
+// snappy so hard sync boundaries cut tight; toward an AUDIBLE target (duck,
+// restore, unmute) is slower so a focus-duck glides in/out instead of stepping.
 constexpr float FADE_SEC = 0.02f;
+constexpr float VOLUME_FADE_SEC = 0.15f;
 
 // Audiophile-grade dynamic-range processor (phone-as-speaker). Amplitude-only:
 // applied in the output callback alongside the volume gain, so it has NO effect
@@ -407,7 +410,10 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     const bool frozen = frozen_.load();
     const float target = frozen ? 0.0f : volume_.load();
     const float g0 = appliedVolume_;
-    const float maxStep = static_cast<float>(numFrames) / (static_cast<float>(sampleRate_) * FADE_SEC);
+    // Snappy toward silence (mute/freeze at sync boundaries), gentle toward an
+    // audible target (duck/restore/unmute) so the level glides, not steps.
+    const float fadeSec = (target < 0.01f) ? FADE_SEC : VOLUME_FADE_SEC;
+    const float maxStep = static_cast<float>(numFrames) / (static_cast<float>(sampleRate_) * fadeSec);
     float g1 = g0;
     if (target > g0) g1 = std::min(target, g0 + maxStep);
     else if (target < g0) g1 = std::max(target, g0 - maxStep);

@@ -67,7 +67,10 @@ class SendspinNativeOutput {
         }
         ptr = created
         // The native engine is recreated on every (re)open, so re-apply the
-        // cached compressor level (default 0 = off needs no call).
+        // cached output gain + compressor level + dither (native defaults are
+        // volume 1.0, compressor 0 = off, dither off, so a default needs no call).
+        // Without the volume re-apply, a reopen mid-duck would jump back to full.
+        if (volume != 1f) nativeSetVolume(created, volume)
         if (compressorLevel != 0) nativeSetCompressorLevel(created, compressorLevel)
         if (ditherEnabled) nativeSetDither(created, true)
         return true
@@ -139,9 +142,15 @@ class SendspinNativeOutput {
         return if (p == 0L) 1.0 else nativeResampleRateMicros(p) / 1_000_000.0
     }
 
+    // Cached so a non-default gain (e.g. a transient focus duck) survives the
+    // native recreate on every (re)open (see start()); native default is 1.0.
+    @Volatile private var volume = 1f
+
     fun setVolume(volume: Float) {
+        val v = volume.coerceIn(0f, 1f)
+        this.volume = v
         val p = ptr
-        if (p != 0L) nativeSetVolume(p, volume.coerceIn(0f, 1f))
+        if (p != 0L) nativeSetVolume(p, v)
     }
 
     // Cached so it survives the native recreate on every (re)open (see start()).
