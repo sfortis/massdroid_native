@@ -183,6 +183,10 @@ class MassDroidApp : Application(), ImageLoaderFactory {
         return ImageLoader.Builder(this)
             .okHttpClient { wsClient.getHttpClient() }
             .components { add(coil.decode.SvgDecoder.Factory()) }
+            // Debug (dev) builds only: log the exact image URL and its load outcome so a user who
+            // hits "missing images" can share logs (from About) that actually pin the failing URL +
+            // reason (e.g. imageproxy 400/404, unreachable LAN host). Stripped from release builds.
+            .apply { if (BuildConfig.DEBUG) eventListener(ImageDebugEventListener) }
             .crossfade(true)
             // Artwork sources differ wildly in HTTP cache headers: fanart.tv sends NONE (no
             // Cache-Control/Last-Modified/ETag), which the default header-respecting policy
@@ -204,5 +208,26 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     private companion object {
         const val IMAGE_DISK_CACHE_BYTES = 1024L * 1024 * 1024 // 1 GB
+    }
+}
+
+/**
+ * Dev-build image-load tracer. Logs each Coil load's URL and outcome under tag `ImageDbg` at a
+ * level that survives release stripping (i/w) and is captured by the persistent logcat writer, so
+ * a "missing images" report can be diagnosed from shared logs: compare the URL that fails on browse
+ * with the one that works after a manual artist refresh. Wired only when BuildConfig.DEBUG.
+ */
+private object ImageDebugEventListener : coil.EventListener {
+    private const val TAG = "ImageDbg"
+
+    override fun onSuccess(request: coil.request.ImageRequest, result: coil.request.SuccessResult) {
+        // Only network loads matter for diagnosis; cache hits just echo an earlier network fetch.
+        if (result.dataSource == coil.decode.DataSource.NETWORK) {
+            Log.i(TAG, "OK (net): ${request.data}")
+        }
+    }
+
+    override fun onError(request: coil.request.ImageRequest, result: coil.request.ErrorResult) {
+        Log.w(TAG, "FAIL: ${request.data} -> ${result.throwable.javaClass.simpleName}: ${result.throwable.message}")
     }
 }

@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.displayCutout
@@ -46,11 +48,13 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -67,6 +71,7 @@ import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -208,6 +213,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 MassDroidTheme(darkTheme = darkTheme) {
                     MassDroidApp()
+                    DevBuildBadge()
                     UpdatePrompt(appUpdateChecker)
                     // Top-level transient OSD for remote-player volume changes.
                     // The system already overlays its own bar for STREAM_MUSIC
@@ -811,5 +817,30 @@ private fun SideNavRail(navController: NavHostController, currentRoute: String?)
                 }
             )
         }
+    }
+}
+
+/**
+ * Dev-build marker: a small translucent bug icon pinned top-right, shown only on debug (dev) builds
+ * so testers can tell a sideloaded dev APK apart from a release install at a glance. Non-interactive
+ * (does not consume touches, so it never blocks the app bar actions underneath). No-op on release.
+ */
+@Composable
+private fun DevBuildBadge() {
+    if (!net.asksakis.massdroidv2.BuildConfig.DEBUG) return
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Icon(
+            imageVector = Icons.Filled.BugReport,
+            contentDescription = "Dev build",
+            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.55f),
+            modifier = Modifier
+                .padding(end = 6.dp, top = 2.dp)
+                .size(18.dp)
+        )
     }
 }
