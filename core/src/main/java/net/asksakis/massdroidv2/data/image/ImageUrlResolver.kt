@@ -22,49 +22,95 @@ import javax.inject.Singleton
 class ImageUrlResolver @Inject constructor(
     private val wsClient: MaWebSocketClient,
 ) {
-    /** Best image for an item: the direct image field, else the first (thumb) metadata image. */
+    /**
+     * Best image for an item: the direct image field, else the most-loadable metadata image.
+     *
+     * "Most-loadable" matters on MA 2.9+: a single item can carry both a proxied local image
+     * (e.g. subsonic `cover_art`, remote=false -> proxy_id, loads anywhere) and a private-LAN
+     * remotely-accessible URL (e.g. subsonic `artist_image_url`, no proxy_id, loads on-LAN only).
+     * Naively picking the first thumb can land on the LAN-only one, so rank by [imageQuality]
+     * first and keep the existing thumb-first preference only as a tie-break within a tier.
+     */
     fun resolveItem(item: ServerMediaItem): String? {
         item.image?.let { resolve(it) }?.let { return it }
-        val images = item.metadata?.images ?: return null
-        val thumb = images.firstOrNull { it.type.equals("thumb", ignoreCase = true) }
-            ?: images.firstOrNull()
-            ?: return null
-        return resolve(thumb)
+        val images = item.metadata?.images.orEmpty().filter { it.path.isNotBlank() }
+        if (images.isEmpty()) return null
+        val best = images.maxWithOrNull(
+            compareBy<MediaItemImage> { imageQuality(it) }
+                .thenBy { if (it.type.equals("thumb", ignoreCase = true)) 1 else 0 }
+        )
+        return best?.let { resolve(it) }
     }
 
     /** Item image, falling back to the album's image (used for tracks). */
     fun resolveItemWithAlbumFallback(item: ServerMediaItem): String? =
         resolveItem(item) ?: item.album?.let { resolveItem(it) }
 
-    /** Item image, album fallback, then a last-resort URI-based legacy proxy. */
+    /**
+     * Item image, album fallback, then a last-resort URI-based legacy proxy. The URI fallback only
+     * ever helped pre-2.9: MA 2.9+ rejects the legacy `/imageproxy?path=<uri>` form for a non-http
+     * scheme (e.g. `library://...`) with HTTP 400, so it is a guaranteed miss there - skip it (a
+     * null result shows the same placeholder without a wasted request + server deprecation warning).
+     */
     fun resolveItemWithUriFallback(item: ServerMediaItem): String? =
         resolveItem(item)
             ?: item.album?.let { resolveItem(it) }
-            ?: fromPath(item.uri)
+            ?: item.uri.takeIf { isLegacyImageproxyServer() }?.let { fromPath(it) }
 
-    /** Resolve a single image to a loadable URL. */
+    /**
+     * Resolve a single image to a loadable URL, covering both imageproxy routes across server
+     * versions. Preference order: canonical proxy_id route -> direct URL -> legacy path proxy.
+     */
     fun resolve(image: MediaItemImage): String? {
         val p = image.path.trim()
         if (p.isEmpty()) return null
         if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
-        // MA 2.9+ hands every non-public image an opaque proxy_id. Fetch it via the canonical
-        // /imageproxy/<proxy_id> route on our own (external) server URL: the server resolves the
-        // real path internally, so it is SSRF-safe and is the ONLY way LAN/local provider art
-        // (Jellyfin, filesystem, Plex, subsonic) loads. The legacy path-based /imageproxy now
-        // rejects private/LAN URLs with HTTP 400 (the cause of the "missing images" reports).
+        // (1) proxy_id: the canonical MA 2.9+ route on our own (external) server URL. The server
+        // resolves the real path internally (SSRF-safe) and it is the ONLY way LAN/local provider
+        // art (Jellyfin, filesystem, Plex, subsonic cover_art) loads on 2.9+. Best whenever present.
         image.proxyId?.let { id -> imageProxyIdUrl(id)?.let { return it } }
+        // (2) remotely_accessible URL without a proxy_id (public CDN art, or a provider that serves
+        // its own image URL such as subsonic artist_image_url).
         if (image.remotelyAccessible) {
-            // Public URL: use directly. On a pre-2.9 server a LAN-only "remotely accessible" host
-            // still needs the legacy proxy off-LAN (cellular / remote / VPN endpoint).
             val host = runCatching { java.net.URI(p).host }.getOrNull()
-            if (host != null && wsClient.isOffLanImageHost(host)) {
-                return fromPath(p, provider = image.imageProvider) ?: p
+            val privateHost = host != null && wsClient.isOffLanImageHost(host)
+            // A private/LAN host is only reachable through the legacy proxy off-LAN, and MA 2.9+
+            // rejects that path with HTTP 400 (the "missing images" reports). So proxy it only on
+            // pre-2.9; on 2.9+ load the URL directly (what the MA web UI does - works on-LAN). A
+            // public host is reachable anywhere, so always load it directly.
+            return if (privateHost && isLegacyImageproxyServer()) {
+                fromPath(p, provider = image.imageProvider) ?: p
+            } else {
+                p
             }
-            return p
         }
-        // Pre-2.9 server (no proxy_id): legacy path-based proxy.
+        // (3) local/relative path (remote=false) without a proxy_id: only pre-2.9, or a 2.9 edge
+        // where the serializer had no proxy_id resolver context. Legacy path proxy accepts these.
         return fromPath(p, provider = image.imageProvider) ?: p
     }
+
+    /**
+     * Loadability rank for [resolveItem] to prefer an image that actually renders:
+     * proxy_id (3, loads anywhere) > local or public-remote (2, loads) > private-LAN remote with no
+     * proxy_id on a 2.9+ server (1, on-LAN only). Higher is better.
+     */
+    private fun imageQuality(image: MediaItemImage): Int = when {
+        image.proxyId != null -> PROXY_ID_QUALITY
+        !image.remotelyAccessible -> LOADABLE_QUALITY
+        else -> {
+            val host = runCatching { java.net.URI(image.path.trim()).host }.getOrNull()
+            val privateHost = host != null && wsClient.isOffLanImageHost(host)
+            if (privateHost && !isLegacyImageproxyServer()) LAN_ONLY_QUALITY else LOADABLE_QUALITY
+        }
+    }
+
+    /**
+     * True for a pre-2.9 server, where the legacy `/imageproxy?path=` route still resolves private
+     * and non-http paths (so it is worth using off-LAN). MA 2.9+ (schema >= 31) rejects those with
+     * HTTP 400, so the legacy route must not be used for them there.
+     */
+    private fun isLegacyImageproxyServer(): Boolean =
+        (wsClient.serverSchemaVersion() ?: 0) < PROXY_ID_MIN_SCHEMA
 
     /**
      * Legacy path-based imageproxy URL ({base}/imageproxy?path=&size=&provider=). Kept for pre-2.9
@@ -102,5 +148,12 @@ class ImageUrlResolver @Inject constructor(
     private companion object {
         const val DEFAULT_SIZE = 512
         const val IMAGEPROXY_SEGMENT = "/imageproxy"
+        // MA API schema at/after which the proxy_id imageproxy route exists and the legacy
+        // path route rejects private/non-http paths (the MA 2.9 line).
+        const val PROXY_ID_MIN_SCHEMA = 31
+        // imageQuality tiers (higher = more likely to render).
+        const val PROXY_ID_QUALITY = 3
+        const val LOADABLE_QUALITY = 2
+        const val LAN_ONLY_QUALITY = 1
     }
 }

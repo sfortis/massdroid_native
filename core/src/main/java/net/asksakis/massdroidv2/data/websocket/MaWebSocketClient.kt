@@ -764,6 +764,13 @@ class MaWebSocketClient(
     fun externalServerUrl(): String? = serverUrl
 
     /**
+     * MA API schema version from the server hello (`server_id` message), or null before connect.
+     * Schema 31 is the MA 2.9 line: the imageproxy `proxy_id` era where the legacy
+     * `/imageproxy?path=` route rejects private/LAN and non-http paths with HTTP 400.
+     */
+    fun serverSchemaVersion(): Int? = serverInfo?.schemaVersion
+
+    /**
      * True when [host] is a private/LAN address that is NOT the host we reach the server through.
      * A "remotely accessible" image on such a host is only reachable on that LAN, so off-LAN
      * (cellular) or via a different remote/VPN endpoint it must be fetched through imageproxy
