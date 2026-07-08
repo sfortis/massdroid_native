@@ -120,6 +120,7 @@ fun QueueSheet(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val hasMore by viewModel.hasMore.collectAsStateWithLifecycle()
+    val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val currentQueueItemId by viewModel.currentQueueItemId.collectAsStateWithLifecycle()
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
@@ -142,12 +143,21 @@ fun QueueSheet(
     var hasScrolledInitially by remember { mutableStateOf(false) }
     val effectiveItems = if (draggingQueueItemId != null) displayItems else items
 
-    LaunchedEffect(items) {
+    // Keyed on BOTH the list and the current id: on a cold launch the first page
+    // can arrive before queueState populates currentQueueItemId, so keying on
+    // items alone left the effect unable to re-fire once the id landed (worked
+    // only on the 2nd open). Re-evaluating on either change fixes the first open.
+    LaunchedEffect(items, currentQueueItemId) {
         if (!hasScrolledInitially && items.isNotEmpty()) {
             val idx = items.indexOfFirst { it.queueItemId == currentQueueItemId }
             if (idx >= 0) {
                 lazyListState.scrollToItem(index = idx, scrollOffset = -200)
                 hasScrolledInitially = true
+            } else if (hasMore && currentQueueItemId != null) {
+                // The playing track sits on a page past the first (queue larger
+                // than one page): page forward so it loads, then this effect
+                // re-fires on the grown list and scrolls to it.
+                viewModel.loadMore()
             }
         }
     }
@@ -209,7 +219,11 @@ fun QueueSheet(
                             } else ""
                             "${chapters.size} chapters$dur"
                         } else {
+                            // Whole-queue total from the server, not just the
+                            // fetched page; fall back to the loaded size until it
+                            // arrives (with a "+" if more pages are pending).
                             when {
+                                totalCount > 0 -> "$totalCount tracks"
                                 hasMore -> "${items.size}+ tracks"
                                 else -> "${items.size} tracks"
                             }

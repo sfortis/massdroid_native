@@ -61,6 +61,12 @@ class QueueViewModel @Inject constructor(
         .map { it?.currentItem?.queueItemId }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    /** Total queue length from the server (whole queue, not just the fetched page). */
+    val totalCount: StateFlow<Int> = playerRepository.queueState
+        .map { it?.totalItems ?: 0 }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     val players: StateFlow<List<Player>> = playerRepository.players
     val sendspinClientId = settingsRepository.sendspinClientId
 
@@ -112,7 +118,27 @@ class QueueViewModel @Inject constructor(
     private val queueId: String?
         get() = playerRepository.queueState.value?.queueId ?: selectedPlayerId
 
+    /**
+     * The active queue id to source and fetch. Prefer queueState.queueId (the
+     * GROUP queue for a synced member); until queueState arrives (cold start
+     * opened from the mini player, before the now-playing screen has loaded the
+     * queue) fall back to the selected player's id so the queue still fetches
+     * instead of rendering empty. queueState.queueId wins the moment it lands,
+     * so a grouped member reconciles from its own id to the group queue.
+     */
+    private val activeQueueIdFlow: Flow<String?> = combine(
+        playerRepository.queueState.map { it?.queueId },
+        playerRepository.selectedPlayer.map { it?.playerId }
+    ) { qid, pid -> qid ?: pid }.distinctUntilChanged()
+
     init {
+        // Fetch the full active-queue STATE (current item, total count, index) on
+        // open, from ANY entry point. Only the now-playing screen did this before,
+        // so opening the queue from the mini player on a cold start (before that
+        // screen was ever visited) left queueState null: no scroll-to-current and
+        // the header fell back to the loaded-page count. Mirrors NowPlayingViewModel.
+        viewModelScope.launch { runCatching { playerRepository.refreshActiveQueue() } }
+
         // Single source of truth for the displayed list + loading flag, derived
         // race-free from (canonical snapshot, active queue id). Two independent
         // collectors writing _isLoading could interleave so the loading reset ran
@@ -128,7 +154,7 @@ class QueueViewModel @Inject constructor(
             var shownQueueId: String? = null
             combine(
                 playerRepository.queueItems,
-                playerRepository.queueState.map { it?.queueId }.distinctUntilChanged()
+                activeQueueIdFlow
             ) { snapshot, qId -> qId to snapshot }
                 .collect { (qId, snapshot) ->
                     if (qId == null) {
@@ -161,10 +187,8 @@ class QueueViewModel @Inject constructor(
         // collapses with its own debounced trigger into one RPC. Mirrors the TV
         // queue VM, which already followed this pattern.
         viewModelScope.launch {
-            playerRepository.queueState
-                .map { it?.queueId }
+            activeQueueIdFlow
                 .filterNotNull()
-                .distinctUntilChanged()
                 .collect { qId -> runCatching { playerRepository.refreshQueueItems(qId) } }
         }
     }

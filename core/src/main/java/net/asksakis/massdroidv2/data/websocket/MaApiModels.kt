@@ -81,6 +81,9 @@ data class ServerQueue(
     @SerialName("elapsed_time_last_updated") val elapsedTimeLastUpdated: Double? = null,
     @SerialName("current_item") val currentItem: ServerQueueItem? = null,
     @SerialName("current_index") val currentIndex: Int = 0,
+    // Total number of items in the queue (server-side count of the whole queue,
+    // not just the page we have fetched). Used for the "N tracks" header.
+    @SerialName("items") val items: Int = 0,
     @SerialName("dont_stop_the_music_enabled") val dontStopTheMusicEnabled: Boolean = false
 )
 

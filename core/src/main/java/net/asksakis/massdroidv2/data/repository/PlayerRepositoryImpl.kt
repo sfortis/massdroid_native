@@ -2047,6 +2047,7 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     repeatMode = RepeatMode.fromApi(repeatMode),
     elapsedTime = elapsedTime,
     currentIndex = currentIndex,
+    totalItems = items,
     dontStopTheMusicEnabled = dontStopTheMusicEnabled,
     currentItem = currentItem?.let { item ->
         QueueItem(

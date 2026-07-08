@@ -7,6 +7,8 @@ data class QueueState(
     val elapsedTime: Double = 0.0,
     val currentItem: QueueItem? = null,
     val currentIndex: Int = 0,
+    /** Total item count of the whole queue (server-side), not just the fetched page. */
+    val totalItems: Int = 0,
     val dontStopTheMusicEnabled: Boolean = false
 )
 
