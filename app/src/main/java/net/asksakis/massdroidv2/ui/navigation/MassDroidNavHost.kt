@@ -13,6 +13,7 @@ import net.asksakis.massdroidv2.ui.screens.library.AlbumDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.ArtistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.LibraryScreen
 import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
+import net.asksakis.massdroidv2.ui.screens.library.PodcastDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
 import net.asksakis.massdroidv2.ui.screens.settings.ProximitySettingsScreen
@@ -38,12 +39,15 @@ object Routes {
         if (roomId != null) "room_setup?roomId=${android.net.Uri.encode(roomId)}" else "room_setup"
     const val ARTIST_DETAIL = "artist/{itemId}/{provider}?name={name}"
     const val ALBUM_DETAIL = "album/{itemId}/{provider}?name={name}"
+    const val PODCAST_DETAIL = "podcast/{itemId}/{provider}?name={name}"
     const val PLAYLIST_DETAIL = "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}"
 
     fun artistDetail(itemId: String, provider: String, name: String = "") =
         "artist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
     fun albumDetail(itemId: String, provider: String, name: String = "") =
         "album/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
+    fun podcastDetail(itemId: String, provider: String, name: String = "") =
+        "podcast/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
     fun playlistDetail(itemId: String, provider: String, name: String = "", uri: String = "", favorite: Boolean = false) =
         "playlist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}&uri=${android.net.Uri.encode(uri)}&favorite=$favorite"
 }
@@ -94,6 +98,9 @@ fun MassDroidNavHost(
                 },
                 onPlaylistClick = { playlist ->
                     navController.navigate(Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite))
+                },
+                onPodcastClick = { podcast ->
+                    navController.navigate(Routes.podcastDetail(podcast.itemId, podcast.provider, podcast.name))
                 }
             )
         }
@@ -192,6 +199,17 @@ fun MassDroidNavHost(
                     navController.navigate(Routes.artistDetail(artist.itemId, artist.provider, artist.name))
                 }
             )
+        }
+
+        composable(
+            Routes.PODCAST_DETAIL,
+            arguments = listOf(
+                navArgument("itemId") { type = NavType.StringType },
+                navArgument("provider") { type = NavType.StringType },
+                navArgument("name") { type = NavType.StringType; defaultValue = "" }
+            )
+        ) {
+            PodcastDetailScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

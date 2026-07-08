@@ -59,6 +59,10 @@ fun MediaActionSheet(
     onPlayNow: () -> Unit,
     onPlayOnPlayer: (Player) -> Unit,
     onPlayNext: (() -> Unit)? = null,
+    // Podcast episodes: mark played / unplayed. The caller passes exactly the one
+    // that applies to the current state; rendered just before Add to Queue.
+    onMarkPlayed: (() -> Unit)? = null,
+    onMarkUnplayed: (() -> Unit)? = null,
     onAddToQueue: () -> Unit,
     onStartRadio: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
@@ -179,6 +183,30 @@ fun MediaActionSheet(
                     leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
                     modifier = Modifier.clickable {
                         onPlayNext()
+                        onDismiss()
+                    }
+                )
+            }
+
+            // Mark played / unplayed (podcast episodes)
+            if (onMarkPlayed != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Mark as played") },
+                    leadingContent = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        onMarkPlayed()
+                        onDismiss()
+                    }
+                )
+            }
+            if (onMarkUnplayed != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Mark as unplayed") },
+                    leadingContent = { Icon(Icons.Default.RadioButtonUnchecked, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        onMarkUnplayed()
                         onDismiss()
                     }
                 )

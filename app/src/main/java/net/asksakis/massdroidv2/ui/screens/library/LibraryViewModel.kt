@@ -333,6 +333,19 @@ class LibraryViewModel @Inject constructor(
         )
     }
 
+    private val podcastsPager = LibraryPager(
+        scope = viewModelScope,
+        key = { it: Podcast -> it.uri },
+        transformPage = { filterBySelectedProviders(it, LibraryTabKey.PODCASTS) { p -> p.providerDomains } }
+    ) { limit, offset ->
+        musicRepository.getPodcasts(
+            search = searchFor(LibraryTabKey.PODCASTS), limit = limit, offset = offset,
+            orderBy = orderByForTab(LibraryTabKey.PODCASTS.index),
+            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.PODCASTS.index),
+            providerFilter = providerFilterFor(LibraryTabKey.PODCASTS)
+        )
+    }
+
     private fun pagerFor(tab: LibraryTabKey): LibraryPager<*>? = when (tab) {
         LibraryTabKey.ARTISTS -> artistsPager
         LibraryTabKey.ALBUMS -> albumsPager
@@ -340,6 +353,7 @@ class LibraryViewModel @Inject constructor(
         LibraryTabKey.PLAYLISTS -> playlistsPager
         LibraryTabKey.RADIOS -> radiosPager
         LibraryTabKey.AUDIOBOOKS -> audiobooksPager
+        LibraryTabKey.PODCASTS -> podcastsPager
         LibraryTabKey.BROWSE -> null // Browse is a folder tree, not a paged list.
     }
 
@@ -357,6 +371,7 @@ class LibraryViewModel @Inject constructor(
     val playlists: StateFlow<List<Playlist>> = playlistsPager.items
     val radios: StateFlow<List<Radio>> = radiosPager.items
     val audiobooks: StateFlow<List<Track>> = audiobooksPager.items
+    val podcasts: StateFlow<List<Podcast>> = podcastsPager.items
 
     // ---- browse (folder tree) state ----------------------------------------------------------
 
@@ -624,6 +639,8 @@ class LibraryViewModel @Inject constructor(
     fun loadMoreRadios() = radiosPager.loadMore()
     fun loadAudiobooks() = audiobooksPager.reloadIfEmpty()
     fun loadMoreAudiobooks() = audiobooksPager.loadMore()
+    fun loadPodcasts() = podcastsPager.reloadIfEmpty()
+    fun loadMorePodcasts() = podcastsPager.loadMore()
 
     /**
      * Warm the tabs on either side of [tab] so a swipe lands on populated content instead of an
@@ -973,6 +990,10 @@ class LibraryViewModel @Inject constructor(
                     MediaType.AUDIOBOOK -> audiobooksPager.update { list ->
                         list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
                     }
+                    MediaType.PODCAST -> podcastsPager.update { list ->
+                        list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
+                    }
+                    MediaType.PODCAST_EPISODE -> {} // Episodes aren't a library tab; no list to patch.
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
@@ -991,6 +1012,8 @@ class LibraryViewModel @Inject constructor(
                     MediaType.PLAYLIST -> playlistsPager.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.RADIO -> radiosPager.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.AUDIOBOOK -> audiobooksPager.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.PODCAST -> podcastsPager.update { list -> list.filter { it.itemId != itemId } }
+                    MediaType.PODCAST_EPISODE -> {} // Episodes aren't a library tab; no list to patch.
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "removeFromLibrary failed: ${e.message}")

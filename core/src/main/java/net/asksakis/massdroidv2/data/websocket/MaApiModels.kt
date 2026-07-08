@@ -128,6 +128,8 @@ data class ServerMediaItem(
     val narrators: List<String>? = null,
     @SerialName("fully_played") val fullyPlayed: Boolean? = null,
     @SerialName("resume_position_ms") val resumePositionMs: Long? = null,
+    val publisher: String? = null,
+    @SerialName("total_episodes") val totalEpisodes: Int? = null,
     val sort_name: String? = null,
     val version: String? = null,
     val position: Int? = null,

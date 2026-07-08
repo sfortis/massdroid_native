@@ -17,9 +17,14 @@ interface MusicRepository {
     suspend fun getPlaylists(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Playlist>
     suspend fun getRadios(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Radio>
     suspend fun getAudiobooks(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Track>
+    suspend fun getPodcasts(search: String? = null, limit: Int = 50, offset: Int = 0, orderBy: String? = null, favoriteOnly: Boolean = false, providerFilter: List<String>? = null): List<Podcast>
 
     suspend fun getArtist(itemId: String, provider: String, lazy: Boolean = true): Artist?
     suspend fun getAlbum(itemId: String, provider: String, lazy: Boolean = true): Album?
+    suspend fun getPodcast(itemId: String, provider: String): Podcast?
+    suspend fun getPodcastEpisodes(podcastItemId: String, provider: String): List<PodcastEpisode>
+    /** Mark a podcast episode fully played ([played] = true) or unplayed on the server. */
+    suspend fun setPodcastEpisodePlayed(itemId: String, provider: String, played: Boolean)
 
     suspend fun getArtistAlbums(itemId: String, provider: String): List<Album>
 

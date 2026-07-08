@@ -107,6 +107,46 @@ class MusicRepositoryImpl @Inject constructor(
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
+    override suspend fun getPodcasts(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Podcast> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.PODCASTS_LIBRARY_ITEMS,
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
+        )
+        return parseMediaItems(result).mapNotNull { it.toPodcast() }
+    }
+
+    override suspend fun getPodcast(itemId: String, provider: String): Podcast? {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.PODCASTS_GET,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        )
+        return result?.let {
+            try { json.decodeFromJsonElement<ServerMediaItem>(it).toPodcast() } catch (_: Exception) { null }
+        }
+    }
+
+    override suspend fun getPodcastEpisodes(podcastItemId: String, provider: String): List<PodcastEpisode> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.PODCAST_EPISODES,
+            ItemRefArgs(itemId = podcastItemId, provider = provider)
+        )
+        return parseMediaItems(result).mapNotNull { it.toPodcastEpisode() }
+    }
+
+    override suspend fun setPodcastEpisodePlayed(itemId: String, provider: String, played: Boolean) {
+        // mark_played/unplayed require the FULL media_item object, so re-fetch the
+        // episode from the server and pass it through verbatim.
+        val raw = wsClient.sendCommand(
+            MaCommands.Music.PODCAST_EPISODE_GET,
+            ItemRefArgs(itemId = itemId, provider = provider)
+        ) ?: return
+        if (played) {
+            wsClient.sendCommand(MaCommands.Music.MARK_PLAYED, MarkPlayedArgs(raw, fullyPlayed = true))
+        } else {
+            wsClient.sendCommand(MaCommands.Music.MARK_UNPLAYED, MarkUnplayedArgs(raw))
+        }
+    }
+
     override suspend fun getArtist(itemId: String, provider: String, lazy: Boolean): Artist? {
         val result = wsClient.sendCommand(
             MaCommands.Music.ARTISTS_GET,
@@ -737,6 +777,40 @@ class MusicRepositoryImpl @Inject constructor(
             imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             providerDomains = extractProviderDomains()
+        )
+    }
+
+    private fun ServerMediaItem.toPodcast(): Podcast? {
+        if (mediaType.isNotEmpty() && mediaType != "podcast") return null
+        return Podcast(
+            itemId = itemId,
+            provider = provider,
+            name = name,
+            uri = uri,
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
+            publisher = publisher,
+            totalEpisodes = totalEpisodes,
+            favorite = favorite,
+            description = metadata?.description,
+            providerDomains = extractProviderDomains()
+        )
+    }
+
+    private fun ServerMediaItem.toPodcastEpisode(): PodcastEpisode? {
+        if (mediaType.isNotEmpty() && mediaType != "podcast_episode") return null
+        return PodcastEpisode(
+            itemId = itemId,
+            provider = provider,
+            name = name,
+            uri = uri,
+            imageUrl = imageResolver.resolveItemWithUriFallback(this),
+            duration = duration ?: 0.0,
+            position = position,
+            description = metadata?.description,
+            fullyPlayed = fullyPlayed ?: false,
+            resumePositionMs = resumePositionMs ?: 0L,
+            favorite = favorite,
+            podcastName = album?.name
         )
     }
 

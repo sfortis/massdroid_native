@@ -137,7 +137,9 @@ enum class MediaType(val apiValue: String) {
     ARTIST("artist"),
     PLAYLIST("playlist"),
     RADIO("radio"),
-    AUDIOBOOK("audiobook");
+    AUDIOBOOK("audiobook"),
+    PODCAST("podcast"),
+    PODCAST_EPISODE("podcast_episode");
 
     companion object {
         fun fromApi(value: String): MediaType? = entries.find { it.apiValue == value }

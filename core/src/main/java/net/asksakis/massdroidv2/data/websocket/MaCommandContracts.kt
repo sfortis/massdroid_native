@@ -22,6 +22,12 @@ object MaCommands {
         const val PLAYLISTS_LIBRARY_ITEMS = "music/playlists/library_items"
         const val RADIOS_LIBRARY_ITEMS = "music/radios/library_items"
         const val AUDIOBOOKS_LIBRARY_ITEMS = "music/audiobooks/library_items"
+        const val PODCASTS_LIBRARY_ITEMS = "music/podcasts/library_items"
+        const val PODCASTS_GET = "music/podcasts/get"
+        const val PODCAST_EPISODES = "music/podcasts/podcast_episodes"
+        const val PODCAST_EPISODE_GET = "music/podcasts/podcast_episode"
+        const val MARK_PLAYED = "music/mark_played"
+        const val MARK_UNPLAYED = "music/mark_unplayed"
         const val PLAYLISTS_CREATE = "music/playlists/create_playlist"
         const val PLAYLISTS_ADD_TRACKS = "music/playlists/add_playlist_tracks"
         const val PLAYLISTS_REMOVE_TRACKS = "music/playlists/remove_playlist_tracks"
@@ -136,6 +142,28 @@ data class ItemRefLazyArgs(
         put("item_id", itemId)
         put("provider_instance_id_or_domain", provider)
         put("lazy", lazy)
+    }
+}
+
+/**
+ * Mark a media item played/unplayed. The server requires the FULL media_item
+ * object (a typed MediaItem, not a uri/id), so [mediaItem] is the raw item
+ * fetched back from the server (e.g. music/podcasts/podcast_episode) and passed
+ * through verbatim.
+ */
+data class MarkPlayedArgs(
+    val mediaItem: JsonElement,
+    val fullyPlayed: Boolean = true
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("media_item", mediaItem)
+        put("fully_played", fullyPlayed)
+    }
+}
+
+data class MarkUnplayedArgs(val mediaItem: JsonElement) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("media_item", mediaItem)
     }
 }
 

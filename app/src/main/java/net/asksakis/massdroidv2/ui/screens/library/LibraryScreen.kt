@@ -73,17 +73,19 @@ private const val TAB_TRACKS = 2
 private const val TAB_PLAYLISTS = 3
 private const val TAB_RADIOS = 4
 private const val TAB_AUDIOBOOKS = 5
-private const val TAB_BROWSE = 6
+private const val TAB_PODCASTS = 6
+private const val TAB_BROWSE = 7
 
 @Composable
 fun LibraryScreen(
     onArtistClick: (Artist) -> Unit,
     onAlbumClick: (Album) -> Unit,
     onPlaylistClick: (Playlist) -> Unit,
+    onPodcastClick: (Podcast) -> Unit,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val selectedTab by viewModel.currentTab.collectAsStateWithLifecycle()
-    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists", "Radios", "Audiobooks", "Browse")
+    val tabs = listOf("Artists", "Albums", "Tracks", "Playlists", "Radios", "Audiobooks", "Podcasts", "Browse")
 
     val artists by viewModel.artists.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
@@ -91,6 +93,7 @@ fun LibraryScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val radios by viewModel.radios.collectAsStateWithLifecycle()
     val audiobooks by viewModel.audiobooks.collectAsStateWithLifecycle()
+    val podcasts by viewModel.podcasts.collectAsStateWithLifecycle()
     val browseItems by viewModel.browseItems.collectAsStateWithLifecycle()
     val browsePath by viewModel.browsePath.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
@@ -169,6 +172,7 @@ fun LibraryScreen(
             TAB_PLAYLISTS -> if (playlists.isEmpty()) viewModel.loadPlaylists()
             TAB_RADIOS -> if (radios.isEmpty()) viewModel.loadRadios()
             TAB_AUDIOBOOKS -> if (audiobooks.isEmpty()) viewModel.loadAudiobooks()
+            TAB_PODCASTS -> if (podcasts.isEmpty()) viewModel.loadPodcasts()
             TAB_BROWSE -> if (browseItems.isEmpty()) viewModel.loadBrowse()
         }
         // Warm the neighbouring tabs so the next swipe shows content immediately.
@@ -187,6 +191,7 @@ fun LibraryScreen(
                     TAB_PLAYLISTS -> "Search playlists..."
                     TAB_RADIOS -> "Search radios..."
                     TAB_AUDIOBOOKS -> "Search audiobooks..."
+                    TAB_PODCASTS -> "Search podcasts..."
                     else -> "Search..."
                 },
                 onSearchChange = { viewModel.updateSearch(it) },
@@ -219,6 +224,7 @@ fun LibraryScreen(
                                 TAB_PLAYLISTS -> "Search playlists..."
                                 TAB_RADIOS -> "Search radios..."
                                 TAB_AUDIOBOOKS -> "Search audiobooks..."
+                                TAB_PODCASTS -> "Search podcasts..."
                                 else -> "Search..."
                             }
                         )
@@ -303,6 +309,7 @@ fun LibraryScreen(
                 TAB_PLAYLISTS -> playlists.isEmpty()
                 TAB_RADIOS -> radios.isEmpty()
                 TAB_AUDIOBOOKS -> audiobooks.isEmpty()
+                TAB_PODCASTS -> podcasts.isEmpty()
                 TAB_BROWSE -> browseItems.isEmpty()
                 else -> false
             }
@@ -506,6 +513,32 @@ fun LibraryScreen(
                                 )
                             },
                             onPlayClick = { viewModel.quickPlay(it.uri) },
+                            providerDomains = { it.providerDomains }
+                        )
+                        TAB_PODCASTS -> MediaList(
+                            items = podcasts,
+                            displayMode = pageMode,
+                            isLoadingMore = isLoadingMore && page == selectedTab,
+                            onLoadMore = { viewModel.loadMorePodcasts() },
+                            key = { it.uri },
+                            title = { it.name },
+                            subtitle = { it.publisher ?: "" },
+                            imageUrl = { it.imageUrl },
+                            favorite = { it.favorite },
+                            onClick = { onPodcastClick(it) },
+                            onLongClick = { podcast ->
+                                actionSheetItem = ActionSheetItem(
+                                    title = podcast.name,
+                                    subtitle = podcast.publisher ?: "",
+                                    uri = podcast.uri,
+                                    imageUrl = podcast.imageUrl,
+                                    favorite = podcast.favorite,
+                                    mediaType = MediaType.PODCAST,
+                                    itemId = podcast.itemId,
+                                    inLibrary = podcast.uri.startsWith("library://")
+                                )
+                            },
+                            onPlayClick = { onPodcastClick(it) },
                             providerDomains = { it.providerDomains }
                         )
                         TAB_BROWSE -> BrowseList(
