@@ -32,3 +32,15 @@ internal fun AudioManager.soleBluetoothSinkName(): String? =
         .filter { isBluetoothSink(it.type) }
         .singleOrNull()
         ?.productName?.toString()
+
+/**
+ * `bt:NAME` route keys for EVERY connected Bluetooth sink (there can be several during a connect
+ * handshake, e.g. a head unit's A2DP + LE endpoints, or the car plus paired buds). Used by the
+ * car-audio pin to decide "is a car-flagged device connected?" without depending on the single
+ * routed name, which is transiently null while the Oboe stream settles on connect.
+ */
+internal fun AudioManager.connectedBtSinkKeys(): List<String> =
+    getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        .filter { isBluetoothSink(it.type) }
+        .mapNotNull { it.productName?.toString() }
+        .map { "bt:$it" }

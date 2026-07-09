@@ -211,6 +211,53 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
+    fun carConnect_routedNameUnresolvedWithMultipleSinks_stillPinsViaConnectedSink() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The intermittent "volume didn't go to 100%" race: at connect the routed name is
+            // still null AND more than one BT sink is present, so the sole-sink fallback is null
+            // too -> currentBtRouteKey() is null. The old one-shot pin bailed with no retry.
+            val f = Fixture().apply {
+                routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                btRouteKey = null // routed name still settling
+                devices = arrayOf(btSink("MINI45864"), btSink("Buds")) // two sinks -> not "sole"
+            }
+            val c = f.build()
+            c.start(backgroundScope)
+            advanceUntilIdle()
+
+            f.carDevicesFlow.emit(setOf(CAR_KEY)) // flags MINI45864
+            advanceUntilIdle()
+
+            // Pinned via the connected-sink match despite the unresolved routed key.
+            verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0) }
+            verify { f.playerRepository.setSelectionLock(PlayerSelectionLock(PLAYER, "car_audio")) }
+        }
+
+    @Test
+    fun carConnect_carDeviceAppearsLate_retryBackstopPins() = runTest(UnconfinedTestDispatcher()) {
+        // At connect only a non-car BT sink is enumerated; the car is added to the device list a
+        // moment later (slow A2DP handshake). The bounded retry must catch it and pin.
+        val f = Fixture().apply {
+            routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+            btRouteKey = null
+            devices = arrayOf(btSink("Buds")) // a BT sink connected, but not the car yet
+        }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+        f.assertNoWriteOf(idx(100)) // car not connected yet -> no pin
+
+        c.onBtRouteConnected() // schedules the retry backstop
+        f.devices = arrayOf(f.btSink("Buds"), f.btSink("MINI45864")) // car settles in
+        advanceTimeBy(600) // a few retry ticks
+        advanceUntilIdle()
+
+        verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0) }
+    }
+
+    @Test
     fun carActive_serverVolume_doesNotTouchStreamMusic() = runTest(UnconfinedTestDispatcher()) {
         val f = Fixture().apply { onBtRoute() }
         val c = f.build()
