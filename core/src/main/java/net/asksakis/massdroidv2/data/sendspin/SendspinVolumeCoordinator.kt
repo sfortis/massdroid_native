@@ -302,17 +302,23 @@ class SendspinVolumeCoordinator(
      * the timeout elapses, or the BT sink is gone.
      */
     private fun scheduleCarPinRetryIfPending() {
-        if (carSession != null || !audioManager.anyBluetoothSinkConnected()) return
-        carPinRetryJob?.cancel()
-        carPinRetryJob = scope?.launch {
-            var waited = 0L
-            while (waited < CAR_PIN_RETRY_TIMEOUT_MS &&
-                carSession == null &&
-                audioManager.anyBluetoothSinkConnected()
-            ) {
-                delay(CAR_PIN_RETRY_INTERVAL_MS)
-                waited += CAR_PIN_RETRY_INTERVAL_MS
-                evaluateCarRoute()
+        if (!audioManager.anyBluetoothSinkConnected()) return
+        // Guard the check-then-launch under carLock (same monitor as the carSession/carLockClearJob
+        // transitions): callers reach this from the controller's IO scope while the coordinator's
+        // own collectors run on the Main scope, so an unguarded cancel+assign could leak a job.
+        synchronized(carLock) {
+            if (carSession != null) return
+            carPinRetryJob?.cancel()
+            carPinRetryJob = scope?.launch {
+                var waited = 0L
+                while (waited < CAR_PIN_RETRY_TIMEOUT_MS &&
+                    carSession == null &&
+                    audioManager.anyBluetoothSinkConnected()
+                ) {
+                    delay(CAR_PIN_RETRY_INTERVAL_MS)
+                    waited += CAR_PIN_RETRY_INTERVAL_MS
+                    evaluateCarRoute()
+                }
             }
         }
     }

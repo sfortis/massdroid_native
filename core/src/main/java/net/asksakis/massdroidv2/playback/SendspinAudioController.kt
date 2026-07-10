@@ -918,6 +918,13 @@ class SendspinAudioController(
                 Log.d(TAG, "BT connect auto-play skipped: route did not stabilize on BT")
                 return@launch
             }
+            // A BT re-stabilization (the connect-time A2DP flap re-binds the sink under a new
+            // device id, same product) must cancel any pending car-session exit that a transient
+            // BECOMING_NOISY started, otherwise the debounced exit tears down the car pin and
+            // restores the pre-car volume off 100%. checkRouteChange fires onBtRouteConnected on a
+            // route-transition reconnect, but this native-reopen re-stabilize path did not, so wire
+            // it here too (idempotent: re-affirms the session / cancels the exit, never re-pins).
+            volumeCoordinator.onBtRouteConnected()
             if (_userIntent.value) return@launch  // already playing / intending to
             if (isInActiveCall()) {
                 Log.d(TAG, "BT connect auto-play skipped: active call/communication")
