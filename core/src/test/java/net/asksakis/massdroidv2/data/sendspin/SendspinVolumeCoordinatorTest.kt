@@ -58,6 +58,8 @@ class SendspinVolumeCoordinatorTest {
         // Mutable route view the injected lambdas read; tests flip these.
         @Volatile var routeType: Int? = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
         @Volatile var btRouteKey: String? = null
+        // Authoritative routed-only key (Oboe binding); null unless actively routed to a BT sink.
+        @Volatile var routedBtKey: String? = null
         // Current STREAM_MUSIC index getStreamVolume returns. Kept distinct from the
         // indices under test so writeStreamMusic actually calls setStreamVolume
         // (it no-ops when current == target).
@@ -82,6 +84,7 @@ class SendspinVolumeCoordinatorTest {
             playerRepository = playerRepository,
             currentOutputDeviceType = { routeType },
             currentBtRouteKey = { btRouteKey },
+            currentRoutedBtSinkKey = { routedBtKey },
             carAudioDevicesFlow = carDevicesFlow,
             recordKnownBtDevice = { recordedBt += it },
         )
@@ -94,12 +97,14 @@ class SendspinVolumeCoordinatorTest {
         fun onPhoneRoute() {
             routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
             btRouteKey = null
+            routedBtKey = null
             devices = emptyArray()
         }
 
         fun onBtRoute(name: String = "MINI45864") {
             routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
             btRouteKey = "bt:$name"
+            routedBtKey = "bt:$name"
             devices = arrayOf(btSink(name))
         }
 
@@ -234,9 +239,10 @@ class SendspinVolumeCoordinatorTest {
         }
 
     @Test
-    fun carConnect_carDeviceAppearsLate_retryBackstopPins() = runTest(UnconfinedTestDispatcher()) {
+    fun carConnect_carDeviceAppearsLate_nextRoutePokeEnters() = runTest(UnconfinedTestDispatcher()) {
         // At connect only a non-car BT sink is enumerated; the car is added to the device list a
-        // moment later (slow A2DP handshake). The bounded retry must catch it and pin.
+        // moment later (slow A2DP handshake). The next route poke (device-added -> checkRouteChange)
+        // must then enter + pin (no dedicated retry job needed).
         val f = Fixture().apply {
             routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
             btRouteKey = null
@@ -249,9 +255,8 @@ class SendspinVolumeCoordinatorTest {
         advanceUntilIdle()
         f.assertNoWriteOf(idx(100)) // car not connected yet -> no pin
 
-        c.onBtRouteConnected() // schedules the retry backstop
         f.devices = arrayOf(f.btSink("Buds"), f.btSink("MINI45864")) // car settles in
-        advanceTimeBy(600) // a few retry ticks
+        c.onRouteChanged() // the device-added route poke
         advanceUntilIdle()
 
         verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0) }
@@ -300,7 +305,9 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY)) // pre-car volume captured = phoneVolume (80)
         advanceUntilIdle()
 
-        c.onBtRouteLost()
+        // BT gone: the Oboe unbinds (routedBtKey null) and the sink leaves the device list.
+        f.onPhoneRoute()
+        c.onRouteChanged()
         advanceTimeBy(3_500) // past CAR_LOCK_CLEAR_DEBOUNCE_MS
         advanceUntilIdle()
 
@@ -319,13 +326,58 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY))
         advanceUntilIdle()
 
-        c.onBtRouteLost()
-        advanceTimeBy(1_000)        // mid-debounce
-        c.onBtRouteConnected()      // flap reconnect cancels the pending exit
+        f.routedBtKey = null        // transient loss: Oboe unbound (device still "connected")
+        c.onRouteChanged()          // schedules the settle exit
+        advanceTimeBy(1_000)        // mid-settle
+        f.routedBtKey = "bt:MINI45864" // flap re-binds to the car
+        c.onRouteChanged()          // routed to car again -> cancels the pending exit
         advanceTimeBy(3_500)
         advanceUntilIdle()
 
         // No restore-to-pre-car and no lock release happened.
+        f.assertNoWriteOf(idx(80))
+        verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carDisconnect_deviceStillListedButOboeUnbound_restores() = runTest(UnconfinedTestDispatcher()) {
+        // Real disconnect: Android keeps the A2DP device in getDevices for a while, but the Oboe
+        // routed device unbinds immediately. The exit uses the routed-only truth, so the lingering
+        // "connected" device must NOT fool the settle re-check into aborting the restore.
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+
+        f.routedBtKey = null // Oboe unbound; devices still lists MINI45864 (Android lag)
+        c.onRouteChanged()
+        advanceTimeBy(3_500)
+        advanceUntilIdle()
+
+        verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(80), 0) }
+        verify { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carDisconnect_flapReBindsByExpiry_settleRecheckAborts() = runTest(UnconfinedTestDispatcher()) {
+        // Even with NO reconnect poke, the settle re-check must abort the exit when the Oboe has
+        // re-bound to the car by expiry (the native-reopen flap that fires no route event).
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+
+        f.routedBtKey = null   // transient unbind -> schedule exit
+        c.onRouteChanged()
+        advanceTimeBy(1_000)
+        f.routedBtKey = "bt:MINI45864" // re-bound, but NO onRouteChanged poke this time
+        advanceTimeBy(3_500)   // settle fires -> re-check sees car routed -> abort
+        advanceUntilIdle()
+
         f.assertNoWriteOf(idx(80))
         verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
     }

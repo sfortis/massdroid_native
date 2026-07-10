@@ -67,6 +67,12 @@ class SendspinVolumeCoordinator(
     private val currentOutputDeviceType: () -> Int?,
     /** Current BT output device route key (`bt:NAME`), or null if not on BT. */
     private val currentBtRouteKey: () -> String?,
+    /**
+     * Authoritative routed BT sink key (`bt:NAME`) from the Oboe stream binding ONLY, with no
+     * connected-sink fallback. Null the moment the stream unbinds from a BT sink. Used for the
+     * car-session exit confirmation (a lingering "connected" A2DP device must not abort a restore).
+     */
+    private val currentRoutedBtSinkKey: () -> String?,
     /** Route keys flagged as car audio (full volume on connect, no bridge). */
     private val carAudioDevicesFlow: Flow<Set<String>>,
     /** Record a BT route key as seen (for the car-audio picker). */
@@ -114,11 +120,6 @@ class SendspinVolumeCoordinator(
         // pushed. Sized above real-world WS round-trips (in-car cellular ~2s).
         private const val ECHO_EXPIRY_MS = 6_000L
         private const val MAX_PENDING_ECHOES = 24
-        // Car-pin retry backstop: re-check the car route this often, up to this long, while a BT
-        // sink is connected but the car session hasn't entered (routed name / device list still
-        // settling on connect). Sized to cover a slow A2DP handshake without a long busy loop.
-        private const val CAR_PIN_RETRY_INTERVAL_MS = 200L
-        private const val CAR_PIN_RETRY_TIMEOUT_MS = 3_000L
     }
 
     private data class PendingEcho(val pct: Int, val atMs: Long)
@@ -161,11 +162,10 @@ class SendspinVolumeCoordinator(
     private data class CarSession(val routeKey: String, val preCarVolume: Int)
     @Volatile private var carSession: CarSession? = null
     private val carLock = Any()
-    // Pending debounced exit of the car session (cancelled by a flap reconnect).
+    // Pending settle-windowed exit of the car session (aborted at expiry if still routed to car).
     @Volatile private var carLockClearJob: Job? = null
-    // Bounded poll that re-tries the car pin while the route settles on connect
-    // (cancelled once the session enters, on route loss, or on stop).
-    @Volatile private var carPinRetryJob: Job? = null
+    // Last BT route key recorded for the picker, to dedupe recordKnownBtDevice launches.
+    @Volatile private var lastSeenBtKey: String? = null
     @Volatile private var awaitingBaseline: Boolean = true
     @Volatile private var lastKnownMaVolume: Int = 100
     // THE canonical "remembered Sendspin volume": the phone-route level. Persisted
@@ -219,74 +219,74 @@ class SendspinVolumeCoordinator(
     }
 
     /**
-     * The output route just settled on a BT device. Records it for the car-audio
-     * picker and re-evaluates the car session (enters/affirms CarActive if the
-     * route is car-flagged).
-     */
-    fun onBtRouteConnected() {
-        currentBtRouteKey()?.let { key -> scope?.launch { recordKnownBtDevice(key) } }
-        evaluateCarRoute()
-        // Backstop for the connect-settling window: if the car session hasn't entered yet
-        // (the car device / routed name isn't resolvable at this instant), poll briefly.
-        scheduleCarPinRetryIfPending()
-    }
-
-    /**
-     * Enter or affirm the car session for the CURRENT route. Idempotent and
-     * self-determining from [currentBtRouteKey], so it is safe to call from route
-     * events AND from the clientId / car-devices flow collectors — covering
-     * cold-start (already in the car at launch) and the late-arriving Sendspin
-     * player id, neither of which fires a route transition.
+     * Single route-state entry point. EVERY route observer (AudioManager device callback /
+     * checkRouteChange, ACTION_AUDIO_BECOMING_NOISY, native Oboe re-stabilize) calls this on any
+     * change, with no connect/lost distinction. All car-session transitions derive from one truth
+     * here, which is why a source can no longer "forget" to notify and drop/revert the pin:
      *
-     * State machine: NoCar -> CarActive on the first connect to a car-flagged
-     * route (capture pre-car volume, lock transport, pin to 100%). A flap
-     * reconnect (same routeKey already CarActive) only re-affirms the lock and
-     * cancels a pending exit — it never re-pins or re-captures.
+     * - ENTER (rising, optimistic + prompt): no session and a car-flagged sink is the current
+     *   output ([resolveCarKey], routed-or-connected so it catches the connect-settling window) ->
+     *   capture pre-car volume, lock transport, pin 100%, ONCE.
+     * - STAY (session active AND still routed to the car): cancel any pending exit (absorbs a flap).
+     * - EXIT (session active AND not routed to the car): start/keep a settle timer; at expiry it
+     *   re-checks the AUTHORITATIVE routed truth ([routedCarActive]) and only then releases the
+     *   lock + restores the pre-car volume. A connect-handshake flap re-binds within the window, so
+     *   the re-check aborts the exit. (Replaces the old connect/lost split + reconnect-cancel + retry.)
      */
-    private fun evaluateCarRoute() {
-        val key = resolveCarKey() ?: return
-        val id = cachedSendspinPlayerId ?: return  // re-runs once the id flow emits
-        val entered: Boolean
-        synchronized(carLock) {
-            carLockClearJob?.cancel()
-            // Lock all transport/UI to the phone (Sendspin) while the car is
-            // connected, so play/pause/next never leaks to a remote player.
-            playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
-            entered = carSession?.routeKey != key
-            if (entered) {
-                // Capture the pre-car volume from phoneVolume (the last genuine
-                // phone-route level), NOT lastKnownMaVolume: on a BT (re)connect an
-                // absolute-volume speaker pushes its stored level (often the pinned
-                // 100%) into lastKnownMaVolume just before we recognise the car, which
-                // would capture 100 and make the restore a no-op. phoneVolume is frozen
-                // while BT is connected, so it holds the real pre-car level. On a
-                // car->car switch carry the ORIGINAL pre-car level forward.
-                val preCar = carSession?.preCarVolume ?: phoneVolume
-                carSession = CarSession(key, preCar)
+    fun onRouteChanged() {
+        // Record any seen BT device for the car-audio picker (deduped so a chatty route stream
+        // doesn't spawn a launch per event).
+        currentBtRouteKey()?.let { seen ->
+            if (seen != lastSeenBtKey) {
+                lastSeenBtKey = seen
+                scope?.launch { recordKnownBtDevice(seen) }
             }
         }
-        if (!entered) {
-            Log.d(TAG, "car-audio $key reconnected (flap) -> hold")
-            return
+        val id = cachedSendspinPlayerId
+        val pinKey: String? = synchronized(carLock) {
+            when {
+                carSession == null -> {
+                    val key = resolveCarKey() ?: return
+                    if (id == null) return  // re-runs once the id flow emits
+                    carLockClearJob?.cancel()
+                    carLockClearJob = null
+                    // Capture pre-car from phoneVolume (the frozen-while-BT phone-route level), NOT
+                    // lastKnownMaVolume which an absolute-volume speaker overwrites with its own
+                    // (often 100%) level on connect, making the restore a no-op.
+                    carSession = CarSession(key, phoneVolume)
+                    playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
+                    key
+                }
+                routedCarActive() -> {
+                    // Still on the car (or a flap just re-bound): re-affirm the lock, drop any exit.
+                    carLockClearJob?.cancel()
+                    carLockClearJob = null
+                    id?.let { playerRepository.setSelectionLock(PlayerSelectionLock(it, CAR_LOCK_REASON)) }
+                    null
+                }
+                else -> {
+                    scheduleCarExit()
+                    null
+                }
+            }
         }
-        Log.d(TAG, "car-audio $key connected -> pin 100% (pre-car ${carSession?.preCarVolume}%)")
-        // Pin to 100% via the normal volume path (MA + STREAM_MUSIC), once.
-        writeStreamMusic(100)
-        recordLocalPush(100)
-        playerRepository.applyVolumeOptimistic(id, 100)
-        launchPushToServer(id, 100, reason = "car-pin")
+        if (pinKey != null && id != null) {
+            Log.d(TAG, "car-audio $pinKey active -> pin 100% (pre-car ${carSession?.preCarVolume}%)")
+            // Pin to 100% via the normal volume path (MA + STREAM_MUSIC), once.
+            writeStreamMusic(100)
+            recordLocalPush(100)
+            playerRepository.applyVolumeOptimistic(id, 100)
+            launchPushToServer(id, 100, reason = "car-pin")
+        }
     }
 
     /**
-     * The car-flagged route key to act on, or null if the current output is not a car device.
-     *
-     * The car pin cares whether a car-flagged device is CONNECTED, not which single device the
-     * Oboe stream is currently bound to. Resolving from the routed name alone was the intermittent
-     * "volume didn't go to 100%" bug: at connect the routed name lags (null while the stream
-     * settles) and the sole-sink fallback returns null when more than one BT sink is momentarily
-     * present, so [currentBtRouteKey] is transiently null and the one-shot pin was skipped with no
-     * retry. So: honor a resolved routed key exactly (a known non-car device -> no pin); only when
-     * it is still null fall back to any connected car-flagged sink.
+     * The car-flagged route key to ENTER on, or null if the current output is not a car device.
+     * Optimistic (routed-or-connected): honors a resolved routed key exactly (a known non-car
+     * device -> no pin), and only when the routed name is still null (settling on connect) falls
+     * back to any connected car-flagged sink. The connected-sink fallback is safe for ENTER (we are
+     * connecting) but must NOT be used for exit (a lingering "connected" device lags a real
+     * disconnect) - the exit uses [routedCarActive] instead.
      */
     private fun resolveCarKey(): String? {
         val routed = currentBtRouteKey()
@@ -294,64 +294,27 @@ class SendspinVolumeCoordinator(
         return audioManager.connectedBtSinkKeys().firstOrNull { it in carAudioDevices }
     }
 
-    /**
-     * While a BT sink is connected but no car session has entered yet, briefly re-run
-     * [evaluateCarRoute] so a car device whose routed name / device list is still settling at the
-     * connect instant is not permanently missed (nothing else re-triggers the one-shot pin while
-     * the device stays connected). Bounded and cancellable: stops as soon as the session enters,
-     * the timeout elapses, or the BT sink is gone.
-     */
-    private fun scheduleCarPinRetryIfPending() {
-        if (!audioManager.anyBluetoothSinkConnected()) return
-        // Guard the check-then-launch under carLock (same monitor as the carSession/carLockClearJob
-        // transitions): callers reach this from the controller's IO scope while the coordinator's
-        // own collectors run on the Main scope, so an unguarded cancel+assign could leak a job.
-        synchronized(carLock) {
-            if (carSession != null) return
-            carPinRetryJob?.cancel()
-            carPinRetryJob = scope?.launch {
-                var waited = 0L
-                while (waited < CAR_PIN_RETRY_TIMEOUT_MS &&
-                    carSession == null &&
-                    audioManager.anyBluetoothSinkConnected()
-                ) {
-                    delay(CAR_PIN_RETRY_INTERVAL_MS)
-                    waited += CAR_PIN_RETRY_INTERVAL_MS
-                    evaluateCarRoute()
-                }
-            }
-        }
-    }
+    /** True when the Oboe stream is bound RIGHT NOW to a car-flagged sink (authoritative exit truth). */
+    private fun routedCarActive(): Boolean = currentRoutedBtSinkKey()?.let { it in carAudioDevices } ?: false
 
     /**
-     * The output route left an external sink (BT dropped to phone speaker).
-     * Schedules a debounced exit of the car session: a genuine disconnect ends it
-     * after [CAR_LOCK_CLEAR_DEBOUNCE_MS] (release lock + restore pre-car volume),
-     * but a flap reconnect ([onBtRouteConnected]) cancels the exit so transport
-     * never leaks to a remote player in the gap.
+     * Begin (or keep) the settle-windowed car-session exit. Must be called under [carLock]. At
+     * expiry it re-checks [routedCarActive]: a connect flap that re-bound within the window aborts
+     * the exit, a durable disconnect proceeds to release the lock + restore the pre-car volume.
      */
-    fun onBtRouteLost() {
-        carPinRetryJob?.cancel()
-        synchronized(carLock) {
-            if (carSession == null) return
-            // Don't restart a countdown that's already running: this fires from BOTH
-            // the fast "becoming noisy" signal AND the (much later) OS route-left-BT
-            // detection — restarting would push the restore back to the slow signal.
-            // The first trigger's timer stands; a reconnect (evaluateCarRoute) cancels
-            // it for flap protection. No route re-check here: both route signals lag
-            // ~8s on disconnect, so we rely on the reconnect-cancel instead.
-            if (carLockClearJob?.isActive == true) return
-            carLockClearJob = scope?.launch {
-                delay(CAR_LOCK_CLEAR_DEBOUNCE_MS)
-                val ended: CarSession
-                synchronized(carLock) {
-                    ended = carSession ?: return@launch
-                    carSession = null
-                    playerRepository.setSelectionLock(null)
-                }
-                Log.d(TAG, "car-audio gone -> release lock + restore ${ended.preCarVolume}%")
-                restoreCarVolume(ended.preCarVolume)
+    private fun scheduleCarExit() {
+        if (carLockClearJob?.isActive == true) return
+        carLockClearJob = scope?.launch {
+            delay(CAR_LOCK_CLEAR_DEBOUNCE_MS)
+            val ended: CarSession
+            synchronized(carLock) {
+                if (routedCarActive()) return@launch  // came back within the window -> flap, abort
+                ended = carSession ?: return@launch
+                carSession = null
+                playerRepository.setSelectionLock(null)
             }
+            Log.d(TAG, "car-audio gone -> release lock + restore ${ended.preCarVolume}%")
+            restoreCarVolume(ended.preCarVolume)
         }
     }
 
@@ -403,13 +366,13 @@ class SendspinVolumeCoordinator(
         jobs += coroutineScope.launch {
             // Re-evaluate on flag changes too: flagging the currently-connected
             // device as car audio takes effect immediately (no reconnect needed).
-            carAudioDevicesFlow.collect { carAudioDevices = it; evaluateCarRoute() }
+            carAudioDevicesFlow.collect { carAudioDevices = it; onRouteChanged() }
         }
         jobs += coroutineScope.launch {
             // The Sendspin player id arrives async; re-evaluate so a cold-start
             // already in the car locks/pins once the id is known (covers the
             // route-already-settled case that fires no transition).
-            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id; evaluateCarRoute() }
+            sendspinClientIdFlow.collect { id -> cachedSendspinPlayerId = id; onRouteChanged() }
         }
         jobs += coroutineScope.launch {
             serverVolumeEvents.collect { pct -> onServerVolumeEvent(pct) }
@@ -426,8 +389,6 @@ class SendspinVolumeCoordinator(
         synchronized(carLock) {
             carLockClearJob?.cancel()
             carLockClearJob = null
-            carPinRetryJob?.cancel()
-            carPinRetryJob = null
             carSession = null
             // Release a held car lock so a stopped Sendspin can't pin player selection.
             if (playerRepository.selectionLock.value?.reason == CAR_LOCK_REASON) {
