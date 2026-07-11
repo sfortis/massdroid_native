@@ -167,19 +167,6 @@ object AppModule {
                 }
                 name?.let { "bt:$it" }
             },
-            // Authoritative "the Oboe stream is bound to this BT sink RIGHT NOW", with NO
-            // soleBluetoothSinkName fallback. Used only for the car-session EXIT confirmation:
-            // after a real disconnect Android keeps the A2DP device "connected" (so getDevices /
-            // soleBluetoothSinkName would still report it and wrongly abort the restore), but the
-            // Oboe routed device unbinds immediately - so this is the reliable falling-edge truth.
-            currentRoutedBtSinkKey = {
-                val routedType = sendspinManager.getRoutedDeviceType()
-                if (routedType != null && isBluetoothSink(routedType)) {
-                    sendspinManager.getRoutedDeviceProductName()?.let { "bt:$it" }
-                } else {
-                    null
-                }
-            },
             carAudioDevicesFlow = settingsRepository.carAudioBtDevices,
             recordKnownBtDevice = { settingsRepository.recordKnownBtDevice(it) },
         )

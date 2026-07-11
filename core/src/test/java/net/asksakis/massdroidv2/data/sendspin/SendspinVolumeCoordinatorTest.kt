@@ -58,8 +58,6 @@ class SendspinVolumeCoordinatorTest {
         // Mutable route view the injected lambdas read; tests flip these.
         @Volatile var routeType: Int? = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
         @Volatile var btRouteKey: String? = null
-        // Authoritative routed-only key (Oboe binding); null unless actively routed to a BT sink.
-        @Volatile var routedBtKey: String? = null
         // Current STREAM_MUSIC index getStreamVolume returns. Kept distinct from the
         // indices under test so writeStreamMusic actually calls setStreamVolume
         // (it no-ops when current == target).
@@ -84,7 +82,6 @@ class SendspinVolumeCoordinatorTest {
             playerRepository = playerRepository,
             currentOutputDeviceType = { routeType },
             currentBtRouteKey = { btRouteKey },
-            currentRoutedBtSinkKey = { routedBtKey },
             carAudioDevicesFlow = carDevicesFlow,
             recordKnownBtDevice = { recordedBt += it },
         )
@@ -97,14 +94,12 @@ class SendspinVolumeCoordinatorTest {
         fun onPhoneRoute() {
             routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
             btRouteKey = null
-            routedBtKey = null
             devices = emptyArray()
         }
 
         fun onBtRoute(name: String = "MINI45864") {
             routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
             btRouteKey = "bt:$name"
-            routedBtKey = "bt:$name"
             devices = arrayOf(btSink(name))
         }
 
@@ -305,7 +300,7 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY)) // pre-car volume captured = phoneVolume (80)
         advanceUntilIdle()
 
-        // BT gone: the Oboe unbinds (routedBtKey null) and the sink leaves the device list.
+        // BT gone: the route leaves BT (back to the phone speaker) and the sink leaves the list.
         f.onPhoneRoute()
         c.onRouteChanged()
         advanceTimeBy(3_500) // past CAR_LOCK_CLEAR_DEBOUNCE_MS
@@ -326,10 +321,10 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY))
         advanceUntilIdle()
 
-        f.routedBtKey = null        // transient loss: Oboe unbound (device still "connected")
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // transient: route briefly off BT
         c.onRouteChanged()          // schedules the settle exit
         advanceTimeBy(1_000)        // mid-settle
-        f.routedBtKey = "bt:MINI45864" // flap re-binds to the car
+        f.onBtRoute()               // flap re-binds to the car (routeType BT + car connected)
         c.onRouteChanged()          // routed to car again -> cancels the pending exit
         advanceTimeBy(3_500)
         advanceUntilIdle()
@@ -340,10 +335,32 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
-    fun carDisconnect_deviceStillListedButOboeUnbound_restores() = runTest(UnconfinedTestDispatcher()) {
-        // Real disconnect: Android keeps the A2DP device in getDevices for a while, but the Oboe
-        // routed device unbinds immediately. The exit uses the routed-only truth, so the lingering
-        // "connected" device must NOT fool the settle re-check into aborting the restore.
+    fun carActive_routedTypeStillBtButNameUnresolved_doesNotExit() = runTest(UnconfinedTestDispatcher()) {
+        // Regression (cold-start-already-in-car): the Oboe product name resolves to null/"unknown"
+        // for seconds even while genuinely routed to the car, so a name-based exit check falsely
+        // reported "gone" and tore down the live session. The exit gates on the routed TYPE (still
+        // BT) + car connected, so an unresolved name must NOT trigger a restore.
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY)) // entered + pinned
+        advanceUntilIdle()
+
+        f.btRouteKey = null // product name unresolved upstream (would be bt:unknown); type stays BT
+        c.onRouteChanged()
+        advanceTimeBy(3_500)
+        advanceUntilIdle()
+
+        f.assertNoWriteOf(idx(80))
+        verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carDisconnect_routedTypeLeftBtButDeviceStillListed_restores() = runTest(UnconfinedTestDispatcher()) {
+        // Real disconnect: the routed TYPE leaves BT immediately (stream rebinds to builtin), but
+        // Android keeps the A2DP device in getDevices for a while. The type gate fails first, so the
+        // lingering "connected" device does NOT abort the restore.
         val f = Fixture().apply { onBtRoute() }
         val c = f.build()
         c.start(backgroundScope)
@@ -351,7 +368,7 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY))
         advanceUntilIdle()
 
-        f.routedBtKey = null // Oboe unbound; devices still lists MINI45864 (Android lag)
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // routed off BT; devices still lists car
         c.onRouteChanged()
         advanceTimeBy(3_500)
         advanceUntilIdle()
@@ -362,8 +379,8 @@ class SendspinVolumeCoordinatorTest {
 
     @Test
     fun carDisconnect_flapReBindsByExpiry_settleRecheckAborts() = runTest(UnconfinedTestDispatcher()) {
-        // Even with NO reconnect poke, the settle re-check must abort the exit when the Oboe has
-        // re-bound to the car by expiry (the native-reopen flap that fires no route event).
+        // Even with NO reconnect poke, the settle re-check must abort the exit when the route has
+        // re-settled on BT (car connected) by expiry (a native-reopen flap that fires no route event).
         val f = Fixture().apply { onBtRoute() }
         val c = f.build()
         c.start(backgroundScope)
@@ -371,10 +388,10 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY))
         advanceUntilIdle()
 
-        f.routedBtKey = null   // transient unbind -> schedule exit
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // transient off BT -> schedule exit
         c.onRouteChanged()
         advanceTimeBy(1_000)
-        f.routedBtKey = "bt:MINI45864" // re-bound, but NO onRouteChanged poke this time
+        f.onBtRoute()          // re-settled on the car, but NO onRouteChanged poke this time
         advanceTimeBy(3_500)   // settle fires -> re-check sees car routed -> abort
         advanceUntilIdle()
 

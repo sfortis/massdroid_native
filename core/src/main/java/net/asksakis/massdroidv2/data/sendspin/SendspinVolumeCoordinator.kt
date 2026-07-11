@@ -67,12 +67,6 @@ class SendspinVolumeCoordinator(
     private val currentOutputDeviceType: () -> Int?,
     /** Current BT output device route key (`bt:NAME`), or null if not on BT. */
     private val currentBtRouteKey: () -> String?,
-    /**
-     * Authoritative routed BT sink key (`bt:NAME`) from the Oboe stream binding ONLY, with no
-     * connected-sink fallback. Null the moment the stream unbinds from a BT sink. Used for the
-     * car-session exit confirmation (a lingering "connected" A2DP device must not abort a restore).
-     */
-    private val currentRoutedBtSinkKey: () -> String?,
     /** Route keys flagged as car audio (full volume on connect, no bridge). */
     private val carAudioDevicesFlow: Flow<Set<String>>,
     /** Record a BT route key as seen (for the car-audio picker). */
@@ -294,8 +288,22 @@ class SendspinVolumeCoordinator(
         return audioManager.connectedBtSinkKeys().firstOrNull { it in carAudioDevices }
     }
 
-    /** True when the Oboe stream is bound RIGHT NOW to a car-flagged sink (authoritative exit truth). */
-    private fun routedCarActive(): Boolean = currentRoutedBtSinkKey()?.let { it in carAudioDevices } ?: false
+    /**
+     * True when the active output is RIGHT NOW a car-flagged BT sink (authoritative exit truth).
+     *
+     * Gated on the routed device TYPE, not the routed product name: the name lags (null/"unknown")
+     * for seconds after a connect or during a reopen even while genuinely bound to the car, which
+     * made a name-based check falsely report "gone" and spuriously exit a live car session (seen in
+     * a cold-start-already-in-car log). The routed TYPE leaves BT promptly on a real disconnect (the
+     * stream rebinds to the builtin output), so it is the reliable falling edge; the connected-sink
+     * list only supplies the car identity and is consulted ONLY while the type is still BT (so its
+     * ~8s post-disconnect lag can never abort a real restore - by then the type has already left BT).
+     */
+    private fun routedCarActive(): Boolean {
+        val type = currentOutputDeviceType() ?: return false
+        if (!isBluetoothSink(type)) return false
+        return audioManager.connectedBtSinkKeys().any { it in carAudioDevices }
+    }
 
     /**
      * Begin (or keep) the settle-windowed car-session exit. Must be called under [carLock]. At
