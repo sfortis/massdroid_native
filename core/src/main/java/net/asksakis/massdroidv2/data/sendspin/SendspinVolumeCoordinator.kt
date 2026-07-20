@@ -300,8 +300,16 @@ class SendspinVolumeCoordinator(
      * ~8s post-disconnect lag can never abort a real restore - by then the type has already left BT).
      */
     private fun routedCarActive(): Boolean {
-        val type = currentOutputDeviceType() ?: return false
-        if (!isBluetoothSink(type)) return false
+        // A NULL routed type means the Oboe stream is mid-reopen (routedDeviceType is
+        // reset to -1 in releaseInternal until the AudioDeviceCallback re-resolves),
+        // NOT a disconnect. A real disconnect resolves to a CONCRETE non-BT (builtin)
+        // type. Treating null as "gone" spuriously exited a live car session across a
+        // reopen (duck/resume, route change, underrun rebind) and restored the stale
+        // pre-car volume while the car was still connected. So bail only on a concrete
+        // non-BT type; null (unresolved) or a BT type falls through to the connected-
+        // car-sink truth, mirroring how resolveCarKey handles a null routed key on entry.
+        val type = currentOutputDeviceType()
+        if (type != null && !isBluetoothSink(type)) return false
         return audioManager.connectedBtSinkKeys().any { it in carAudioDevices }
     }
 
