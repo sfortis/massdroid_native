@@ -7,6 +7,7 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -97,7 +98,6 @@ class ProximityController(
             androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
         )
         observeProximityConfig()
-        observeBluetoothState()
         noRoomStopController.start()
     }
 
@@ -210,39 +210,31 @@ class ProximityController(
             var wasEnabled = false
             var roomCount = 0
             var roomHash = 0
-            proximityConfigStore.config.collect { config ->
-                val shouldRun = shouldRunProximity(config)
-                val currentHash = config.rooms.sumOf { it.beaconProfiles.size + it.id.hashCode() }
-                val structureChanged = config.enabled != wasEnabled || config.rooms.size != roomCount || currentHash != roomHash
-                wasEnabled = config.enabled
-                roomCount = config.rooms.size
-                roomHash = currentHash
-                if (shouldRun && (structureChanged || proximityJob?.isActive != true)) {
-                    startProximityEngine()
-                } else if (!shouldRun) {
-                    stopEngine()
-                }
-            }
-        }
-    }
-
-    private fun observeBluetoothState() {
-        scope.launch {
-            try {
-                proximityScanner.observeBluetoothState()
-                    .distinctUntilChanged()
-                    .collect { enabled ->
-                        if (enabled) return@collect
-
-                        val config = proximityConfigStore.config.value
-                        if (!config.enabled) return@collect
-
-                        Log.d(TAG, "Bluetooth turned off: disabling Follow Me")
-                        proximityConfigStore.update { it.copy(enabled = false) }
+            var wasBtOn = true
+            // Bluetooth is a RUNTIME gate, not a persisted toggle. While BT is off we stop scanning
+            // but keep the user's enabled intent in config, so a BT flap (common on car connect) no
+            // longer permanently disables Follow Me: it resumes automatically when BT returns. The
+            // settings UI already surfaces this paused state ("Bluetooth is off. Turn it on to detect
+            // room changes.") off config.enabled && !btEnabled.
+            combine(
+                proximityConfigStore.config,
+                proximityScanner.observeBluetoothState().distinctUntilChanged(),
+            ) { config, btOn -> config to btOn }
+                .collect { (config, btOn) ->
+                    val shouldRun = shouldRunProximity(config) && btOn
+                    val currentHash = config.rooms.sumOf { it.beaconProfiles.size + it.id.hashCode() }
+                    val structureChanged = config.enabled != wasEnabled ||
+                        config.rooms.size != roomCount || currentHash != roomHash || btOn != wasBtOn
+                    wasEnabled = config.enabled
+                    roomCount = config.rooms.size
+                    roomHash = currentHash
+                    wasBtOn = btOn
+                    if (shouldRun && (structureChanged || proximityJob?.isActive != true)) {
+                        startProximityEngine()
+                    } else if (!shouldRun) {
+                        stopEngine()
                     }
-            } catch (e: Exception) {
-                Log.w(TAG, "Bluetooth state observer failed: ${e.message}")
-            }
+                }
         }
     }
 

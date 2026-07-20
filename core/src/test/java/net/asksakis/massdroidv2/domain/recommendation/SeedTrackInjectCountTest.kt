@@ -14,15 +14,15 @@ class SeedTrackInjectCountTest {
 
     @Test
     fun `zero discovery reserves up to the max fraction`() {
-        // (1 - 0) * 0.4 * 40 = 16
-        assertThat(seedTrackInjectCount(discovery = 0.0, target = 40)).isEqualTo(16)
+        // (1 - 0) * 0.30 * 40 = 12
+        assertThat(seedTrackInjectCount(discovery = 0.0, target = 40)).isEqualTo(12)
     }
 
     @Test
     fun `mid discovery reserves a proportional slice`() {
-        // (1 - 0.5) * 0.4 * 40 = 8
-        assertThat(seedTrackInjectCount(discovery = 0.5, target = 40)).isEqualTo(8)
-        // (1 - 0.875) * 0.4 * 40 = 2 (the value observed in the 5-run test)
+        // (1 - 0.5) * 0.30 * 40 = 6
+        assertThat(seedTrackInjectCount(discovery = 0.5, target = 40)).isEqualTo(6)
+        // (1 - 0.875) * 0.30 * 40 = 1.5 -> 2
         assertThat(seedTrackInjectCount(discovery = 0.875, target = 40)).isEqualTo(2)
     }
 

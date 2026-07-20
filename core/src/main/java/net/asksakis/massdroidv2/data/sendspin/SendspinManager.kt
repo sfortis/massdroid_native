@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 
 class SendspinManager(
@@ -44,6 +46,12 @@ class SendspinManager(
         // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
         private const val DUCK_GAIN = 0.1f
         private const val HEARTBEAT_INTERVAL_MS = 2000L
+        // After stream/end, wait this long before fully releasing the audio
+        // resources (Oboe output, wake + Wi-Fi locks). A normal track change is
+        // stream/end -> stream/start within ~1-3s and cancels the teardown; only a
+        // real stop (player deselect / group leave, no stream/start follows) lets
+        // it fire. Kept conservative so track gaps never churn the output.
+        private const val IDLE_TEARDOWN_GRACE_MS = 15_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -65,6 +73,32 @@ class SendspinManager(
 
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
+
+    // Whether the phone is actively an audio OUTPUT (a protocol stream is live).
+    // Distinct from [connectionState]: the client stays connected/STREAMING as an
+    // available player even after playback moves elsewhere, but audio resources
+    // (Oboe output, wake + Wi-Fi locks) must only be held while this is true. The
+    // controller observes this to acquire/release those locks. Set true on
+    // stream/start; set false after the [IDLE_TEARDOWN_GRACE_MS] grace once a
+    // stream/end is not followed by a new stream. See the idle-teardown below.
+    private val _audioResourcesActive = MutableStateFlow(false)
+    val audioResourcesActive: StateFlow<Boolean> = _audioResourcesActive.asStateFlow()
+
+    // Serializes the stream/start, stream/end-teardown, stop, and engine-swap
+    // lifecycle transitions so a grace-timer teardown cannot release the engine
+    // while a concurrent stream/start is configuring it. [streamEpoch] bumps on
+    // every such transition; a pending teardown captures it and no-ops if stale.
+    private val lifecycleMutex = Mutex()
+    @Volatile private var streamEpoch = 0L
+    private var idleTeardownJob: Job? = null
+
+    // Maps the active engine's output-active transitions to [_audioResourcesActive]
+    // so the controller holds wake + Wi-Fi locks only while audio actually flows:
+    // a long pause / idle gap releases them (engine stays configured, resume
+    // re-acquires). Wired on both engines and re-wired on swap.
+    private val outputActiveHandler: (Boolean) -> Unit = { active ->
+        _audioResourcesActive.value = active
+    }
 
     // Server-pushed volume and mute events. Consumed by the
     // SendspinVolumeCoordinator to translate MA-side values into the phone's
@@ -136,6 +170,10 @@ class SendspinManager(
     private var clientName: String = ""
 
     init {
+        // Both engines exist for the app's lifetime (swapped on group join/leave);
+        // wire the output-active handler on each so locks track playback on either.
+        (directEngine as? SendspinPlaybackEngine)?.onOutputActiveChanged = outputActiveHandler
+        (syncEngine as? SendspinPlaybackEngine)?.onOutputActiveChanged = outputActiveHandler
         scope.launch {
             sessionEventBus.resets.collect {
                 if (_enabled.value || _connectionState.value != SendspinState.DISCONNECTED) {
@@ -223,7 +261,7 @@ class SendspinManager(
         client.refresh()
     }
 
-    private fun handleIncoming(incoming: SendspinIncoming) {
+    private suspend fun handleIncoming(incoming: SendspinIncoming) {
         when (incoming) {
             is SendspinIncoming.AuthOk -> {
                 Log.d(TAG, "Auth OK, sending hello")
@@ -296,7 +334,15 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> group/update")
             }
 
-            is SendspinIncoming.StreamStart -> {
+            is SendspinIncoming.StreamStart -> lifecycleMutex.withLock {
+                // A new stream cancels any pending idle teardown (this is the
+                // normal track-change stream/end -> stream/start). Bump the epoch
+                // so a teardown already past its delay() no-ops instead of racing
+                // the configure() below.
+                streamEpoch++
+                idleTeardownJob?.cancel()
+                idleTeardownJob = null
+                _audioResourcesActive.value = true
                 val info = incoming.payload.player
                 val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
                 Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
@@ -321,10 +367,33 @@ class SendspinManager(
             }
 
             is SendspinIncoming.StreamEnd -> {
-                Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
-                hasActiveProtocolStream = false
-                lastStreamInfo = null
-                audio.onStreamEnd()
+                val myEpoch = lifecycleMutex.withLock {
+                    Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+                    hasActiveProtocolStream = false
+                    lastStreamInfo = null
+                    audio.onStreamEnd()
+                    idleTeardownJob?.cancel()
+                    ++streamEpoch
+                }
+                // Full audio-resource teardown after a grace window IF no new
+                // stream arrives (real stop / player deselect, not a track change).
+                // engine.release() closes the Oboe output + MediaCodec and joins the
+                // producer (configured=false, so the next stream/start rebuilds via
+                // the tested full configure path); the client stays connected as an
+                // available player. Epoch-guarded so a stream/start, stop, or engine
+                // swap during the grace makes this a no-op.
+                idleTeardownJob = scope.launch {
+                    delay(IDLE_TEARDOWN_GRACE_MS)
+                    lifecycleMutex.withLock {
+                        if (streamEpoch != myEpoch || hasActiveProtocolStream) return@withLock
+                        if (_connectionState.value == SendspinState.DISCONNECTED ||
+                            _connectionState.value == SendspinState.CONNECTING
+                        ) return@withLock
+                        Log.d(TAG, "Sendspin idle ${IDLE_TEARDOWN_GRACE_MS}ms after stream/end: releasing audio resources (client stays connected)")
+                        engine.release()
+                        _audioResourcesActive.value = false
+                    }
+                }
             }
 
             is SendspinIncoming.StreamClear -> {
@@ -569,6 +638,12 @@ class SendspinManager(
         // (stops its playback thread + AudioTrack), then wire up the incoming
         // one. The next stream/start (configure) sets it up fresh — a group
         // join/leave is already a hard relock boundary.
+        // Invalidate any pending idle teardown: this swap releases the outgoing
+        // engine itself, and the epoch bump keeps a mid-delay teardown from
+        // racing/double-releasing the freshly swapped-in engine.
+        idleTeardownJob?.cancel()
+        idleTeardownJob = null
+        streamEpoch++
         val carrySyncDelay = engine.syncDelayMs
         val carryAcoustic = engine.routeAcousticExtraUs
         engine.onSyncStateChanged = null
@@ -770,6 +845,12 @@ class SendspinManager(
     }
 
     fun stop() {
+        // Invalidate any pending idle teardown (epoch bump makes a mid-delay
+        // teardown no-op under the mutex; releaseInternal is idempotent anyway).
+        idleTeardownJob?.cancel()
+        idleTeardownJob = null
+        streamEpoch++
+        _audioResourcesActive.value = false
         hasActiveProtocolStream = false
         lastStreamInfo = null
         _enabled.value = false

@@ -211,6 +211,53 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
+    fun carConnect_routedNameUnresolvedWithMultipleSinks_stillPinsViaConnectedSink() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The intermittent "volume didn't go to 100%" race: at connect the routed name is
+            // still null AND more than one BT sink is present, so the sole-sink fallback is null
+            // too -> currentBtRouteKey() is null. The old one-shot pin bailed with no retry.
+            val f = Fixture().apply {
+                routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                btRouteKey = null // routed name still settling
+                devices = arrayOf(btSink("MINI45864"), btSink("Buds")) // two sinks -> not "sole"
+            }
+            val c = f.build()
+            c.start(backgroundScope)
+            advanceUntilIdle()
+
+            f.carDevicesFlow.emit(setOf(CAR_KEY)) // flags MINI45864
+            advanceUntilIdle()
+
+            // Pinned via the connected-sink match despite the unresolved routed key.
+            verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0) }
+            verify { f.playerRepository.setSelectionLock(PlayerSelectionLock(PLAYER, "car_audio")) }
+        }
+
+    @Test
+    fun carConnect_carDeviceAppearsLate_nextRoutePokeEnters() = runTest(UnconfinedTestDispatcher()) {
+        // At connect only a non-car BT sink is enumerated; the car is added to the device list a
+        // moment later (slow A2DP handshake). The next route poke (device-added -> checkRouteChange)
+        // must then enter + pin (no dedicated retry job needed).
+        val f = Fixture().apply {
+            routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+            btRouteKey = null
+            devices = arrayOf(btSink("Buds")) // a BT sink connected, but not the car yet
+        }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+        f.assertNoWriteOf(idx(100)) // car not connected yet -> no pin
+
+        f.devices = arrayOf(f.btSink("Buds"), f.btSink("MINI45864")) // car settles in
+        c.onRouteChanged() // the device-added route poke
+        advanceUntilIdle()
+
+        verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0) }
+    }
+
+    @Test
     fun carActive_serverVolume_doesNotTouchStreamMusic() = runTest(UnconfinedTestDispatcher()) {
         val f = Fixture().apply { onBtRoute() }
         val c = f.build()
@@ -253,7 +300,9 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY)) // pre-car volume captured = phoneVolume (80)
         advanceUntilIdle()
 
-        c.onBtRouteLost()
+        // BT gone: the route leaves BT (back to the phone speaker) and the sink leaves the list.
+        f.onPhoneRoute()
+        c.onRouteChanged()
         advanceTimeBy(3_500) // past CAR_LOCK_CLEAR_DEBOUNCE_MS
         advanceUntilIdle()
 
@@ -272,13 +321,80 @@ class SendspinVolumeCoordinatorTest {
         f.carDevicesFlow.emit(setOf(CAR_KEY))
         advanceUntilIdle()
 
-        c.onBtRouteLost()
-        advanceTimeBy(1_000)        // mid-debounce
-        c.onBtRouteConnected()      // flap reconnect cancels the pending exit
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // transient: route briefly off BT
+        c.onRouteChanged()          // schedules the settle exit
+        advanceTimeBy(1_000)        // mid-settle
+        f.onBtRoute()               // flap re-binds to the car (routeType BT + car connected)
+        c.onRouteChanged()          // routed to car again -> cancels the pending exit
         advanceTimeBy(3_500)
         advanceUntilIdle()
 
         // No restore-to-pre-car and no lock release happened.
+        f.assertNoWriteOf(idx(80))
+        verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carActive_routedTypeStillBtButNameUnresolved_doesNotExit() = runTest(UnconfinedTestDispatcher()) {
+        // Regression (cold-start-already-in-car): the Oboe product name resolves to null/"unknown"
+        // for seconds even while genuinely routed to the car, so a name-based exit check falsely
+        // reported "gone" and tore down the live session. The exit gates on the routed TYPE (still
+        // BT) + car connected, so an unresolved name must NOT trigger a restore.
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY)) // entered + pinned
+        advanceUntilIdle()
+
+        f.btRouteKey = null // product name unresolved upstream (would be bt:unknown); type stays BT
+        c.onRouteChanged()
+        advanceTimeBy(3_500)
+        advanceUntilIdle()
+
+        f.assertNoWriteOf(idx(80))
+        verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carDisconnect_routedTypeLeftBtButDeviceStillListed_restores() = runTest(UnconfinedTestDispatcher()) {
+        // Real disconnect: the routed TYPE leaves BT immediately (stream rebinds to builtin), but
+        // Android keeps the A2DP device in getDevices for a while. The type gate fails first, so the
+        // lingering "connected" device does NOT abort the restore.
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // routed off BT; devices still lists car
+        c.onRouteChanged()
+        advanceTimeBy(3_500)
+        advanceUntilIdle()
+
+        verify { f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(80), 0) }
+        verify { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
+    fun carDisconnect_flapReBindsByExpiry_settleRecheckAborts() = runTest(UnconfinedTestDispatcher()) {
+        // Even with NO reconnect poke, the settle re-check must abort the exit when the route has
+        // re-settled on BT (car connected) by expiry (a native-reopen flap that fires no route event).
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+
+        f.routeType = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER // transient off BT -> schedule exit
+        c.onRouteChanged()
+        advanceTimeBy(1_000)
+        f.onBtRoute()          // re-settled on the car, but NO onRouteChanged poke this time
+        advanceTimeBy(3_500)   // settle fires -> re-check sees car routed -> abort
+        advanceUntilIdle()
+
         f.assertNoWriteOf(idx(80))
         verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
     }

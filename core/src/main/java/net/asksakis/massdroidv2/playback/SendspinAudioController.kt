@@ -138,11 +138,11 @@ class SendspinAudioController(
                 if (sendspinPlayerId == null) return
                 Log.d(TAG, "Audio becoming noisy -> clean pause")
                 volumeCoordinator.onOutputRouteChanging()
-                // Fast disconnect signal: starts the car-session exit debounce now,
-                // ~8s before the OS finally reports the route left BT (Android keeps
-                // the A2DP device "connected" long after audio stops). A reconnect
-                // cancels it, so a flap is still absorbed.
-                volumeCoordinator.onBtRouteLost()
+                // Poke the unified car-route evaluation. If this is a real disconnect the
+                // coordinator's settle timer will confirm (Oboe no longer routed to the car) and
+                // restore the pre-car volume; a connect-handshake flap re-binds within the window
+                // and the settle re-check aborts the exit. No connect/lost distinction here.
+                volumeCoordinator.onRouteChanged()
                 ++routeChangeGeneration  // supersede any in-flight relock
                 pauseForRouteLoss()
             }
@@ -221,7 +221,7 @@ class SendspinAudioController(
                     sendspinManager.setRouteAcousticExtraUs(correctionUs)
                     sendspinManager.onOutputRouteChanged("bt:device-switch")
                     currentBtRouteKey = routeKey  // commit only after successful apply
-                    volumeCoordinator.onBtRouteConnected()
+                    volumeCoordinator.onRouteChanged()
                 }
             }
         }
@@ -236,7 +236,7 @@ class SendspinAudioController(
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
             sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
-            if (newRoute == OutputRoute.BT) volumeCoordinator.onBtRouteConnected()
+            if (newRoute == OutputRoute.BT) volumeCoordinator.onRouteChanged()
         }
     }
 
@@ -267,7 +267,7 @@ class SendspinAudioController(
         sendspinManager.setMuted(false)
         // Debounced release of any car-audio selection lock (a flap reconnect
         // cancels it, so transport stays on the phone through the gap).
-        volumeCoordinator.onBtRouteLost()
+        volumeCoordinator.onRouteChanged()
         scope.launch { playerRepository.pause(id) }
     }
 
@@ -503,12 +503,12 @@ class SendspinAudioController(
                 recomputeAvailability()
                 Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady, sync=$localSyncState")
 
-                if (!wasStreaming && transportState == SendspinState.STREAMING) {
-                    acquireLocks()
-                    if (!hasAudioFocus) requestAudioFocus()
-                }
+                // Wake + Wi-Fi locks AND audio focus now follow the manager's
+                // audioResourcesActive flow (collector below), not this transport
+                // edge, so they release once the phone stops being an actual output
+                // even though the client stays connected (STREAMING) as an
+                // available player.
                 if (wasStreaming && transportState != SendspinState.STREAMING) {
-                    releaseLocks()
                     Log.d(TAG, "Sendspin dropped while streaming")
                 }
 
@@ -523,6 +523,29 @@ class SendspinAudioController(
                     sendspinManager.onTransportFailure()
                 }
                 notifyStateChanged()
+            }
+        }
+
+        // Collector: audio-resource ownership. Wake + Wi-Fi locks are held only
+        // while the phone is an actual output (a protocol stream is live). The
+        // manager keeps this true across track changes and drops it after a grace
+        // once playback moves elsewhere, so the locks + native Oboe output are not
+        // held indefinitely while the client stays connected as an available
+        // player. distinctUntilChanged so we only act on real edges.
+        collectorJobs += scope.launch {
+            // StateFlow is already conflated (distinct-by-equality), so collect
+            // sees only real true/false edges. Audio focus rides the same signal:
+            // requested while we are an actual output, abandoned on idle/deselect
+            // so other apps regain focus (voluntary abandon fires no LOSS callback,
+            // so it never triggers our own focus-loss pause path).
+            sendspinManager.audioResourcesActive.collect { active ->
+                if (active) {
+                    acquireLocks()
+                    if (!hasAudioFocus) requestAudioFocus()
+                } else {
+                    releaseLocks()
+                    abandonAudioFocus()
+                }
             }
         }
 
@@ -918,6 +941,12 @@ class SendspinAudioController(
                 Log.d(TAG, "BT connect auto-play skipped: route did not stabilize on BT")
                 return@launch
             }
+            // Poke the unified car-route evaluation once BT re-stabilizes. The connect-time A2DP
+            // flap re-binds the sink under a new AAudio device id (same product) via this native
+            // reopen path, which does not fire a checkRouteChange transition; without this poke the
+            // coordinator's settle re-check still aborts the exit (Oboe is routed to the car again),
+            // but poking here re-affirms promptly. Idempotent: never re-pins.
+            volumeCoordinator.onRouteChanged()
             if (_userIntent.value) return@launch  // already playing / intending to
             if (isInActiveCall()) {
                 Log.d(TAG, "BT connect auto-play skipped: active call/communication")

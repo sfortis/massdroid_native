@@ -106,7 +106,13 @@ class FollowMeService : Service() {
         ).also { it.start() }
 
         // Hold the foreground notification only while Follow Me is enabled; tear down when disabled.
+        // Gate on load() first: config starts as the disabled-by-default value and is populated
+        // asynchronously from disk. On a START_STICKY background restart there is no Activity to load
+        // it early, so acting on the default enabled=false here would call stopSelf() and the service
+        // would never come back (sticky restart does not fire again after an explicit stop). Awaiting
+        // load() makes the first collected value authoritative and closes that suicide race.
         configJob = scope.launch {
+            proximityConfigStore.load()
             proximityConfigStore.config
                 .map { it.enabled }
                 .distinctUntilChanged()

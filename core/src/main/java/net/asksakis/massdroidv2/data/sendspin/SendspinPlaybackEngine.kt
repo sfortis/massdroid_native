@@ -267,6 +267,13 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         private set
     var onRoutingChanged: (() -> Unit)? = null
 
+    // Fires when the native output transitions between actively-running and
+    // idle-stopped (power-save). The manager maps this to audioResourcesActive so
+    // the wake + Wi-Fi locks are held only while audio is really flowing: a long
+    // pause or an inter-track/idle gap releases them (the engine stays configured,
+    // ring preserved), and resume re-acquires. Distinct from stream/end teardown.
+    var onOutputActiveChanged: ((Boolean) -> Unit)? = null
+
     // Detects output route changes (Oboe has no routing listener). If our bound
     // device disappears (disconnect / BT switch) we reopen the native stream
     // onto the new default route (self-heal — Oboe Shared streams do not
@@ -615,6 +622,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         outputPausedForIdle = true
         playbackActive = false      // producer loop exits
         nativeOutput.pauseStream()  // real-time HAL callback stops firing
+        onOutputActiveChanged?.invoke(false)  // release wake + Wi-Fi locks
     }
 
     /** Restart the output + producer if they were stopped for idle. */
@@ -625,6 +633,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         nativeOutput.resumeStream()
         playbackActive = true
         ensurePlaybackThread()
+        onOutputActiveChanged?.invoke(true)  // re-acquire wake + Wi-Fi locks
         Log.d(TAG, "Output resumed from idle stop")
     }
 
