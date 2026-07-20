@@ -503,11 +503,14 @@ class SendspinAudioController(
                 recomputeAvailability()
                 Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady, sync=$localSyncState")
 
-                // Wake + Wi-Fi locks AND audio focus now follow the manager's
-                // audioResourcesActive flow (collector below), not this transport
-                // edge, so they release once the phone stops being an actual output
-                // even though the client stays connected (STREAMING) as an
-                // available player.
+                // Audio focus still tracks the STREAMING transport edge. The wake
+                // + Wi-Fi locks are NOT acquired here anymore: they follow the
+                // manager's audioResourcesActive flow (collector below), so they
+                // release once the phone stops being an actual output even though
+                // the client stays connected (STREAMING) as an available player.
+                if (!wasStreaming && transportState == SendspinState.STREAMING) {
+                    if (!hasAudioFocus) requestAudioFocus()
+                }
                 if (wasStreaming && transportState != SendspinState.STREAMING) {
                     Log.d(TAG, "Sendspin dropped while streaming")
                 }
@@ -534,18 +537,9 @@ class SendspinAudioController(
         // player. distinctUntilChanged so we only act on real edges.
         collectorJobs += scope.launch {
             // StateFlow is already conflated (distinct-by-equality), so collect
-            // sees only real true/false edges. Audio focus rides the same signal:
-            // requested while we are an actual output, abandoned on idle/deselect
-            // so other apps regain focus (voluntary abandon fires no LOSS callback,
-            // so it never triggers our own focus-loss pause path).
+            // sees only real true/false edges.
             sendspinManager.audioResourcesActive.collect { active ->
-                if (active) {
-                    acquireLocks()
-                    if (!hasAudioFocus) requestAudioFocus()
-                } else {
-                    releaseLocks()
-                    abandonAudioFocus()
-                }
+                if (active) acquireLocks() else releaseLocks()
             }
         }
 
