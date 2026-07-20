@@ -45,6 +45,12 @@ class SendspinManager(
         // The transition is not abrupt because the native ramp fades to it over
         // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
         private const val DUCK_GAIN = 0.1f
+        // Safety net: if AUDIOFOCUS_GAIN is never delivered after a duck (dropped
+        // focus request, flaky car HMI), auto-restore the gain so we can never
+        // stay stuck ducked - especially in the car where STREAM_MUSIC is pinned
+        // 100% and the quiet would otherwise persist. Long enough that a real
+        // notification / nav prompt has ended before it fires.
+        private const val DUCK_SAFETY_RESTORE_MS = 45_000L
         private const val HEARTBEAT_INTERVAL_MS = 2000L
         // After stream/end, wait this long before fully releasing the audio
         // resources (Oboe output, wake + Wi-Fi locks). A normal track change is
@@ -91,6 +97,7 @@ class SendspinManager(
     private val lifecycleMutex = Mutex()
     @Volatile private var streamEpoch = 0L
     private var idleTeardownJob: Job? = null
+    private var duckRestoreJob: Job? = null
 
     // Maps the active engine's output-active transitions to [_audioResourcesActive]
     // so the controller holds wake + Wi-Fi locks only while audio actually flows:
@@ -582,9 +589,18 @@ class SendspinManager(
         // restoreVolume() brings us back to full gain on AUDIOFOCUS_GAIN.
         if (!muted) audio.setVolume(DUCK_GAIN)
         Log.d(TAG, "Duck -> $DUCK_GAIN gain")
+        // Safety net against a lost AUDIOFOCUS_GAIN leaving us stuck ducked.
+        duckRestoreJob?.cancel()
+        duckRestoreJob = scope.launch {
+            delay(DUCK_SAFETY_RESTORE_MS)
+            Log.w(TAG, "Duck safety timeout (${DUCK_SAFETY_RESTORE_MS}ms): no AUDIOFOCUS_GAIN, restoring gain")
+            if (!muted) audio.setVolume(1f)
+        }
     }
 
     fun restoreVolume() {
+        duckRestoreJob?.cancel()
+        duckRestoreJob = null
         if (!muted) audio.setVolume(1f)
     }
 
@@ -849,6 +865,8 @@ class SendspinManager(
         // teardown no-op under the mutex; releaseInternal is idempotent anyway).
         idleTeardownJob?.cancel()
         idleTeardownJob = null
+        duckRestoreJob?.cancel()
+        duckRestoreJob = null
         streamEpoch++
         _audioResourcesActive.value = false
         hasActiveProtocolStream = false
