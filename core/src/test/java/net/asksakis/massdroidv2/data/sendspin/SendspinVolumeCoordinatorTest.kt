@@ -335,6 +335,29 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
+    fun carActive_routedTypeNullDuringReopen_doesNotExit() = runTest(UnconfinedTestDispatcher()) {
+        // Regression: an Oboe reopen (duck/resume, route change, underrun rebind) resets
+        // routedDeviceType to -1, so currentOutputDeviceType() returns null transiently.
+        // A null type is "resolving", NOT a disconnect (that resolves to a concrete
+        // builtin type), so the live car session must hold and the pre-car volume must
+        // NOT be restored while the car BT sink is still connected.
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+        f.carDevicesFlow.emit(setOf(CAR_KEY)) // car session active, pre-car (80) captured
+        advanceUntilIdle()
+
+        f.routeType = null            // mid-reopen: routed type unresolved; car sink stays connected
+        c.onRouteChanged()
+        advanceTimeBy(3_500)          // past CAR_LOCK_CLEAR_DEBOUNCE_MS
+        advanceUntilIdle()
+
+        f.assertNoWriteOf(idx(80))
+        verify(exactly = 0) { f.playerRepository.setSelectionLock(null) }
+    }
+
+    @Test
     fun carActive_routedTypeStillBtButNameUnresolved_doesNotExit() = runTest(UnconfinedTestDispatcher()) {
         // Regression (cold-start-already-in-car): the Oboe product name resolves to null/"unknown"
         // for seconds even while genuinely routed to the car, so a name-based exit check falsely
