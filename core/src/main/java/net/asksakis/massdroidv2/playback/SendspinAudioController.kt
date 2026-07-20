@@ -503,12 +503,15 @@ class SendspinAudioController(
                 recomputeAvailability()
                 Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady, sync=$localSyncState")
 
+                // Audio focus still tracks the STREAMING transport edge. The wake
+                // + Wi-Fi locks are NOT acquired here anymore: they follow the
+                // manager's audioResourcesActive flow (collector below), so they
+                // release once the phone stops being an actual output even though
+                // the client stays connected (STREAMING) as an available player.
                 if (!wasStreaming && transportState == SendspinState.STREAMING) {
-                    acquireLocks()
                     if (!hasAudioFocus) requestAudioFocus()
                 }
                 if (wasStreaming && transportState != SendspinState.STREAMING) {
-                    releaseLocks()
                     Log.d(TAG, "Sendspin dropped while streaming")
                 }
 
@@ -523,6 +526,20 @@ class SendspinAudioController(
                     sendspinManager.onTransportFailure()
                 }
                 notifyStateChanged()
+            }
+        }
+
+        // Collector: audio-resource ownership. Wake + Wi-Fi locks are held only
+        // while the phone is an actual output (a protocol stream is live). The
+        // manager keeps this true across track changes and drops it after a grace
+        // once playback moves elsewhere, so the locks + native Oboe output are not
+        // held indefinitely while the client stays connected as an available
+        // player. distinctUntilChanged so we only act on real edges.
+        collectorJobs += scope.launch {
+            // StateFlow is already conflated (distinct-by-equality), so collect
+            // sees only real true/false edges.
+            sendspinManager.audioResourcesActive.collect { active ->
+                if (active) acquireLocks() else releaseLocks()
             }
         }
 
