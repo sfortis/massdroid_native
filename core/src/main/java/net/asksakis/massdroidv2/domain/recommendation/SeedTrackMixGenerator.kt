@@ -56,6 +56,13 @@ private const val RESOLVED_TRACK_TTL_MS = 30L * 24 * 60 * 60 * 1000
 private const val SEED_RECENT_ARTIST_PENALTY = 0.4
 private const val SEED_RECENT_TRACK_PENALTY = 1.5
 private const val MIN_SEEDS = 2
+// Variety knob -> genre movement between consecutive mixes. Below this the next
+// mix STAYS in the recent genre family (drifting the sub-genre via exactFresh:
+// deep house -> techno -> nu-disco), avoiding whiplash to unrelated genres.
+// At/above it the mix is allowed to HOP to a different family (exploration).
+// This replaces the old always-on family-hop that jumped e.g. deep house ->
+// hard rock every run.
+private const val FAMILY_HOP_VARIETY_THRESHOLD = 0.66
 // Strictness knob -> minimum tracks.score a seed must have. At 1.0 only "loved"
 // tracks (score > 0.5) qualify; at 0.0 any non-disliked track (score >= 0).
 private const val STRICTNESS_MAX_SCORE = 0.5
@@ -63,14 +70,12 @@ private const val STRICTNESS_MAX_SCORE = 0.5
 // mix can still be built (cold-start / lightly-rated libraries).
 private const val SEED_POOL_RELAX_MIN = 6
 // Loved-track injection (comfort anchor). Discovery drives the share, with NO
-// floor: at Discovery=0 up to MAX_FRACTION of the mix may be the user's own loved
-// tracks, and at high Discovery it tapers to zero (pure discovery). Only tracks
-// scored >= MIN_SCORE qualify.
-private const val OWN_INJECT_MAX_FRACTION = 0.4
-// "Liked" floor (0.1) rather than "loved" (0.5): once narrowed to the mix's
-// genre and deduped by artist, a 0.5 floor leaves too small an in-genre pool to
-// fill the quota. Score ordering still puts the most-loved in-genre tracks first.
-private const val LOVED_INJECT_MIN_SCORE = 0.1
+// ceiling: at Discovery=0 up to MAX_FRACTION of the mix may be the user's own
+// loved tracks, and at high Discovery it tapers to zero (pure discovery). The
+// score floor for what qualifies is derived from the Strictness slider (see
+// lovedInjection), so a low Discovery no longer fills the mix with weakly-liked
+// filler.
+private const val OWN_INJECT_MAX_FRACTION = 0.30
 private const val LOVED_INJECT_POOL_LIMIT = 600
 // Injected loved tracks enter with a MID-PACK relevance so they COMPETE with the
 // seed-similars instead of dominating the front of the mix. A top score (1.0) made
@@ -380,7 +385,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // favourites rotate.
         val injectCount = seedTrackInjectCount(tuning.discovery, target)
         val injected = if (injectCount > 0) {
-            lovedInjection(coherentGenres, injectCount, mixSeed, recency)
+            lovedInjection(coherentGenres, injectCount, mixSeed, recency, tuning.strictness)
         } else {
             emptyList()
         }
@@ -400,21 +405,31 @@ class SeedTrackMixGenerator @Inject constructor(
         coherentGenres: Set<String>,
         count: Int,
         mixSeed: Long,
-        recency: Recency
+        recency: Recency,
+        strictness: Double
     ): List<CandidateTrack> {
         val since = System.currentTimeMillis() - GENRE_SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
         val blockedKeys = recency.blockedArtistNames
             .map { LastFmTrackSimilarResolver.normalizeName(it) }
             .filter { it.isNotBlank() }
             .toSet()
-        val raw = querySeedTracks(since, LOVED_INJECT_MIN_SCORE, LOVED_INJECT_POOL_LIMIT)
+        // Floor derives from the Strictness slider, matching the seed threshold
+        // (strictness * STRICTNESS_MAX_SCORE). A low Discovery therefore reserves
+        // a slice for genuinely loved tracks, not weakly-liked (score ~0.1) filler.
+        val minScore = strictness * STRICTNESS_MAX_SCORE
+        val raw = querySeedTracks(since, minScore, LOVED_INJECT_POOL_LIMIT)
         val notRecent = raw.filter {
             it.trackUri.isNotBlank() &&
                 it.trackUri !in recency.recentMixTrackUris &&
                 LastFmTrackSimilarResolver.normalizeName(it.artistName) !in blockedKeys
         }
+        // Family-aware in-genre gate (same as the discovery-candidate gate) so an
+        // injected loved track cannot reintroduce a foreign family that merely
+        // shares a noisy token with the cluster envelope.
+        val envelopeTokens = genreTokens(coherentGenres)
+        val envelopeFamilies = genreFamilies(coherentGenres)
         val inGenre = notRecent.filter { row ->
-            coherentGenres.isEmpty() || row.genres.any { normalizeGenre(it) in coherentGenres }
+            coherentGenres.isEmpty() || genreGatePasses(row.genres, envelopeFamilies, envelopeTokens)
         }
         val deduped = dedupeByArtist(inGenre).shuffled(kotlin.random.Random(mixSeed)).take(count)
         Log.d(TAG, "loved-inject: want=$count inGenrePool=${inGenre.size} -> injected ${deduped.size}")
@@ -489,18 +504,26 @@ class SeedTrackMixGenerator @Inject constructor(
         // the top-ranked seeds (steadier), high variety draws from the whole
         // tagged pool. varietyWindow spans the full 0..1 range (no plateau).
         val primaryPool = tagged.take(varietyWindow(tuning.variety, tagged.size))
-        // Genre rotation: prefer a primary whose FAMILY was not the anchor of
-        // the last few mixes (strongest hop across the user's genres), then one
-        // whose exact genres are at least new, then the full window when
-        // everything recent is in the same family.
+        // Genre movement (Variety-gated). exactFresh always rotates the sub-genre
+        // (avoid the exact genres of recent mixes) so we never lock onto one thing.
+        // The FAMILY behaviour then depends on Variety:
+        //   - below FAMILY_HOP_VARIETY_THRESHOLD: prefer a primary in the SAME
+        //     family as recent mixes (coherent adjacency drift, no whiplash),
+        //   - at/above it: prefer a DIFFERENT family (exploration hop).
+        // Either preference falls back to exactFresh, then the full window, so the
+        // pool never collapses. Track/artist cool-down (below) keeps songs fresh.
         val recentFamilies = genreFamilies(recency.recentClusterGenres)
         val exactFresh = primaryPool.filter { seed ->
             coherenceGenres(seed).none { it in recency.recentClusterGenres }
         }
-        val familyFresh = exactFresh.filter { seed ->
-            genreFamilies(coherenceGenres(seed)).none { it in recentFamilies }
+        val preferred = when {
+            recentFamilies.isEmpty() -> emptyList()
+            tuning.variety >= FAMILY_HOP_VARIETY_THRESHOLD ->
+                exactFresh.filter { seed -> genreFamilies(coherenceGenres(seed)).none { it in recentFamilies } }
+            else ->
+                exactFresh.filter { seed -> genreFamilies(coherenceGenres(seed)).any { it in recentFamilies } }
         }
-        val freshPool = familyFresh.ifEmpty { exactFresh }
+        val freshPool = preferred.ifEmpty { exactFresh }
         val primary = freshPool.ifEmpty { primaryPool }.shuffled(random).first()
         val primaryGenres = coherenceGenres(primary)
         val cluster = byArtist.filter { seed ->
