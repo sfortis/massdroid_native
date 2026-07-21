@@ -10,14 +10,11 @@ import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
 import android.media.AudioManager
 import android.view.KeyEvent
@@ -166,11 +163,11 @@ class MainActivity : ComponentActivity() {
         }
         // The activity may be (re)launched via the OAuth callback deep link.
         handleOAuthCallback(intent)
-        // No battery-optimization prompt on a car head unit (always powered, and the
-        // dialog is an unwanted distraction). The exemption permission is stripped too.
-        if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-            checkBatteryOptimization()
-        }
+        // Battery-optimization exemption is NOT prompted at launch anymore: it is
+        // not needed for reliable playback (the Sendspin foreground service is
+        // doze-exempt while active) nor for Follow Me (motion-gated; a room change
+        // is motion, which takes the device out of doze so scanning runs). It is now
+        // an optional, no-nag toggle under Settings > Diagnostics for power users.
         handleShortcutIntent(intent)
 
         // Cache sendspin client ID for the local-player checks below. STREAM_MUSIC
@@ -410,30 +407,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun checkBatteryOptimization() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-            showBatteryOptimizationDialog()
-        }
-    }
-
-    @SuppressLint("BatteryLife")
-    private fun showBatteryOptimizationDialog() {
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Disable Battery Optimization")
-            .setMessage(
-                "For reliable background music playback, MassDroid needs to be " +
-                "excluded from battery optimization.\n\n" +
-                "Without this, Android may stop playback when the screen is off."
-            )
-            .setPositiveButton("Disable Optimization") { _, _ ->
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                intent.data = Uri.parse("package:$packageName")
-                startActivity(intent)
-            }
-            .setNegativeButton("Skip", null)
-            .show()
-    }
 }
 
 /**

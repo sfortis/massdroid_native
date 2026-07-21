@@ -537,6 +537,51 @@ private fun DiagnosticsCard() {
             ) {
                 Text("Share logs")
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            Text("Battery optimization", style = MaterialTheme.typography.titleMedium)
+            val powerManager = remember {
+                context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            }
+            var batteryExcluded by remember {
+                mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName))
+            }
+            // Re-read on resume: the user grants it in the system screen and returns here.
+            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+                val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                        batteryExcluded = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(obs)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+            }
+            Text(
+                "Optional. Playback keeps running with the screen off (the audio service is doze-exempt " +
+                    "while active) and room detection works too (moving between rooms wakes the device out " +
+                    "of doze). Excluding MassDroid only helps background reconnects during long deep-doze. " +
+                    "Currently: " + if (batteryExcluded) "excluded." else "not excluded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (!batteryExcluded) {
+                MdFilledTonalButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    android.net.Uri.parse("package:${context.packageName}")
+                                )
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Exclude from battery optimization")
+                }
+            }
         }
     }
 }
