@@ -191,6 +191,29 @@ internal fun genreGatePasses(
 }
 
 /**
+ * Variety-gated genre movement between consecutive mixes. Given a candidate
+ * primary seed's genre families and the families of the recent mixes, decides
+ * whether the candidate is PREFERRED for the next cluster:
+ *  - below [FAMILY_HOP_VARIETY_THRESHOLD]: prefer the SAME family as recent
+ *    (coherent adjacency drift, no whiplash to unrelated genres),
+ *  - at/above it: prefer a DIFFERENT family (exploration hop).
+ * With no recent families there is no preference (returns false), so the caller
+ * falls back to the plain fresh pool. This keeps Smart Mix in the current genre
+ * neighbourhood at mid/low Variety instead of jumping deep house -> hard rock
+ * every run (the whiplash the old always-on family-hop caused).
+ */
+@VisibleForTesting
+internal fun prefersCandidateFamily(
+    candidateFamilies: Set<String>,
+    recentFamilies: Set<String>,
+    variety: Double,
+): Boolean {
+    if (recentFamilies.isEmpty()) return false
+    val sharesRecentFamily = candidateFamilies.any { it in recentFamilies }
+    return if (variety >= FAMILY_HOP_VARIETY_THRESHOLD) !sharesRecentFamily else sharesRecentFamily
+}
+
+/**
  * Track-level recommendation generator: recent (or in-genre) well-listened
  * tracks seed Last.fm `track.getSimilar`, producing a coherent candidate pool
  * that is resolved to playable provider URIs (cache-first + bounded search +
@@ -516,12 +539,8 @@ class SeedTrackMixGenerator @Inject constructor(
         val exactFresh = primaryPool.filter { seed ->
             coherenceGenres(seed).none { it in recency.recentClusterGenres }
         }
-        val preferred = when {
-            recentFamilies.isEmpty() -> emptyList()
-            tuning.variety >= FAMILY_HOP_VARIETY_THRESHOLD ->
-                exactFresh.filter { seed -> genreFamilies(coherenceGenres(seed)).none { it in recentFamilies } }
-            else ->
-                exactFresh.filter { seed -> genreFamilies(coherenceGenres(seed)).any { it in recentFamilies } }
+        val preferred = exactFresh.filter { seed ->
+            prefersCandidateFamily(genreFamilies(coherenceGenres(seed)), recentFamilies, tuning.variety)
         }
         val freshPool = preferred.ifEmpty { exactFresh }
         val primary = freshPool.ifEmpty { primaryPool }.shuffled(random).first()
