@@ -76,6 +76,17 @@ private const val TAB_AUDIOBOOKS = 5
 private const val TAB_PODCASTS = 6
 private const val TAB_BROWSE = 7
 
+/**
+ * Sort options offered per tab. Browse only supports name; Albums additionally
+ * exposes Year (the MA `year` sort key backs an albums-only column, so it is
+ * hidden elsewhere to avoid ordering by a non-existent column server-side).
+ */
+private fun availableSortOptions(tab: Int): List<SortOption> = when (tab) {
+    TAB_BROWSE -> listOf(SortOption.NAME)
+    TAB_ALBUMS -> SortOption.entries
+    else -> SortOption.entries.filter { it != SortOption.YEAR }
+}
+
 @Composable
 fun LibraryScreen(
     onArtistClick: (Artist) -> Unit,
@@ -783,6 +794,7 @@ fun LibraryScreen(
     if (showControlsSheet) {
         LibraryControlsSheet(
             isBrowseTab = isBrowseTab,
+            sortOptions = availableSortOptions(selectedTab),
             musicProviders = musicProviders,
             selectedProviders = selectedProviders,
             providerCache = providerCache,
@@ -866,6 +878,7 @@ private fun LibraryCompactHeader(
 @Composable
 private fun LibraryControlsSheet(
     isBrowseTab: Boolean,
+    sortOptions: List<SortOption>,
     musicProviders: List<net.asksakis.massdroidv2.data.provider.MusicProvider>,
     selectedProviders: Set<String>,
     providerCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
@@ -914,7 +927,7 @@ private fun LibraryControlsSheet(
                     SortDropdown(
                         selected = sortOption,
                         onSelect = onSortSelect,
-                        options = if (isBrowseTab) listOf(SortOption.NAME) else SortOption.entries
+                        options = sortOptions
                     )
                     FilterChip(
                         selected = sortDescending,

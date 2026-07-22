@@ -5,6 +5,10 @@ enum class SortOption(val apiValue: String, val label: String) {
     RECENTLY_ADDED("timestamp_added", "Recently Added"),
     LAST_PLAYED("last_played", "Last Played"),
     MOST_PLAYED("play_count", "Most Played"),
+    // Albums-only: the MA server exposes a `year` sort key, but only the albums
+    // table carries a `year` column. Offering it on other tabs would order by a
+    // non-existent column server-side, so callers must gate YEAR to albums.
+    YEAR("year", "Year"),
     RANDOM("random", "Random")
 }
 

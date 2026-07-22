@@ -119,6 +119,7 @@ fun TvBrowseScreen(
     if (showSortDialog) {
         SortDialog(
             current = sortOption,
+            sortOptions = availableSortOptions(category),
             descending = sortDescending,
             onSelect = { option ->
                 viewModel.setSort(option)
@@ -130,10 +131,19 @@ fun TvBrowseScreen(
     }
 }
 
+/**
+ * Sort options offered per category. Year is albums-only: the MA `year` sort key
+ * backs a column that exists only on the albums table, so it is hidden elsewhere.
+ */
+private fun availableSortOptions(category: BrowseCategory): List<SortOption> =
+    if (category == BrowseCategory.ALBUMS) SortOption.entries
+    else SortOption.entries.filter { it != SortOption.YEAR }
+
 /** Per-category sort picker; the choice is persisted by the view model. */
 @Composable
 private fun SortDialog(
     current: SortOption,
+    sortOptions: List<SortOption>,
     descending: Boolean,
     onSelect: (SortOption) -> Unit,
     onSetDescending: (Boolean) -> Unit,
@@ -145,7 +155,7 @@ private fun SortDialog(
             Column(modifier = Modifier.padding(20.dp).width(260.dp)) {
                 Text("Sort by", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(12.dp))
-                SortOption.entries.forEach { option ->
+                sortOptions.forEach { option ->
                     val selected = option == current
                     Surface(
                         onClick = { onSelect(option) },
