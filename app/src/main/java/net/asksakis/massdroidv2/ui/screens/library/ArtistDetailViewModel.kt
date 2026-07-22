@@ -136,9 +136,14 @@ class ArtistDetailViewModel @Inject constructor(
                 }
             }
 
-            // Auto-refresh if artist has no real image (only imageproxy fallback)
-            val hasRealImage = _artist.value?.imageUrl?.let {
-                !it.contains("imageproxy") || it.contains("path=http")
+            // Auto-refresh only if the artist has no loadable image. The canonical MA 2.9 proxy_id
+            // route (/imageproxy/<id>) and any direct/remote URL are real images; only the legacy
+            // /imageproxy?path=<non-http> URI fallback (placeholder-grade, 400 on 2.9+) counts as "no
+            // real image". The old check treated every /imageproxy URL as fake, so it refetched almost
+            // every artist on 2.9+ (proxy_id images live at /imageproxy/<id>).
+            val hasRealImage = _artist.value?.imageUrl?.let { url ->
+                val legacyUriFallback = url.contains("imageproxy?path=") && !url.contains("path=http")
+                !legacyUriFallback
             } ?: false
             if (lazy && !hasRealImage) {
                 kotlinx.coroutines.delay(500)
