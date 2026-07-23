@@ -46,11 +46,15 @@ class SendspinManager(
         // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
         private const val DUCK_GAIN = 0.1f
         // Safety net: if AUDIOFOCUS_GAIN is never delivered after a duck (dropped
-        // focus request, flaky car HMI), auto-restore the gain so we can never
-        // stay stuck ducked - especially in the car where STREAM_MUSIC is pinned
-        // 100% and the quiet would otherwise persist. Long enough that a real
-        // notification / nav prompt has ended before it fires.
-        private const val DUCK_SAFETY_RESTORE_MS = 45_000L
+        // focus request, flaky car HMI, an interrupter that never abandons focus),
+        // auto-restore the gain so we can never stay stuck ducked - especially in
+        // the car where STREAM_MUSIC is pinned 100% and the quiet would otherwise
+        // persist. Normal transient interruptions return a GAIN within ~1-4s; the
+        // old 45s value left music audibly quiet for up to 45s when the GAIN was
+        // dropped (a notification/SpeedCam alert in the car). Kept short: ducking
+        // means we keep PLAYING (not paused), so restoring a little early over the
+        // tail of a lingering prompt is fine, whereas a long silence is not.
+        private const val DUCK_SAFETY_RESTORE_MS = 10_000L
         private const val HEARTBEAT_INTERVAL_MS = 2000L
         // After stream/end, wait this long before fully releasing the audio
         // resources (Oboe output, wake + Wi-Fi locks). A normal track change is
