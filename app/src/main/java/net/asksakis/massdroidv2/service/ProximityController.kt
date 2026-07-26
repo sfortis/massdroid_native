@@ -359,14 +359,14 @@ class ProximityController(
                         // Away mode: no room matched for 5 min, conserve battery
                         if (isInAwayMode()) {
                             ensurePersistentScan(lowPower = true)
-                            scanController.recoverScannerIfNeeded(false, proximityConfigStore.config.value, roomDetector)
+                            scanController.recoverScannerIfNeeded(false, proximityConfigStore.config.value)
                             burstScan("away")
                             kotlinx.coroutines.delay(AWAY_MODE_SCAN_INTERVAL_MS)
                             continue
                         }
                         // Normal: scan aggressiveness follows motion state
                         ensurePersistentScan(lowPower = !highAccuracy)
-                        scanController.recoverScannerIfNeeded(highAccuracy, proximityConfigStore.config.value, roomDetector)
+                        scanController.recoverScannerIfNeeded(highAccuracy, proximityConfigStore.config.value)
                         burstScan(if (highAccuracy) "motion" else "screen")
                         kotlinx.coroutines.delay(if (highAccuracy) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3)
                     }

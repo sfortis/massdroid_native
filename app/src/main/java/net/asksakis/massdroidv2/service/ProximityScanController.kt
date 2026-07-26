@@ -5,7 +5,6 @@ import kotlinx.coroutines.delay
 import net.asksakis.massdroidv2.data.proximity.AnchorType
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
-import net.asksakis.massdroidv2.data.proximity.RoomDetector
 
 class ProximityScanController(
     private val proximityScanner: ProximityScanner,
@@ -79,7 +78,7 @@ class ProximityScanController(
         persistentScanLowPower = null
     }
 
-    fun recoverScannerIfNeeded(highAccuracy: Boolean, config: ProximityConfig, roomDetector: RoomDetector) {
+    fun recoverScannerIfNeeded(highAccuracy: Boolean, config: ProximityConfig) {
         if (proximityScanner.zeroDeviceStreak < 5) return
         // Recovery is a stop+start; rate-limit it like any restart. Without this, a streak of
         // zero-device reads (no beacons in range) thrashes the scanner every cycle and trips the
@@ -89,7 +88,11 @@ class ProximityScanController(
         stopPersistentScan()
         ensurePersistentScan(lowPower = !highAccuracy, config = config)
         proximityScanner.zeroDeviceStreak = 0
-        roomDetector.resetNoMatchStreak()
+        // Deliberately NOT resetting the detector's no-match streak. Restarting the scanner
+        // says nothing about whether the user is still near a known room, and an empty
+        // buffer is the NORMAL state away from home now that scans are filtered. Zeroing it
+        // here was a second reason "left all rooms" never fired: between this and the
+        // warmup grace the streak could not survive long enough to reach its threshold.
     }
 
     /**

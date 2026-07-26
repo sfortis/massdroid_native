@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.data.proximity
 
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +15,26 @@ private const val COVERAGE_ANCHORS = 8
 private const val STAY_BIAS_FACTOR = 1.08
 private const val NO_MATCH_CLEAR_THRESHOLD = 10
 private const val SCORE_MARGIN_SCALE = 10.0
+
+/**
+ * Whether an empty read should be excused as scanner warmup instead of counted as "not
+ * near any known room".
+ *
+ * ONE-SHOT per scanner gap: [lastWarmupGraceAtMs] > [lastScanActivityMs] means this gap
+ * was already excused, so the next empty read must count. Without that condition the
+ * grace re-armed itself every [graceMs] (the old code stamped lastScanActivityMs on each
+ * excuse), which wiped the no-match streak every few cycles and meant leaving the house
+ * never cleared the room.
+ */
+@VisibleForTesting
+internal fun shouldExcuseAsWarmup(
+    nowMs: Long,
+    lastScanActivityMs: Long,
+    lastWarmupGraceAtMs: Long,
+    graceMs: Long
+): Boolean = lastScanActivityMs > 0 &&
+    lastWarmupGraceAtMs <= lastScanActivityMs &&
+    nowMs - lastScanActivityMs > graceMs
 
 sealed interface DetectResult {
     data class Confirmed(val room: DetectedRoom) : DetectResult
@@ -54,7 +75,14 @@ class RoomDetector @Inject constructor() {
         private set
     var lastConfirmedAtMs = 0L
         private set
+    /** Last scan that actually returned devices. Only a real read updates this. */
     private var lastScanActivityMs = 0L
+
+    /**
+     * When the warmup grace was last granted. Compared against [lastScanActivityMs] to
+     * keep the grace ONE-SHOT per scanner gap (see [handleNoMatch]).
+     */
+    private var lastWarmupGraceAtMs = 0L
     private val CONFIRM_GRACE_MS = 15_000L
     private val SCANNER_WARMUP_GRACE_MS = 30_000L
     @Volatile private var suppressed = false
@@ -214,11 +242,22 @@ class RoomDetector @Inject constructor() {
             Log.d(TAG, "Fit: skip ($reason, confirm grace)")
             return
         }
-        // Scanner warmup grace: after doze/long gap, scanner needs time to fill buffer
-        if (_currentRoom.value != null && lastScanActivityMs > 0 && now - lastScanActivityMs > SCANNER_WARMUP_GRACE_MS) {
+        // Scanner warmup grace: after a doze/long gap the buffer can be empty because the
+        // scanner has not refilled yet, not because we left. Grant that benefit ONCE per
+        // gap, and do not touch the streak.
+        //
+        // It used to set lastScanActivityMs = now and zero the streak, which made the
+        // grace re-arm itself every SCANNER_WARMUP_GRACE_MS: with ~12 s detection cycles
+        // the streak was wiped every third cycle and never reached
+        // NO_MATCH_CLEAR_THRESHOLD, so leaving the house never cleared the room (observed:
+        // max streak 3, zero clears in a day). That stayed hidden while an unfiltered scan
+        // kept returning foreign devices everywhere, which refreshed lastScanActivityMs
+        // each cycle and meant this branch never ran.
+        if (_currentRoom.value != null &&
+            shouldExcuseAsWarmup(now, lastScanActivityMs, lastWarmupGraceAtMs, SCANNER_WARMUP_GRACE_MS)
+        ) {
             Log.d(TAG, "Fit: skip ($reason, scanner warmup after ${(now - lastScanActivityMs) / 1000}s gap)")
-            lastScanActivityMs = now // reset so next empty scan counts normally
-            noMatchStreak = 0
+            lastWarmupGraceAtMs = now
             return
         }
         noMatchStreak++
