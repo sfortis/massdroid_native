@@ -20,6 +20,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
@@ -174,7 +175,7 @@ class DiscoverViewModel @Inject constructor(
     private fun autoConnect() {
         viewModelScope.launch {
             wsClient.startupReady.first { it }
-            if (wsClient.connectionState.value is ConnectionState.Disconnected && !wsClient.userDisconnected) {
+            if (wsClient.connectionState.value.needsConnect() && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank() && url.contains("://")) {

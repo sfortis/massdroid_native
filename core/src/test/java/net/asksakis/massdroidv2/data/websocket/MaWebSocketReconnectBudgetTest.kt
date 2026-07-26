@@ -82,6 +82,35 @@ class MaWebSocketReconnectBudgetTest {
     }
 
     @Test
+    fun `retry cadence escalates aggressive then patient then idle`() {
+        val client = client()
+
+        // Aggressive: ~1 s for the first 30 attempts.
+        assertThat(client.retryDelayBaseMs(1)).isEqualTo(1_000L)
+        assertThat(client.retryDelayBaseMs(30)).isEqualTo(1_000L)
+
+        // Patient: ~5 s up to the budget.
+        assertThat(client.retryDelayBaseMs(31)).isEqualTo(5_000L)
+        assertThat(client.retryDelayBaseMs(60)).isEqualTo(5_000L)
+
+        // Idle: past the budget we keep probing slowly instead of giving up, because a
+        // route-only outage produces no network callback to revive us.
+        assertThat(client.retryDelayBaseMs(61)).isEqualTo(15 * 60_000L)
+        assertThat(client.retryDelayBaseMs(5_000)).isEqualTo(15 * 60_000L)
+    }
+
+    @Test
+    fun `cadence is monotonically non-decreasing across the whole budget`() {
+        val client = client()
+        var previous = 0L
+        for (attempt in 1..70) {
+            val delay = client.retryDelayBaseMs(attempt)
+            assertThat(delay).isAtLeast(previous)
+            previous = delay
+        }
+    }
+
+    @Test
     fun `marker is cleared even when the connection was too short to reset`() {
         val client = client()
         client.lastAuthenticatedAtMs = T0

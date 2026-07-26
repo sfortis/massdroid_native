@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.repository.QueueDstmCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
@@ -91,7 +92,9 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             wsClient.startupReady.first { it }
             val state = wsClient.connectionState.value
-            if (state is ConnectionState.Disconnected && !wsClient.userDisconnected) {
+            // Error counts as "needs connecting": a spent retry budget leaves the client
+            // parked in Error, and opening the app must always be able to revive it.
+            if (state.needsConnect() && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {
@@ -144,7 +147,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             wsClient.startupReady.first { it }
             val state = wsClient.connectionState.value
-            if (state is ConnectionState.Disconnected && !wsClient.userDisconnected) {
+            if (state.needsConnect() && !wsClient.userDisconnected) {
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {

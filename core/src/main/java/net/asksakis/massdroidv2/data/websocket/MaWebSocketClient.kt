@@ -27,6 +27,17 @@ sealed class ConnectionState {
     data class Error(val message: String) : ConnectionState()
 }
 
+/**
+ * True when a lifecycle-driven auto-connect should fire.
+ *
+ * [ConnectionState.Error] counts, not just a clean [ConnectionState.Disconnected]: a
+ * spent retry budget parks the client in Error, and every auto-connect entry point
+ * must be able to revive it from there. Checking only Disconnected meant an app
+ * launch could not recover a connection the retry loop had abandoned.
+ */
+fun ConnectionState.needsConnect(): Boolean =
+    this is ConnectionState.Disconnected || this is ConnectionState.Error
+
 class MaWebSocketClient(
     private val baseOkHttpClient: OkHttpClient,
     private val json: Json,
@@ -43,6 +54,12 @@ class MaWebSocketClient(
         private const val PATIENT_RETRY_MS = 5_000L
         private const val PATIENT_RETRY_COUNT = 30
         private const val MAX_RETRY_COUNT = AGGRESSIVE_RETRY_COUNT + PATIENT_RETRY_COUNT
+        /**
+         * Cadence once the retry budget is spent. Slow enough that a long outage costs
+         * a handful of radio wake-ups per hour, frequent enough that the client comes
+         * back on its own when the server returns without any network transition.
+         */
+        private const val IDLE_RETRY_MS = 15 * 60_000L
         private const val STABLE_CONNECTION_RESET_MS = 30_000L
         // Coalesce the burst of network callbacks a single transition emits
         // (onAvailable + repeated onLinkPropertiesChanged) into one revive.
@@ -466,11 +483,15 @@ class MaWebSocketClient(
             val now = System.currentTimeMillis()
             if (now - lastNetworkReviveMs < NETWORK_REVIVE_DEBOUNCE_MS) return@launch
             lastNetworkReviveMs = now
+            // An idle-phase sleep can be IDLE_RETRY_MS long: fresh connectivity must
+            // preempt it rather than wait out the window. Read before the reset clears it.
+            val wasIdleRetry = reconnectAttempts > MAX_RETRY_COUNT
             resetReconnectBackoff()
-            if (reconnectJob?.isActive == true) {
+            if (reconnectJob?.isActive == true && !wasIdleRetry) {
                 Log.d(TAG, "Network $reason: backoff reset, retry already in flight")
                 return@launch
             }
+            if (wasIdleRetry) reconnectJob?.cancel()
             Log.d(TAG, "Network $reason: reviving WS connection")
             doConnect(url)
         }
@@ -485,23 +506,45 @@ class MaWebSocketClient(
 
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            _isReconnecting.value = true
             val attempt = reconnectAttempts + 1
-            if (attempt > MAX_RETRY_COUNT) {
-                Log.w(TAG, "Max reconnect attempts ($MAX_RETRY_COUNT) reached, giving up")
-                _isReconnecting.value = false
+            if (attempt == MAX_RETRY_COUNT + 1) {
+                // Budget spent. Settle into the idle phase: surface the plain error and
+                // stop advertising an active retry, but keep probing slowly instead of
+                // giving up outright (see retryDelayBaseMs).
+                Log.w(TAG, "Retry budget ($MAX_RETRY_COUNT) spent, dropping to idle retries")
                 _connectionState.value = ConnectionState.Error("Connection lost. Check server and retry.")
-                return@launch
             }
-            val baseMs = if (attempt <= AGGRESSIVE_RETRY_COUNT) AGGRESSIVE_RETRY_MS else PATIENT_RETRY_MS
+            _isReconnecting.value = attempt <= MAX_RETRY_COUNT
             val jitterFactor = ThreadLocalRandom.current().nextDouble(0.85, 1.15)
-            val delayMs = (baseMs * jitterFactor).toLong()
-            Log.d(TAG, "Reconnecting in ${delayMs}ms (attempt=$attempt/$MAX_RETRY_COUNT)")
+            val delayMs = (retryDelayBaseMs(attempt) * jitterFactor).toLong()
+            val phase = if (attempt > MAX_RETRY_COUNT) "idle" else "$attempt/$MAX_RETRY_COUNT"
+            Log.d(TAG, "Reconnecting in ${delayMs}ms (attempt=$phase)")
             delay(delayMs)
             if (userDisconnected) return@launch
-            reconnectAttempts = attempt
+            // Pin at the idle sentinel so the counter can't run away over a long outage
+            // and so onNetworkAvailable can recognise an idle sleep it should preempt.
+            reconnectAttempts = attempt.coerceAtMost(MAX_RETRY_COUNT + 1)
             doConnect(url)
         }
+    }
+
+    /**
+     * Retry cadence: aggressive (~1 s) for the first [AGGRESSIVE_RETRY_COUNT] attempts,
+     * patient (~5 s) up to [MAX_RETRY_COUNT], then idle ([IDLE_RETRY_MS]) forever.
+     *
+     * The idle phase exists because giving up outright stranded the client: on the
+     * outage that motivated this, ConnectivityManager reported NO network transition
+     * for 4 hours (the device had a network, just no route to the server), so
+     * [onNetworkAvailable] never fired and nothing else re-triggered a connect. The
+     * client would have stayed in [ConnectionState.Error] until an app restart, taking
+     * Sendspin and Follow Me down with it. A ~15 min probe costs a handful of radio
+     * wake-ups per hour instead of the ~3600 the unbounded aggressive loop caused.
+     */
+    @VisibleForTesting
+    internal fun retryDelayBaseMs(attempt: Int): Long = when {
+        attempt <= AGGRESSIVE_RETRY_COUNT -> AGGRESSIVE_RETRY_MS
+        attempt <= MAX_RETRY_COUNT -> PATIENT_RETRY_MS
+        else -> IDLE_RETRY_MS
     }
 
     private fun cancelReconnect() {

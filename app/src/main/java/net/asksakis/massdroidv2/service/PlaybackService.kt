@@ -20,6 +20,7 @@ import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
@@ -103,7 +104,7 @@ class PlaybackService : MediaLibraryService() {
         if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
         scope.launch {
             wsClient.startupReady.first { it }
-            if (wsClient.connectionState.value !is ConnectionState.Disconnected || wsClient.userDisconnected) {
+            if (!wsClient.connectionState.value.needsConnect() || wsClient.userDisconnected) {
                 return@launch
             }
             val url = settingsRepository.serverUrl.first()
