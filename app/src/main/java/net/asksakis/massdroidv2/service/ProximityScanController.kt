@@ -92,10 +92,20 @@ class ProximityScanController(
         roomDetector.resetNoMatchStreak()
     }
 
+    /**
+     * (Re)start the PendingIntent batch scan, which only ever carries MAC filters.
+     *
+     * Batch scan filters are offloaded to the BLE controller, and that hardware can
+     * only match addresses/UUIDs, not advertised names. This used to fall back to a
+     * match-all filter whenever ANY room had a NAME anchor, which made the app an
+     * always-on unoptimized scanner: it woke the process for every advertisement in
+     * range (233k results / 34h on-battery, flagged by the OS as unoptimized) purely
+     * to catch the handful of name anchors. Those name anchors are already covered by
+     * the regular persistent scan, which carries real name filters and therefore also
+     * survives screen-off (see ProximityScanner.startPersistentScan). Both scans feed
+     * the same device buffer, so dropping the match-all fallback loses no coverage.
+     */
     fun startBackgroundScanForConfig(config: ProximityConfig) {
-        val hasNameAnchors = config.rooms.any { room ->
-            room.beaconProfiles.any { it.anchorType == AnchorType.NAME }
-        }
         val macAddresses = config.rooms
             .flatMap { room ->
                 room.beaconProfiles
@@ -105,10 +115,10 @@ class ProximityScanController(
             .filter { !it.startsWith("wifi:") }
             .toSet()
 
-        if (hasNameAnchors) {
-            proximityScanner.startBackgroundScan(emptySet())
-        } else if (macAddresses.isNotEmpty()) {
+        if (macAddresses.isNotEmpty()) {
             proximityScanner.startBackgroundScan(macAddresses)
+        } else {
+            proximityScanner.stopBackgroundScan()
         }
     }
 

@@ -397,23 +397,31 @@ class ProximityScanner @Inject constructor(
 
     private var backgroundScanPending: PendingIntent? = null
 
+    /**
+     * Batch scan for known beacon addresses, delivered via PendingIntent.
+     *
+     * Requires at least one address: a match-all batch scan reports every
+     * advertisement in range, which the OS counts as an unoptimized scan and which
+     * wakes the process continuously for devices we can never anchor on. Callers
+     * with only name anchors rely on [startPersistentScan] instead, which can carry
+     * real name filters.
+     */
     @SuppressLint("MissingPermission")
     fun startBackgroundScan(beaconAddresses: Set<String>) {
         val scanner = getScanner() ?: return
         stopBackgroundScan()
+        if (beaconAddresses.isEmpty()) {
+            Log.d(TAG, "Background scan skipped: no MAC anchors to filter on")
+            return
+        }
 
         val intent = Intent(BLE_SCAN_ACTION).setPackage(context.packageName)
         backgroundScanPending = PendingIntent.getBroadcast(
             context, 0, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        // Filter for known beacon addresses only
-        val filters = if (beaconAddresses.isNotEmpty()) {
-            beaconAddresses.map { addr ->
-                ScanFilter.Builder().setDeviceAddress(addr).build()
-            }
-        } else {
-            listOf(ScanFilter.Builder().build())
+        val filters = beaconAddresses.map { addr ->
+            ScanFilter.Builder().setDeviceAddress(addr).build()
         }
 
         val settings = ScanSettings.Builder()
