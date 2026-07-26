@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
@@ -127,7 +128,10 @@ class MaWebSocketClient(
     @Volatile var userDisconnected = false
         private set
     private var reconnectJob: Job? = null
-    private var reconnectAttempts = 0
+
+    /** Consumed retry budget; drives the aggressive -> patient -> give-up escalation. */
+    @VisibleForTesting
+    internal var reconnectAttempts = 0
     /**
      * Guards the window between opening the socket and receiving the server
      * handshake (`server_id`). OkHttp's connectTimeout only covers the TCP +
@@ -141,7 +145,15 @@ class MaWebSocketClient(
     @Volatile private var lastNetworkReviveMs = 0L
     @Volatile
     private var connectionGeneration = 0
-    private var lastAuthenticatedAtMs = 0L
+
+    /**
+     * When the current connection authenticated, or 0 once that has been consumed
+     * by a disconnect. Read from the OkHttp callback threads, written from the auth
+     * coroutine, hence volatile. See [consumeStableConnectionBackoffReset].
+     */
+    @VisibleForTesting
+    @Volatile
+    internal var lastAuthenticatedAtMs = 0L
 
     fun setSavedCredentials(username: String, password: String) {
         if (username.isNotBlank() && password.isNotBlank()) {
@@ -315,7 +327,7 @@ class MaWebSocketClient(
                 cancelHandshakeWatchdog()
                 this@MaWebSocketClient.webSocket = null
                 _connectionState.value = ConnectionState.Disconnected
-                maybeResetBackoffForStableConnection()
+                consumeStableConnectionBackoffReset()
                 failAllPending("Connection closed")
                 scheduleReconnect()
             }
@@ -336,7 +348,7 @@ class MaWebSocketClient(
                 }
 
                 _connectionState.value = ConnectionState.Error(t.message ?: "Connection failed")
-                maybeResetBackoffForStableConnection()
+                consumeStableConnectionBackoffReset()
                 scheduleReconnect()
             }
         })
@@ -363,7 +375,7 @@ class MaWebSocketClient(
             _connectionState.value = ConnectionState.Error(
                 "Server not responding. Check the address and that Music Assistant is reachable on this network."
             )
-            maybeResetBackoffForStableConnection()
+            consumeStableConnectionBackoffReset()
             scheduleReconnect()
         }
     }
@@ -376,6 +388,7 @@ class MaWebSocketClient(
     fun disconnect() {
         userDisconnected = true
         hasConnectedSuccessfully = false
+        lastAuthenticatedAtMs = 0L
         cancelReconnect()
         cancelHandshakeWatchdog()
         webSocket?.close(1000, "User disconnect")
@@ -614,9 +627,27 @@ class MaWebSocketClient(
         }
     }
 
-    private fun maybeResetBackoffForStableConnection(nowMs: Long = System.currentTimeMillis()) {
-        val connectedForMs = nowMs - lastAuthenticatedAtMs
-        if (lastAuthenticatedAtMs > 0L && connectedForMs >= STABLE_CONNECTION_RESET_MS) {
+    /**
+     * A connection that just dropped after having been authenticated for at least
+     * [STABLE_CONNECTION_RESET_MS] earns a fresh retry budget: that drop is a
+     * one-off (server restart, roam) rather than an unreachable server.
+     *
+     * Called from the disconnect paths only, and it CONSUMES the marker. Without
+     * clearing [lastAuthenticatedAtMs] the elapsed time kept growing after the
+     * socket died, so every subsequent failure also looked "stable" and reset the
+     * budget again. That pinned `attempt` at 1 ([AGGRESSIVE_RETRY_MS]) forever, so
+     * an unreachable server (observed: DNS failing while off-VPN on cellular)
+     * produced a ~1 retry/s storm that never exhausted [MAX_RETRY_COUNT] and kept
+     * the mobile radio awake for hours. [onNetworkAvailable] remains the way a
+     * genuinely new route revives an exhausted budget.
+     */
+    @VisibleForTesting
+    internal fun consumeStableConnectionBackoffReset(nowMs: Long = System.currentTimeMillis()) {
+        val authenticatedAtMs = lastAuthenticatedAtMs
+        lastAuthenticatedAtMs = 0L
+        if (authenticatedAtMs <= 0L) return
+        val connectedForMs = nowMs - authenticatedAtMs
+        if (connectedForMs >= STABLE_CONNECTION_RESET_MS) {
             Log.d(TAG, "Stable connection lasted ${connectedForMs}ms, resetting reconnect backoff")
             resetReconnectBackoff()
         }
