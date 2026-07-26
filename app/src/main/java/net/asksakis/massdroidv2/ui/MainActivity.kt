@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui
 
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
+import net.asksakis.massdroidv2.service.FollowMeService
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
@@ -256,6 +257,12 @@ class MainActivity : ComponentActivity() {
         // Detect OAuth abandonment: user pressed back/close in the browser tab
         // without completing the sign-in. The repo handles the grace window.
         maAuthRepository.handleAppResumed()
+        // Follow Me's only other start site is PlaybackService.onCreate, which can run in
+        // a background context where Android refuses the start outright (see
+        // FollowMeService.start). This is the guaranteed-foreground retry: without it a
+        // refused start left room detection dead until the next lucky launch. Cheap and
+        // idempotent - the service self-gates on config and is a no-op when already up.
+        FollowMeService.start(this)
     }
 
     private fun handleOAuthCallback(intent: Intent?) {

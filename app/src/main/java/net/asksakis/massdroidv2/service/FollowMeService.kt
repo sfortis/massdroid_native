@@ -67,9 +67,26 @@ class FollowMeService : Service() {
         const val PROXIMITY_REEVALUATE_ACTION = "net.asksakis.massdroidv2.PROXIMITY_REEVALUATE"
         const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
 
-        /** Start (or nudge) the service. Safe to call from any foreground context; self-gates on config. */
+        /**
+         * Start (or nudge) the service; it self-gates on config.
+         *
+         * A refused start must never propagate. The only caller is
+         * [PlaybackService.onCreate], and that service can be created from a BACKGROUND
+         * context (a MediaBrowser bind from Android Auto / Bixby / a Samsung routine, or
+         * right after an install). On Android 12+ [Context.startService] then throws
+         * BackgroundServiceStartNotAllowedException, and because that escaped onCreate it
+         * took the whole process down with "Unable to create service PlaybackService" -
+         * the app would not launch at all, repeatedly. Both refusal types
+         * (Background/ForegroundServiceStartNotAllowedException) are
+         * IllegalStateException subclasses. Skipping the nudge is safe: the service is
+         * started again from a foreground entry point, and it is sticky once running.
+         */
         fun start(context: Context) {
-            context.startService(Intent(context, FollowMeService::class.java))
+            try {
+                context.startService(Intent(context, FollowMeService::class.java))
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Start refused (no foreground context): ${e.javaClass.simpleName}")
+            }
         }
     }
 
