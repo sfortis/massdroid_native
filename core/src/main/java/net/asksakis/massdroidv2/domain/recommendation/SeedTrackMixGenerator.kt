@@ -28,6 +28,7 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private const val TAG = "SeedTrackMix"
@@ -47,6 +48,21 @@ private const val SEED_MIN_LISTENED_MS = 30_000L
 // yields ~226 artists across ~37 anchors. The query cost is flat (~21 ms either
 // way; the 30-day GROUP BY dominates), so the width is essentially free.
 private const val RECENCY_POOL_LIMIT = 600
+
+// How much Strictness may tilt the pick of the NON-primary seeds toward score.
+// Weight spans 1.0 (lowest-scored in the cluster) to 1 + this (highest), so at
+// Strictness 1.0 a top-scored seed is ~10x likelier than a bottom-scored one and
+// at Strictness 0.0 the draw is uniform (the old plain shuffle).
+//
+// Why this exists: the pool is dominated by tracks played exactly ONCE (measured
+// on a real 30-day history: 211 of 240 artists after dedupe, 88%, mean score
+// 0.267 vs 0.703 for repeat-played ones). Those are overwhelmingly tracks the
+// engine ITSELF queued and the user simply did not skip (78% of all plays are
+// >=90% completions), so seeding from them uniformly makes each mix a mutation
+// of the previous one. strictnessRankedPool already answers to Strictness, but
+// it only decides the PRIMARY via varietyWindow; the other seeds used to be a
+// plain shuffle over the whole pool, which is where the drift came from.
+private const val SEED_WEIGHT_STRENGTH = 9.0
 private const val GENRE_SEED_LOOKBACK_DAYS = 365
 private const val GENRE_SEED_POOL_LIMIT = 250
 private const val SEED_SIMILARS_MIN = 15
@@ -185,6 +201,57 @@ internal fun strictnessRankedPool(pool: List<SeedTrack>, strictness: Double): Li
         val recencyNorm = 1.0 - index / lastIndex
         s * scoreNorm + (1.0 - s) * recencyNorm
     }.map { it.value }
+}
+
+/**
+ * Randomised order over [seeds] that leans on `score` as [strictness] rises.
+ *
+ * Weighted sampling WITHOUT replacement (Efraimidis-Spirakis): draw one uniform
+ * per item and sort by `u^(1/w)`, which yields an order whose first element is
+ * chosen with probability `w_i / sum(w)`, and so on down the list. At strictness
+ * 0 every weight is 1.0, so this degrades exactly to a uniform shuffle.
+ *
+ * NOTE this only re-weights WITHIN the cluster it is handed. It cannot conjure
+ * confirmed-taste seeds that the pool query never returned, and measured on a
+ * real history that is the binding constraint: `getRecentSeedTracks` orders by
+ * recency alone, so of ~739 artists with 3+ plays in the last 30 days only ~10
+ * survive into the 600-row window. This helper moved once-only seeds 88% -> 79%;
+ * closing the rest needs the POOL to carry confirmed taste, not a better draw.
+ *
+ * It stays a DRAW rather than a ranking on purpose: consecutive mixes must still
+ * differ (that is what [strictnessRankedPool] plus rotation buys us), we only
+ * want the passively-played tail to stop being as likely as a track the listener
+ * actually returned to. See [SEED_WEIGHT_STRENGTH] for the measurement.
+ */
+@VisibleForTesting
+internal fun strictnessWeightedOrder(
+    seeds: List<SeedTrack>,
+    strictness: Double,
+    random: kotlin.random.Random
+): List<SeedTrack> {
+    if (seeds.size <= 1) return seeds
+    val s = strictness.coerceIn(0.0, 1.0)
+    if (s <= 0.0) return seeds.shuffled(random)
+    // RANK, not min-max: `tracks.score` is long-tailed (a real cluster ran
+    // -0.32..1.96 with the mass under 0.4), so a single high outlier flattened
+    // min-max normalisation and left the top and bottom of the pool within 1.4x
+    // of each other instead of the intended 10x. Ranking is outlier-proof.
+    // Ties share the lowest rank of the tied run, so equal scores keep equal
+    // weight and a flat cluster stays a uniform shuffle.
+    val rankByScore = seeds.map { it.score }.distinct().sorted()
+        .withIndex().associate { (i, score) -> score to i }
+    val lastRank = (rankByScore.size - 1).takeIf { it > 0 } ?: return seeds.shuffled(random)
+    // The key is drawn ONCE per seed and the materialised pairs are sorted:
+    // sorting on a lambda that calls random() would re-roll the key on every
+    // comparison, an inconsistent comparator that makes TimSort throw.
+    return seeds
+        .map { seed ->
+            val scoreNorm = (rankByScore.getValue(seed.score)).toDouble() / lastRank
+            val weight = 1.0 + s * SEED_WEIGHT_STRENGTH * scoreNorm
+            seed to random.nextDouble().pow(1.0 / weight)
+        }
+        .sortedByDescending { it.second }
+        .map { it.first }
 }
 
 /**
@@ -922,8 +989,16 @@ class SeedTrackMixGenerator @Inject constructor(
             seed.trackUri == primary.trackUri ||
                 seedJoinsCluster(genresBySeed[seed.trackUri].orEmpty(), primaryGenres, primaryFamily)
         }
+        // The primary keeps its uniform draw from the (already score-ranked and
+        // variety-windowed) freshPool, because rotating the anchor is the whole
+        // point of Variety. The remaining seeds are where Strictness had no say
+        // at all, so they are drawn score-weighted instead of plain-shuffled.
         val ordered = listOf(primary) +
-            cluster.filter { it.trackUri != primary.trackUri }.shuffled(random)
+            strictnessWeightedOrder(
+                cluster.filter { it.trackUri != primary.trackUri },
+                tuning.strictness,
+                random
+            )
         val result = ordered.take(SEED_COUNT)
         Log.d(
             TAG,
