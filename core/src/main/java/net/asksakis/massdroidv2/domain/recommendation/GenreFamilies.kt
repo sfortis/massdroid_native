@@ -47,7 +47,13 @@ private val GENRE_FAMILY: Map<String, String> = buildMap {
         "breakbeat", "breakcore", "club", "dance", "deep house",
         "drum and bass", "dubstep", "electro", "electronic", "electronica",
         "electropop", "glitch", "house", "idm", "minimal", "progressive trance",
-        "psytrance", "synth pop", "synthpop", "tech house", "techno", "trance"
+        "psytrance", "synth pop", "synthpop", "tech house", "techno", "trance",
+        // The synthwave scene. "wave" is NOT in GLUED_SUFFIX_FAMILY on purpose
+        // (it spans new wave / darkwave / synthwave, which sit in three different
+        // families), so every member is listed here by hand. Measured on a real
+        // library: synthwave was the most-dropped lead tag of all, 14 artists.
+        "chillwave", "dreamwave", "electroclash", "new retro wave", "retrowave",
+        "synthwave"
     )
     // Synth pop / electropop sit with ELECTRONIC, not pop: on Last.fm they
     // surface with the electronic scene, and keeping them under "pop" let
@@ -76,8 +82,22 @@ private val GENRE_FAMILY: Map<String, String> = buildMap {
     family(
         "goth",
         "dark electro", "darkwave", "ebm", "ethereal", "goth", "gothic rock",
-        "industrial", "industrial rock"
+        "industrial", "industrial rock",
+        // Cold/minimal synth is the darkwave side of the synth revival, not the
+        // synthwave side: it surfaces with Ash Code / NNHMN / Hante., not with
+        // The Midnight. Co-occurrence on the real library agrees independently
+        // (minimal synth -> goth 44%).
+        "coldwave", "minimal synth", "minimal wave"
     )
+    // Genres no suffix rule can reach. "blackgaze"/"doomgaze" are metal despite
+    // the shoegaze root ("gaze" is not a suffix rule: it would also catch
+    // shoegaze, which is rock). "psychill" is psychedelic ambient, not trance.
+    family("metal", "blackgaze", "doomgaze")
+    family("chill", "psychill")
+    family("world", "bossa nova")
+    // "noise pop" would fall to pop on the last word, but it is the Jesus and
+    // Mary Chain lineage: indie/rock with noise, not pop.
+    family("rock", "noise pop")
 }
 
 // Glued-suffix fallback for single-word genres outside the curated map
