@@ -104,6 +104,19 @@ interface PlayHistoryRepository {
     suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrack>
     /** Recently-played well-listened tracks ordered by recency (no score floor). */
     suspend fun getRecentSeedTracks(sinceMs: Long, minListenedMs: Long, limit: Int): List<SeedTrack>
+
+    /**
+     * Seed candidates the listener has demonstrably come back to: at least
+     * [minPlays] plays all time, ordered by replay count then score. Recency
+     * alone is owned by whatever generated the most plays (the mixes), so this
+     * is the pool that carries actual taste.
+     */
+    suspend fun getConfirmedSeedTracks(
+        sinceMs: Long,
+        minListenedMs: Long,
+        minPlays: Int,
+        limit: Int
+    ): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>

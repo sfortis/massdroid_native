@@ -63,6 +63,28 @@ private const val RECENCY_POOL_LIMIT = 600
 // it only decides the PRIMARY via varietyWindow; the other seeds used to be a
 // plain shuffle over the whole pool, which is where the drift came from.
 private const val SEED_WEIGHT_STRENGTH = 9.0
+
+// Plays (all time) that make a track count as confirmed taste rather than a play
+// the listener merely sat through. Two is deliberately low: on a real history it
+// already yields ~428 distinct artists, so the pool stays wide enough to rotate.
+private const val SEED_CONFIRMED_MIN_PLAYS = 2
+
+// Largest share of the seed pool the confirmed-taste query may take, reached at
+// Strictness 1.0 and scaled linearly by Strictness (so 0.0 keeps the old
+// recency-only pool exactly). Measured on a real 30-day history over 2000
+// simulated mixes, non-primary seeds:
+//
+//   recency only, plain shuffle (old) : 88% played-once-only, mean score 0.319
+//   recency only, weighted            : 82%                 , mean score 0.368
+//   50/50 split, weighted             : 14%                 , mean score 1.255
+//   confirmed only, weighted          :  0%                 , mean score 1.136
+//
+// The split beats BOTH extremes on score because it keeps the high-scoring recent
+// tracks as well. Rotation does not suffer, it IMPROVES: distinct primary seeds
+// over 500 mixes went 205 (recency only, 240-artist pool) -> 239 (split, 353) ->
+// 288 (confirmed only, 428), because the recency window wastes most of its 600
+// rows on repeats of the engine's own output.
+private const val SEED_POOL_CONFIRMED_MAX_SHARE = 0.5
 private const val GENRE_SEED_LOOKBACK_DAYS = 365
 private const val GENRE_SEED_POOL_LIMIT = 250
 private const val SEED_SIMILARS_MIN = 15
@@ -252,6 +274,23 @@ internal fun strictnessWeightedOrder(
         }
         .sortedByDescending { it.second }
         .map { it.first }
+}
+
+/**
+ * Rows of the seed pool reserved for confirmed taste (replayed tracks), scaled
+ * linearly by [strictness] up to [SEED_POOL_CONFIRMED_MAX_SHARE].
+ *
+ * Strictness 0.0 MUST return 0: that is the contract that keeps the bottom of the
+ * slider on the old recency-only pool, where the listener has asked for "what I
+ * played lately", not "what I keep coming back to".
+ */
+@VisibleForTesting
+internal fun confirmedPoolBudget(strictness: Double): Int {
+    // NaN would reach roundToInt() and throw ("Cannot round NaN value"), taking
+    // the whole mix build down; a broken slider value falls back to the safe,
+    // pre-existing recency-only pool instead.
+    val s = if (strictness.isNaN()) 0.0 else strictness.coerceIn(0.0, 1.0)
+    return (RECENCY_POOL_LIMIT * s * SEED_POOL_CONFIRMED_MAX_SHARE).roundToInt()
 }
 
 /**
@@ -935,7 +974,7 @@ class SeedTrackMixGenerator @Inject constructor(
         recency: Recency
     ): SeedSelection {
         val since = System.currentTimeMillis() - SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
-        val pool = strictnessRankedPool(queryRecentSeedTracks(since, RECENCY_POOL_LIMIT), tuning.strictness)
+        val pool = strictnessRankedPool(querySeedPool(since, tuning.strictness), tuning.strictness)
         val byArtist = dedupeByArtist(pool)
         if (byArtist.size <= SEED_COUNT) return SeedSelection(byArtist, emptySet())
 
@@ -1015,11 +1054,51 @@ class SeedTrackMixGenerator @Inject constructor(
         return SeedSelection(result, primaryGenres.toSet(), envelope, setOfNotNull(primaryFamily))
     }
 
+    /**
+     * The seed candidate pool: a confirmed-taste slice (tracks replayed at least
+     * [SEED_CONFIRMED_MIN_PLAYS] times) plus a recency slice, budgeted by
+     * Strictness. See [SEED_POOL_CONFIRMED_MAX_SHARE] for the measurements.
+     *
+     * Recency always fills whatever the confirmed query could not supply, so a
+     * new user with no replay history gets exactly the old recency-only pool
+     * rather than an empty mix.
+     */
+    private suspend fun querySeedPool(sinceMs: Long, strictness: Double): List<SeedTrack> {
+        val confirmedBudget = confirmedPoolBudget(strictness)
+        val confirmed =
+            if (confirmedBudget <= 0) emptyList()
+            else queryConfirmedSeedTracks(sinceMs, confirmedBudget)
+        val recent = queryRecentSeedTracks(sinceMs, RECENCY_POOL_LIMIT - confirmed.size)
+        // A track can sit in both slices; the confirmed copy wins so the budget
+        // is not silently spent twice on the same row.
+        val taken = confirmed.mapTo(mutableSetOf()) { it.trackUri }
+        val merged = confirmed + recent.filter { taken.add(it.trackUri) }
+        Log.d(
+            TAG,
+            "seed pool: ${merged.size} (confirmed ${confirmed.size}/$confirmedBudget " +
+                "+ recent ${merged.size - confirmed.size}, strictness $strictness)"
+        )
+        return merged
+    }
+
     private suspend fun queryRecentSeedTracks(sinceMs: Long, limit: Int): List<SeedTrack> =
-        try {
+        if (limit <= 0) emptyList() else try {
             playHistoryRepository.getRecentSeedTracks(sinceMs, SEED_MIN_LISTENED_MS, limit)
         } catch (e: Exception) {
             Log.w(TAG, "getRecentSeedTracks failed: ${e.message}")
+            emptyList()
+        }
+
+    private suspend fun queryConfirmedSeedTracks(sinceMs: Long, limit: Int): List<SeedTrack> =
+        try {
+            playHistoryRepository.getConfirmedSeedTracks(
+                sinceMs,
+                SEED_MIN_LISTENED_MS,
+                SEED_CONFIRMED_MIN_PLAYS,
+                limit
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "getConfirmedSeedTracks failed: ${e.message}")
             emptyList()
         }
 

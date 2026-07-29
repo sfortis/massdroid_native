@@ -440,6 +440,46 @@ interface PlayHistoryDao {
     )
     suspend fun getRecentSeedTracks(since: Long, minListenedMs: Long, limit: Int): List<SeedTrackRow>
 
+    // Confirmed-taste seed pool: same shape as getRecentSeedTracks, but ordered by
+    // how often the track was REPLAYED (all time, not just inside the window) and
+    // then by score, keeping only tracks with at least :minPlays plays.
+    //
+    // Why a second pool exists: ordering by recency alone lets whatever produced
+    // the most PLAY VOLUME own every row, and that is the generated mixes
+    // themselves. Measured on a real 30-day history, the 600-row recency window
+    // collapsed to 240 artists of which 88% had been played exactly once, while
+    // 739 artists with 3+ plays existed in the same window and only ~10 got in.
+    // Replay count is the one taste signal that survives that: it cannot be
+    // manufactured by the engine queueing something the listener did not skip.
+    //
+    // The play count is deliberately ALL TIME: a track loved last year and heard
+    // once this month is confirmed taste, not a passive play.
+    @Query(
+        """
+        SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
+               MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
+               (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
+               (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
+                WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
+        FROM play_history ph
+        JOIN tracks t ON t.uri = ph.track_uri
+        JOIN track_artists ta ON ta.track_uri = t.uri
+        JOIN artists a ON a.uri = ta.artist_uri
+        WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
+        GROUP BY t.uri
+        HAVING (SELECT COUNT(*) FROM play_history p2 WHERE p2.track_uri = t.uri) >= :minPlays
+        ORDER BY (SELECT COUNT(*) FROM play_history p2 WHERE p2.track_uri = t.uri) DESC,
+                 t.score DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getConfirmedSeedTracks(
+        since: Long,
+        minListenedMs: Long,
+        minPlays: Int,
+        limit: Int
+    ): List<SeedTrackRow>
+
     // Genre play timestamps for BLL scoring (track_genres + artist_genres)
     @Query(
         """

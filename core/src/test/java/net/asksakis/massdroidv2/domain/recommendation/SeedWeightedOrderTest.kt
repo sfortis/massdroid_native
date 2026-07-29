@@ -111,6 +111,37 @@ class SeedWeightedOrderTest {
         assertThat(out.map { it.trackUri }.toSet()).isEqualTo(mixed.map { it.trackUri }.toSet())
     }
 
+    // --- confirmedPoolBudget: how much of the pool carries confirmed taste ---
+
+    @Test
+    fun `strictness zero reserves nothing, so the old recency-only pool survives`() {
+        // Contract: the bottom of the slider means "what I played lately".
+        assertThat(confirmedPoolBudget(0.0)).isEqualTo(0)
+    }
+
+    @Test
+    fun `the confirmed slice never exceeds half the pool`() {
+        // RECENCY_POOL_LIMIT is 600 and the cap is 0.5.
+        assertThat(confirmedPoolBudget(1.0)).isEqualTo(300)
+        assertThat(confirmedPoolBudget(0.5)).isEqualTo(150)
+    }
+
+    @Test
+    fun `the budget grows monotonically with strictness`() {
+        val budgets = listOf(0.0, 0.1, 0.26, 0.52, 0.8, 0.95, 1.0).map { confirmedPoolBudget(it) }
+        assertThat(budgets).isInOrder()
+        assertThat(budgets.first()).isEqualTo(0)
+        assertThat(budgets.last()).isEqualTo(300)
+    }
+
+    @Test
+    fun `out-of-range strictness is clamped rather than trusted`() {
+        assertThat(confirmedPoolBudget(-1.0)).isEqualTo(0)
+        assertThat(confirmedPoolBudget(5.0)).isEqualTo(300)
+        // NaN must not reach roundToInt(), which throws rather than returning 0.
+        assertThat(confirmedPoolBudget(Double.NaN)).isEqualTo(0)
+    }
+
     @Test
     fun `a full-size pool sorts without an inconsistent comparator`() {
         // RECENCY_POOL_LIMIT is 600 and TimSort throws on a comparator that

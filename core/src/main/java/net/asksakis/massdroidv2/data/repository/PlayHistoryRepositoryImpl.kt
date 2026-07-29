@@ -363,6 +363,14 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     ): List<SeedTrack> =
         dao.getRecentSeedTracks(sinceMs, minListenedMs, limit).map { it.toSeedTrack() }
 
+    override suspend fun getConfirmedSeedTracks(
+        sinceMs: Long,
+        minListenedMs: Long,
+        minPlays: Int,
+        limit: Int
+    ): List<SeedTrack> =
+        dao.getConfirmedSeedTracks(sinceMs, minListenedMs, minPlays, limit).map { it.toSeedTrack() }
+
     private fun SeedTrackRow.toSeedTrack() = SeedTrack(
         trackUri = trackUri,
         trackName = trackName,
