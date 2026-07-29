@@ -69,6 +69,13 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
         private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
+        private val KEY_RECENT_SEED_CLUSTERS = stringPreferencesKey("recent_seed_cluster_genres")
+
+        // One cluster per line, its genres comma-separated. Genres never contain
+        // either character (Last.fm tags are words: "drum and bass", "hip hop")
+        // and the DB already round-trips them through comma-joined lists.
+        private const val CLUSTER_SEPARATOR = "\n"
+        private const val GENRE_SEPARATOR = ","
     }
 
     private val safeData = context.dataStore.data
@@ -325,6 +332,31 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override val knownBtDevices: Flow<Set<String>> = safeData.map { prefs ->
         prefs[KEY_KNOWN_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    }
+
+    override val recentSeedClusterGenres: Flow<List<Set<String>>> = safeData.map { prefs ->
+        prefs[KEY_RECENT_SEED_CLUSTERS]
+            ?.split(CLUSTER_SEPARATOR)
+            ?.mapNotNull { line ->
+                line.split(GENRE_SEPARATOR)
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .toSet()
+                    .takeIf { it.isNotEmpty() }
+            }
+            ?: emptyList()
+    }
+
+    override suspend fun setRecentSeedClusterGenres(clusters: List<Set<String>>) {
+        context.dataStore.edit { prefs ->
+            val serialized = clusters
+                .filter { it.isNotEmpty() }
+                .joinToString(CLUSTER_SEPARATOR) { cluster ->
+                    cluster.joinToString(GENRE_SEPARATOR)
+                }
+            if (serialized.isEmpty()) prefs.remove(KEY_RECENT_SEED_CLUSTERS)
+            else prefs[KEY_RECENT_SEED_CLUSTERS] = serialized
+        }
     }
 
     override suspend fun recordKnownBtDevice(routeKey: String) {

@@ -187,6 +187,11 @@ class MixPlaybackOrchestrator @Inject constructor(
     // Cluster genres of the last few SEED-TRACK smart mixes: the generator's
     // primary-seed pick avoids these so consecutive mixes rotate genre families.
     private val recentSeedClusterGenres: ArrayDeque<Set<String>> = ArrayDeque()
+    // The cluster rotation is the one cool-down that must outlive the process:
+    // Android kills a backgrounded app routinely, and an empty window let the next
+    // mix rebuild the cluster the previous one just used. Hydrated lazily on first
+    // use rather than in init{}, so a FAB tap cannot race the load and read empty.
+    private var clusterRotationHydrated = false
 
     // ---- Tuning knobs (read fresh from settings per build) ----
     private var smartMixVariety = 0.5
@@ -227,6 +232,10 @@ class MixPlaybackOrchestrator @Inject constructor(
         recentSmartMixArtists.clear()
         recentSmartMixGenres.clear()
         recentSeedClusterGenres.clear()
+        // A different account is a different library, so the persisted rotation
+        // window is meaningless; drop it and re-hydrate on the next build.
+        clusterRotationHydrated = false
+        persistClusterRotation()
     }
 
     // ---------------------------------------------------------------------------
@@ -466,6 +475,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         (SMART_MIX_TARGET_MIN + smartMixLength * SMART_MIX_TARGET_SPAN).toInt()
 
     private suspend fun buildSeedTrackMix(): SmartMixResult {
+        hydrateClusterRotation()
         val result = seedTrackMixGenerator.buildSmartMix(seedTuning(), smartMixTrackTarget(), currentRecency())
         // Record the cluster's genres only for a mix that will actually be used,
         // so a failed/short attempt does not burn a rotation slot.
@@ -474,8 +484,38 @@ class MixPlaybackOrchestrator @Inject constructor(
             while (recentSeedClusterGenres.size > SEED_CLUSTER_ROTATION_DEPTH) {
                 recentSeedClusterGenres.removeFirst()
             }
+            persistClusterRotation()
         }
         return SmartMixResult(result.tracks, null)
+    }
+
+    /**
+     * Load the persisted cluster rotation window once per process. A failure here
+     * only costs variety, never the mix, so it degrades to the in-memory window.
+     */
+    private suspend fun hydrateClusterRotation() {
+        if (clusterRotationHydrated) return
+        clusterRotationHydrated = true
+        try {
+            val stored = settingsRepository.recentSeedClusterGenres.first()
+            if (stored.isEmpty()) return
+            // Only fill what this process has not already recorded itself.
+            if (recentSeedClusterGenres.isEmpty()) {
+                stored.takeLast(SEED_CLUSTER_ROTATION_DEPTH)
+                    .forEach { recentSeedClusterGenres.addLast(it) }
+            }
+            Log.d(TAG, "cluster rotation: hydrated ${recentSeedClusterGenres.size} recent clusters")
+        } catch (e: Exception) {
+            Log.w(TAG, "cluster rotation hydrate failed: ${e.message}")
+        }
+    }
+
+    private suspend fun persistClusterRotation() {
+        try {
+            settingsRepository.setRecentSeedClusterGenres(recentSeedClusterGenres.toList())
+        } catch (e: Exception) {
+            Log.w(TAG, "cluster rotation persist failed: ${e.message}")
+        }
     }
 
     private suspend fun buildGenreRadioSeedMix(genre: String): List<Track> =

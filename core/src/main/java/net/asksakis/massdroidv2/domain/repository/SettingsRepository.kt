@@ -74,6 +74,18 @@ interface SettingsRepository {
      * device without us enumerating bonded devices (no BLUETOOTH_CONNECT).
      */
     val knownBtDevices: Flow<Set<String>>
+
+    /**
+     * Cluster genres of the last few seed-track Smart Mixes, newest LAST, so the
+     * generator can rotate genre families instead of rebuilding the same cluster.
+     *
+     * Persisted rather than kept in memory only: Android kills a backgrounded app
+     * routinely, and an in-process deque meant the anti-repeat window reset to
+     * empty on every process death. Verified on device: the first mix of each new
+     * PID filtered 183 of 183 candidate seeds, i.e. it had no history to avoid.
+     */
+    val recentSeedClusterGenres: Flow<List<Set<String>>>
+    suspend fun setRecentSeedClusterGenres(clusters: List<Set<String>>)
     /**
      * BT devices (route keys) flagged as car audio: on connect their output is
      * pinned to STREAM_MUSIC 100% (the head unit's own dial does the attenuation)
