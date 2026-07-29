@@ -277,7 +277,14 @@ class MixEngine @Inject constructor() {
                 )
             }
             .sortedByDescending { it.score }
+            // Two passes: by name, then by the resolved URI. The name key alone
+            // let the same recording in twice when two Last.fm candidates spelled
+            // it differently ("Wicked Games" and "Wicked Games (feat. Anna
+            // Naklab) - Radio Edit") and the provider search resolved both to one
+            // track. The URI key alone would miss the same song under two
+            // provider items.
             .distinctBy { trackDedupeKey(it.track) }
+            .distinctBy { it.track.uri }
         if (deduped.isEmpty()) return emptyList()
         val scored = discoveryWeightedOrder(deduped, discovery, random)
 

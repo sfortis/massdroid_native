@@ -86,39 +86,49 @@ class SeedTrackInjectCountTest {
         assertThat(low).isNotEqualTo(high)
     }
 
-    // --- prefersCandidateFamily: Variety-gated genre movement (no whiplash) ---
-    // Pins the cluster-whiplash fix: at low/mid Variety the next mix stays in the
-    // recent genre family; only high Variety hops to a different family.
+    // --- genre movement between mixes (no whiplash, no lock-in) ---
+    // Pins the cluster-whiplash fix: a mix that stays keeps the recent genre
+    // family, a mix that hops leaves it. Variety decides HOW OFTEN we hop.
 
     private val recentElectronic = setOf("electronic")
 
     @Test
-    fun `low variety prefers staying in the recent family`() {
-        // deep house session (electronic family), low variety -> prefer electronic, reject rock.
-        assertThat(prefersCandidateFamily(setOf("electronic"), recentElectronic, variety = 0.3)).isTrue()
-        assertThat(prefersCandidateFamily(setOf("rock"), recentElectronic, variety = 0.3)).isFalse()
+    fun `a staying mix prefers the recent family`() {
+        // deep house session (electronic family) -> prefer electronic, reject rock.
+        assertThat(prefersCandidateFamily(setOf("electronic"), recentElectronic, hop = false)).isTrue()
+        assertThat(prefersCandidateFamily(setOf("rock"), recentElectronic, hop = false)).isFalse()
     }
 
     @Test
-    fun `high variety prefers hopping to a different family`() {
-        // high variety -> exploration: reject the recent family, prefer a foreign one.
-        assertThat(prefersCandidateFamily(setOf("electronic"), recentElectronic, variety = 0.9)).isFalse()
-        assertThat(prefersCandidateFamily(setOf("rock"), recentElectronic, variety = 0.9)).isTrue()
+    fun `a hopping mix prefers a different family`() {
+        // exploration: reject the recent family, prefer a foreign one.
+        assertThat(prefersCandidateFamily(setOf("electronic"), recentElectronic, hop = true)).isFalse()
+        assertThat(prefersCandidateFamily(setOf("rock"), recentElectronic, hop = true)).isTrue()
     }
 
     @Test
     fun `no recent families means no preference`() {
         // First run / cleared history: nothing preferred, caller falls back to the fresh pool.
-        assertThat(prefersCandidateFamily(setOf("electronic"), emptySet(), variety = 0.3)).isFalse()
-        assertThat(prefersCandidateFamily(setOf("rock"), emptySet(), variety = 0.9)).isFalse()
+        assertThat(prefersCandidateFamily(setOf("electronic"), emptySet(), hop = false)).isFalse()
+        assertThat(prefersCandidateFamily(setOf("rock"), emptySet(), hop = true)).isFalse()
     }
 
     @Test
-    fun `the stay-hop flip happens across the threshold, not below it`() {
-        // Same candidate (recent family), only Variety changes: mid stays, high hops.
-        val staysMid = prefersCandidateFamily(setOf("electronic"), recentElectronic, variety = 0.5)
-        val staysHigh = prefersCandidateFamily(setOf("electronic"), recentElectronic, variety = 0.8)
-        assertThat(staysMid).isTrue()   // below threshold: keep same family
-        assertThat(staysHigh).isFalse() // above threshold: hop away
+    fun `variety is the probability of hopping, and the extremes are absolute`() {
+        val random = kotlin.random.Random(42)
+        assertThat((1..50).count { shouldHopFamily(0.0, random) }).isEqualTo(0)
+        assertThat((1..50).count { shouldHopFamily(1.0, random) }).isEqualTo(50)
+        // Mid slider: both outcomes occur, so consecutive mixes are not locked
+        // into one behaviour the way the old 0.66 threshold locked them.
+        val mid = (1..200).count { shouldHopFamily(0.5, random) }
+        assertThat(mid).isGreaterThan(60)
+        assertThat(mid).isLessThan(140)
+    }
+
+    @Test
+    fun `a higher variety hops more often than a lower one`() {
+        val low = (1..400).count { shouldHopFamily(0.2, kotlin.random.Random(7 + it)) }
+        val high = (1..400).count { shouldHopFamily(0.8, kotlin.random.Random(7 + it)) }
+        assertThat(low).isLessThan(high)
     }
 }

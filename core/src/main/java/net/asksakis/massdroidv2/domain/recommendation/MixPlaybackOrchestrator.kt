@@ -76,6 +76,12 @@ private const val RESOLVED_ARTIST_TTL_MS = 30L * 24 * 60 * 60 * 1000
 private const val RECENT_ARTIST_APPEARANCE_PENALTY = 1.0
 private const val RECENT_ARTIST_HISTORY_DEPTH = 4
 private const val RECENT_GENRE_EXCLUSION_DEPTH = 3
+// Seed-track clusters rotate deeper than the genre engine's picked genre: the
+// seed pool now spans ~37 distinct anchor genres on a real library, so keeping
+// six mixes of history spreads consecutive mixes across it instead of cycling
+// three clusters. Falls back gracefully (the generator drops to the full window
+// when nothing outside the history is left), so a thin library is unaffected.
+private const val SEED_CLUSTER_ROTATION_DEPTH = 6
 private const val SMART_MIX_FAVORITES_QUERY_LIMIT = 500
 private const val ARTIST_TRACK_CACHE_TTL_MS = 12 * 60 * 60 * 1000L
 private const val MAX_TRACKS_PER_ARTIST = 40
@@ -465,7 +471,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         // so a failed/short attempt does not burn a rotation slot.
         if (result.tracks.size >= SMART_MIX_MIN_TRACKS && result.clusterGenres.isNotEmpty()) {
             recentSeedClusterGenres.addLast(result.clusterGenres)
-            while (recentSeedClusterGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) {
+            while (recentSeedClusterGenres.size > SEED_CLUSTER_ROTATION_DEPTH) {
                 recentSeedClusterGenres.removeFirst()
             }
         }

@@ -46,10 +46,14 @@ private val GENRE_FAMILY: Map<String, String> = buildMap {
         "electronic",
         "breakbeat", "breakcore", "club", "dance", "deep house",
         "drum and bass", "dubstep", "electro", "electronic", "electronica",
-        "glitch", "house", "idm", "minimal", "progressive trance", "psytrance",
-        "tech house", "techno", "trance"
+        "electropop", "glitch", "house", "idm", "minimal", "progressive trance",
+        "psytrance", "synth pop", "synthpop", "tech house", "techno", "trance"
     )
-    family("pop", "ballad", "disco", "electropop", "pop", "synth pop", "synthpop")
+    // Synth pop / electropop sit with ELECTRONIC, not pop: on Last.fm they
+    // surface with the electronic scene, and keeping them under "pop" let
+    // darkwave/synthpop acts (NNHMN, Das Beat, Alphaville) into a vintage
+    // jazz-pop mix through their weakest tag.
+    family("pop", "ballad", "disco", "pop")
     family("hip hop", "hip hop", "rap", "underground hip hop")
     family("jazz", "acid jazz", "fusion", "jazz", "jazz fusion", "nu jazz", "smooth jazz", "swing")
     family("classical", "baroque", "classical", "contemporary classical", "neoclassical")
@@ -117,3 +121,58 @@ private fun familyOf(normalized: String): String? {
 @VisibleForTesting
 internal fun genreFamilies(genres: Iterable<String>): Set<String> =
     genres.mapNotNull { familyOf(normalizeGenre(it).replace('-', ' ')) }.toSet()
+
+/**
+ * Families that sit next to each other closely enough that a mix anchored on
+ * one should still accept the other: shared repertoire, shared players, shared
+ * audience. Deliberately tiny and symmetric. It exists to stop false drops the
+ * dominant-family rule would otherwise cause (a retro-soul act like Lake Street
+ * Dive or Paloma Faith being thrown out of a vintage jazz/swing mix), NOT to
+ * re-open the leaks the rule closes: chill and electronic are NOT adjacent,
+ * which is what kept trance and IDM out of a lounge mix.
+ */
+private val ADJACENT_FAMILIES: Map<String, Set<String>> = mapOf(
+    "jazz" to setOf("soul", "blues"),
+    "soul" to setOf("jazz", "blues"),
+    "blues" to setOf("jazz", "soul"),
+    "folk" to setOf("country"),
+    "country" to setOf("folk")
+)
+
+/** [families] plus the families that neighbour them (see [ADJACENT_FAMILIES]). */
+@VisibleForTesting
+internal fun withAdjacentFamilies(families: Set<String>): Set<String> =
+    if (families.isEmpty()) families
+    else families + families.flatMap { ADJACENT_FAMILIES[it].orEmpty() }
+
+/**
+ * The family of the FIRST mapped tag, i.e. what the artist mostly is.
+ * Last.fm returns `artist.getTopTags` weight-descending and
+ * [net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver] preserves that
+ * order, so tag #1 is the dominant genre and later tags are side notes.
+ * Comparing the WHOLE family set let an artist into a mix through their
+ * weakest tag (Robert Miles `trance, electronic, ambient` entered a lounge mix
+ * on "ambient"; NNHMN `darkwave, electronic, synthpop` entered a swing mix on
+ * "synthpop"), so the gate uses this instead. Null when no tag is mapped.
+ */
+@VisibleForTesting
+internal fun dominantFamily(genres: Iterable<String>): String? =
+    genres.firstNotNullOfOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) }
+
+/**
+ * Reorder an UNORDERED genre list so that the best-represented family comes
+ * first, making [dominantFamily] meaningful on it.
+ *
+ * Last.fm tags arrive weight-descending, but the DB's `artist_genres` is a set
+ * (alphabetical, deduplicated), and reading "the first tag" there is reading the
+ * alphabet: IAMX is stored as `alternative, electronic, house, psychedelic,
+ * synthpop, trance`, so it counted as ROCK because "alternative" sorts first,
+ * even though four of its six tags are electronic. Ties keep the original
+ * order, so the result is deterministic.
+ */
+@VisibleForTesting
+internal fun orderByFamilyFrequency(genres: List<String>): List<String> {
+    if (genres.size < 2) return genres
+    val counts = genres.groupingBy { familyOf(normalizeGenre(it).replace('-', ' ')) }.eachCount()
+    return genres.sortedByDescending { counts[familyOf(normalizeGenre(it).replace('-', ' '))] ?: 0 }
+}

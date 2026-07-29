@@ -190,7 +190,12 @@ interface PlayHistoryDao {
     )
     suspend fun cacheResolvedUriBySimilarName(similarArtist: String, uri: String, resolvedAt: Long)
 
-    @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName")
+    // COLLATE NOCASE: the table is keyed by the artist name exactly as the
+    // source spelled it, and the same artist reaches us with different casing
+    // from different places ("york" from a provider, "York" from Last.fm), so a
+    // case-sensitive lookup missed a cached artist and made them look untagged
+    // to the Smart Mix genre gate. Reads now find either spelling.
+    @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
     suspend fun getLastFmTags(artistName: String): LastFmArtistTagsEntity?
 
     @Query("DELETE FROM artist_genres WHERE artist_uri NOT IN (SELECT DISTINCT uri FROM artists)")
