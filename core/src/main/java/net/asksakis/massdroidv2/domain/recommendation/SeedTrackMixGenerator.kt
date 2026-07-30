@@ -709,7 +709,7 @@ class SeedTrackMixGenerator @Inject constructor(
         if (seedRefs.isEmpty() && trackSeeds.isEmpty()) return emptyList()
         if (seedRefs.isEmpty()) {
             Log.d(TAG, "no library seed in this cluster, expanding from provider tracks only")
-            return gatherSimilarTracks(trackSeeds, blockedKeys, SIMILAR_TRACKS_PER_SEED)
+            return gatherSimilarTracks(trackSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED)
         }
         // Ask each productive seed deeper when there are few of them, so a
         // cluster carried by one or two library artists still fills a mix.
@@ -884,7 +884,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // when the mix would otherwise come up short: the artist route is the
         // better-structured evidence, so it is not diluted for its own sake.
         if (out.size >= wanted) return out
-        val fromTracks = gatherSimilarTracks(trackSeeds, blockedKeys, SIMILAR_TRACKS_PER_SEED)
+        val fromTracks = gatherSimilarTracks(trackSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED)
         if (fromTracks.isEmpty()) return out
         val known = out.mapTo(mutableSetOf()) { it.track.uri }
         return out + fromTracks.filter { it.track.uri !in known }
@@ -900,9 +900,11 @@ class SeedTrackMixGenerator @Inject constructor(
      * tracks". Returns nothing for providers that do not implement it, which
      * costs one round-trip per seed and is why the seeds are capped.
      */
+    @Suppress("LongParameterList")
     private suspend fun gatherSimilarTracks(
         seeds: List<SeedTrack>,
         blockedKeys: Set<String>,
+        coreFamilies: Set<String>,
         perSeed: Int
     ): List<CandidateTrack> {
         val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
@@ -921,20 +923,69 @@ class SeedTrackMixGenerator @Inject constructor(
                 }
             }.awaitAll()
         }
-        val out = mutableListOf<CandidateTrack>()
+        val kept = mutableListOf<CandidateTrack>()
         val seen = mutableSetOf<String>()
+        var dropped = 0
+        // The same family gate the artist route uses. It was missing here, and
+        // that alone spoiled a mix: a folk cluster with Bob Dylan among the
+        // seeds pulled Grateful Dead, CCR, the Allman Brothers and Little Feat
+        // through this route, which supplied 95 of the mix's 114 candidates.
+        // Provider track-similarity is looser than artist-similarity precisely
+        // because it follows one song's neighbours rather than an artist's
+        // identity, so it needs the gate MORE, not less.
+        val dbGenres = playHistoryRepository.getArtistGenreMap(
+            lists.flatten().mapNotNull { it.artistUri }.distinct()
+        )
         for (list in lists) {
             list.forEachIndexed { rank, track ->
                 // The seed track itself always comes back first.
                 if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
                 if (normalizeArtistKey(track.artistNames) in blockedKeys) return@forEachIndexed
                 if (!seen.add(track.uri)) return@forEachIndexed
+                val genres = trackCandidateGenres(track, dbGenres)
+                val family = dominantFamily(genres)
+                if (coreFamilies.isNotEmpty() && family != null && family !in coreFamilies) {
+                    dropped++
+                    return@forEachIndexed
+                }
                 val closeness = 1.0 - (rank.toDouble() / perSeed).coerceIn(0.0, 1.0)
-                out += CandidateTrack(track = track, score = closeness * SIMILAR_TRACK_SCALE)
+                val verified = family != null
+                kept += CandidateTrack(
+                    track = track,
+                    score = closeness * SIMILAR_TRACK_SCALE * (if (verified) 1.0 else MA_UNVERIFIED_SCALE)
+                )
             }
         }
-        if (out.isNotEmpty()) Log.d(TAG, "similar_tracks: ${out.size} candidates from ${refs.size} provider seeds")
-        return out
+        if (kept.isNotEmpty() || dropped > 0) {
+            Log.d(
+                TAG,
+                "similar_tracks: ${kept.size} candidates from ${refs.size} provider seeds " +
+                    "($dropped dropped by the family gate)"
+            )
+        }
+        return kept
+    }
+
+    /**
+     * What a similar-track candidate is, best source first: the genres MA put on
+     * the track, then the DB's genres for its artist, then MusicBrainz. Null
+     * family means unjudgeable, and those are kept but scored down.
+     */
+    private suspend fun trackCandidateGenres(
+        track: Track,
+        dbGenres: Map<String, List<String>>
+    ): List<String> {
+        track.genres.takeIf { it.isNotEmpty() }?.let { return it }
+        track.artistUri?.let { uri ->
+            dbGenres[uri]?.takeIf { it.isNotEmpty() }?.let { return orderByFamilyFrequency(it) }
+        }
+        val name = track.artistNames.split(",").firstOrNull()?.trim().orEmpty()
+        if (name.isEmpty()) return emptyList()
+        return try {
+            musicBrainzGenreResolver.cachedGenres(name).orEmpty()
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     /**
