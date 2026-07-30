@@ -15,7 +15,6 @@ import net.asksakis.massdroidv2.data.database.SeedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
-import net.asksakis.massdroidv2.data.database.TrackUriCacheEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -339,15 +338,6 @@ class PlayHistoryRepositoryImpl @Inject constructor(
 
     override suspend fun cacheResolvedArtistUri(name: String, uri: String) {
         dao.cacheResolvedUriBySimilarName(name, uri, System.currentTimeMillis())
-    }
-
-    override suspend fun getCachedResolvedTrackUri(nameKey: String, maxAgeMs: Long): String? =
-        dao.getCachedTrackUri(nameKey, System.currentTimeMillis() - maxAgeMs)
-
-    override suspend fun cacheResolvedTrackUri(nameKey: String, uri: String) {
-        val now = System.currentTimeMillis()
-        dao.upsertTrackUriCache(TrackUriCacheEntity(nameKey = nameKey, uri = uri, resolvedAt = now))
-        dao.deleteExpiredTrackUriCache(now - (30 * MILLIS_PER_DAY))
     }
 
     override suspend fun getSeedTracks(

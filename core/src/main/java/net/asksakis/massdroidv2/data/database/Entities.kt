@@ -213,36 +213,6 @@ data class ArtistTrackCacheEntity(
 )
 
 /**
- * Cache of Last.fm `track.getSimilar` results, keyed by a normalized
- * "artist|track" source key. Powers the seed-track recommendation generator.
- * Name-based (no FK to core tables), like the other Last.fm caches.
- */
-@Entity(
-    tableName = "lastfm_similar_tracks",
-    primaryKeys = ["source_key", "similar_artist", "similar_track"]
-)
-data class LastFmSimilarTrackEntity(
-    @ColumnInfo(name = "source_key") val sourceKey: String,
-    @ColumnInfo(name = "similar_artist") val similarArtist: String,
-    @ColumnInfo(name = "similar_track") val similarTrack: String,
-    @ColumnInfo(name = "match_score") val matchScore: Double,
-    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
-)
-
-/**
- * Reusable cache mapping a normalized "artist|track" name key to a playable
- * provider URI resolved via MA search. Shared across seeds (the same similar
- * track surfaces from many seeds), so resolution happens once.
- */
-@Entity(tableName = "track_uri_cache")
-data class TrackUriCacheEntity(
-    @PrimaryKey
-    @ColumnInfo(name = "name_key") val nameKey: String,
-    @ColumnInfo(name = "uri") val uri: String,
-    @ColumnInfo(name = "resolved_at") val resolvedAt: Long
-)
-
-/**
  * MA `similar_artists` results, cached so a mix build does not re-ask the server
  * every time. Without this the MA discovery route made ~42 live WS calls per mix
  * (18s) where the Last.fm route it replaces was answered from Room in 6.6s.

@@ -161,28 +161,6 @@ interface PlayHistoryDao {
 
     // ---- Seed-track generator caches ----
 
-    @Transaction
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSimilarTracks(entities: List<LastFmSimilarTrackEntity>)
-
-    @Query("SELECT * FROM lastfm_similar_tracks WHERE source_key = :sourceKey ORDER BY match_score DESC")
-    suspend fun getSimilarTracks(sourceKey: String): List<LastFmSimilarTrackEntity>
-
-    @Query("SELECT fetched_at FROM lastfm_similar_tracks WHERE source_key = :sourceKey LIMIT 1")
-    suspend fun getSimilarTracksFetchedAt(sourceKey: String): Long?
-
-    @Query("DELETE FROM lastfm_similar_tracks WHERE fetched_at < :olderThan")
-    suspend fun deleteExpiredSimilarTracks(olderThan: Long)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertTrackUriCache(cache: TrackUriCacheEntity)
-
-    @Query("SELECT uri FROM track_uri_cache WHERE name_key = :nameKey AND resolved_at > :minResolvedAt LIMIT 1")
-    suspend fun getCachedTrackUri(nameKey: String, minResolvedAt: Long): String?
-
-    @Query("DELETE FROM track_uri_cache WHERE resolved_at < :olderThan")
-    suspend fun deleteExpiredTrackUriCache(olderThan: Long)
-
     @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist ORDER BY match_score DESC")
     suspend fun getSimilarArtists(sourceArtist: String): List<LastFmSimilarArtistEntity>
 

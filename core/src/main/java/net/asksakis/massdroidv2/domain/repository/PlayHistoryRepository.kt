@@ -108,9 +108,6 @@ interface PlayHistoryRepository {
     /** Cached provider URI for a Last.fm similar-artist name (null if absent or older than maxAgeMs). */
     suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String?
     suspend fun cacheResolvedArtistUri(name: String, uri: String)
-    /** Cached playable URI for a normalized "artist|track" name key (seed-track resolution). */
-    suspend fun getCachedResolvedTrackUri(nameKey: String, maxAgeMs: Long): String?
-    suspend fun cacheResolvedTrackUri(nameKey: String, uri: String)
     /**
      * Seed-track seeds: listened tracks scored at or above [minScore], ordered
      * by preference (score desc, then recency). minScore is the Strictness knob:

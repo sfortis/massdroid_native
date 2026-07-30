@@ -341,6 +341,15 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_14_15 = object : Migration(14, 15) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Caches of the Last.fm track-similarity route, which the mix engine
+            // no longer uses: 28,644 + 7,428 rows and ~2.7 MB of a 45 MB database.
+            database.execSQL("DROP TABLE IF EXISTS `lastfm_similar_tracks`")
+            database.execSQL("DROP TABLE IF EXISTS `track_uri_cache`")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -349,7 +358,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
         .fallbackToDestructiveMigration()
         .build()
 
