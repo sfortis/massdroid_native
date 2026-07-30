@@ -783,7 +783,7 @@ class SeedTrackMixGenerator @Inject constructor(
         // Whatever we still cannot describe is queued for MusicBrainz, so the
         // next mix over these artists (the similar-artist lists are cached for
         // two weeks, so they recur) gates them properly instead of guessing.
-        scheduleMusicBrainzWarm(unjudged)
+        scheduleMusicBrainzWarm(unjudged.map { it.name }, "candidates")
 
         // Fetch in parallel: this used to be a sequential loop over every gated
         // artist, which made the MA route SLOWER than the Last.fm one it replaces
@@ -896,9 +896,9 @@ class SeedTrackMixGenerator @Inject constructor(
      * cached for two weeks), so the cache fills across runs instead of in one
      * long burst.
      */
-    private fun scheduleMusicBrainzWarm(unjudged: List<CachedSimilarArtist>) {
-        if (unjudged.isEmpty() || warmJob?.isActive == true) return
-        val names = unjudged.map { it.name }.filter { it.isNotBlank() }.distinct().take(MB_WARM_LIMIT)
+    private fun scheduleMusicBrainzWarm(artistNames: List<String>, what: String) {
+        if (warmJob?.isActive == true) return
+        val names = artistNames.filter { it.isNotBlank() }.distinct().take(MB_WARM_LIMIT)
         if (names.isEmpty()) return
         warmJob = warmScope.launch {
             var resolved = 0
@@ -909,7 +909,7 @@ class SeedTrackMixGenerator @Inject constructor(
                     Log.w(TAG, "MusicBrainz warm failed for '$name': ${e.message}")
                 }
             }
-            Log.d(TAG, "MusicBrainz warm: $resolved/${names.size} artists now have genres")
+            Log.d(TAG, "MusicBrainz warm ($what): $resolved/${names.size} artists now have genres")
         }
     }
 
@@ -1024,8 +1024,9 @@ class SeedTrackMixGenerator @Inject constructor(
     // MA reported for the artist), falling back to the track's own genres. Both
     // are unordered sets, so they are reordered by family frequency before the
     // first mapped family decides.
-    private fun injectionGenres(row: SeedTrack): List<String> =
-        orderByFamilyFrequency(row.artistGenres.ifEmpty { row.genres })
+    private suspend fun injectionGenres(row: SeedTrack): List<String> =
+        musicBrainzGenres(listOf(row.artistName))[normalizeArtistKey(row.artistName)]
+            ?: orderByFamilyFrequency(row.artistGenres.ifEmpty { row.genres })
 
     // Variety knob -> how many of the most-recent tracks stay as stable anchors.
     private fun seedAnchorCount(tuning: Tuning): Int =
@@ -1058,8 +1059,14 @@ class SeedTrackMixGenerator @Inject constructor(
     )
 
     /**
-     * Cluster coherence genres per seed: the DB's artist genres, falling back to
-     * the track's own tags.
+     * Cluster coherence genres per seed: MusicBrainz first, then the DB's artist
+     * genres, then the track's own tags.
+     *
+     * MusicBrainz leads because `artist_genres` is 92% Last.fm tags written by
+     * the library enricher, and those are written by NAME across every uri an
+     * artist has, so two different artists sharing a name merge: the rock Jack
+     * White carries techno, the pop Annie carries black metal, and a seed picked
+     * on that lands in the wrong cluster. MusicBrainz is per-entity and precise.
      *
      * `artist_genres` is a UNION of everything MA ever reported for the artist,
      * unordered, so it is reordered by family frequency before anything reads
@@ -1068,14 +1075,35 @@ class SeedTrackMixGenerator @Inject constructor(
      * whichever landed first alphabetically. The candidate gate reads the same
      * source, so seeds and candidates are judged on the same data.
      */
-    private fun coherenceGenreMap(pool: List<SeedTrack>): Map<String, List<String>> {
+    private suspend fun coherenceGenreMap(pool: List<SeedTrack>): Map<String, List<String>> {
+        val mb = musicBrainzGenres(pool.map { it.artistName })
         val map = HashMap<String, List<String>>(pool.size)
         for (seed in pool) {
-            map[seed.trackUri] =
-                orderByFamilyFrequency(seed.artistGenres.ifEmpty { seed.genres }.map { normalizeGenre(it) })
+            map[seed.trackUri] = mb[normalizeArtistKey(seed.artistName)]
+                ?: orderByFamilyFrequency(seed.artistGenres.ifEmpty { seed.genres }.map { normalizeGenre(it) })
         }
+        // Seeds are warmed BEFORE candidates (this runs first, and the warm is
+        // single-flight) because a seed decides the whole cluster: one merged
+        // artist here sends every candidate to the wrong genre world.
+        scheduleMusicBrainzWarm(
+            pool.filter { normalizeArtistKey(it.artistName) !in mb }.map { it.artistName },
+            "seeds"
+        )
         return map
     }
+
+    /**
+     * MusicBrainz genres for these artists, from cache only, keyed by
+     * [normalizeArtistKey]. Weight-ordered as MusicBrainz reports them, so
+     * unlike the DB fallback they need no family-frequency reordering.
+     */
+    private suspend fun musicBrainzGenres(artistNames: List<String>): Map<String, List<String>> =
+        try {
+            musicBrainzGenreResolver.cachedGenresFor(artistNames)
+                .mapKeys { (name, _) -> normalizeArtistKey(name) }
+        } catch (_: Exception) {
+            emptyMap()
+        }
 
     private suspend fun selectSeedTracks(
         tuning: Tuning,

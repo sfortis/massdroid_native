@@ -64,6 +64,28 @@ class MusicBrainzGenreResolver @Inject constructor(
     }
 
     /**
+     * Cached genres for many artists at once, for callers that judge a whole
+     * pool (the Smart Mix cluster is ~200 artists and cannot afford a query
+     * each). Artists never looked up, or whose entry expired, are absent.
+     */
+    suspend fun cachedGenresFor(artistNames: Collection<String>): Map<String, List<String>> {
+        val keys = artistNames.map { cacheKey(it) }.filter { it.isNotEmpty() }.distinct()
+        if (keys.isEmpty()) return emptyMap()
+        val rows = try {
+            dao.getMusicBrainzTagsFor(keys)
+        } catch (_: Exception) {
+            return emptyMap()
+        }
+        val now = System.currentTimeMillis()
+        return rows.mapNotNull { row ->
+            val ttl = if (row.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
+            if (now - row.fetchedAt > ttl) return@mapNotNull null
+            val tags = row.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (tags.isEmpty()) null else row.artistName to tags
+        }.toMap()
+    }
+
+    /**
      * Fetch and cache genres for [artistName]. Rate-limited to MusicBrainz's
      * 1 req/s, so callers must treat this as background work, never inline in a
      * mix build.

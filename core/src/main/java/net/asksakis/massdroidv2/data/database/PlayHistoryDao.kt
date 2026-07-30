@@ -229,6 +229,9 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM musicbrainz_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
     suspend fun getMusicBrainzTags(artistName: String): MusicBrainzArtistTagsEntity?
 
+    @Query("SELECT * FROM musicbrainz_artist_tags WHERE artist_name IN (:artistNames)")
+    suspend fun getMusicBrainzTagsFor(artistNames: List<String>): List<MusicBrainzArtistTagsEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMusicBrainzTags(entity: MusicBrainzArtistTagsEntity)
 

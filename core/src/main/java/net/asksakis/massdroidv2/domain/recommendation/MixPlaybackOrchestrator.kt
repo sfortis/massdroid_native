@@ -559,8 +559,15 @@ class MixPlaybackOrchestrator @Inject constructor(
             Log.d(TAG, "Seed-track mix produced ${seedResult.tracks.size} tracks")
             return seedResult
         }
-        Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$minTracks), using genre engine")
-        return buildGenreSmartMixTracks()
+        Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$minTracks), trying genre engine")
+        val genreResult = buildGenreSmartMixTracks()
+        // Keep whichever is longer. The genre engine is the fallback for a SHORT
+        // seed mix, so handing back an even shorter one is the one outcome that
+        // cannot be right: an 18-track seed mix was once replaced by a 14-track
+        // genre mix, leaving the user worse off than if we had not checked.
+        if (genreResult.tracks.size >= seedResult.tracks.size) return genreResult
+        Log.d(TAG, "Genre engine gave ${genreResult.tracks.size}, keeping the seed mix")
+        return seedResult
     }
 
     /** A seed-track mix is only worth preferring if it is close to the length asked for. */
