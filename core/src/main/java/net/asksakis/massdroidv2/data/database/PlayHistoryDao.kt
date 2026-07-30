@@ -224,6 +224,14 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
     suspend fun getLastFmTags(artistName: String): LastFmArtistTagsEntity?
 
+    // COLLATE NOCASE for the same reason as the Last.fm lookup above: the same
+    // artist reaches us with different casing depending on the provider.
+    @Query("SELECT * FROM musicbrainz_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
+    suspend fun getMusicBrainzTags(artistName: String): MusicBrainzArtistTagsEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMusicBrainzTags(entity: MusicBrainzArtistTagsEntity)
+
     @Query("DELETE FROM artist_genres WHERE artist_uri NOT IN (SELECT DISTINCT uri FROM artists)")
     suspend fun deleteOrphanArtistGenres()
 

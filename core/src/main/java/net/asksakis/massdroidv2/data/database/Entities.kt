@@ -244,6 +244,31 @@ data class TrackUriCacheEntity(
  * can be fed straight back into `top_tracks` with no resolution step.
  * Standalone, like `artist_track_cache`: these artists may never be played.
  */
+/**
+ * MusicBrainz genres per artist, the genre source for candidates nobody else can
+ * describe.
+ *
+ * Measured on a real mix: Music Assistant returns similar artists as PROVIDER
+ * items (Deezer), which carry neither genres nor an MBID, so 50-70% of a
+ * candidate pool reached the genre gate unjudgeable and was admitted blind -
+ * that is how Russian pop landed in a shoegaze mix. MusicBrainz answered for
+ * 13 of 16 of those artists, precisely (Lost Frequencies -> house/dance/edm,
+ * The Telescopes -> shoegaze/dream pop), with no API key.
+ *
+ * Keyed by normalized NAME rather than MBID because the candidates have no MBID
+ * to look up with. [tags] is weight-ordered and may be EMPTY, which is a real
+ * answer ("MusicBrainz knows nothing about them") and is cached as such so the
+ * 1 req/s budget is never spent on the same dead end twice.
+ */
+@Entity(tableName = "musicbrainz_artist_tags")
+data class MusicBrainzArtistTagsEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "artist_name") val artistName: String,
+    val mbid: String,
+    val tags: String,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)
+
 @Entity(tableName = "ma_similar_artists", primaryKeys = ["source_uri", "similar_uri"])
 data class MaSimilarArtistEntity(
     @ColumnInfo(name = "source_uri") val sourceUri: String,

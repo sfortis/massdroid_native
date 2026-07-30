@@ -2,11 +2,17 @@ package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -85,6 +91,10 @@ private const val MA_RANK_DECAY = 0.001
 // return nothing playable.
 private const val MA_ARTIST_FETCH_SLACK = 8
 private const val MA_TRACK_FETCH_CONCURRENCY = 6
+// Artists per mix the background MusicBrainz warm will look up. At 1 req/s
+// this is ~20s of background work; the rest are picked up by later mixes,
+// which see the same candidates because similar-artist lists are cached.
+private const val MB_WARM_LIMIT = 20
 // Cache lifetimes. Similar-artist and top-track listings barely move, and without
 // caching the MA route made ~42 live calls per mix (18s) against the Last.fm
 // route's 6.6s, which is answered from Room.
@@ -435,8 +445,12 @@ internal fun prefersCandidateFamily(
 class SeedTrackMixGenerator @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val musicRepository: MusicRepository,
+    private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
     private val mixEngine: MixEngine
 ) {
+    private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var warmJob: Job? = null
+
     /**
      * Tuning knobs (0..1) from settings; Length is folded into [target].
      * Strictness gates which tracks may seed a mix: 0 = anything recently
@@ -661,30 +675,28 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         if (pool.isEmpty()) return emptyList()
 
-        // Gate on the cluster's families using the genres MA carries on the
-        // similar artist itself, falling back to whatever the DB already holds
-        // for that artist (MA provider genres written during play history). An
-        // artist we cannot judge is KEPT: dropping the unknown is what makes
-        // whole scenes invisible, and MA has no genres at all for ~17% of them.
+        // Gate on the cluster's families. An artist we cannot judge is KEPT:
+        // dropping the unknown is what makes whole scenes invisible.
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             pool.values.filter { it.genres.isEmpty() }.map { it.uri }
         )
+        val genresByArtist = HashMap<String, List<String>>(pool.size)
+        for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres)
         val gated = pool.values.filter { art ->
             if (coreFamilies.isEmpty()) return@filter true
-            // The DB set is a union with no weight order, so it is reordered by
-            // family frequency before dominantFamily reads "the first tag".
-            val genres = art.genres.ifEmpty { orderByFamilyFrequency(dbGenres[art.uri].orEmpty()) }
-            val family = dominantFamily(genres)
+            val family = dominantFamily(genresByArtist[art.uri].orEmpty())
             family == null || family in coreFamilies
         }
-        val unjudgeable = pool.values.count {
-            dominantFamily(it.genres.ifEmpty { orderByFamilyFrequency(dbGenres[it.uri].orEmpty()) }) == null
-        }
+        val unjudged = pool.values.filter { dominantFamily(genresByArtist[it.uri].orEmpty()) == null }
         Log.d(
             TAG,
             "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate " +
-                "($unjudgeable had no usable genre and were kept unjudged)"
+                "(${unjudged.size} had no usable genre and were kept unjudged)"
         )
+        // Whatever we still cannot describe is queued for MusicBrainz, so the
+        // next mix over these artists (the similar-artist lists are cached for
+        // two weeks, so they recur) gates them properly instead of guessing.
+        scheduleMusicBrainzWarm(unjudged)
 
         // Fetch in parallel: this used to be a sequential loop over every gated
         // artist, which made the MA route SLOWER than the Last.fm one it replaces
@@ -735,6 +747,59 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         Log.d(TAG, "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists (0 searches, 0 Last.fm)")
         return out
+    }
+
+    /**
+     * What we know a candidate artist is, best source first: the genres MA
+     * attached to the similar-artist item, then whatever the DB holds for that
+     * uri, then MusicBrainz.
+     *
+     * MusicBrainz is read from cache ONLY. Its 1 req/s ceiling makes it
+     * unusable inline (a cold pool of 60 unknowns would add a minute to the
+     * mix), so misses are warmed in the background by [scheduleMusicBrainzWarm]
+     * and pay off from the next mix onward.
+     *
+     * The DB set is a union with no weight order, so it is reordered by family
+     * frequency before dominantFamily reads "the first tag"; MA and MusicBrainz
+     * both come weight-ordered already.
+     */
+    private suspend fun genresFor(
+        art: CachedSimilarArtist,
+        dbGenres: Map<String, List<String>>
+    ): List<String> {
+        art.genres.takeIf { it.isNotEmpty() }?.let { return it }
+        dbGenres[art.uri]?.takeIf { it.isNotEmpty() }?.let { return orderByFamilyFrequency(it) }
+        return try {
+            musicBrainzGenreResolver.cachedGenres(art.name).orEmpty()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Single-flight background warm of the MusicBrainz genre cache for the
+     * candidates the gate could not judge.
+     *
+     * Bounded per run: at 1 req/s a full pool would run for a minute, and the
+     * same artists come back on the next mix anyway (similar-artist lists are
+     * cached for two weeks), so the cache fills across runs instead of in one
+     * long burst.
+     */
+    private fun scheduleMusicBrainzWarm(unjudged: List<CachedSimilarArtist>) {
+        if (unjudged.isEmpty() || warmJob?.isActive == true) return
+        val names = unjudged.map { it.name }.filter { it.isNotBlank() }.distinct().take(MB_WARM_LIMIT)
+        if (names.isEmpty()) return
+        warmJob = warmScope.launch {
+            var resolved = 0
+            for (name in names) {
+                try {
+                    if (musicBrainzGenreResolver.resolve(name).isNotEmpty()) resolved++
+                } catch (e: Exception) {
+                    Log.w(TAG, "MusicBrainz warm failed for '$name': ${e.message}")
+                }
+            }
+            Log.d(TAG, "MusicBrainz warm: $resolved/${names.size} artists now have genres")
+        }
     }
 
     private data class ArtistRef(val itemId: String, val provider: String)

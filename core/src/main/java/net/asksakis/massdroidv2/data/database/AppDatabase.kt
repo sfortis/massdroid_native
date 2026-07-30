@@ -20,9 +20,10 @@ import androidx.room.RoomDatabase
         ArtistTrackCacheEntity::class,
         LastFmSimilarTrackEntity::class,
         TrackUriCacheEntity::class,
-        MaSimilarArtistEntity::class
+        MaSimilarArtistEntity::class,
+        MusicBrainzArtistTagsEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
