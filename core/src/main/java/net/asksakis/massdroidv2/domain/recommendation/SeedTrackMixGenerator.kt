@@ -25,6 +25,9 @@ import kotlin.math.roundToInt
 
 private const val TAG = "SeedTrackMix"
 
+// Only library items answer `similar_artists`; see [productiveFirst].
+private const val LIBRARY_URI_PREFIX = "library://"
+
 private const val SEED_COUNT = 8
 private const val SEED_ANCHOR_MAX = 3
 private const val SEED_LOOKBACK_DAYS = 30
@@ -83,10 +86,18 @@ private const val GENRE_SEED_POOL_LIMIT = 250
 // name-resolution stage at all and these numbers cost one round-trip each,
 // rather than one round-trip PLUS a provider search per candidate.
 private const val MA_SIMILAR_PER_SEED = 25
+// Ceiling for the per-seed depth when a cluster has only one or two library
+// seeds to expand from. Above this the server cost stops being worth it (100
+// takes 4.9s against 0.3s for 25, measured).
+private const val MA_SIMILAR_MAX_PER_SEED = 100
 private const val MA_TOP_TRACKS_PER_ARTIST = 5
 private const val MA_TRACKS_PER_ARTIST = 2
 private const val MA_POOL_FACTOR = 1.6
 private const val MA_RANK_DECAY = 0.001
+// How much a candidate is worth when nothing could describe its genre. They are
+// kept (dropping the unknown is what makes whole scenes invisible) but ranked
+// below artists we verified, so a mix does not OPEN on an unverified one.
+private const val MA_UNVERIFIED_SCALE = 0.5
 // Extra artists fetched beyond the arithmetic minimum, to absorb the ones that
 // return nothing playable.
 private const val MA_ARTIST_FETCH_SLACK = 8
@@ -319,6 +330,28 @@ internal fun seedJoinsCluster(
  * rock). Short tokens ("of", "nu") and connectors ("and": "drum and bass" must
  * not match "rhythm and blues") are noise and dropped.
  */
+/**
+ * Only a `library://` artist can seed discovery: Music Assistant answers
+ * `similar_artists` for library items (24-25 each, measured) and returns
+ * **nothing at all** for provider items, because the provider path needs
+ * `ProviderFeature.SIMILAR_ARTISTS` and Deezer does not implement it.
+ *
+ * That matters because the library is a small slice of what gets listened to:
+ * of the artists eligible to seed a mix here, 524 are library and 1526 are
+ * provider-only, so a cluster picked purely on genre averages about two
+ * productive seeds out of eight. One unlucky cluster (all provider but a single
+ * artist) yielded 25 similar artists and an 8-track "mix".
+ *
+ * So within the cluster the genre rules already chose, the seeds that can
+ * actually produce are moved to the front. This changes NOTHING about which
+ * cluster a mix is about, only which of its members are asked.
+ */
+@VisibleForTesting
+internal fun productiveFirst(seeds: List<SeedTrack>): List<SeedTrack> {
+    val (productive, rest) = seeds.partition { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
+    return productive + rest
+}
+
 /**
  * Artist identity for blocking and de-duplication: case, bracketed suffixes and
  * punctuation removed, so `Röyksopp (Live)` and `royksopp` are the same artist.
@@ -622,16 +655,18 @@ class SeedTrackMixGenerator @Inject constructor(
     }
 
     /**
-     * Candidate pool straight from Music Assistant, no Last.fm involved.
+     * Candidate pool straight from Music Assistant.
      *
      * `music/artists/similar_artists` + `music/artists/top_tracks` return fully
-     * formed, PLAYABLE items, so this path skips the entire name-resolution stage
-     * the Last.fm route needs (up to [SEED_INLINE_SEARCH_BUDGET] `music/search`
-     * calls, which is where most of a mix build's wall-clock went).
+     * formed, PLAYABLE items, so this path has no name-resolution stage at all.
      *
-     * Returns an empty list when MA cannot help - notably when no seed is a
-     * `library` artist, since provider items report no similar artists - and the
-     * caller then falls back to the Last.fm route.
+     * Only `library://` seeds are asked: the provider path requires
+     * `ProviderFeature.SIMILAR_ARTISTS`, which Deezer does not implement, so a
+     * provider seed reliably answers zero (verified live: Tosca and Anderholm
+     * both 0, The Raveonettes 24, Juno Francis 25). Asking anyway cost a
+     * round-trip per seed for nothing, and cached the empty answer for a
+     * fortnight. Empty when the cluster has no library seed at all, and the
+     * caller then drops to the genre engine.
      */
     private suspend fun gatherFromMa(
         activeSeeds: List<SeedTrack>,
@@ -639,19 +674,39 @@ class SeedTrackMixGenerator @Inject constructor(
         coreFamilies: Set<String>,
         target: Int
     ): List<CandidateTrack> {
-        val seedRefs = activeSeeds.mapNotNull { seed ->
-            parseArtistRef(seed.artistUri)?.let { seed to it }
+        val seedRefs = activeSeeds
+            .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
+            .mapNotNull { seed -> parseArtistRef(seed.artistUri)?.let { seed to it } }
+        if (seedRefs.isEmpty()) {
+            Log.d(TAG, "no library seed in this cluster, MA cannot expand it")
+            return emptyList()
         }
-        if (seedRefs.isEmpty()) return emptyList()
+        // Ask each productive seed deeper when there are few of them, so a
+        // cluster carried by one or two library artists still fills a mix.
+        //
+        // The depth is per seed rather than a flat maximum because the server
+        // cost is superlinear, measured on this library: limit 25 answers in
+        // 0.3s, 40 in 1.5s, 100 in 4.9s. Asking 100 from all eight seeds put 31s
+        // into a single mix (MA aggregates providers in one asyncio loop, so the
+        // calls do not really run in parallel); asking 25 each costs ~2s for the
+        // same eight, and the one-seed cluster that actually needs the depth
+        // pays the 4.9s alone.
+        val perSeed = (MA_SIMILAR_PER_SEED * SEED_COUNT / seedRefs.size)
+            .coerceIn(MA_SIMILAR_PER_SEED, MA_SIMILAR_MAX_PER_SEED)
+        Log.d(TAG, "${seedRefs.size}/${activeSeeds.size} seeds are library artists, asking $perSeed similar each")
 
         val similarArtists = coroutineScope {
             seedRefs.map { (seed, ref) ->
                 async {
+                    // A cached entry is used as-is even if this mix would have
+                    // asked deeper: re-fetching to top it up costs seconds and
+                    // buys candidates the pool rarely needs. Depth is therefore
+                    // NOT part of the cache key.
                     playHistoryRepository
                         .getCachedMaSimilarArtists(seed.artistUri, MA_SIMILAR_TTL_MS)
                         ?.let { return@async it }
                     val fresh = try {
-                        musicRepository.getSimilarArtists(ref.itemId, ref.provider, MA_SIMILAR_PER_SEED)
+                        musicRepository.getSimilarArtists(ref.itemId, ref.provider, perSeed)
                     } catch (e: Exception) {
                         Log.w(TAG, "similar_artists failed for ${ref.itemId}: ${e.message}")
                         emptyList()
@@ -662,16 +717,28 @@ class SeedTrackMixGenerator @Inject constructor(
                     fresh
                 }
             }.awaitAll()
-        }.flatten()
+        }
 
-        // Dedupe by artist identity, drop blocked artists and the seeds themselves.
+        // Dedupe by artist identity, drop blocked artists and the seeds
+        // themselves, and remember each artist's BEST rank across the seeds.
+        //
+        // The rank is the server's own similarity ordering, and it is the only
+        // measure of "how close is this to the seed" this route has. It used to
+        // be thrown away (the lists were flattened and later shuffled), so the
+        // score attached to a candidate reflected nothing but the order it
+        // happened to be processed in - which is why the first track of a mix
+        // could be anything at all.
         val seedNames = activeSeeds.mapTo(mutableSetOf()) { it.artistName.trim().lowercase() }
         val pool = LinkedHashMap<String, CachedSimilarArtist>()
-        for (art in similarArtists) {
-            val key = art.name.trim().lowercase()
-            if (key.isEmpty() || key in seedNames) continue
-            if (normalizeArtistKey(art.name) in blockedKeys) continue
-            pool.putIfAbsent(key, art)
+        val rankByArtist = HashMap<String, Int>()
+        for (list in similarArtists) {
+            list.forEachIndexed { rank, art ->
+                val key = art.name.trim().lowercase()
+                if (key.isEmpty() || key in seedNames) return@forEachIndexed
+                if (normalizeArtistKey(art.name) in blockedKeys) return@forEachIndexed
+                pool.putIfAbsent(key, art)
+                rankByArtist[art.uri] = minOf(rankByArtist[art.uri] ?: Int.MAX_VALUE, rank)
+            }
         }
         if (pool.isEmpty()) return emptyList()
 
@@ -708,8 +775,14 @@ class SeedTrackMixGenerator @Inject constructor(
         // starves the server. 34 unbounded calls took 70s; the same work at
         // concurrency 6 is what the Last.fm path already used and why it kept up.
         val gate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
+        // Closest first, not shuffled: shuffling meant the artists we fetched
+        // were a random slice of everything that passed the gate, and (with the
+        // score below) that the mix opened on a random one. Variety across mixes
+        // comes from the cluster rotation and from MixEngine's discovery-weighted
+        // ordering, not from discarding the server's similarity ranking here.
+        val byCloseness = gated.sortedBy { rankByArtist[it.uri] ?: Int.MAX_VALUE }
         val trackLists = coroutineScope {
-            gated.shuffled().take(needArtists).map { art ->
+            byCloseness.take(needArtists).map { art ->
                 async {
                     gate.withPermit {
                     val ref = parseArtistRef(art.uri) ?: return@async art to emptyList()
@@ -735,13 +808,23 @@ class SeedTrackMixGenerator @Inject constructor(
         val seenTitles = mutableSetOf<String>()
         for ((art, tracks) in trackLists) {
             if (out.size >= wanted) break
+            // What a candidate is worth: how similar the server said the artist
+            // is to a seed, halved when we could not verify the genre at all.
+            // Unverified artists still take part (dropping them makes whole
+            // scenes invisible) but they no longer outrank artists we KNOW fit,
+            // which is what put an off-genre track at the top of the mix.
+            val rank = rankByArtist[art.uri] ?: MA_SIMILAR_MAX_PER_SEED
+            val closeness = 1.0 - (rank.toDouble() / MA_SIMILAR_MAX_PER_SEED).coerceIn(0.0, 1.0)
+            val verified = dominantFamily(genresByArtist[art.uri].orEmpty()) != null
+            val artistScore = closeness * (if (verified) 1.0 else MA_UNVERIFIED_SCALE)
             var taken = 0
             for (t in tracks) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
                 // MA can return the same recording twice (album + single/remaster).
                 val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
                 if (t.uri.isBlank() || !seenTitles.add(titleKey)) continue
-                out += CandidateTrack(track = t, score = 1.0 - out.size * MA_RANK_DECAY)
+                // Second track of an artist ranks just below the first.
+                out += CandidateTrack(track = t, score = artistScore - taken * MA_RANK_DECAY)
                 taken++
             }
         }
@@ -1029,12 +1112,16 @@ class SeedTrackMixGenerator @Inject constructor(
         // The primary keeps its uniform draw from the (already score-ranked and
         // variety-windowed) freshPool, because rotating the anchor is the whole
         // point of Variety. The remaining seeds are where Strictness had no say
-        // at all, so they are drawn score-weighted instead of plain-shuffled.
+        // at all, so they are drawn score-weighted instead of plain-shuffled,
+        // then ordered so the ones that can actually produce candidates come
+        // first (see productiveFirst).
         val ordered = listOf(primary) +
-            strictnessWeightedOrder(
-                cluster.filter { it.trackUri != primary.trackUri },
-                tuning.strictness,
-                random
+            productiveFirst(
+                strictnessWeightedOrder(
+                    cluster.filter { it.trackUri != primary.trackUri },
+                    tuning.strictness,
+                    random
+                )
             )
         val result = ordered.take(SEED_COUNT)
         Log.d(

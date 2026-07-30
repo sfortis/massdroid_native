@@ -38,6 +38,7 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import java.time.LocalTime
 import javax.inject.Inject
+import kotlin.math.roundToInt
 import javax.inject.Singleton
 import kotlin.math.abs
 
@@ -60,6 +61,13 @@ private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
 private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
+// Share of the requested track target the seed-track engine must reach before
+// its mix is preferred over the genre engine. SMART_MIX_MIN_TRACKS alone is an
+// absolute floor for "is this playable at all"; it let an 8-track result stand
+// against a target of 33 because 8 >= 8, and the user got a mix a third the
+// length they asked for. That happened whenever a cluster held few library
+// artists, since only those can be expanded.
+private const val SEED_MIX_MIN_TARGET_SHARE = 0.6
 // How many recent mixes' tracks feed the cross-mix cool-down. Raised 3 -> 12
 // after offline tuning: at depth 3 a track fell out of the cool-down after only
 // 3 mixes and cycled straight back, so >50% of each mix was already-heard
@@ -476,10 +484,11 @@ class MixPlaybackOrchestrator @Inject constructor(
 
     private suspend fun buildSeedTrackMix(): SmartMixResult {
         hydrateClusterRotation()
-        val result = seedTrackMixGenerator.buildSmartMix(seedTuning(), smartMixTrackTarget(), currentRecency())
+        val target = smartMixTrackTarget()
+        val result = seedTrackMixGenerator.buildSmartMix(seedTuning(), target, currentRecency())
         // Record the cluster's genres only for a mix that will actually be used,
         // so a failed/short attempt does not burn a rotation slot.
-        if (result.tracks.size >= SMART_MIX_MIN_TRACKS && result.clusterGenres.isNotEmpty()) {
+        if (result.tracks.size >= seedMixMinTracks(target) && result.clusterGenres.isNotEmpty()) {
             recentSeedClusterGenres.addLast(result.clusterGenres)
             while (recentSeedClusterGenres.size > SEED_CLUSTER_ROTATION_DEPTH) {
                 recentSeedClusterGenres.removeFirst()
@@ -545,13 +554,18 @@ class MixPlaybackOrchestrator @Inject constructor(
             Log.w(TAG, "Seed-track mix failed, falling back to genre engine: ${e.message}")
             SmartMixResult(emptyList(), null)
         }
-        if (seedResult.tracks.size >= SMART_MIX_MIN_TRACKS) {
+        val minTracks = seedMixMinTracks(smartMixTrackTarget())
+        if (seedResult.tracks.size >= minTracks) {
             Log.d(TAG, "Seed-track mix produced ${seedResult.tracks.size} tracks")
             return seedResult
         }
-        Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$SMART_MIX_MIN_TRACKS), using genre engine")
+        Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$minTracks), using genre engine")
         return buildGenreSmartMixTracks()
     }
+
+    /** A seed-track mix is only worth preferring if it is close to the length asked for. */
+    private fun seedMixMinTracks(target: Int): Int =
+        maxOf(SMART_MIX_MIN_TRACKS, (target * SEED_MIX_MIN_TARGET_SHARE).roundToInt())
 
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private suspend fun buildGenreSmartMixTracks(): SmartMixResult {
