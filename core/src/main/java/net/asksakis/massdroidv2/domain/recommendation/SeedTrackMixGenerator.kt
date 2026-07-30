@@ -98,6 +98,12 @@ private const val MA_RANK_DECAY = 0.001
 // kept (dropping the unknown is what makes whole scenes invisible) but ranked
 // below artists we verified, so a mix does not OPEN on an unverified one.
 private const val MA_UNVERIFIED_SCALE = 0.5
+// Discovery's reach. Depth: how far down each seed's similar list we fetch
+// (1x the base at Discovery 0, 3x at 1). Window: how much wider than the
+// artists we need the draw pool is, so high Discovery can surface the tail
+// instead of the same closest artists every run.
+private const val DISCOVERY_DEPTH_SPAN = 2.0
+private const val DISCOVERY_WINDOW_SPAN = 2.0
 // Extra artists fetched beyond the arithmetic minimum, to absorb the ones that
 // return nothing playable.
 private const val MA_ARTIST_FETCH_SLACK = 8
@@ -599,7 +605,7 @@ class SeedTrackMixGenerator @Inject constructor(
         val activeSeeds = seeds.filterNot { normalizeArtistKey(it.artistName) in blockedKeys }
         if (activeSeeds.isEmpty()) return emptyList()
 
-        val candidates = gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target)
+        val candidates = gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed)
         if (candidates.isEmpty()) {
             Log.d(TAG, "MA returned no candidates for this cluster")
             return emptyList()
@@ -668,11 +674,14 @@ class SeedTrackMixGenerator @Inject constructor(
      * fortnight. Empty when the cluster has no library seed at all, and the
      * caller then drops to the genre engine.
      */
+    @Suppress("LongParameterList")
     private suspend fun gatherFromMa(
         activeSeeds: List<SeedTrack>,
         blockedKeys: Set<String>,
         coreFamilies: Set<String>,
-        target: Int
+        target: Int,
+        discovery: Double,
+        mixSeed: Long
     ): List<CandidateTrack> {
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
@@ -691,9 +700,20 @@ class SeedTrackMixGenerator @Inject constructor(
         // calls do not really run in parallel); asking 25 each costs ~2s for the
         // same eight, and the one-seed cluster that actually needs the depth
         // pays the 4.9s alone.
-        val perSeed = (MA_SIMILAR_PER_SEED * SEED_COUNT / seedRefs.size)
+        //
+        // Discovery widens the same list: at 0 we take only the closest matches
+        // (comfort), at 1 we reach a long way down each seed's similars. This is
+        // the knob's main job and it went missing when the Last.fm route, which
+        // owned it, was removed - leaving Discovery in charge of little more
+        // than how many of your own loved tracks get mixed in.
+        val depth = (MA_SIMILAR_PER_SEED * (1.0 + discovery * DISCOVERY_DEPTH_SPAN)).roundToInt()
+        val perSeed = (depth * SEED_COUNT / seedRefs.size)
             .coerceIn(MA_SIMILAR_PER_SEED, MA_SIMILAR_MAX_PER_SEED)
-        Log.d(TAG, "${seedRefs.size}/${activeSeeds.size} seeds are library artists, asking $perSeed similar each")
+        Log.d(
+            TAG,
+            "${seedRefs.size}/${activeSeeds.size} seeds are library artists, " +
+                "asking $perSeed similar each (discovery $discovery)"
+        )
 
         val similarArtists = coroutineScope {
             seedRefs.map { (seed, ref) ->
@@ -775,14 +795,22 @@ class SeedTrackMixGenerator @Inject constructor(
         // starves the server. 34 unbounded calls took 70s; the same work at
         // concurrency 6 is what the Last.fm path already used and why it kept up.
         val gate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
-        // Closest first, not shuffled: shuffling meant the artists we fetched
-        // were a random slice of everything that passed the gate, and (with the
-        // score below) that the mix opened on a random one. Variety across mixes
-        // comes from the cluster rotation and from MixEngine's discovery-weighted
-        // ordering, not from discarding the server's similarity ranking here.
+        // Closest first, then a Discovery-sized window to draw from. Shuffling
+        // the whole gated pool (what this used to do) made the mix open on a
+        // random artist; taking a flat top-N instead would pin every mix to the
+        // same closest artists and leave Discovery no room past the fetch depth.
+        // So: order by the server's similarity, widen the window with Discovery,
+        // and sample within it. The candidate SCORE stays the similarity rank,
+        // so whoever is drawn, the closest of them still opens the mix.
         val byCloseness = gated.sortedBy { rankByArtist[it.uri] ?: Int.MAX_VALUE }
+        val window = (needArtists * (1.0 + discovery * DISCOVERY_WINDOW_SPAN)).roundToInt()
+        val chosen = if (byCloseness.size <= needArtists) {
+            byCloseness
+        } else {
+            byCloseness.take(window).shuffled(kotlin.random.Random(mixSeed)).take(needArtists)
+        }
         val trackLists = coroutineScope {
-            byCloseness.take(needArtists).map { art ->
+            chosen.map { art ->
                 async {
                     gate.withPermit {
                     val ref = parseArtistRef(art.uri) ?: return@async art to emptyList()
