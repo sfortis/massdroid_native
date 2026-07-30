@@ -35,6 +35,23 @@ class LastFmGenreResolver @Inject constructor(
         private const val CACHE_MS = CACHE_DAYS * 86_400_000L
         private const val EMPTY_CACHE_MS = EMPTY_CACHE_HOURS * 3_600_000L
 
+        /**
+         * Tags accepted from Last.fm's free-text crowd tags, which are full of
+         * nationalities, decades and moods ("british" hit 36 artists in a real
+         * sample, "female vocalists" 28).
+         *
+         * DO NOT EXTEND THIS LIST. An allow-list cannot scale, because genres
+         * are unbounded and any hand-written set encodes whoever wrote it:
+         * measured against 520 artists from 26 scenes outside this library, it
+         * left 70% of gospel, 65% of bollywood and 60% of fado artists with no
+         * genre at all, which makes them invisible to the recommendation gate.
+         * A round of additions taken from one user's own library (synthwave,
+         * coldwave, psychill) was reverted for exactly that reason.
+         *
+         * The Smart Mix engine no longer reads this at all: it takes genres from
+         * Music Assistant and MusicBrainz, whose taxonomy is curated and needs
+         * no filtering. What remains here is display and library enrichment.
+         */
         private val ALLOWED_GENRES: Set<String> = setOf(
             "acid jazz", "acoustic", "alt country", "alternative",
             "alternative metal", "alternative rock", "ambient", "americana",
@@ -74,31 +91,7 @@ class LastFmGenreResolver @Inject constructor(
             "swing", "symphonic metal", "synth pop", "synthpop",
             "tech house", "technical death metal", "techno",
             "thrash metal", "trance", "trip hop",
-            "underground hip hop", "viking metal", "world",
-            // Added 2026-07-29 after measuring what this whitelist was throwing
-            // away. Sampled 400 of the user's artists and replayed the resolver:
-            // 11.7% lost their STRONGEST tag, i.e. what the artist mostly IS.
-            // The dropped tags below are real genres that appear in a real
-            // library; the ones still rejected are correctly rejected (they are
-            // nationalities and decades: "british" hit 36 artists, "female
-            // vocalists" 28, then "french", "80s", "swedish").
-            //
-            // Group 1: GenreFamilies.familyOf() already resolves these via its
-            // last-word/suffix chain ("minimal techno" -> techno -> electronic),
-            // so the whitelist was the only thing blocking them.
-            "chill house", "melodic house", "melodic techno", "minimal techno",
-            "progressive house", "vocal trance", "witch house",
-            "baroque pop", "chamber pop", "neo progressive",
-            // Group 2: the synthwave/coldwave scene, previously invisible.
-            // "synthwave" was the single most-lost lead tag (14 artists incl.
-            // The Midnight, Trevor Something, Dead Astronauts, Hello Meteor).
-            // familyOf() returns null for all of these because "wave" is
-            // deliberately absent from GLUED_SUFFIX_FAMILY (it spans new wave /
-            // darkwave / synthwave), so GenreFamilies maps them explicitly.
-            "chillwave", "coldwave", "dreamwave", "electroclash", "minimal synth",
-            "minimal wave", "new retro wave", "retrowave", "synthwave",
-            // Group 3: no suffix rule can reach these, mapped explicitly too.
-            "blackgaze", "bossa nova", "doomgaze", "noise pop", "psychill"
+            "underground hip hop", "viking metal", "world"
         )
 
         private fun normalizeTag(tag: String): String =
