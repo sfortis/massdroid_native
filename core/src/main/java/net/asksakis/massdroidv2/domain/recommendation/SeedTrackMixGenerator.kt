@@ -23,6 +23,7 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
 import net.asksakis.massdroidv2.domain.repository.SeedTrack
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import java.util.concurrent.atomic.AtomicInteger
@@ -107,6 +108,11 @@ private const val MA_RANK_DECAY = 0.001
 // return nothing playable.
 private const val MA_ARTIST_FETCH_SLACK = 8
 private const val MA_TRACK_FETCH_CONCURRENCY = 6
+// Cache lifetimes. Similar-artist and top-track listings barely move, and without
+// caching the MA route made ~42 live calls per mix (18s) against the Last.fm
+// route's 6.6s, which is answered from Room.
+private const val MA_SIMILAR_TTL_MS = 14L * 24 * 60 * 60 * 1000
+private const val MA_TOP_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
 
 private const val SEED_INLINE_SEARCH_BUDGET = 32
 private const val SEED_SEARCH_CONCURRENCY = 6
@@ -751,21 +757,28 @@ class SeedTrackMixGenerator @Inject constructor(
         if (seedRefs.isEmpty()) return emptyList()
 
         val similarArtists = coroutineScope {
-            seedRefs.map { (_, ref) ->
+            seedRefs.map { (seed, ref) ->
                 async {
-                    try {
+                    playHistoryRepository
+                        .getCachedMaSimilarArtists(seed.artistUri, MA_SIMILAR_TTL_MS)
+                        ?.let { return@async it }
+                    val fresh = try {
                         musicRepository.getSimilarArtists(ref.itemId, ref.provider, MA_SIMILAR_PER_SEED)
                     } catch (e: Exception) {
                         Log.w(TAG, "similar_artists failed for ${ref.itemId}: ${e.message}")
                         emptyList()
+                    }.map { CachedSimilarArtist(it.uri, it.name, it.genres) }
+                    if (fresh.isNotEmpty()) {
+                        playHistoryRepository.cacheMaSimilarArtists(seed.artistUri, fresh)
                     }
+                    fresh
                 }
             }.awaitAll()
         }.flatten()
 
         // Dedupe by artist identity, drop blocked artists and the seeds themselves.
         val seedNames = activeSeeds.mapTo(mutableSetOf()) { it.artistName.trim().lowercase() }
-        val pool = LinkedHashMap<String, net.asksakis.massdroidv2.domain.model.Artist>()
+        val pool = LinkedHashMap<String, CachedSimilarArtist>()
         for (art in similarArtists) {
             val key = art.name.trim().lowercase()
             if (key.isEmpty() || key in seedNames) continue
@@ -805,8 +818,10 @@ class SeedTrackMixGenerator @Inject constructor(
                     // over the wire each), which alone made a build take 70s.
                     // We need two tracks per artist, and top_tracks supplies
                     // that: 20 artists yielded 33 usable tracks in practice.
-                    val tracks = try {
+                    val cached = playHistoryRepository.getCachedArtistTracks(art.uri, MA_TOP_TRACKS_TTL_MS)
+                    val tracks = cached ?: try {
                         musicRepository.getArtistTopTracks(ref.itemId, ref.provider, MA_TOP_TRACKS_PER_ARTIST)
+                            .also { if (it.isNotEmpty()) playHistoryRepository.cacheArtistTracks(art.uri, it) }
                     } catch (_: Exception) {
                         emptyList()
                     }

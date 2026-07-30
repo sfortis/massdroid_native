@@ -112,6 +112,21 @@ interface PlayHistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtistTrackCache(cache: ArtistTrackCacheEntity)
 
+    // ---- MA similar-artists cache ----
+
+    @Transaction
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMaSimilarArtists(entities: List<MaSimilarArtistEntity>)
+
+    @Query("SELECT * FROM ma_similar_artists WHERE source_uri = :sourceUri ORDER BY position")
+    suspend fun getMaSimilarArtists(sourceUri: String): List<MaSimilarArtistEntity>
+
+    @Query("SELECT MIN(fetched_at) FROM ma_similar_artists WHERE source_uri = :sourceUri")
+    suspend fun getMaSimilarArtistsFetchedAt(sourceUri: String): Long?
+
+    @Query("DELETE FROM ma_similar_artists WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredMaSimilarArtists(olderThan: Long)
+
     @Query("SELECT * FROM artist_track_cache WHERE artist_uri = :artistUri LIMIT 1")
     suspend fun getArtistTrackCache(artistUri: String): ArtistTrackCacheEntity?
 

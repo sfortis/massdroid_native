@@ -10,6 +10,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
+import net.asksakis.massdroidv2.data.database.MaSimilarArtistEntity
 import net.asksakis.massdroidv2.data.database.SeedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
@@ -21,6 +22,7 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
+import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
 import net.asksakis.massdroidv2.domain.repository.DecadeScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -355,6 +357,38 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         limit: Int
     ): List<SeedTrack> =
         dao.getSeedTracks(sinceMs, minListenedMs, minScore, limit).map { it.toSeedTrack() }
+
+    override suspend fun getCachedMaSimilarArtists(
+        artistUri: String,
+        maxAgeMs: Long
+    ): List<CachedSimilarArtist>? {
+        val fetchedAt = dao.getMaSimilarArtistsFetchedAt(artistUri) ?: return null
+        if (System.currentTimeMillis() - fetchedAt >= maxAgeMs) return null
+        return dao.getMaSimilarArtists(artistUri).map { row ->
+            CachedSimilarArtist(
+                uri = row.similarUri,
+                name = row.similarName,
+                genres = row.similarGenres.split(",").filter { it.isNotBlank() }
+            )
+        }
+    }
+
+    override suspend fun cacheMaSimilarArtists(artistUri: String, similar: List<CachedSimilarArtist>) {
+        if (artistUri.isBlank()) return
+        val now = System.currentTimeMillis()
+        dao.upsertMaSimilarArtists(
+            similar.mapIndexed { index, s ->
+                MaSimilarArtistEntity(
+                    sourceUri = artistUri,
+                    similarUri = s.uri,
+                    similarName = s.name,
+                    similarGenres = s.genres.joinToString(","),
+                    position = index,
+                    fetchedAt = now
+                )
+            }
+        )
+    }
 
     override suspend fun getRecentSeedTracks(
         sinceMs: Long,

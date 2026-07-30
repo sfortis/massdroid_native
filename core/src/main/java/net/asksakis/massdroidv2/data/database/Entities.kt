@@ -234,3 +234,23 @@ data class TrackUriCacheEntity(
     @ColumnInfo(name = "uri") val uri: String,
     @ColumnInfo(name = "resolved_at") val resolvedAt: Long
 )
+
+/**
+ * MA `similar_artists` results, cached so a mix build does not re-ask the server
+ * every time. Without this the MA discovery route made ~42 live WS calls per mix
+ * (18s) where the Last.fm route it replaces was answered from Room in 6.6s.
+ *
+ * Keyed by MA uris on both sides, so entries stay valid across name changes and
+ * can be fed straight back into `top_tracks` with no resolution step.
+ * Standalone, like `artist_track_cache`: these artists may never be played.
+ */
+@Entity(tableName = "ma_similar_artists", primaryKeys = ["source_uri", "similar_uri"])
+data class MaSimilarArtistEntity(
+    @ColumnInfo(name = "source_uri") val sourceUri: String,
+    @ColumnInfo(name = "similar_uri") val similarUri: String,
+    @ColumnInfo(name = "similar_name") val similarName: String,
+    @ColumnInfo(name = "similar_genres") val similarGenres: String,
+    /** Server-provided ordering; lower is more similar. */
+    @ColumnInfo(name = "position") val position: Int,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)

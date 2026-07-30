@@ -33,6 +33,13 @@ data class SeedTrack(
     val artistGenres: List<String> = emptyList()
 )
 
+/** One MA similar-artist edge, as cached. */
+data class CachedSimilarArtist(
+    val uri: String,
+    val name: String,
+    val genres: List<String> = emptyList()
+)
+
 data class ArtistScore(
     val artistUri: String,
     val artistName: String,
@@ -91,6 +98,9 @@ interface PlayHistoryRepository {
     suspend fun getGenreArtistMap(): Map<String, List<String>>
     suspend fun getRediscoverAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getPlaysForTimeAnalysis(days: Int = 30): List<Long>
+    /** Cached MA similar artists for [artistUri] (uri, name, genres), null when absent/stale. */
+    suspend fun getCachedMaSimilarArtists(artistUri: String, maxAgeMs: Long): List<CachedSimilarArtist>?
+    suspend fun cacheMaSimilarArtists(artistUri: String, similar: List<CachedSimilarArtist>)
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
     /** Cached provider URI for a Last.fm similar-artist name (null if absent or older than maxAgeMs). */

@@ -287,6 +287,26 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // MA similar-artists cache. Uri-keyed on both sides so results can be
+            // reused directly for top_tracks without any name resolution.
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `ma_similar_artists` (
+                    `source_uri` TEXT NOT NULL,
+                    `similar_uri` TEXT NOT NULL,
+                    `similar_name` TEXT NOT NULL,
+                    `similar_genres` TEXT NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`source_uri`, `similar_uri`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -295,7 +315,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
         .fallbackToDestructiveMigration()
         .build()
 
