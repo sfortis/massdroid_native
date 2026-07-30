@@ -90,7 +90,15 @@ data class Artist(
     val favorite: Boolean = false,
     val description: String? = null,
     val genres: List<String> = emptyList(),
-    val providerDomains: List<String> = emptyList()
+    val providerDomains: List<String> = emptyList(),
+    /**
+     * MusicBrainz artist id, when Music Assistant knows one. It is the only way
+     * to identify an artist unambiguously: names are not unique and the same
+     * name covers unrelated acts in unrelated genres (MusicBrainz has a
+     * Scottish singer-songwriter and a Norwegian pop singer both called Annie,
+     * a US grunge band and a 60s UK band both called Nirvana).
+     */
+    val mbid: String? = null
 )
 
 @Serializable

@@ -126,7 +126,12 @@ private const val MA_TOP_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
 // SMART_MIX_HISTORY_DEPTH in MixPlaybackOrchestrator.
 private const val SEED_RECENT_ARTIST_PENALTY = 0.4
 private const val SEED_RECENT_TRACK_PENALTY = 1.5
-private const val MIN_SEEDS = 2
+// One seed is enough now that a lone library seed is asked for up to
+// MA_SIMILAR_MAX_PER_SEED similars: a single-seed cluster produced a full mix in
+// testing, while refusing it dropped the user to the genre engine and 8 tracks.
+// Precise MusicBrainz genres make clusters tighter, so single-seed ones (the
+// only punk artist in a library, say) are now common rather than pathological.
+private const val MIN_SEEDS = 1
 // Variety knob -> genre movement between consecutive mixes. Below this the next
 // mix STAYS in the recent genre family (drifting the sub-genre via exactFresh:
 // deep house -> techno -> nu-disco), avoiding whiplash to unrelated genres.
@@ -783,7 +788,9 @@ class SeedTrackMixGenerator @Inject constructor(
         // Whatever we still cannot describe is queued for MusicBrainz, so the
         // next mix over these artists (the similar-artist lists are cached for
         // two weeks, so they recur) gates them properly instead of guessing.
-        scheduleMusicBrainzWarm(unjudged.map { it.name }, "candidates")
+        // Candidates are provider items and carry no id, so these fall back to
+        // a name search with the ambiguity that implies.
+        scheduleMusicBrainzWarm(unjudged.map { MusicBrainzGenreResolver.ArtistRef(it.name) }, "candidates")
 
         // Fetch in parallel: this used to be a sequential loop over every gated
         // artist, which made the MA route SLOWER than the Last.fm one it replaces
@@ -896,20 +903,28 @@ class SeedTrackMixGenerator @Inject constructor(
      * cached for two weeks), so the cache fills across runs instead of in one
      * long burst.
      */
-    private fun scheduleMusicBrainzWarm(artistNames: List<String>, what: String) {
+    private fun scheduleMusicBrainzWarm(artists: List<MusicBrainzGenreResolver.ArtistRef>, what: String) {
         if (warmJob?.isActive == true) return
-        val names = artistNames.filter { it.isNotBlank() }.distinct().take(MB_WARM_LIMIT)
-        if (names.isEmpty()) return
+        val targets = artists.filter { it.name.isNotBlank() }.distinctBy { it.mbid ?: it.name }
+            .take(MB_WARM_LIMIT)
+        if (targets.isEmpty()) return
         warmJob = warmScope.launch {
             var resolved = 0
-            for (name in names) {
+            var byId = 0
+            for (ref in targets) {
                 try {
-                    if (musicBrainzGenreResolver.resolve(name).isNotEmpty()) resolved++
+                    if (musicBrainzGenreResolver.resolve(ref.name, ref.mbid).isNotEmpty()) {
+                        resolved++
+                        if (ref.mbid != null) byId++
+                    }
                 } catch (e: Exception) {
-                    Log.w(TAG, "MusicBrainz warm failed for '$name': ${e.message}")
+                    Log.w(TAG, "MusicBrainz warm failed for '${ref.name}': ${e.message}")
                 }
             }
-            Log.d(TAG, "MusicBrainz warm ($what): $resolved/${names.size} artists now have genres")
+            Log.d(
+                TAG,
+                "MusicBrainz warm ($what): $resolved/${targets.size} artists now have genres ($byId by id)"
+            )
         }
     }
 
@@ -1025,7 +1040,7 @@ class SeedTrackMixGenerator @Inject constructor(
     // are unordered sets, so they are reordered by family frequency before the
     // first mapped family decides.
     private suspend fun injectionGenres(row: SeedTrack): List<String> =
-        musicBrainzGenres(listOf(row.artistName))[normalizeArtistKey(row.artistName)]
+        musicBrainzGenres(listOf(row))[normalizeArtistKey(row.artistName)]
             ?: orderByFamilyFrequency(row.artistGenres.ifEmpty { row.genres })
 
     // Variety knob -> how many of the most-recent tracks stay as stable anchors.
@@ -1076,7 +1091,7 @@ class SeedTrackMixGenerator @Inject constructor(
      * source, so seeds and candidates are judged on the same data.
      */
     private suspend fun coherenceGenreMap(pool: List<SeedTrack>): Map<String, List<String>> {
-        val mb = musicBrainzGenres(pool.map { it.artistName })
+        val mb = musicBrainzGenres(pool)
         val map = HashMap<String, List<String>>(pool.size)
         for (seed in pool) {
             map[seed.trackUri] = mb[normalizeArtistKey(seed.artistName)]
@@ -1086,7 +1101,8 @@ class SeedTrackMixGenerator @Inject constructor(
         // single-flight) because a seed decides the whole cluster: one merged
         // artist here sends every candidate to the wrong genre world.
         scheduleMusicBrainzWarm(
-            pool.filter { normalizeArtistKey(it.artistName) !in mb }.map { it.artistName },
+            pool.filter { normalizeArtistKey(it.artistName) !in mb }
+                .map { MusicBrainzGenreResolver.ArtistRef(it.artistName, it.artistMbid) },
             "seeds"
         )
         return map
@@ -1097,10 +1113,17 @@ class SeedTrackMixGenerator @Inject constructor(
      * [normalizeArtistKey]. Weight-ordered as MusicBrainz reports them, so
      * unlike the DB fallback they need no family-frequency reordering.
      */
-    private suspend fun musicBrainzGenres(artistNames: List<String>): Map<String, List<String>> =
+    private suspend fun musicBrainzGenres(seeds: List<SeedTrack>): Map<String, List<String>> =
         try {
-            musicBrainzGenreResolver.cachedGenresFor(artistNames)
-                .mapKeys { (name, _) -> normalizeArtistKey(name) }
+            val refs = seeds.map { MusicBrainzGenreResolver.ArtistRef(it.artistName, it.artistMbid) }
+            val byKey = musicBrainzGenreResolver.cachedGenresFor(refs)
+            // Re-key to the artist so callers do not need to know whether the
+            // entry was stored under an id or a name.
+            seeds.mapNotNull { seed ->
+                val key = seed.artistMbid?.takeIf { it.isNotBlank() }
+                    ?: seed.artistName.trim().lowercase()
+                byKey[key]?.let { normalizeArtistKey(seed.artistName) to it }
+            }.toMap()
         } catch (_: Exception) {
             emptyMap()
         }

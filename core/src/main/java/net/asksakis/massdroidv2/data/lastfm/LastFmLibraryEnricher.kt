@@ -186,8 +186,15 @@ class LastFmLibraryEnricher @Inject constructor(
                 if (batch.isEmpty()) break
                 for (artist in batch) {
                     if (artist.name.isNotBlank() && artist.name !in existing) {
-                        dao.insertArtist(ArtistEntity(uri = artist.uri, name = artist.name))
+                        dao.insertArtist(
+                            ArtistEntity(uri = artist.uri, name = artist.name, mbid = artist.mbid)
+                        )
                         inserted++
+                    }
+                    if (artist.mbid != null) {
+                        // Fill the id in for artists stored before we read it, and
+                        // for ones first seen through playback (which has none).
+                        dao.setArtistMbidIfMissing(artist.name, artist.mbid)
                     }
                 }
                 offset += batch.size

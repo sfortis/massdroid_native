@@ -23,6 +23,8 @@ data class SeedTrack(
     /** MA uri of the artist, e.g. `library://artist/59`. Lets the generator ask MA
      *  for similar artists directly instead of resolving the name. */
     val artistUri: String = "",
+    /** MusicBrainz id of the artist when known, for unambiguous genre lookups. */
+    val artistMbid: String? = null,
     val lastPlayedAt: Long,
     val score: Double = 0.0,
     val genres: List<String> = emptyList(),

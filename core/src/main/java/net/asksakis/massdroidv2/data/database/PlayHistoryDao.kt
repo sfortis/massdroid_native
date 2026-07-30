@@ -55,6 +55,21 @@ interface PlayHistoryDao {
     """)
     suspend fun getGenresForArtists(artistUris: List<String>): List<ArtistGenreRow>
 
+    /**
+     * Write the id to every uri the artist is stored under, not just the library
+     * one, because playback records tracks against whichever provider uri the
+     * server sent and the seed queries read that row. Matching by name is the
+     * same propagation `backfillArtistGenres` already does, and is safe in the
+     * direction that matters: the risk it carries (two different acts sharing a
+     * name) is exactly the risk the id exists to remove downstream, and having
+     * no id at all guarantees the ambiguous name lookup instead.
+     *
+     * `mbid IS NULL` so an id already known for a specific uri is never
+     * overwritten by a namesake's.
+     */
+    @Query("UPDATE artists SET mbid = :mbid WHERE name = :name AND mbid IS NULL")
+    suspend fun setArtistMbidIfMissing(name: String, mbid: String)
+
     @Query("SELECT uri FROM artists WHERE name = :name")
     suspend fun getArtistUrisByName(name: String): List<String>
 
@@ -438,7 +453,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
-               a.uri AS artistUri,
+               a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
@@ -462,7 +477,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
-               a.uri AS artistUri,
+               a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
@@ -496,7 +511,7 @@ interface PlayHistoryDao {
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
-               a.uri AS artistUri,
+               a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag

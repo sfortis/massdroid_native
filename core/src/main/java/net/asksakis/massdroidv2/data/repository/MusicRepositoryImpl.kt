@@ -29,6 +29,7 @@ class MusicRepositoryImpl @Inject constructor(
 ) : MusicRepository {
     companion object {
         private const val TAG = "MusicRepo"
+        private const val MUSICBRAINZ_ARTIST_ID = "musicbrainz_artistid"
         private const val FAVORITE_ACK_TIMEOUT_MS = 1_000L
         private const val FAVORITE_MAX_ATTEMPTS = 3
         private const val FAVORITE_RETRY_DELAY_MS = 180L
@@ -694,7 +695,11 @@ class MusicRepositoryImpl @Inject constructor(
             favorite = favorite,
             description = metadata?.description,
             genres = metadata?.genres ?: emptyList(),
-            providerDomains = extractProviderDomains()
+            providerDomains = extractProviderDomains(),
+            mbid = externalIds
+                .firstOrNull { it.size >= 2 && it[0] == MUSICBRAINZ_ARTIST_ID }
+                ?.get(1)
+                ?.takeIf { it.isNotBlank() }
         )
     }
 

@@ -140,7 +140,12 @@ data class ServerMediaItem(
     val path: String? = null,
     @SerialName("translation_key") val translationKey: String? = null,
     @SerialName("date_added") val dateAdded: String? = null,
-    @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList()
+    @SerialName("provider_mappings") val providerMappings: List<ProviderMapping> = emptyList(),
+    /**
+     * `[["musicbrainz_artistid", "<uuid>"], ...]`. Present on LIBRARY items
+     * (88% of library artists here carry an MBID); provider items report none.
+     */
+    @SerialName("external_ids") val externalIds: List<List<String>> = emptyList()
 )
 
 @Serializable

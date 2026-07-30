@@ -53,8 +53,8 @@ class MusicBrainzGenreResolver @Inject constructor(
      * Cached genres for [artistName]: weight-ordered, empty when MusicBrainz has
      * nothing, null when we have never asked (or the entry has expired).
      */
-    suspend fun cachedGenres(artistName: String): List<String>? {
-        val key = cacheKey(artistName)
+    suspend fun cachedGenres(artistName: String, mbid: String? = null): List<String>? {
+        val key = cacheKey(artistName, mbid)
         if (key.isEmpty()) return null
         val row = try {
             dao.getMusicBrainzTags(key)
@@ -71,8 +71,8 @@ class MusicBrainzGenreResolver @Inject constructor(
      * pool (the Smart Mix cluster is ~200 artists and cannot afford a query
      * each). Artists never looked up, or whose entry expired, are absent.
      */
-    suspend fun cachedGenresFor(artistNames: Collection<String>): Map<String, List<String>> {
-        val keys = artistNames.map { cacheKey(it) }.filter { it.isNotEmpty() }.distinct()
+    suspend fun cachedGenresFor(artists: Collection<ArtistRef>): Map<String, List<String>> {
+        val keys = artists.map { cacheKey(it.name, it.mbid) }.filter { it.isNotEmpty() }.distinct()
         if (keys.isEmpty()) return emptyMap()
         val rows = try {
             dao.getMusicBrainzTagsFor(keys)
@@ -93,17 +93,21 @@ class MusicBrainzGenreResolver @Inject constructor(
      * 1 req/s, so callers must treat this as background work, never inline in a
      * mix build.
      */
-    suspend fun resolve(artistName: String): List<String> {
-        val key = cacheKey(artistName)
+    suspend fun resolve(artistName: String, mbid: String? = null): List<String> {
+        val key = cacheKey(artistName, mbid)
         if (key.isEmpty()) return emptyList()
-        cachedGenres(artistName)?.let { return it }
+        cachedGenres(artistName, mbid)?.let { return it }
         return withContext(Dispatchers.IO) {
-            val mbid = findMbid(artistName) ?: run {
+            // With an id from Music Assistant this is an exact lookup. Without
+            // one we have to search by name, and a name is not an identity:
+            // "Annie" scores 100 for a Scottish singer-songwriter and 95 for the
+            // Norwegian pop singer, so the wrong artist's genres win by default.
+            val resolvedMbid = mbid?.takeIf { it.isNotBlank() } ?: findMbid(artistName) ?: run {
                 cache(key, mbid = "", genres = emptyList())
                 return@withContext emptyList()
             }
-            val genres = fetchGenres(mbid)
-            cache(key, mbid, genres)
+            val genres = fetchGenres(resolvedMbid)
+            cache(key, resolvedMbid, genres)
             genres
         }
     }
@@ -177,7 +181,16 @@ class MusicBrainzGenreResolver @Inject constructor(
         }
     }
 
-    private fun cacheKey(artistName: String): String = artistName.trim().lowercase()
+    /**
+     * Cache identity: the MusicBrainz id when we have one, otherwise the name.
+     * Keying everything by name would make two different artists sharing a name
+     * share one cache entry, which is the very thing the id is here to prevent.
+     */
+    private fun cacheKey(artistName: String, mbid: String?): String =
+        mbid?.trim()?.takeIf { it.isNotEmpty() } ?: artistName.trim().lowercase()
+
+    /** An artist to look up: the id if Music Assistant knew one, else the name. */
+    data class ArtistRef(val name: String, val mbid: String? = null)
 
     private companion object {
         const val TAG = "MusicBrainzGenre"

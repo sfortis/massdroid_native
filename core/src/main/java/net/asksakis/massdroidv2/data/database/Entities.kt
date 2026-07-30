@@ -17,7 +17,14 @@ data class AlbumEntity(
 @Entity(tableName = "artists")
 data class ArtistEntity(
     @PrimaryKey val uri: String,
-    val name: String
+    val name: String,
+    /**
+     * MusicBrainz id, when Music Assistant reported one (library artists only).
+     * Stored because it is the only unambiguous handle on an artist: a genre
+     * lookup by NAME picks whoever happens to share it, which is how the
+     * Scottish Annie's folk tags could end up describing the Norwegian pop one.
+     */
+    val mbid: String? = null
 )
 
 @Entity(tableName = "genres")
