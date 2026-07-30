@@ -37,6 +37,19 @@ interface MusicRepository {
      */
     suspend fun getArtistDiscography(itemId: String, provider: String): List<Album>
     suspend fun getArtistTracks(itemId: String, provider: String): List<Track>
+
+    /**
+     * Artists the provider considers similar, as playable MA items.
+     *
+     * This is the discovery source for generated mixes. Unlike the Last.fm path it
+     * replaces, the results already carry uris, so no name-resolution search is
+     * needed. Reliable for `library` artists; a provider item may return empty
+     * when its provider does not implement the feature.
+     */
+    suspend fun getSimilarArtists(itemId: String, provider: String, limit: Int = 25): List<Artist>
+
+    /** The artist's most-played tracks, as playable MA items. */
+    suspend fun getArtistTopTracks(itemId: String, provider: String, limit: Int = 10): List<Track>
     suspend fun getAlbumTracks(itemId: String, provider: String): List<Track>
     suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track>
 

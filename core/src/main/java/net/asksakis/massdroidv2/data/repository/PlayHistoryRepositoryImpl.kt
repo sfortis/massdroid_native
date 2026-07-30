@@ -375,6 +375,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         trackUri = trackUri,
         trackName = trackName,
         artistName = artistName,
+        artistUri = artistUri,
         lastPlayedAt = lastPlayedAt,
         score = score,
         genres = genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList(),

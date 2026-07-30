@@ -20,6 +20,9 @@ data class SeedTrack(
     val trackUri: String,
     val trackName: String,
     val artistName: String,
+    /** MA uri of the artist, e.g. `library://artist/59`. Lets the generator ask MA
+     *  for similar artists directly instead of resolving the name. */
+    val artistUri: String = "",
     val lastPlayedAt: Long,
     val score: Double = 0.0,
     val genres: List<String> = emptyList(),

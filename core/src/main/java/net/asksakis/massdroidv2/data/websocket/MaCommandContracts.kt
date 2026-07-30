@@ -35,6 +35,14 @@ object MaCommands {
         const val ALBUMS_GET = "music/albums/get"
         const val ARTIST_ALBUMS = "music/artists/artist_albums"
         const val ARTIST_TRACKS = "music/artists/artist_tracks"
+
+        // Provider-backed discovery. These return fully-formed, PLAYABLE media
+        // items (with uris), which is why they replace the Last.fm path: that one
+        // returned names and every name then cost a `music/search` to resolve.
+        // Note MA registers these via register_api_command, so they do not appear
+        // in the server's @api_command listing.
+        const val SIMILAR_ARTISTS = "music/artists/similar_artists"
+        const val ARTIST_TOP_TRACKS = "music/artists/top_tracks"
         const val ALBUM_TRACKS = "music/albums/album_tracks"
         const val PLAYLIST_TRACKS = "music/playlists/playlist_tracks"
         const val SEARCH = "music/search"
@@ -130,6 +138,19 @@ data class ItemRefArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("item_id", itemId)
         put("provider_instance_id_or_domain", provider)
+    }
+}
+
+/** [ItemRefArgs] plus a result cap, for the similar-artists / top-tracks lookups. */
+data class ItemRefLimitArgs(
+    val itemId: String,
+    val provider: String,
+    val limit: Int
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("item_id", itemId)
+        put("provider_instance_id_or_domain", provider)
+        put("limit", limit)
     }
 }
 

@@ -213,6 +213,22 @@ class MusicRepositoryImpl @Inject constructor(
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
+    override suspend fun getSimilarArtists(itemId: String, provider: String, limit: Int): List<Artist> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.SIMILAR_ARTISTS,
+            ItemRefLimitArgs(itemId = itemId, provider = provider, limit = limit)
+        )
+        return parseMediaItems(result).mapNotNull { it.toArtist() }
+    }
+
+    override suspend fun getArtistTopTracks(itemId: String, provider: String, limit: Int): List<Track> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.ARTIST_TOP_TRACKS,
+            ItemRefLimitArgs(itemId = itemId, provider = provider, limit = limit)
+        )
+        return parseMediaItems(result).mapNotNull { it.toTrack() }
+    }
+
     override suspend fun getAlbumTracks(itemId: String, provider: String): List<Track> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ALBUM_TRACKS,

@@ -95,6 +95,19 @@ private const val SEED_SIMILARS_SPAN = 25
 // playable tracks, so a 33-track mix came out at 24. Concurrency stays at 6 on
 // purpose (MA aggregates every provider in one asyncio.gather, so a burst is
 // what starves it, see BulkRpcThrottle).
+// MA-native discovery. `similar_artists` returns playable items, so unlike the
+// Last.fm route there is no name-resolution stage and these numbers cost one
+// round-trip each rather than one round-trip PLUS a provider search.
+private const val MA_SIMILAR_PER_SEED = 25
+private const val MA_TOP_TRACKS_PER_ARTIST = 5
+private const val MA_TRACKS_PER_ARTIST = 2
+private const val MA_POOL_FACTOR = 1.6
+private const val MA_RANK_DECAY = 0.001
+// Extra artists fetched beyond the arithmetic minimum, to absorb the ones that
+// return nothing playable.
+private const val MA_ARTIST_FETCH_SLACK = 8
+private const val MA_TRACK_FETCH_CONCURRENCY = 6
+
 private const val SEED_INLINE_SEARCH_BUDGET = 32
 private const val SEED_SEARCH_CONCURRENCY = 6
 private const val SEED_TRACK_SEARCH_LIMIT = 5
@@ -275,6 +288,35 @@ internal fun strictnessWeightedOrder(
         .sortedByDescending { it.second }
         .map { it.first }
 }
+
+/**
+ * What to call the finished mix, from the genres of ALL its seeds.
+ *
+ * Naming it after the primary seed alone is wrong: the primary is one artist of
+ * eight, and the mix is built from the whole cluster. A primary tagged
+ * "new wave" can anchor a cluster that is otherwise indie, and calling that a
+ * "New wave mix" when indie plays is worse than saying nothing specific.
+ *
+ * So: the most common dominant genre among the seeds wins, but only if at least
+ * two seeds agree on it. Otherwise the seeds genuinely disagree on the detail and
+ * we fall back to the family they share ("rock"), which is vaguer but true.
+ * Null when even that is unknown, and the caller then says nothing.
+ */
+@VisibleForTesting
+internal fun mixLabel(seedGenres: List<List<String>>, family: String?): String? {
+    val votes = seedGenres.mapNotNull { dominantGenre(it) }.groupingBy { it }.eachCount()
+    // maxByOrNull on a map is order-dependent on ties; sort the tie away so the
+    // same cluster always produces the same name.
+    val winner = votes.entries
+        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+        .firstOrNull()
+    return when {
+        winner != null && winner.value >= MIX_LABEL_MIN_AGREEMENT -> winner.key
+        else -> family
+    }
+}
+
+private const val MIX_LABEL_MIN_AGREEMENT = 2
 
 /**
  * Rows of the seed pool reserved for confirmed taste (replayed tracks), scaled
@@ -572,6 +614,18 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         if (activeSeeds.isEmpty()) return emptyList()
 
+        // Preferred route: ask MA itself. It answers with playable items, so the
+        // whole Last.fm -> name -> music/search chain below is skipped. Falls
+        // through to Last.fm when MA has nothing (no library seed, or a provider
+        // that does not implement similar artists).
+        val maCandidates = gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target)
+        if (maCandidates.size >= target) {
+            return finishMix(maCandidates, tuning, target, mixSeed, recency, coherentGenres, coreFamilies)
+        }
+        if (maCandidates.isNotEmpty()) {
+            Log.d(TAG, "MA gave ${maCandidates.size} (< $target), falling back to Last.fm")
+        }
+
         val similarsPerSeed = seedSimilarsPerSeed(tuning)
         val similarLists = coroutineScope {
             activeSeeds.map { seed ->
@@ -626,6 +680,23 @@ class SeedTrackMixGenerator @Inject constructor(
         // Recent-mix cool-down: tracks that appeared in the last few mixes, and
         // artists that recurred, are softly penalised (not excluded) so back-to-
         // back mixes diverge without the pool ever collapsing below the target.
+        return finishMix(resolved, tuning, target, mixSeed, recency, coherentGenres, coreFamilies)
+    }
+
+    /**
+     * Shared tail for both candidate routes (MA-native and Last.fm): recent-mix
+     * cool-down, loved-track injection, then the diversity/interleave build.
+     */
+    @Suppress("LongParameterList")
+    private suspend fun finishMix(
+        resolved: List<CandidateTrack>,
+        tuning: Tuning,
+        target: Int,
+        mixSeed: Long,
+        recency: Recency,
+        coherentGenres: Set<String>,
+        coreFamilies: Set<String>
+    ): List<Track> {
         val candidates = resolved
             .filterNot { it.track.uri in recency.excludedTrackUris }
             .map { c ->
@@ -654,6 +725,125 @@ class SeedTrackMixGenerator @Inject constructor(
         val mix = mixEngine.buildFromCandidates(allCandidates, target, mixSeed, tuning.discovery)
         Log.d(TAG, "built ${mix.size} tracks (target $target) from ${candidates.size} discovery + ${injected.size} loved-injected")
         return mix
+    }
+
+    /**
+     * Candidate pool straight from Music Assistant, no Last.fm involved.
+     *
+     * `music/artists/similar_artists` + `music/artists/top_tracks` return fully
+     * formed, PLAYABLE items, so this path skips the entire name-resolution stage
+     * the Last.fm route needs (up to [SEED_INLINE_SEARCH_BUDGET] `music/search`
+     * calls, which is where most of a mix build's wall-clock went).
+     *
+     * Returns an empty list when MA cannot help - notably when no seed is a
+     * `library` artist, since provider items report no similar artists - and the
+     * caller then falls back to the Last.fm route.
+     */
+    private suspend fun gatherFromMa(
+        activeSeeds: List<SeedTrack>,
+        blockedKeys: Set<String>,
+        coreFamilies: Set<String>,
+        target: Int
+    ): List<CandidateTrack> {
+        val seedRefs = activeSeeds.mapNotNull { seed ->
+            parseArtistRef(seed.artistUri)?.let { seed to it }
+        }
+        if (seedRefs.isEmpty()) return emptyList()
+
+        val similarArtists = coroutineScope {
+            seedRefs.map { (_, ref) ->
+                async {
+                    try {
+                        musicRepository.getSimilarArtists(ref.itemId, ref.provider, MA_SIMILAR_PER_SEED)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "similar_artists failed for ${ref.itemId}: ${e.message}")
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
+        }.flatten()
+
+        // Dedupe by artist identity, drop blocked artists and the seeds themselves.
+        val seedNames = activeSeeds.mapTo(mutableSetOf()) { it.artistName.trim().lowercase() }
+        val pool = LinkedHashMap<String, net.asksakis.massdroidv2.domain.model.Artist>()
+        for (art in similarArtists) {
+            val key = art.name.trim().lowercase()
+            if (key.isEmpty() || key in seedNames) continue
+            if (LastFmTrackSimilarResolver.normalizeName(art.name) in blockedKeys) continue
+            pool.putIfAbsent(key, art)
+        }
+        if (pool.isEmpty()) return emptyList()
+
+        // Gate on the cluster's families using the genres MA already carries,
+        // falling back to the cached Last.fm tags. An artist we cannot judge is
+        // KEPT: dropping the unknown is what makes whole scenes invisible.
+        val gated = pool.values.filter { art ->
+            if (coreFamilies.isEmpty()) return@filter true
+            val genres = art.genres.ifEmpty { lastFmGenreResolver.cachedGenres(art.name).orEmpty() }
+            val family = dominantFamily(genres)
+            family == null || family in coreFamilies
+        }
+        Log.d(TAG, "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate")
+
+        // Fetch in parallel: this used to be a sequential loop over every gated
+        // artist, which made the MA route SLOWER than the Last.fm one it replaces
+        // despite doing less work. Only fetch as many artists as the pool target
+        // needs, since two tracks each is the cap anyway.
+        val wanted = (target * MA_POOL_FACTOR).roundToInt().coerceAtLeast(target)
+        val needArtists = (wanted / MA_TRACKS_PER_ARTIST) + MA_ARTIST_FETCH_SLACK
+        // Throttled: MA aggregates providers in one asyncio.gather, so a burst
+        // starves the server. 34 unbounded calls took 70s; the same work at
+        // concurrency 6 is what the Last.fm path already used and why it kept up.
+        val gate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
+        val trackLists = coroutineScope {
+            gated.shuffled().take(needArtists).map { art ->
+                async {
+                    gate.withPermit {
+                    val ref = parseArtistRef(art.uri) ?: return@async art to emptyList()
+                    // top_tracks ONLY. The unbounded artist_tracks listing was
+                    // tried as a fallback and cost ~1.5s per artist (27+ tracks
+                    // over the wire each), which alone made a build take 70s.
+                    // We need two tracks per artist, and top_tracks supplies
+                    // that: 20 artists yielded 33 usable tracks in practice.
+                    val tracks = try {
+                        musicRepository.getArtistTopTracks(ref.itemId, ref.provider, MA_TOP_TRACKS_PER_ARTIST)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    art to tracks
+                    }
+                }
+            }.awaitAll()
+        }
+
+        val out = mutableListOf<CandidateTrack>()
+        val seenTitles = mutableSetOf<String>()
+        for ((art, tracks) in trackLists) {
+            if (out.size >= wanted) break
+            var taken = 0
+            for (t in tracks) {
+                if (taken >= MA_TRACKS_PER_ARTIST) break
+                // MA can return the same recording twice (album + single/remaster).
+                val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
+                if (t.uri.isBlank() || !seenTitles.add(titleKey)) continue
+                out += CandidateTrack(track = t, score = 1.0 - out.size * MA_RANK_DECAY)
+                taken++
+            }
+        }
+        Log.d(TAG, "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists (0 searches, 0 Last.fm)")
+        return out
+    }
+
+    private data class ArtistRef(val itemId: String, val provider: String)
+
+    /** `library://artist/59` -> (59, library). Null when the uri is unusable. */
+    private fun parseArtistRef(uri: String?): ArtistRef? {
+        val raw = uri?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val provider = raw.substringBefore("://", "").trim()
+        val itemId = raw.substringAfter("://", "").trim('/').substringAfterLast('/').trim()
+        if (provider.isEmpty() || itemId.isEmpty()) return null
+        return ArtistRef(itemId, provider)
     }
 
     // Merge a Last.fm track list into the candidate pool, keeping the best score
@@ -1073,9 +1263,7 @@ class SeedTrackMixGenerator @Inject constructor(
             primaryGenres.toSet(),
             envelope,
             setOfNotNull(primaryFamily),
-            // primaryGenres is still weight-ordered here; coherentGenres above is
-            // a Set and cannot answer "what is this mix called".
-            dominantGenre(primaryGenres)
+            mixLabel(result.map { genresBySeed[it.trackUri].orEmpty() }, primaryFamily)
         )
     }
 

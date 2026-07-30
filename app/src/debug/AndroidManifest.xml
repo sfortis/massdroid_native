@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Debug-only: lets adb trigger a real mix build without driving the UI.
+             MUST be exported: `am broadcast` runs as the shell uid (2000), so an
+             unexported receiver silently never fires (the broadcast is enqueued
+             and then dropped, which is exactly what happened first time round).
+             Safe because this whole manifest is the debug source set and is
+             absent from release builds. -->
+        <receiver
+            android:name="net.asksakis.massdroidv2.debug.DebugMixReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="net.asksakis.massdroidv2.debug.SMART_MIX" />
+                <action android:name="net.asksakis.massdroidv2.debug.GENRE_RADIO" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>
