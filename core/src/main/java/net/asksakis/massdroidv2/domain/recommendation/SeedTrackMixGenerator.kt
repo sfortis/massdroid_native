@@ -677,7 +677,14 @@ class SeedTrackMixGenerator @Inject constructor(
             val family = dominantFamily(genres)
             family == null || family in coreFamilies
         }
-        Log.d(TAG, "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate")
+        val unjudgeable = pool.values.count {
+            dominantFamily(it.genres.ifEmpty { orderByFamilyFrequency(dbGenres[it.uri].orEmpty()) }) == null
+        }
+        Log.d(
+            TAG,
+            "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate " +
+                "($unjudgeable had no usable genre and were kept unjudged)"
+        )
 
         // Fetch in parallel: this used to be a sequential loop over every gated
         // artist, which made the MA route SLOWER than the Last.fm one it replaces
