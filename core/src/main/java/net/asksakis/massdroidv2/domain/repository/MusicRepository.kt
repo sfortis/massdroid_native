@@ -49,6 +49,8 @@ interface MusicRepository {
     suspend fun getSimilarArtists(itemId: String, provider: String, limit: Int = 25): List<Artist>
 
     /** The artist's most-played tracks, as playable MA items. */
+    /** Tracks the provider considers similar to this one. Includes the seed itself; callers filter it. */
+    suspend fun getSimilarTracks(itemId: String, provider: String, limit: Int): List<Track>
     suspend fun getArtistTopTracks(itemId: String, provider: String, limit: Int = 10): List<Track>
     suspend fun getAlbumTracks(itemId: String, provider: String): List<Track>
     suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track>

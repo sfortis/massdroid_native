@@ -42,6 +42,13 @@ object MaCommands {
         // Note MA registers these via register_api_command, so they do not appear
         // in the server's @api_command listing.
         const val SIMILAR_ARTISTS = "music/artists/similar_artists"
+        /**
+         * Track-level similarity. Unlike `similar_artists`, this one answers for
+         * PROVIDER items (Deezer declares `similar_tracks` but not
+         * `similar_artists`), so it reaches the listening that happens outside a
+         * user's Music Assistant library.
+         */
+        const val SIMILAR_TRACKS = "music/tracks/similar_tracks"
         const val ARTIST_TOP_TRACKS = "music/artists/top_tracks"
         const val ALBUM_TRACKS = "music/albums/album_tracks"
         const val PLAYLIST_TRACKS = "music/playlists/playlist_tracks"

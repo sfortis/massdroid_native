@@ -112,6 +112,14 @@ private const val MA_TRACK_FETCH_CONCURRENCY = 6
 // this is ~20s of background work; the rest are picked up by later mixes,
 // which see the same candidates because similar-artist lists are cached.
 private const val MB_WARM_LIMIT = 20
+// `similar_tracks` route (provider seeds). Capped per mix because a provider
+// that does not implement it costs a round-trip per seed to find that out.
+private const val SIMILAR_TRACK_SEED_LIMIT = 6
+private const val SIMILAR_TRACKS_PER_SEED = 20
+// Track-level similarity is good evidence but less structured than "this artist
+// is similar, here are their top tracks", so it ranks just under the artist
+// route rather than competing with its best.
+private const val SIMILAR_TRACK_SCALE = 0.8
 // Cache lifetimes. Similar-artist and top-track listings barely move, and without
 // caching the MA route made ~42 live calls per mix (18s) against the Last.fm
 // route's 6.6s, which is answered from Room.
@@ -671,13 +679,19 @@ class SeedTrackMixGenerator @Inject constructor(
      * `music/artists/similar_artists` + `music/artists/top_tracks` return fully
      * formed, PLAYABLE items, so this path has no name-resolution stage at all.
      *
-     * Only `library://` seeds are asked: the provider path requires
-     * `ProviderFeature.SIMILAR_ARTISTS`, which Deezer does not implement, so a
-     * provider seed reliably answers zero (verified live: Tosca and Anderholm
-     * both 0, The Raveonettes 24, Juno Francis 25). Asking anyway cost a
-     * round-trip per seed for nothing, and cached the empty answer for a
-     * fortnight. Empty when the cluster has no library seed at all, and the
-     * caller then drops to the genre engine.
+     * Two routes, because Music Assistant answers different questions for
+     * different items:
+     * - `library://` seeds -> `similar_artists` + `top_tracks`. The provider
+     *   path needs `ProviderFeature.SIMILAR_ARTISTS`, which Deezer does not
+     *   declare, so a provider seed reliably answers zero here (verified:
+     *   Tosca 0, Anderholm 0, The Raveonettes 24, Juno Francis 25).
+     * - provider seeds -> `similar_tracks`, which Deezer DOES declare and which
+     *   returns playable tracks (Joy Division's "Transmission" -> The Cure).
+     *
+     * The second route matters more than it looks: only 26% of the artists
+     * eligible to seed a mix here are library ones, and a user who has added
+     * nothing to their Music Assistant library would otherwise never get a
+     * seed-track mix at all.
      */
     @Suppress("LongParameterList")
     private suspend fun gatherFromMa(
@@ -691,9 +705,11 @@ class SeedTrackMixGenerator @Inject constructor(
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
             .mapNotNull { seed -> parseArtistRef(seed.artistUri)?.let { seed to it } }
+        val trackSeeds = activeSeeds.filterNot { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
+        if (seedRefs.isEmpty() && trackSeeds.isEmpty()) return emptyList()
         if (seedRefs.isEmpty()) {
-            Log.d(TAG, "no library seed in this cluster, MA cannot expand it")
-            return emptyList()
+            Log.d(TAG, "no library seed in this cluster, expanding from provider tracks only")
+            return gatherSimilarTracks(trackSeeds, blockedKeys, SIMILAR_TRACKS_PER_SEED)
         }
         // Ask each productive seed deeper when there are few of them, so a
         // cluster carried by one or two library artists still fills a mix.
@@ -864,6 +880,60 @@ class SeedTrackMixGenerator @Inject constructor(
             }
         }
         Log.d(TAG, "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists (0 searches, 0 Last.fm)")
+        // Top up from the provider seeds the artist route cannot use, but only
+        // when the mix would otherwise come up short: the artist route is the
+        // better-structured evidence, so it is not diluted for its own sake.
+        if (out.size >= wanted) return out
+        val fromTracks = gatherSimilarTracks(trackSeeds, blockedKeys, SIMILAR_TRACKS_PER_SEED)
+        if (fromTracks.isEmpty()) return out
+        val known = out.mapTo(mutableSetOf()) { it.track.uri }
+        return out + fromTracks.filter { it.track.uri !in known }
+    }
+
+    /**
+     * Candidates from `similar_tracks` on the seeds' own provider items, for the
+     * listening that never entered the user's library.
+     *
+     * Scored below the artist route's best but overlapping it: a track the
+     * provider calls similar to something you played is strong evidence, just
+     * less structured than "this artist is similar and here are their top
+     * tracks". Returns nothing for providers that do not implement it, which
+     * costs one round-trip per seed and is why the seeds are capped.
+     */
+    private suspend fun gatherSimilarTracks(
+        seeds: List<SeedTrack>,
+        blockedKeys: Set<String>,
+        perSeed: Int
+    ): List<CandidateTrack> {
+        val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
+            .mapNotNull { seed -> parseArtistRef(seed.trackUri)?.let { seed to it } }
+        if (refs.isEmpty()) return emptyList()
+        val seedTrackUris = seeds.mapTo(mutableSetOf()) { it.trackUri }
+        val lists = coroutineScope {
+            refs.map { (seed, ref) ->
+                async {
+                    try {
+                        musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
+        }
+        val out = mutableListOf<CandidateTrack>()
+        val seen = mutableSetOf<String>()
+        for (list in lists) {
+            list.forEachIndexed { rank, track ->
+                // The seed track itself always comes back first.
+                if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
+                if (normalizeArtistKey(track.artistNames) in blockedKeys) return@forEachIndexed
+                if (!seen.add(track.uri)) return@forEachIndexed
+                val closeness = 1.0 - (rank.toDouble() / perSeed).coerceIn(0.0, 1.0)
+                out += CandidateTrack(track = track, score = closeness * SIMILAR_TRACK_SCALE)
+            }
+        }
+        if (out.isNotEmpty()) Log.d(TAG, "similar_tracks: ${out.size} candidates from ${refs.size} provider seeds")
         return out
     }
 
