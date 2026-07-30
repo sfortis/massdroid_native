@@ -536,10 +536,9 @@ class MixPlaybackOrchestrator @Inject constructor(
     )
 
     private suspend fun buildSmartMixTracks(): SmartMixResult {
-        if (!hasLastFmKey()) {
-            Log.d(TAG, "Smart mix: no Last.fm key, using genre engine directly")
-            return buildGenreSmartMixTracks()
-        }
+        // No Last.fm precondition: the seed-track engine asks Music Assistant
+        // for both similarity and genre, so it works on any server, with or
+        // without an API key.
         val seedResult = try {
             buildSeedTrackMix()
         } catch (e: Exception) {
@@ -553,13 +552,6 @@ class MixPlaybackOrchestrator @Inject constructor(
         Log.d(TAG, "Seed-track mix yielded ${seedResult.tracks.size} (<$SMART_MIX_MIN_TRACKS), using genre engine")
         return buildGenreSmartMixTracks()
     }
-
-    private suspend fun hasLastFmKey(): Boolean =
-        try {
-            settingsRepository.lastFmApiKey.first().isNotBlank()
-        } catch (_: Exception) {
-            false
-        }
 
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private suspend fun buildGenreSmartMixTracks(): SmartMixResult {

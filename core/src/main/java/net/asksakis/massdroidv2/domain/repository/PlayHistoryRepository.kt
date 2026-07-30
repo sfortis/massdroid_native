@@ -131,6 +131,12 @@ interface PlayHistoryRepository {
         limit: Int
     ): List<SeedTrack>
     suspend fun getAllGenreNames(): List<String>
+    /**
+     * Genres the DB holds for each of [artistUris] (missing artists are absent
+     * from the map). Batched because the Smart Mix genre gate judges the whole
+     * candidate pool at once.
+     */
+    suspend fun getArtistGenreMap(artistUris: List<String>): Map<String, List<String>>
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>
     suspend fun resolveLibraryArtistUri(name: String): String?

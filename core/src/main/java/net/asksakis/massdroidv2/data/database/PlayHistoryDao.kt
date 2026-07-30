@@ -44,6 +44,17 @@ interface PlayHistoryDao {
     @Query("SELECT genre_name FROM artist_genres WHERE artist_uri = :artistUri")
     suspend fun getGenresForArtist(artistUri: String): List<String>
 
+    /**
+     * Batched form for the Smart Mix genre gate, which judges ~100 candidate
+     * artists per mix and cannot afford one round-trip each.
+     */
+    @Query("""
+        SELECT artist_uri AS artistUri, genre_name AS genre
+        FROM artist_genres
+        WHERE artist_uri IN (:artistUris)
+    """)
+    suspend fun getGenresForArtists(artistUris: List<String>): List<ArtistGenreRow>
+
     @Query("SELECT uri FROM artists WHERE name = :name")
     suspend fun getArtistUrisByName(name: String): List<String>
 
@@ -846,6 +857,11 @@ data class ArtistPlayTimestamp(
 data class ArtistNameUri(
     val name: String,
     val uri: String
+)
+
+data class ArtistGenreRow(
+    val artistUri: String,
+    val genre: String
 )
 
 data class GenreArtistUri(

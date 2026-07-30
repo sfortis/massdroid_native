@@ -431,6 +431,12 @@ class PlayHistoryRepositoryImpl @Inject constructor(
 
     override suspend fun getAllGenreNames(): List<String> = dao.getAllGenreNames()
 
+    override suspend fun getArtistGenreMap(artistUris: List<String>): Map<String, List<String>> {
+        if (artistUris.isEmpty()) return emptyMap()
+        return dao.getGenresForArtists(artistUris.distinct())
+            .groupBy({ it.artistUri }, { it.genre })
+    }
+
     override suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>> =
         dao.getArtistsByGenre(genre).map { it.name to it.uri }
 
