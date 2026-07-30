@@ -23,7 +23,7 @@ import androidx.room.RoomDatabase
         MaSimilarArtistEntity::class,
         MusicBrainzArtistTagsEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

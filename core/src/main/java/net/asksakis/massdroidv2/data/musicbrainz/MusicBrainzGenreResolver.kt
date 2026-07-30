@@ -30,9 +30,12 @@ import javax.inject.Singleton
  * - **Search, not lookup.** The candidates have no MBID, so the entity is found
  *   by name. A hit is accepted only at [MIN_MATCH_SCORE], because a weak name
  *   match would poison the gate with a stranger's genres.
- * - **One request, usually.** The search response already carries `tags`
- *   weight-ordered, and they match the full entity's `genres` in practice; the
- *   second call is made only when search returned an entity but no tags.
+ * - **Two requests: find the entity, then read its GENRES.** The search
+ *   response also carries `tags`, and using those to save a call was a mistake:
+ *   tags are free-text and include nationalities, so Ramones came back as
+ *   `punk rock, pop punk, punk, estados unidos` and a cluster was built on a
+ *   country. The `genres` list is the curated taxonomy and gives
+ *   `punk rock, pop punk, punk, power pop`.
  * - **Empty is an answer.** An artist MusicBrainz has nothing on is cached as
  *   empty, so the 1 req/s budget is never spent twice on the same dead end.
  * - Genres are taken as MusicBrainz reports them, with no allow-list. The list
@@ -95,12 +98,12 @@ class MusicBrainzGenreResolver @Inject constructor(
         if (key.isEmpty()) return emptyList()
         cachedGenres(artistName)?.let { return it }
         return withContext(Dispatchers.IO) {
-            val match = searchArtist(artistName) ?: run {
+            val mbid = findMbid(artistName) ?: run {
                 cache(key, mbid = "", genres = emptyList())
                 return@withContext emptyList()
             }
-            val genres = match.tags.ifEmpty { fetchGenres(match.mbid) }
-            cache(key, match.mbid, genres)
+            val genres = fetchGenres(mbid)
+            cache(key, mbid, genres)
             genres
         }
     }
@@ -120,9 +123,7 @@ class MusicBrainzGenreResolver @Inject constructor(
         }
     }
 
-    private data class Match(val mbid: String, val tags: List<String>)
-
-    private suspend fun searchArtist(artistName: String): Match? {
+    private suspend fun findMbid(artistName: String): String? {
         // Quoting the name makes this a phrase match; without it Lucene splits
         // on whitespace and "Pale Saints" matches any artist called "Saints".
         val url = "$BASE/artist".toHttpUrlOrNull()?.newBuilder()
@@ -138,9 +139,7 @@ class MusicBrainzGenreResolver @Inject constructor(
             Log.d(TAG, "'$artistName': best match scored $score, rejected")
             return null
         }
-        val mbid = artist["id"]?.jsonPrimitive?.content.orEmpty()
-        if (mbid.isEmpty()) return null
-        return Match(mbid, artist["tags"]?.let { readTags(it) }.orEmpty())
+        return artist["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }
     }
 
     private suspend fun fetchGenres(mbid: String): List<String> {

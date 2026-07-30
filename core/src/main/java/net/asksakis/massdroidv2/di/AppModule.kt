@@ -325,6 +325,16 @@ object AppModule {
         }
     }
 
+    private val MIGRATION_12_13 = object : Migration(12, 13) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Drop what the first version of the MusicBrainz resolver cached. It
+            // read the search response's free-text `tags`, which include
+            // nationalities ("estados unidos" made Ramones anchor a cluster on a
+            // country); the resolver now reads the curated `genres` list.
+            database.execSQL("DELETE FROM `musicbrainz_artist_tags`")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -333,7 +343,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
         .fallbackToDestructiveMigration()
         .build()
 
