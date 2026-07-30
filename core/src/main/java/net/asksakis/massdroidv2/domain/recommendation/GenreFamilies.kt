@@ -180,6 +180,20 @@ internal fun dominantFamily(genres: Iterable<String>): String? =
     genres.firstNotNullOfOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) }
 
 /**
+ * The first genre that [dominantFamily] would resolve on, i.e. what the artist
+ * mostly IS, kept as the genre itself rather than its family. Used to name a mix
+ * for the user ("Post punk mix ready"), where "rock" would be uselessly broad.
+ *
+ * Skips leading unmapped tags on purpose: mood/format tags like "instrumental" or
+ * "soundtrack" often sort first but say nothing about the genre. Null when no tag
+ * maps at all, and the caller should then say nothing rather than guess.
+ */
+@VisibleForTesting
+internal fun dominantGenre(genres: Iterable<String>): String? =
+    genres.firstOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) != null }
+        ?.let { normalizeGenre(it) }
+
+/**
  * Reorder an UNORDERED genre list so that the best-represented family comes
  * first, making [dominantFamily] meaningful on it.
  *

@@ -486,7 +486,10 @@ class MixPlaybackOrchestrator @Inject constructor(
             }
             persistClusterRotation()
         }
-        return SmartMixResult(result.tracks, null)
+        // Name the mix after the cluster it anchored on. This used to be null, so
+        // the phone fell back to the generic "Smart mix ready" on every seed-track
+        // run and only ever named a genre on the rarer genre-engine fallback.
+        return SmartMixResult(result.tracks, result.clusterLabel)
     }
 
     /**

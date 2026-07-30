@@ -77,6 +77,43 @@ class GenreFamiliesWaveTest {
             .isEqualTo("electronic")
     }
 
+    // --- dominantGenre: what the mix gets CALLED for the user ---
+
+    @Test
+    fun `the mix is named after the primary's strongest mapped tag`() {
+        // Real cluster from the device: "post punk/indie pop/shoegaze -> rock".
+        // "Post punk mix ready" is useful; "Rock mix ready" is not.
+        assertThat(dominantGenre(listOf("post punk", "indie pop", "shoegaze")))
+            .isEqualTo("post punk")
+        assertThat(dominantGenre(listOf("ebm", "darkwave"))).isEqualTo("ebm")
+    }
+
+    @Test
+    fun `leading mood and format tags are skipped, not used as the name`() {
+        // "instrumental" and "soundtrack" are deliberately unmapped: they sort
+        // first for some artists but say nothing about the genre.
+        assertThat(dominantGenre(listOf("instrumental", "soundtrack", "techno")))
+            .isEqualTo("techno")
+    }
+
+    @Test
+    fun `an unnameable cluster returns null rather than a guess`() {
+        assertThat(dominantGenre(listOf("instrumental", "seen live"))).isNull()
+        assertThat(dominantGenre(emptyList())).isNull()
+    }
+
+    @Test
+    fun `the name is normalized for display`() {
+        assertThat(dominantGenre(listOf("Post-Punk"))).isEqualTo("post-punk")
+        assertThat(dominantGenre(listOf("  Techno  "))).isEqualTo("techno")
+    }
+
+    @Test
+    fun `newly allowed genres can name a mix`() {
+        assertThat(dominantGenre(listOf("synthwave", "electronic"))).isEqualTo("synthwave")
+        assertThat(dominantGenre(listOf("minimal techno", "techno"))).isEqualTo("minimal techno")
+    }
+
     @Test
     fun `a lounge act tagged bossa nova is world, not chill`() {
         // Sarah Menescal, measured: was [lounge, jazz] -> chill.

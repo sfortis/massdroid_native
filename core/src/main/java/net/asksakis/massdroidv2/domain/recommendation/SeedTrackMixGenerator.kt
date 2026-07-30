@@ -470,8 +470,19 @@ class SeedTrackMixGenerator @Inject constructor(
         val recentClusterGenres: Set<String> = emptySet()
     )
 
-    /** A built mix plus the primary-cluster genres it anchored on (for the caller's rotation cool-down). */
-    data class SeedMixResult(val tracks: List<Track>, val clusterGenres: Set<String>)
+    /**
+     * A built mix, the primary-cluster genres it anchored on (for the caller's
+     * rotation cool-down), and a human-readable name for the cluster.
+     *
+     * [clusterLabel] exists because the seed-track engine used to hand the caller
+     * a null genre, so the phone always said the generic "Smart mix ready" and
+     * only named a genre on the rare runs that fell back to the genre engine.
+     */
+    data class SeedMixResult(
+        val tracks: List<Track>,
+        val clusterGenres: Set<String>,
+        val clusterLabel: String? = null
+    )
 
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var prefetchJob: Job? = null
@@ -502,7 +513,7 @@ class SeedTrackMixGenerator @Inject constructor(
             seeds, tuning, target, mixSeed, recency,
             selection.coherentGenres, selection.envelope, selection.coreFamilies
         )
-        return SeedMixResult(tracks, selection.coherentGenres)
+        return SeedMixResult(tracks, selection.coherentGenres, selection.clusterLabel)
     }
 
     /**
@@ -935,7 +946,13 @@ class SeedTrackMixGenerator @Inject constructor(
         val seeds: List<SeedTrack>,
         val coherentGenres: Set<String>,
         val envelope: Set<String> = emptySet(),
-        val coreFamilies: Set<String> = emptySet()
+        val coreFamilies: Set<String> = emptySet(),
+        /**
+         * What to call this mix for the user, e.g. "post punk". [coherentGenres]
+         * cannot answer that: it is a Set, so it has lost the weight order that
+         * makes the primary's first tag the meaningful one.
+         */
+        val clusterLabel: String? = null
     )
 
     /**
@@ -1051,7 +1068,15 @@ class SeedTrackMixGenerator @Inject constructor(
         // family. The seed-union envelope survives only as token fallback and as
         // the relaxation target when the tight gate cannot fill the mix.
         val envelope = result.flatMap { coherenceGenres(it) }.toSet()
-        return SeedSelection(result, primaryGenres.toSet(), envelope, setOfNotNull(primaryFamily))
+        return SeedSelection(
+            result,
+            primaryGenres.toSet(),
+            envelope,
+            setOfNotNull(primaryFamily),
+            // primaryGenres is still weight-ordered here; coherentGenres above is
+            // a Set and cannot answer "what is this mix called".
+            dominantGenre(primaryGenres)
+        )
     }
 
     /**
