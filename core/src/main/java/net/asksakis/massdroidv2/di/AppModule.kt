@@ -287,7 +287,16 @@ object AppModule {
         }
     }
 
-    private val MIGRATION_10_11 = object : Migration(10, 11) {
+    /**
+     * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
+     *
+     * v11..v14 never shipped: they were all added in the same unreleased run, so
+     * no installation is ever on them and stepping through each would only make
+     * an upgrade do pointless work (one of them emptied a table the previous one
+     * had just created). v10 is what `main` ships, so v10 -> v15 is the only
+     * path a real user takes.
+     */
+    private val MIGRATION_10_15 = object : Migration(10, 15) {
         override fun migrate(database: SupportSQLiteDatabase) {
             // MA similar-artists cache. Uri-keyed on both sides so results can be
             // reused directly for top_tracks without any name resolution.
@@ -304,13 +313,8 @@ object AppModule {
                 )
                 """.trimIndent()
             )
-        }
-    }
-
-    private val MIGRATION_11_12 = object : Migration(11, 12) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            // MusicBrainz genre cache, name-keyed: the candidates that need it
-            // are provider items with no MBID to look up with.
+            // MusicBrainz genres, keyed by MBID where one is known and by name
+            // otherwise (see MusicBrainzGenreResolver).
             database.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS `musicbrainz_artist_tags` (
@@ -322,29 +326,11 @@ object AppModule {
                 )
                 """.trimIndent()
             )
-        }
-    }
-
-    private val MIGRATION_12_13 = object : Migration(12, 13) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            // Drop what the first version of the MusicBrainz resolver cached. It
-            // read the search response's free-text `tags`, which include
-            // nationalities ("estados unidos" made Ramones anchor a cluster on a
-            // country); the resolver now reads the curated `genres` list.
-            database.execSQL("DELETE FROM `musicbrainz_artist_tags`")
-        }
-    }
-
-    private val MIGRATION_13_14 = object : Migration(13, 14) {
-        override fun migrate(database: SupportSQLiteDatabase) {
+            // MusicBrainz id per artist, so genre lookups are exact rather than
+            // by name (names are not unique across unrelated acts).
             database.execSQL("ALTER TABLE `artists` ADD COLUMN `mbid` TEXT")
-        }
-    }
-
-    private val MIGRATION_14_15 = object : Migration(14, 15) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            // Caches of the Last.fm track-similarity route, which the mix engine
-            // no longer uses: 28,644 + 7,428 rows and ~2.7 MB of a 45 MB database.
+            // Caches of the Last.fm track-similarity route the mix engine no
+            // longer uses: ~2.7 MB of a 45 MB database on a real install.
             database.execSQL("DROP TABLE IF EXISTS `lastfm_similar_tracks`")
             database.execSQL("DROP TABLE IF EXISTS `track_uri_cache`")
         }
@@ -358,7 +344,7 @@ object AppModule {
         context,
         AppDatabase::class.java,
         "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_15)
         .fallbackToDestructiveMigration()
         .build()
 
