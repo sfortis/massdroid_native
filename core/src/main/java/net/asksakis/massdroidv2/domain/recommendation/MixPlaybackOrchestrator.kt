@@ -60,6 +60,10 @@ private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
 private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
+// Chunk size for the retry after the server rejects a whole mix. Small enough
+// that one unplayable item costs only a few tracks, large enough that the retry
+// is a handful of calls rather than one per track.
+private const val PLAY_MEDIA_SALVAGE_CHUNK = 5
 // Share of the requested track target the seed-track engine must reach before
 // its mix is preferred over the genre engine. SMART_MIX_MIN_TRACKS alone is an
 // absolute floor for "is this playable at all"; it let an 8-track result stand
@@ -437,6 +441,58 @@ class MixPlaybackOrchestrator @Inject constructor(
     // Radio): mark the queue smart-generated, record recent history/artists/genre
     // for the next round's cool-down, then replace the queue. DSTM is left
     // untouched (MA 2.9.1 atomic replace keeps the curated list clean).
+    /**
+     * Queue the mix, and if the server chokes on one item, queue the rest anyway.
+     *
+     * A whole mix is sent as ONE play_media, so a single unplayable item takes
+     * all thirty tracks down with it. Music Assistant 2.9.10 fails the entire
+     * call with "year must be in 1..9999, not 0" when any track's album carries
+     * an invalid release date - the underlying deezer-python guard only catches
+     * the literal "0000-00-00", so "0000-01-01" reaches strptime and raises.
+     * Nothing is wrong with the mix: it is fully built by then, and the year is
+     * album metadata that playback never needs.
+     *
+     * There is no cheap way to spot the bad item in advance (get_track on it
+     * succeeds; only loading its album fails), so this pays nothing in the
+     * normal case and only splits into chunks after a failure, dropping just
+     * the chunk that cannot load.
+     */
+    private suspend fun playMediaSalvagingBadItems(queueId: String, uris: List<String>) {
+        if (uris.isEmpty()) return
+        try {
+            musicRepository.playMedia(queueId, uris, option = "replace", awaitResponse = true)
+            return
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "play_media rejected ${uris.size} tracks (${e.message}), retrying in chunks")
+        }
+
+        var queued = 0
+        var dropped = 0
+        var first = true
+        for (chunk in uris.chunked(PLAY_MEDIA_SALVAGE_CHUNK)) {
+            try {
+                // The first chunk that lands owns the queue; the rest append to it.
+                musicRepository.playMedia(
+                    queueId = queueId,
+                    uris = chunk,
+                    option = if (first) "replace" else "add",
+                    awaitResponse = true
+                )
+                queued += chunk.size
+                first = false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                dropped += chunk.size
+                Log.w(TAG, "dropped ${chunk.size} tracks the server could not load: ${e.message}")
+            }
+        }
+        Log.d(TAG, "play_media salvage: queued $queued, dropped $dropped")
+        if (queued == 0) error("Music Assistant rejected every track in this mix")
+    }
+
     private suspend fun playGeneratedMix(
         queueId: String,
         tracks: List<Track>,
@@ -461,12 +517,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             recentSmartMixGenres.addLast(normalizeGenre(picked))
             while (recentSmartMixGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) recentSmartMixGenres.removeFirst()
         }
-        musicRepository.playMedia(
-            queueId = queueId,
-            uris = tracks.map { it.uri },
-            option = "replace",
-            awaitResponse = true
-        )
+        playMediaSalvagingBadItems(queueId, tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) })
         logQueueContents(queueId, logSource, awaitQueueItems = true)
     }
 
