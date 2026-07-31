@@ -1,7 +1,9 @@
 package net.asksakis.massdroidv2.di
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
+import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import dagger.Module
@@ -25,6 +27,8 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    private const val DATABASE_NAME = "massdroid.db"
 
     private val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(database: SupportSQLiteDatabase) {
@@ -339,14 +343,59 @@ object AppModule {
     @Provides
     @Singleton
     fun provideAppDatabase(
-        @ApplicationContext context: Context
-    ): AppDatabase = Room.databaseBuilder(
-        context,
-        AppDatabase::class.java,
-        "massdroid.db"
-    ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_15)
-        .fallbackToDestructiveMigration()
-        .build()
+        @ApplicationContext context: Context,
+        resetReporter: net.asksakis.massdroidv2.data.util.DatabaseResetReporter
+    ): AppDatabase {
+        // Read the on-disk version BEFORE Room opens the file: if a migration is
+        // missing, the destructive fallback rebuilds the database and the old
+        // version - the one piece of information needed to write the missing
+        // migration - is gone by the time onDestructiveMigration runs.
+        val existingVersion = readDatabaseVersion(context)
+        return Room.databaseBuilder(
+            context,
+            AppDatabase::class.java,
+            DATABASE_NAME
+        ).addMigrations(
+            MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_15
+        )
+            // Kept so a missing migration cannot brick the app, but no longer
+            // silent: see DatabaseResetReporter.
+            .fallbackToDestructiveMigration()
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
+                    // db.version is still the OLD one here, so the target comes
+                    // from the schema constant rather than the file.
+                    resetReporter.report(
+                        net.asksakis.massdroidv2.data.util.DatabaseResetInfo(
+                            fromVersion = existingVersion,
+                            toVersion = AppDatabase.SCHEMA_VERSION,
+                            appVersion = appVersionName(context)
+                        )
+                    )
+                }
+            })
+            .build()
+    }
+
+    /** On-disk schema version, or 0 when there is no database yet (a fresh install). */
+    private fun readDatabaseVersion(context: Context): Int {
+        val file = context.getDatabasePath(DATABASE_NAME)
+        if (!file.exists()) return 0
+        return try {
+            SQLiteDatabase.openDatabase(
+                file.path, null, SQLiteDatabase.OPEN_READONLY
+            ).use { it.version }
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun appVersionName(context: Context): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
 
     @Provides
     fun providePlayHistoryDao(db: AppDatabase): PlayHistoryDao = db.playHistoryDao()

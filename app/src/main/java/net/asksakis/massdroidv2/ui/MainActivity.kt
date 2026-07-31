@@ -61,7 +61,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -559,6 +563,40 @@ private fun MassDroidApp(
                 duration = SnackbarDuration.Long
             )
         }
+    }
+
+    // A failed database migration wipes the listening history. It used to happen
+    // in silence, so the only symptom was that recommendations suddenly knew
+    // nothing about you. This says so, and shows the version numbers needed to
+    // write the missing migration.
+    val databaseReset by appNoticesViewModel.databaseReset.collectAsStateWithLifecycle()
+    databaseReset?.let { info ->
+        AlertDialog(
+            onDismissRequest = appNoticesViewModel::acknowledgeDatabaseReset,
+            title = { Text("Listening history was reset") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "This app could not upgrade its local database, so it had to start over. " +
+                            "Your play history and the recommendations built from it are gone. " +
+                            "Nothing on your Music Assistant server was touched."
+                    )
+                    Text(
+                        "Please report this with a screenshot:",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        "database ${info.fromVersion} \u2192 ${info.toVersion}\n" +
+                            "app ${info.appVersion}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = appNoticesViewModel::acknowledgeDatabaseReset) { Text("OK") }
+            }
+        )
     }
 
     val miniPlayerCollapsedHeight = 72.dp

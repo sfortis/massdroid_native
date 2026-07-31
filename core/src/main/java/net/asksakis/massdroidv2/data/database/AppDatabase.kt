@@ -21,9 +21,19 @@ import androidx.room.RoomDatabase
         MaSimilarArtistEntity::class,
         MusicBrainzArtistTagsEntity::class
     ],
-    version = 15,
+    version = AppDatabase.SCHEMA_VERSION,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun playHistoryDao(): PlayHistoryDao
+
+    companion object {
+        /**
+         * Schema version. Referenced by the @Database annotation above and by the
+         * destructive-migration reporter, which cannot read it from the database
+         * itself: inside onDestructiveMigration the file still carries the OLD
+         * version, so reporting `db.version` there said "v1 -> v1".
+         */
+        const val SCHEMA_VERSION = 15
+    }
 }
