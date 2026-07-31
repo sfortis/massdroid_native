@@ -164,21 +164,37 @@ class MusicBrainzGenreResolver @Inject constructor(
             .map { it.first }
 
     private suspend fun request(url: String): String? {
-        rateLimiter.acquire()
-        return try {
-            // MusicBrainz rejects requests without a descriptive User-Agent.
-            val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "HTTP ${response.code} for $url")
-                    return null
+        // MusicBrainz answers 503 when it considers the caller over the rate
+        // limit, and it counts more strictly than one-per-second suggests: a
+        // background enrichment run hit it repeatedly at a 1.1s interval. A 503
+        // is a "come back later", not a failure, so it is retried once after a
+        // pause rather than being cached as "this artist has no genres".
+        repeat(RATE_LIMIT_RETRIES + 1) { attempt ->
+            rateLimiter.acquire()
+            val result = try {
+                // MusicBrainz rejects requests without a descriptive User-Agent.
+                val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    when {
+                        response.isSuccessful -> response.body?.string()
+                        response.code == HTTP_SERVICE_UNAVAILABLE -> {
+                            rateLimiter.backOff(response.header("Retry-After")?.toLongOrNull())
+                            null
+                        }
+                        else -> {
+                            Log.w(TAG, "HTTP ${response.code} for $url")
+                            return null
+                        }
+                    }
                 }
-                response.body?.string()
+            } catch (e: Exception) {
+                Log.w(TAG, "request failed: ${e.message}")
+                return null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "request failed: ${e.message}")
-            null
+            if (result != null) return result
+            if (attempt == RATE_LIMIT_RETRIES) Log.w(TAG, "rate-limited, giving up on $url")
         }
+        return null
     }
 
     /**
@@ -204,5 +220,7 @@ class MusicBrainzGenreResolver @Inject constructor(
         // Search scores are 0..100 and an exact name match scores 100. Anything
         // materially below that is a different artist.
         const val MIN_MATCH_SCORE = 90
+        const val HTTP_SERVICE_UNAVAILABLE = 503
+        const val RATE_LIMIT_RETRIES = 1
     }
 }

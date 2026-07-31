@@ -5,7 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
-import net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
+import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 import net.asksakis.massdroidv2.domain.model.Artist
@@ -37,7 +37,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     lastFmSimilarResolver: LastFmSimilarResolver,
     lastFmGenreResolver: LastFmGenreResolver,
-    private val lastFmLibraryEnricher: LastFmLibraryEnricher,
+    private val libraryGenreEnricher: LibraryGenreEnricher,
     providerHealthReporter: ProviderHealthReporter,
     private val sectionBuilder: DiscoverSectionBuilder,
 ) {
@@ -78,7 +78,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
         val content = contentLoader.load(excludedArtistUris = excludedArtistUris)
         val merged = content.mergedArtists
         // Fire-and-forget background enrichment (manages its own scope).
-        lastFmLibraryEnricher.enrichInBackground(merged)
+        libraryGenreEnricher.enrichInBackground(merged)
 
         val artistByUri = merged.mapNotNull { artist ->
             artist.canonicalKey()?.let { it to artist }

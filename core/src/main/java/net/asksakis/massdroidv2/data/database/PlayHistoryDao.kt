@@ -73,6 +73,21 @@ interface PlayHistoryDao {
     @Query("SELECT uri FROM artists WHERE name = :name")
     suspend fun getArtistUrisByName(name: String): List<String>
 
+    /**
+     * Artists carrying no genre at all, one row per name, with an MBID if any of
+     * that name's uris has one. This is what the genre enricher works through:
+     * MusicBrainz allows one request per second, so walking every artist would
+     * take hours, while walking only the gaps takes minutes.
+     */
+    @Query("""
+        SELECT a.name AS name, MIN(a.uri) AS uri, MAX(a.mbid) AS mbid
+        FROM artists a
+        LEFT JOIN artist_genres g ON g.artist_uri = a.uri
+        WHERE a.name != '' AND g.artist_uri IS NULL
+        GROUP BY a.name
+    """)
+    suspend fun getArtistsWithoutGenres(): List<ArtistNeedingGenres>
+
     @Query("SELECT DISTINCT name FROM artists WHERE name != ''")
     suspend fun getAllArtistNames(): List<String>
 
@@ -861,6 +876,12 @@ data class ArtistPlayTimestamp(
 data class ArtistNameUri(
     val name: String,
     val uri: String
+)
+
+data class ArtistNeedingGenres(
+    val name: String,
+    val uri: String,
+    val mbid: String?
 )
 
 data class ArtistGenreRow(

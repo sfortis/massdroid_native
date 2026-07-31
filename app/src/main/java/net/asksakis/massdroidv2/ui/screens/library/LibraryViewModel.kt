@@ -13,7 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
-import net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
+import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 import net.asksakis.massdroidv2.data.util.LibraryPager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
@@ -52,7 +52,7 @@ class LibraryViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val lastFmLibraryEnricher: LastFmLibraryEnricher,
+    private val libraryGenreEnricher: LibraryGenreEnricher,
     val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
     private val sessionEventBus: SessionEventBus
 ) : ViewModel() {
@@ -236,7 +236,7 @@ class LibraryViewModel @Inject constructor(
             ) { provider, itemId -> listOfNotNull(musicRepository.getArtist(itemId, provider)) }
         },
         transformPage = { filterBySelectedProviders(it, LibraryTabKey.ARTISTS) { a -> a.providerDomains } },
-        onPageLoaded = { lastFmLibraryEnricher.enrichInBackground(it) }
+        onPageLoaded = { libraryGenreEnricher.enrichInBackground(it) }
     ) { limit, offset ->
         musicRepository.getArtists(
             search = searchFor(LibraryTabKey.ARTISTS), limit = limit, offset = offset,

@@ -38,7 +38,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     lateinit var json: kotlinx.serialization.json.Json
 
     @Inject
-    lateinit var lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher
+    lateinit var libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -141,7 +141,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                         lastFmSyncJob?.cancel()
                         lastFmSyncJob = appScope.launch {
                             delay(lastFmSyncStartupDelayMs)
-                            lastFmLibraryEnricher.enrichAllUnenriched()
+                            libraryGenreEnricher.enrichAllUnenriched()
                         }
                     }
                     is ConnectionState.Error -> {

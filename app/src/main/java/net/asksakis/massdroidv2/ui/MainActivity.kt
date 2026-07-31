@@ -24,6 +24,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import net.asksakis.massdroidv2.domain.player.VolumeKeyTarget
+import net.asksakis.massdroidv2.domain.player.remoteVolumeStep
+import net.asksakis.massdroidv2.domain.player.volumeKeyTarget
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -281,99 +284,68 @@ class MainActivity : ComponentActivity() {
         val keyCode = event.keyCode
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
             val player = playerRepository.selectedPlayer.value
-            if (player != null) {
-                val isLocal = cachedSsClientId != null && player.playerId == cachedSsClientId
-                if (isLocal) {
-                    // Local Sendspin player: let the system handle the
-                    // STREAM_MUSIC adjustment with the FLAG_SHOW_UI overlay.
-                    // Mirroring to MA happens on the resulting ContentObserver
-                    // tick — onPhoneStreamVolumeChanged is the single canonical
-                    // entry point for every STREAM_MUSIC mutation (HW keys,
-                    // system bar, accessibility shortcuts, all the same).
-                    if (event.action == KeyEvent.ACTION_DOWN) {
-                        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-                            AudioManager.ADJUST_RAISE
-                        } else {
-                            AudioManager.ADJUST_LOWER
-                        }
-                        audio.adjustStreamVolume(
-                            AudioManager.STREAM_MUSIC,
-                            direction,
-                            AudioManager.FLAG_SHOW_UI
-                        )
-                        return true
-                    }
-                    return true
-                }
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
-                    val isGroup = player.groupChilds.any { it != player.playerId }
-                    val localId = cachedSsClientId
-                    val localIsMember = localId != null &&
-                        isGroup &&
-                        player.groupChilds.any { it == localId }
-                    if (localIsMember && localId != null) {
-                        // Hardware keys drive only the local Sendspin's own MA
-                        // volume (not the entire group). System handles
-                        // STREAM_MUSIC + UI overlay; the ContentObserver wakeup
-                        // mirrors the new level to MA via onPhoneStreamVolumeChanged,
-                        // so there is no need to push from here.
-                        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-                            AudioManager.ADJUST_RAISE
-                        } else {
-                            AudioManager.ADJUST_LOWER
-                        }
-                        audio.adjustStreamVolume(
-                            AudioManager.STREAM_MUSIC,
-                            direction,
-                            AudioManager.FLAG_SHOW_UI
-                        )
+            val target = volumeKeyTarget(player, cachedSsClientId)
+            if (target == VolumeKeyTarget.System) return super.dispatchKeyEvent(event)
+
+            // ACTION_UP, not ACTION_DOWN: One UI's volume panel consumes the
+            // DOWN edge before an activity sees it, so a handler keyed to DOWN
+            // silently did nothing while still returning true - the rocker was
+            // swallowed and dead inside the app. Measured on a Samsung S25: 47
+            // ACTION_UP reached here and zero ACTION_DOWN, with no code change
+            // on our side, so a system update is enough to cause it. Every
+            // press yields exactly one UP, which also makes this repeat-safe.
+            if (event.action != KeyEvent.ACTION_UP) return true
+
+            when (target) {
+                is VolumeKeyTarget.LocalStream -> {
+                    // This phone is the output: let the OS move STREAM_MUSIC and
+                    // show its own volume UI. Mirroring to MA happens on the
+                    // resulting ContentObserver tick, which is the single
+                    // canonical entry point for every STREAM_MUSIC mutation
+                    // (keys, system bar, accessibility shortcuts alike).
+                    val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                        AudioManager.ADJUST_RAISE
                     } else {
-                        // Plain remote speaker / non-local group: adjust the
-                        // selected player's volume (or the group volume for a
-                        // group-type parent). The group fan-out is handled by
-                        // MA's cmd/group_volume.
-                        val basis = if (isGroup) player.groupVolume ?: player.volumeLevel
-                            else player.volumeLevel
-                        val newVol = (basis + delta).coerceIn(0, 100)
-                        playerRepository.applyVolumeOptimistic(player.playerId, newVol)
-                        // Show the in-app volume overlay — the system volume
-                        // bar covers STREAM_MUSIC only; remote players have no
-                        // OS-level surface, so without this the user has no
-                        // visual feedback for the level change.
-                        playerRepository.showVolumeOsd(
-                            playerName = player.displayName,
-                            volume = newVol,
-                            isGroup = isGroup,
-                            isMuted = player.volumeMuted,
-                        )
-                        lifecycleScope.launch {
-                            try {
-                                if (isGroup) {
-                                    playerRepository.setGroupVolume(player.playerId, newVol)
-                                } else {
-                                    playerRepository.setVolume(player.playerId, newVol)
-                                }
-                            } catch (e: Exception) {
-                                // CancellationException must propagate so the
-                                // scope can unwind on activity destroy without
-                                // being logged as a failure.
-                                if (e is kotlinx.coroutines.CancellationException) throw e
-                                // MA server may time out (~10 s) when the
-                                // remote player is unreachable, surfacing as
-                                // MaApiException. Without this guard the
-                                // exception escapes lifecycleScope and kills
-                                // the process — a slow speaker should not
-                                // crash the app.
-                                Log.w("MainActivity", "remote volume push failed: ${e.message}")
+                        AudioManager.ADJUST_LOWER
+                    }
+                    audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+                }
+                is VolumeKeyTarget.RemotePlayer -> {
+                    val current = player ?: return true
+                    val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
+                    val newVol = remoteVolumeStep(current, target.isGroup, delta)
+                    playerRepository.applyVolumeOptimistic(current.playerId, newVol)
+                    // The system volume bar covers STREAM_MUSIC only, and a
+                    // remote player has no OS-level surface, so without this the
+                    // level changes with no visual feedback at all.
+                    playerRepository.showVolumeOsd(
+                        playerName = current.displayName,
+                        volume = newVol,
+                        isGroup = target.isGroup,
+                        isMuted = current.volumeMuted,
+                    )
+                    lifecycleScope.launch {
+                        try {
+                            if (target.isGroup) {
+                                playerRepository.setGroupVolume(current.playerId, newVol)
+                            } else {
+                                playerRepository.setVolume(current.playerId, newVol)
                             }
+                        } catch (e: Exception) {
+                            // CancellationException must propagate so the scope
+                            // can unwind on activity destroy without being
+                            // logged as a failure.
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            // MA can time out (~10 s) when the remote player is
+                            // unreachable; a slow speaker must not crash the app.
+                            Log.w("MainActivity", "remote volume push failed: ${e.message}")
                         }
                     }
                 }
-                return true
+                VolumeKeyTarget.System -> Unit
             }
+            return true
         }
         return super.dispatchKeyEvent(event)
     }

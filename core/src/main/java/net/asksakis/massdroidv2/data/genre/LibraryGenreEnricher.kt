@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.data.lastfm
+package net.asksakis.massdroidv2.data.genre
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -23,8 +23,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class LastFmLibraryEnricher @Inject constructor(
-    private val lastFmGenreResolver: LastFmGenreResolver,
+class LibraryGenreEnricher @Inject constructor(
+    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val dao: PlayHistoryDao,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val musicRepository: net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -69,20 +69,14 @@ class LastFmLibraryEnricher @Inject constructor(
             if (name.isBlank() || name in enrichedNames) continue
             total++
             try {
-                val cached = dao.getLastFmTags(name)
-                if (cached != null) {
-                    enrichedNames += name
-                    writeArtistGenres(artist, cached.tags.split(",").filter { it.isNotBlank() })
-                    continue
-                }
-                val tags = lastFmGenreResolver.resolve(name)
+                // The resolver answers from its own cache when it can, and the
+                // MusicBrainz rate limiter only paces real calls.
+                val tags = musicBrainzGenreResolver.resolve(name, artist.mbid)
                 enrichedNames += name
                 if (tags.isNotEmpty()) {
                     writeArtistGenres(artist, tags)
                     enriched++
                 }
-                // Throttling is handled globally by LastFmRateLimiter inside the
-                // resolver, and only for real API calls (cache hits are free).
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to enrich ${artist.name}: ${e.message}")
             }
@@ -92,9 +86,22 @@ class LastFmLibraryEnricher @Inject constructor(
         }
     }
 
+    /** Gap walk: the DB row is already there, only the genres are missing. */
+    private suspend fun writeArtistGenres(artistName: String, genres: List<String>) {
+        val uris = dao.getArtistUrisByName(artistName)
+        if (uris.isEmpty()) return
+        for (genre in genres.mapNotNull { normalizeGenre(it).ifBlank { null } }) {
+            dao.insertGenre(GenreEntity(name = genre))
+            for (uri in uris) {
+                dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
+            }
+        }
+    }
+
     private suspend fun writeArtistGenres(artist: Artist, genres: List<String>) {
         val primaryUri = artist.canonicalKey() ?: return
-        dao.insertArtist(ArtistEntity(uri = primaryUri, name = artist.name))
+        dao.insertArtist(ArtistEntity(uri = primaryUri, name = artist.name, mbid = artist.mbid))
+        artist.mbid?.let { dao.setArtistMbidIfMissing(artist.name, it) }
         val allUris = dao.getArtistUrisByName(artist.name).toMutableSet()
         allUris += primaryUri
         val normalizedGenres = genres.mapNotNull { normalizeGenre(it).ifBlank { null } }
@@ -106,70 +113,54 @@ class LastFmLibraryEnricher @Inject constructor(
         }
     }
 
+    /**
+     * Fill in genres for the artists that have none, from MusicBrainz.
+     *
+     * Only the GAPS are walked, not the whole library. MusicBrainz allows one
+     * request per second, so on a real history (5574 artists, 539 of them
+     * without a genre) working through everything would take hours of radio
+     * time, while the gaps take minutes - and the artists that already have
+     * genres have them from Music Assistant, which is a better source than a
+     * name lookup anyway.
+     *
+     * An artist whose MBID we know (Music Assistant reports one for most library
+     * items) is looked up by id, which is exact; the rest fall back to a name
+     * search inside the resolver.
+     */
     @Suppress("TooGenericExceptionCaught")
     fun enrichAllUnenriched() {
         if (enrichJob?.isActive == true) return
         enrichJob = scope.launch {
             try {
-                val apiKey = settingsRepository.lastFmApiKey.first()
-                if (apiKey.isBlank()) {
-                    Log.d(TAG, "No Last.fm API key, skipping periodic enrichment")
+                syncLibraryArtists()
+                val gaps = dao.getArtistsWithoutGenres()
+                if (gaps.isEmpty()) {
+                    Log.d(TAG, "No artists without genres")
                     return@launch
                 }
-                syncLibraryArtists()
-                val allArtists = dao.getAllArtistNames()
-                val unenriched = allArtists.filter { it.isNotBlank() && it !in enrichedNames }
+                Log.d(TAG, "Enriching ${gaps.size} artists that have no genres yet")
+                _progress.value = EnrichmentProgress(total = gaps.size, isRunning = true)
                 var enriched = 0
                 var processed = 0
-                _progress.value = EnrichmentProgress(total = unenriched.size, isRunning = true)
-                for (name in unenriched) {
-                    val cached = dao.getLastFmTags(name)
-                    if (cached != null) {
-                        enrichedNames += name
-                        if (cached.tags.isNotBlank()) {
-                            val uris = dao.getArtistUrisByName(name)
-                            val existingGenres = uris.flatMap { dao.getGenresForArtist(it) }.toSet()
-                            if (existingGenres.isEmpty()) {
-                                val normalizedGenres = cached.tags.split(",")
-                                    .mapNotNull { normalizeGenre(it).ifBlank { null } }
-                                for (genre in normalizedGenres) {
-                                    dao.insertGenre(GenreEntity(name = genre))
-                                    for (uri in uris) {
-                                        dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
-                                    }
-                                }
-                                if (normalizedGenres.isNotEmpty()) enriched++
-                            }
-                        }
-                        processed++
-                        _progress.value = _progress.value.copy(processed = processed)
-                        continue
-                    }
+                for (gap in gaps) {
                     try {
-                        val tags = lastFmGenreResolver.resolve(name)
-                        enrichedNames += name
-                        if (tags.isNotEmpty()) {
-                            val uris = dao.getArtistUrisByName(name)
-                            val normalizedGenres = tags.mapNotNull { normalizeGenre(it).ifBlank { null } }
-                            for (genre in normalizedGenres) {
-                                dao.insertGenre(GenreEntity(name = genre))
-                                for (uri in uris) {
-                                    dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
-                                }
-                            }
+                        val genres = musicBrainzGenreResolver.resolve(gap.name, gap.mbid)
+                        if (genres.isNotEmpty()) {
+                            writeArtistGenres(gap.name, genres)
                             enriched++
                         }
-                        // Throttling handled globally by LastFmRateLimiter.
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to enrich $name: ${e.message}")
+                        Log.w(TAG, "Failed to enrich ${gap.name}: ${e.message}")
                     }
                     processed++
                     _progress.value = _progress.value.copy(processed = processed, enriched = enriched)
                 }
-                Log.d(TAG, "Periodic enrichment done: $enriched/${unenriched.size} enriched")
-                _progress.value = EnrichmentProgress(total = unenriched.size, processed = processed, enriched = enriched, isRunning = false)
+                Log.d(TAG, "Genre enrichment done: $enriched/${gaps.size} enriched")
+                _progress.value = EnrichmentProgress(
+                    total = gaps.size, processed = processed, enriched = enriched, isRunning = false
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "Periodic enrichment failed", e)
+                Log.e(TAG, "Genre enrichment failed", e)
                 _progress.value = _progress.value.copy(isRunning = false)
             }
         }
@@ -207,7 +198,7 @@ class LastFmLibraryEnricher @Inject constructor(
     }
 
     companion object {
-        private const val TAG = "LastFmEnricher"
+        private const val TAG = "GenreEnricher"
         private const val PAGE_SIZE = 500
     }
 }

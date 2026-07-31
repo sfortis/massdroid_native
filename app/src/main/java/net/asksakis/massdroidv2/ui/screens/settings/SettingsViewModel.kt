@@ -44,7 +44,7 @@ class SettingsViewModel @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val lastFmGenreResolver: LastFmGenreResolver,
-    private val lastFmLibraryEnricher: net.asksakis.massdroidv2.data.lastfm.LastFmLibraryEnricher,
+    private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 ) : ViewModel() {
@@ -112,7 +112,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    val enrichmentProgress = lastFmLibraryEnricher.progress
+    val enrichmentProgress = libraryGenreEnricher.progress
 
     companion object {
         private const val TAG = "SettingsVM"

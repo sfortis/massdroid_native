@@ -30,8 +30,25 @@ class MusicBrainzRateLimiter @Inject constructor() {
         }
     }
 
+    /**
+     * Called when MusicBrainz answered 503: hold everything off for a while, so
+     * a run that has annoyed the server does not keep hammering it. Honours
+     * `Retry-After` (in seconds) when the server sends one.
+     */
+    suspend fun backOff(retryAfterSeconds: Long?) {
+        val penalty = (retryAfterSeconds?.times(1000) ?: RATE_LIMIT_PENALTY_MS)
+            .coerceIn(RATE_LIMIT_PENALTY_MS, MAX_PENALTY_MS)
+        mutex.withLock {
+            nextAllowedAt = maxOf(System.currentTimeMillis(), nextAllowedAt) + penalty
+        }
+    }
+
     private companion object {
-        // 1 request/second, with a margin so clock jitter cannot push us over.
-        const val MIN_INTERVAL_MS = 1100L
+        // MusicBrainz publishes one request per second but measures it more
+        // strictly than that: a background run at 1.1s intervals still drew 503s,
+        // so the floor sits above the published rate.
+        const val MIN_INTERVAL_MS = 1500L
+        const val RATE_LIMIT_PENALTY_MS = 10_000L
+        const val MAX_PENALTY_MS = 60_000L
     }
 }
