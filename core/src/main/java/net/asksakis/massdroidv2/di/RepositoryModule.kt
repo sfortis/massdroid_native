@@ -9,7 +9,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.repository.MaAuthRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.PlayHistoryRepositoryImpl
@@ -63,7 +63,7 @@ object RepositoryModule {
         playHistoryRepository: PlayHistoryRepository,
         settingsRepository: SettingsRepository,
         smartListeningRepository: SmartListeningRepository,
-        lastFmGenreResolver: LastFmGenreResolver,
+        musicBrainzGenreResolver: MusicBrainzGenreResolver,
         sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus,
         queueItemsCoordinator: QueueItemsCoordinator,
     ): PlayerRepository = PlayerRepositoryImpl(
@@ -73,7 +73,7 @@ object RepositoryModule {
         playHistoryRepository = playHistoryRepository,
         settingsRepository = settingsRepository,
         smartListeningRepository = smartListeningRepository,
-        lastFmGenreResolver = lastFmGenreResolver,
+        musicBrainzGenreResolver = musicBrainzGenreResolver,
         sessionEventBus = sessionEventBus,
         queueItemsCoordinator = queueItemsCoordinator,
     )

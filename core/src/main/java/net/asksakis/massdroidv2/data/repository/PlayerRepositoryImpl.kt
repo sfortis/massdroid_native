@@ -8,7 +8,7 @@ import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.domain.model.*
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -31,7 +31,7 @@ class PlayerRepositoryImpl @Inject constructor(
     private val playHistoryRepository: PlayHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
     private val sessionEventBus: SessionEventBus,
     private val queueItemsCoordinator: QueueItemsCoordinator,
 ) : PlayerRepository {
@@ -735,21 +735,37 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * MusicBrainz genres for an artist name, resolving live when they are not
+     * cached yet. Safe to call live ONLY from the background scope: the resolver
+     * is rate-limited to one request per second.
+     */
+    private suspend fun musicBrainzGenres(name: String): List<String> =
+        try {
+            musicBrainzGenreResolver.resolve(name)
+        } catch (e: Exception) {
+            Log.w(TAG, "MusicBrainz lookup failed for '$name': ${e.message}")
+            emptyList()
+        }
+
     private suspend fun enrichTrackGenresForHistory(
         track: Track,
         artists: List<Pair<String, String>>
     ): Track {
-        // Always try Last.fm first (curated whitelist, more accurate than raw provider tags)
-        val lastFmGenres = LinkedHashSet<String>()
+        // MusicBrainz first: a curated taxonomy tied to an artist ENTITY, where
+        // Last.fm gave free-text crowd tags matched on a name. This runs on a
+        // background scope (see the caller), so MusicBrainz's 1 req/s ceiling
+        // costs nothing - a track lasts minutes, this needs a second.
+        val resolved = LinkedHashSet<String>()
         artists.forEach { (_, name) ->
-            val tags = lastFmGenreResolver.resolve(name)
+            val tags = musicBrainzGenres(name)
             if (tags.isNotEmpty()) {
-                Log.d(TAG, "History genres from Last.fm '$name': $tags")
-                lastFmGenres.addAll(tags)
+                Log.d(TAG, "History genres from MusicBrainz '$name': $tags")
+                resolved.addAll(tags)
             }
         }
-        if (lastFmGenres.isNotEmpty()) {
-            return track.copy(genres = lastFmGenres.toList())
+        if (resolved.isNotEmpty()) {
+            return track.copy(genres = resolved.toList())
         }
 
         // Fall back to MA provider genres + artist cache
@@ -1071,16 +1087,16 @@ class PlayerRepositoryImpl @Inject constructor(
     ) {
         Log.d(TAG, "fetchAndApplyGenres: ${artists.map { "${it.name}(${it.itemId})" }}")
         val allGenres = mutableSetOf<String>()
-        // Try Last.fm first (better genre data when API key is configured)
+        // MusicBrainz first, then the MA server (see enrichTrackGenresForHistory).
         for (artist in artists) {
-            val tags = lastFmGenreResolver.resolve(artist.name)
+            val tags = musicBrainzGenres(artist.name)
             if (tags.isNotEmpty()) {
-                Log.d(TAG, "Last.fm genres for ${artist.name}: $tags")
+                Log.d(TAG, "MusicBrainz genres for ${artist.name}: $tags")
                 allGenres.addAll(tags)
                 artistGenreCache[artist.uri] = tags
             }
         }
-        // Fall back to MA server if Last.fm returned nothing
+        // Fall back to MA server if MusicBrainz returned nothing
         if (allGenres.isEmpty()) {
             for (artist in artists) {
                 try {
