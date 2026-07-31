@@ -29,8 +29,9 @@ data class SeedTrack(
     val score: Double = 0.0,
     val genres: List<String> = emptyList(),
     /**
-     * Artist-level genres (whitelisted Last.fm top tags, max 3). Cleaner than
-     * the crowd-noisy track tags, so cluster coherence checks prefer these.
+     * Artist-level genres as stored in `artist_genres`. Cleaner than the
+     * crowd-noisy track tags, so cluster coherence checks prefer these - though
+     * MusicBrainz, when it has an answer, is preferred over both.
      */
     val artistGenres: List<String> = emptyList()
 )
@@ -105,7 +106,7 @@ interface PlayHistoryRepository {
     suspend fun cacheMaSimilarArtists(artistUri: String, similar: List<CachedSimilarArtist>)
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
-    /** Cached provider URI for a Last.fm similar-artist name (null if absent or older than maxAgeMs). */
+    /** Cached provider URI for an artist name resolved by the genre engine (null if absent or stale). */
     suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String?
     suspend fun cacheResolvedArtistUri(name: String, uri: String)
     /**

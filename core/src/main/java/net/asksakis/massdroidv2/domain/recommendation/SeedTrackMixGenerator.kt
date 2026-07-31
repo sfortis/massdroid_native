@@ -408,7 +408,7 @@ internal fun genresOverlapLoose(candidateGenres: Iterable<String>, envelopeToken
  * overlap only covers candidates whose tags are all unmapped.
  *
  * [candidateGenres] must be weight-ordered (Last.fm `artist.getTopTags` order),
- * which is what `LastFmGenreResolver.cachedGenres` returns. The previous
+ * which is what the genre resolvers return. The previous
  * any-family rule admitted an artist on their weakest tag, and on real mixes
  * that was the dominant source of bleed: `trance, electronic, ambient` passed
  * a lounge envelope, `darkwave, electronic, synthpop` passed a jazz/pop one.

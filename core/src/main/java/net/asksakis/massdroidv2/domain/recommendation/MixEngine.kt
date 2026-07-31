@@ -241,7 +241,7 @@ class MixEngine @Inject constructor() {
 
     /**
      * Build a final mix from a flat list of pre-scored candidate tracks: the
-     * seed-track generator path (Last.fm track.getSimilar). Scores are supplied
+     * seed-track generator path (Music Assistant similarity). Scores are supplied
      * per candidate (match x BLL x recency), so this skips the artist-first
      * scoring of [buildTracks] but reuses the exact same diversity guarantees:
      * cross-provider per-artist cap, per-album cap, and the anti-clustering
@@ -278,7 +278,7 @@ class MixEngine @Inject constructor() {
             }
             .sortedByDescending { it.score }
             // Two passes: by name, then by the resolved URI. The name key alone
-            // let the same recording in twice when two Last.fm candidates spelled
+            // let the same recording in twice when two candidates spelled
             // it differently ("Wicked Games" and "Wicked Games (feat. Anna
             // Naklab) - Radio Edit") and the provider search resolved both to one
             // track. The URI key alone would miss the same song under two

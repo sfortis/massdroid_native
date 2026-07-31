@@ -3,16 +3,15 @@ package net.asksakis.massdroidv2.domain.recommendation
 import androidx.annotation.VisibleForTesting
 
 /**
- * Static genre -> family mapping over the Last.fm whitelist the app already
- * uses ([net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver] ALLOWED_GENRES)
- * plus common MA server genres. Deterministic family comparison replaces token
+ * Static genre -> family mapping, covering what Music Assistant, MusicBrainz and
+ * ID3 tags actually report. Deterministic family comparison replaces token
  * heuristics wherever both sides carry mapped tags: "techno" and "indie rock"
  * disagree by FAMILY, not by fragile substring luck. Unmapped tags fall back to
  * the loose token overlap at the call site.
  *
  * Families are a coarse safety net (is this the same musical world?), not a
- * taxonomy: border genres are placed with the scene they surface with in
- * Last.fm similars (shoegaze/dream pop with rock, psytrance with electronic).
+ * taxonomy: border genres are placed with the scene they surface with
+ * (shoegaze/dream pop with rock, psytrance with electronic).
  */
 @Suppress("StringLiteralDuplication")
 private val GENRE_FAMILY: Map<String, String> = buildMap {
@@ -55,8 +54,8 @@ private val GENRE_FAMILY: Map<String, String> = buildMap {
         "chillwave", "dreamwave", "electroclash", "new retro wave", "retrowave",
         "synthwave"
     )
-    // Synth pop / electropop sit with ELECTRONIC, not pop: on Last.fm they
-    // surface with the electronic scene, and keeping them under "pop" let
+    // Synth pop / electropop sit with ELECTRONIC, not pop: they surface with
+    // the electronic scene, and keeping them under "pop" let
     // darkwave/synthpop acts (NNHMN, Das Beat, Alphaville) into a vintage
     // jazz-pop mix through their weakest tag.
     family("pop", "ballad", "disco", "pop")
@@ -124,7 +123,7 @@ private val GLUED_SUFFIX_FAMILY: List<Pair<String, String>> = listOf(
 /**
  * Family of one normalized genre, or null. Resolution chain, from exact to
  * structural (so it generalizes to ANY user's provider/ID3 genres, not just
- * the Last.fm whitelist): exact curated entry -> last significant word looked
+ * the curated ones): exact curated entry -> last significant word looked
  * up in the same map ("deep tech house" -> "house" -> electronic, "greek
  * rock" -> rock) -> glued suffix ("synthpop" -> pop).
  */
@@ -167,9 +166,9 @@ internal fun withAdjacentFamilies(families: Set<String>): Set<String> =
 
 /**
  * The family of the FIRST mapped tag, i.e. what the artist mostly is.
- * Last.fm returns `artist.getTopTags` weight-descending and
- * [net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver] preserves that
- * order, so tag #1 is the dominant genre and later tags are side notes.
+ * MusicBrainz and Music Assistant both report genres weight-descending and the
+ * resolvers preserve that order, so tag #1 is the dominant genre and later tags
+ * are side notes.
  * Comparing the WHOLE family set let an artist into a mix through their
  * weakest tag (Robert Miles `trance, electronic, ambient` entered a lounge mix
  * on "ambient"; NNHMN `darkwave, electronic, synthpop` entered a swing mix on
@@ -197,7 +196,7 @@ internal fun dominantGenre(genres: Iterable<String>): String? =
  * Reorder an UNORDERED genre list so that the best-represented family comes
  * first, making [dominantFamily] meaningful on it.
  *
- * Last.fm tags arrive weight-descending, but the DB's `artist_genres` is a set
+ * Resolved genres arrive weight-descending, but the DB's `artist_genres` is a set
  * (alphabetical, deduplicated), and reading "the first tag" there is reading the
  * alphabet: IAMX is stored as `alternative, electronic, house, psychedelic,
  * synthpop, trance`, so it counted as ROCK because "alternative" sorts first,

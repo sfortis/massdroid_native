@@ -156,7 +156,7 @@ class DiscoverContentLoader(
         historyGenreArtists: Map<String, List<String>>,
         artistByUri: Map<String, Artist>
     ): Triple<List<GenreItem>, Map<String, List<String>>, Map<String, List<String>>> {
-        // Artists with enriched genres in play history (Last.fm preferred)
+        // Artists with enriched genres in play history
         val enrichedArtistKeys = buildSet {
             historyGenreArtists.values.forEach { addAll(it) }
         }
