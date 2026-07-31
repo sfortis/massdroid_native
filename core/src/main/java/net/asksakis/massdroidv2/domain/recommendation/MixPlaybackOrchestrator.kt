@@ -20,14 +20,13 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.genre.GenreRepository
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
-import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.QueueItem
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
@@ -74,13 +73,10 @@ private const val SEED_MIX_MIN_TARGET_SHARE = 0.6
 // tracks. Depth 12 (with the stronger SeedTrack penalties) roughly halves that.
 // In-memory only for now; a process restart still resets it (persistence TODO).
 private const val SMART_MIX_HISTORY_DEPTH = 12
-private const val SMART_MIX_LASTFM_EXPANSION = 12
-private const val SMART_MIX_LASTFM_SEED_LIMIT = 5
-private const val SMART_MIX_LASTFM_SIMILARS_PER_SEED = 20
-private const val SMART_MIX_SEARCH_LIMIT = 5
-private const val SMART_MIX_MAX_SEARCHES = 8
-private const val SMART_MIX_SEARCH_TIMEOUT_MS = 4000L
-private const val RESOLVED_ARTIST_TTL_MS = 30L * 24 * 60 * 60 * 1000
+private const val SMART_MIX_EXPANSION = 12
+private const val SMART_MIX_EXPANSION_SEED_LIMIT = 5
+private const val SMART_MIX_SIMILARS_PER_SEED = 20
+private const val LIBRARY_ARTIST_PREFIX = "library://artist/"
 private const val RECENT_ARTIST_APPEARANCE_PENALTY = 1.0
 private const val RECENT_ARTIST_HISTORY_DEPTH = 4
 private const val RECENT_GENRE_EXCLUSION_DEPTH = 3
@@ -125,6 +121,7 @@ private data class SmartMixResult(val tracks: List<Track>, val genre: String?)
 @Singleton
 class MixPlaybackOrchestrator @Inject constructor(
     private val musicRepository: MusicRepository,
+    private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
     private val playerRepository: PlayerRepository,
     private val settingsRepository: SettingsRepository,
     private val playHistoryRepository: PlayHistoryRepository,
@@ -132,8 +129,6 @@ class MixPlaybackOrchestrator @Inject constructor(
     private val seedTrackMixGenerator: SeedTrackMixGenerator,
     private val mixEngine: MixEngine,
     private val genreRepository: GenreRepository,
-    private val lastFmSimilarResolver: LastFmSimilarResolver,
-    private val lastFmGenreResolver: LastFmGenreResolver,
     private val sessionEventBus: SessionEventBus,
 ) {
 
@@ -841,10 +836,9 @@ class MixPlaybackOrchestrator @Inject constructor(
         val expandedArtistOrder: List<String>
         val tracksByArtist: Map<String, List<Track>>
         if (needExpansion) {
-            val expansionArtists = resolveLastFmExpansionArtists(
+            val expansionArtists = resolveExpansionArtists(
                 seedArtistUris = artistOrder,
-                excludedArtistUris = excludedArtistUris,
-                allowProviderSearch = false
+                excludedArtistUris = excludedArtistUris
             )
             val seenKeys = artistOrder
                 .mapNotNull { MediaIdentity.artistKeyFromUri(it) ?: it.takeIf { it.isNotBlank() } }
@@ -941,98 +935,84 @@ class MixPlaybackOrchestrator @Inject constructor(
     // ---------------------------------------------------------------------------
 
     @Suppress("TooGenericExceptionCaught", "LongMethod", "CyclomaticComplexMethod")
-    private suspend fun resolveLastFmExpansionArtists(
+    /**
+     * More artists like the ones already in the pool, from Music Assistant.
+     *
+     * This used to ask Last.fm for similar NAMES and then spend up to
+     * [SMART_MIX_MAX_SEARCHES] `music/search` calls turning them back into
+     * playable items, often landing on a different act with the same name.
+     * `similar_artists` answers with playable MA items directly, so the whole
+     * name round-trip is gone.
+     *
+     * Only `library://` seeds are asked: the provider path needs
+     * `ProviderFeature.SIMILAR_ARTISTS`, which Deezer does not implement, so a
+     * provider seed reliably answers nothing (verified live).
+     */
+    /**
+     * Genres for an artist, without asking Last.fm: what the DB already holds
+     * (written from Music Assistant during playback), then MusicBrainz from
+     * cache.
+     *
+     * MusicBrainz is read from cache only - its 1 req/s ceiling makes it
+     * unusable inline - and misses are queued for the background warm the mix
+     * engine already runs, so the next build judges them properly.
+     */
+    private suspend fun artistGenres(name: String): List<String> {
+        if (name.isBlank()) return emptyList()
+        val fromDb = try {
+            playHistoryRepository.resolveLibraryArtistUri(name)
+                ?.let { playHistoryRepository.getArtistGenreMap(listOf(it))[it] }
+        } catch (_: Exception) {
+            null
+        }
+        if (!fromDb.isNullOrEmpty()) return fromDb
+        return try {
+            musicBrainzGenreResolver.cachedGenres(name).orEmpty()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private suspend fun resolveExpansionArtists(
         seedArtistUris: List<String>,
         excludedArtistUris: Set<String>,
-        targetCount: Int = SMART_MIX_LASTFM_EXPANSION,
-        allowProviderSearch: Boolean = false
+        targetCount: Int = SMART_MIX_EXPANSION
     ): List<String> {
         if (seedArtistUris.isEmpty() || targetCount <= 0) return emptyList()
-
-        val seedNames = seedArtistUris
-            .take(SMART_MIX_LASTFM_SEED_LIMIT)
+        val refs = seedArtistUris
+            .filter { it.startsWith(LIBRARY_ARTIST_PREFIX) }
+            .take(SMART_MIX_EXPANSION_SEED_LIMIT)
             .mapNotNull { uri ->
-                val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
-                artistByUri[key]?.name ?: artistByUri[uri]?.name
+                val itemId = uri.substringAfterLast('/').takeIf { it.isNotBlank() }
+                itemId?.let { it to "library" }
             }
-            .filter { it.isNotBlank() }
-        if (seedNames.isEmpty()) return emptyList()
+        if (refs.isEmpty()) return emptyList()
 
-        val nameToUri = artistByUri.entries
-            .associate { (uri, artist) -> artist.name.lowercase() to uri }
-        if (nameToUri.isEmpty()) return emptyList()
-
-        val alreadyInPoolNames = seedArtistUris
-            .mapNotNull { uri ->
-                val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
-                (artistByUri[key]?.name ?: artistByUri[uri]?.name)?.lowercase()
-            }
+        val seenKeys = seedArtistUris
+            .mapNotNull { MediaIdentity.artistKeyFromUri(it) ?: it.takeIf(String::isNotBlank) }
             .toMutableSet()
-
         val collected = mutableListOf<String>()
-        val newNames = mutableListOf<String>()
-        coroutineScope {
-            val deferreds = seedNames.map { name ->
+        val lists = coroutineScope {
+            refs.map { (itemId, provider) ->
                 async {
                     try {
-                        lastFmSimilarResolver.resolve(name, limit = SMART_MIX_LASTFM_SIMILARS_PER_SEED)
+                        musicRepository.getSimilarArtists(itemId, provider, SMART_MIX_SIMILARS_PER_SEED)
                     } catch (_: Exception) {
                         emptyList()
                     }
                 }
-            }
-            val merged = deferreds.flatMap { it.await() }
-                .sortedByDescending { it.matchScore }
-
-            for (similar in merged) {
-                if (similar.name in alreadyInPoolNames) continue
-                val libraryUri = nameToUri[similar.name]
-                if (libraryUri != null) {
-                    if (libraryUri in excludedArtistUris) continue
-                    if (collected.size < targetCount) {
-                        collected += libraryUri
-                        alreadyInPoolNames += similar.name
-                    }
-                } else {
-                    newNames += similar.name
-                    alreadyInPoolNames += similar.name
-                }
-            }
+            }.awaitAll()
         }
-
-        if (collected.size < targetCount && newNames.isNotEmpty()) {
-            val gate = Semaphore(ARTIST_FETCH_CONCURRENCY)
-            var searchBudget = if (allowProviderSearch) SMART_MIX_MAX_SEARCHES else 0
-            val resolved = coroutineScope {
-                newNames.mapNotNull { name ->
-                    val cachedUri = playHistoryRepository.getCachedResolvedArtistUri(
-                        name, RESOLVED_ARTIST_TTL_MS
-                    )
-                    when {
-                        cachedUri != null -> async { cachedUri }
-                        searchBudget > 0 -> {
-                            searchBudget--
-                            async { gate.withPermit { searchAndCacheArtistUri(name) } }
-                        }
-                        else -> null
-                    }
-                }.awaitAll()
-            }
-            for (uri in resolved) {
-                if (collected.size >= targetCount) break
-                if (uri.isNullOrBlank() || uri in excludedArtistUris) continue
-                val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
-                if (collected.any { (MediaIdentity.artistKeyFromUri(it) ?: it) == key }) continue
-                collected += uri
-            }
+        for (artist in lists.flatten()) {
+            if (collected.size >= targetCount) break
+            val uri = artist.uri.takeIf { it.isNotBlank() } ?: continue
+            if (uri in excludedArtistUris) continue
+            val key = MediaIdentity.artistKeyFromUri(uri) ?: uri
+            if (!seenKeys.add(key)) continue
+            collected += uri
         }
-
         if (collected.isNotEmpty()) {
-            Log.d(
-                TAG,
-                "Last.fm expansion: ${collected.size}/$targetCount artists from ${seedNames.size} seeds " +
-                    "(${newNames.size} new candidates searched)"
-            )
+            Log.d(TAG, "MA expansion: ${collected.size}/$targetCount artists from ${refs.size} library seeds")
         }
         return collected
     }
@@ -1045,10 +1025,12 @@ class MixPlaybackOrchestrator @Inject constructor(
         if (expansionPrefetchJob?.isActive == true) return
         expansionPrefetchJob = scope.launch {
             try {
-                val artists = resolveLastFmExpansionArtists(
+                // No search budget to distinguish any more: the MA route never
+                // resolves names, so the prefetch is the same call as the inline
+                // one, just warming the track cache ahead of the next mix.
+                val artists = resolveExpansionArtists(
                     seedArtistUris = seedArtistUris,
-                    excludedArtistUris = excludedArtistUris,
-                    allowProviderSearch = true
+                    excludedArtistUris = excludedArtistUris
                 )
                 if (artists.isNotEmpty()) {
                     fetchTracksByArtist(artists, concurrency = PREFETCH_CONCURRENCY) { _, tracks -> tracks }
@@ -1061,91 +1043,55 @@ class MixPlaybackOrchestrator @Inject constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun searchAndCacheArtistUri(name: String): String? {
-        return try {
-            val result = withTimeoutOrNull(SMART_MIX_SEARCH_TIMEOUT_MS) {
-                musicRepository.search(
-                    query = name,
-                    mediaTypes = listOf(MediaType.ARTIST),
-                    limit = SMART_MIX_SEARCH_LIMIT
-                )
-            } ?: return null
-            val match = result.artists.firstOrNull { it.name.equals(name, ignoreCase = true) }
-            val uri = match?.uri?.takeIf { it.isNotBlank() }
-            if (uri != null) playHistoryRepository.cacheResolvedArtistUri(name, uri)
-            uri
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    @Suppress("TooGenericExceptionCaught")
+    /**
+     * Artists outside the library that belong to [genre], to widen a Genre Radio.
+     *
+     * Was: Last.fm similar NAMES -> genre-validate each name against Last.fm ->
+     * `music/search` each survivor back into a playable uri. Three name-keyed
+     * stages, each able to land on the wrong act.
+     *
+     * Now: `similar_artists` returns playable MA items, so the only remaining
+     * question is whether each one is really in this genre, answered from what
+     * we know locally (MA genres in the DB, then MusicBrainz). Artists we cannot
+     * describe are left out here on purpose: this is the DISCOVERY widener, so
+     * an unverified guess is exactly what it should not add.
+     */
     private suspend fun resolveDiscoverySeeds(libraryUris: List<String>, genre: String): List<String> {
-        val seedArtists = libraryUris.take(GENRE_RADIO_SIMILAR_RESOLVE_LIMIT).mapNotNull { uri ->
-            val key = MediaIdentity.artistKeyFromUri(uri)
-            artistByUri[key]?.name ?: artistByUri[uri]?.name
-        }
-        if (seedArtists.isEmpty()) return emptyList()
+        val refs = libraryUris
+            .filter { it.startsWith(LIBRARY_ARTIST_PREFIX) }
+            .take(GENRE_RADIO_SIMILAR_RESOLVE_LIMIT)
+            .mapNotNull { uri -> uri.substringAfterLast('/').takeIf { it.isNotBlank() } }
+        if (refs.isEmpty()) return emptyList()
 
-        val libraryNames = artistByUri.values.map { it.name.lowercase() }.toSet()
-        val discoveryNames = mutableSetOf<String>()
-
-        coroutineScope {
-            val deferreds = seedArtists.map { name ->
+        val known = libraryUris.mapNotNullTo(mutableSetOf()) { MediaIdentity.artistKeyFromUri(it) ?: it }
+        val candidates = coroutineScope {
+            refs.map { itemId ->
                 async {
                     try {
-                        lastFmSimilarResolver.resolve(name)
+                        musicRepository.getSimilarArtists(itemId, "library", SMART_MIX_SIMILARS_PER_SEED)
                     } catch (_: Exception) {
                         emptyList()
                     }
                 }
-            }
-            for (deferred in deferreds) {
-                for (similar in deferred.await()) {
-                    if (similar.name !in libraryNames && similar.matchScore >= 0.15) {
-                        discoveryNames.add(similar.name)
-                    }
-                }
-            }
-        }
-        if (discoveryNames.isEmpty()) return emptyList()
+            }.awaitAll()
+        }.flatten().filter { artist ->
+            artist.uri.isNotBlank() && (MediaIdentity.artistKeyFromUri(artist.uri) ?: artist.uri) !in known
+        }.distinctBy { MediaIdentity.artistKeyFromUri(it.uri) ?: it.uri }
+        if (candidates.isEmpty()) return emptyList()
 
         val normalizedTarget = normalizeGenre(genre)
-        val validatedNames = mutableListOf<String>()
-        coroutineScope {
-            val genreDeferreds = discoveryNames.map { name ->
-                async {
-                    try {
-                        val genres = lastFmGenreResolver.resolve(name)
-                        if (genres.any { normalizeGenre(it) == normalizedTarget }) name else null
-                    } catch (_: Exception) { null }
-                }
-            }
-            for (deferred in genreDeferreds) {
-                deferred.await()?.let { validatedNames.add(it) }
+        val discoveryUris = mutableListOf<String>()
+        for (artist in candidates) {
+            if (discoveryUris.size >= GENRE_RADIO_DISCOVERY_SEEDS) break
+            val genres = artist.genres.ifEmpty { artistGenres(artist.name) }
+            if (genres.any { normalizeGenre(it) == normalizedTarget }) {
+                discoveryUris += artist.uri
             }
         }
         Log.d(
             TAG,
-            "resolveDiscoverySeeds: genre-validated ${validatedNames.size}/${discoveryNames.size} for '$genre'"
+            "resolveDiscoverySeeds: ${discoveryUris.size} of ${candidates.size} candidates are '$genre'"
         )
-        if (validatedNames.isEmpty()) return emptyList()
-
-        val discoveryUris = mutableListOf<String>()
-        for (name in validatedNames.take(GENRE_RADIO_DISCOVERY_SEEDS * 2)) {
-            if (discoveryUris.size >= GENRE_RADIO_DISCOVERY_SEEDS) break
-            try {
-                val result = musicRepository.search(name, mediaTypes = listOf(MediaType.ARTIST), limit = 1)
-                val artist = result.artists.firstOrNull() ?: continue
-                if (artist.name.lowercase() == name) {
-                    discoveryUris.add(artist.uri)
-                    Log.d(TAG, "Discovery seed: $name -> ${artist.uri}")
-                }
-            } catch (_: Exception) {
-                // skip
-            }
-        }
-        Log.d(TAG, "resolveDiscoverySeeds: ${discoveryUris.size} found from ${validatedNames.size} validated")
         return discoveryUris
     }
 
@@ -1404,11 +1350,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             coroutineScope {
                 needsLookup.map { name ->
                     async {
-                        name.lowercase() to try {
-                            lastFmGenreResolver.resolve(name)
-                        } catch (_: Exception) {
-                            emptyList()
-                        }
+                        name.lowercase() to artistGenres(name)
                     }
                 }.associate { it.await() }
             }
@@ -1480,7 +1422,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             if (cached.isNotEmpty()) {
                 val capped = sampleTracksForMix(cached, cacheKey.hashCode().toLong())
                 Log.d(TAG, "Artist track cache hit: $cacheKey (${capped.size}/${cached.size} tracks)")
-                return enrichTracksWithLastFmGenres(capped)
+                return enrichTracksWithArtistGenres(capped)
             }
         }
         if (cacheOnly) return emptyList()
@@ -1489,7 +1431,7 @@ class MixPlaybackOrchestrator @Inject constructor(
                 val tracks = musicRepository.getArtistTracks(itemId, provider)
                 if (tracks.isNotEmpty()) {
                     val capped = sampleTracksForMix(tracks, cacheKey.hashCode().toLong())
-                    val enriched = enrichTracksWithLastFmGenres(capped)
+                    val enriched = enrichTracksWithArtistGenres(capped)
                     playHistoryRepository.cacheArtistTracks(cacheKey, enriched)
                     Log.d(TAG, "Artist track cache fill: $cacheKey (${enriched.size}/${tracks.size} tracks)")
                     return enriched
@@ -1501,16 +1443,11 @@ class MixPlaybackOrchestrator @Inject constructor(
         return emptyList()
     }
 
-    private suspend fun enrichTracksWithLastFmGenres(tracks: List<Track>): List<Track> {
+    private suspend fun enrichTracksWithArtistGenres(tracks: List<Track>): List<Track> {
         if (tracks.isEmpty()) return tracks
         if (tracks.all { it.genres.isNotEmpty() }) return tracks
-        val artistName = tracks.first().artistNames.split(",").firstOrNull()?.trim()
-        if (artistName.isNullOrBlank()) return tracks
-        val genres = try {
-            lastFmGenreResolver.resolve(artistName)
-        } catch (_: Exception) {
-            emptyList()
-        }
+        val artistName = tracks.first().artistNames.split(",").firstOrNull()?.trim().orEmpty()
+        val genres = artistGenres(artistName)
         if (genres.isEmpty()) return tracks
         return tracks.map { if (it.genres.isEmpty()) it.copy(genres = genres) else it }
     }
