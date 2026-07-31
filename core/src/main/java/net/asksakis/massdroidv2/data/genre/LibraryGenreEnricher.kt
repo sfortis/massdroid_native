@@ -167,20 +167,51 @@ class LibraryGenreEnricher @Inject constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
+    /**
+     * Bring the local artist rows in line with the server's library.
+     *
+     * Music Assistant REUSES library ids: remove an artist and the next one
+     * added can take the freed `library://artist/<n>`. Measured against a real
+     * server, 113 of 164 library uris pointed at a different artist locally than
+     * on the server - `library://artist/41` was stored as Savages while the
+     * server had Lindstrøm there.
+     *
+     * That is not a cosmetic mismatch. Everything downstream keys off the uri:
+     * asking for `similar_artists` on artist/41 returns Lindstrøm's neighbours
+     * while the mix believes it is expanding a post-punk seed, and the stale
+     * genres attached to the uri describe the previous occupant. So a uri whose
+     * occupant changed is repointed and its genres are dropped, to be rebuilt
+     * from MusicBrainz for whoever lives there now.
+     */
     private suspend fun syncLibraryArtists() {
         try {
-            val existing = dao.getAllArtistNames().toSet()
+            val existingNames = dao.getAllArtistNames().toSet()
             var offset = 0
             var inserted = 0
+            var repointed = 0
             while (true) {
                 val batch = musicRepository.getArtists(limit = PAGE_SIZE, offset = offset, orderBy = "name")
                 if (batch.isEmpty()) break
+                val known = dao.getArtistsByUris(batch.map { it.uri }).associateBy { it.uri }
                 for (artist in batch) {
-                    if (artist.name.isNotBlank() && artist.name !in existing) {
-                        dao.insertArtist(
-                            ArtistEntity(uri = artist.uri, name = artist.name, mbid = artist.mbid)
-                        )
-                        inserted++
+                    if (artist.name.isBlank()) continue
+                    val local = known[artist.uri]
+                    when {
+                        local == null -> {
+                            if (artist.name !in existingNames) {
+                                dao.insertArtist(
+                                    ArtistEntity(uri = artist.uri, name = artist.name, mbid = artist.mbid)
+                                )
+                                inserted++
+                            }
+                        }
+                        // Same uri, different occupant: the id was recycled.
+                        !local.name.equals(artist.name, ignoreCase = true) -> {
+                            Log.d(TAG, "Library id reused: ${artist.uri} was '${local.name}', now '${artist.name}'")
+                            dao.replaceArtistIdentity(artist.uri, artist.name, artist.mbid)
+                            dao.deleteArtistGenres(artist.uri)
+                            repointed++
+                        }
                     }
                     if (artist.mbid != null) {
                         // Fill the id in for artists stored before we read it, and
@@ -191,7 +222,9 @@ class LibraryGenreEnricher @Inject constructor(
                 offset += batch.size
                 if (batch.size < PAGE_SIZE) break
             }
-            if (inserted > 0) Log.d(TAG, "Synced $inserted new library artists")
+            if (inserted > 0 || repointed > 0) {
+                Log.d(TAG, "Library sync: $inserted new, $repointed uris repointed to a new artist")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Library artist sync failed: ${e.message}")
         }

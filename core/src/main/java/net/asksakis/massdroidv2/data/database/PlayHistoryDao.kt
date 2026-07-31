@@ -70,6 +70,17 @@ interface PlayHistoryDao {
     @Query("UPDATE artists SET mbid = :mbid WHERE name = :name AND mbid IS NULL")
     suspend fun setArtistMbidIfMissing(name: String, mbid: String)
 
+    @Query("SELECT uri, name, mbid FROM artists WHERE uri IN (:uris)")
+    suspend fun getArtistsByUris(uris: List<String>): List<ArtistIdentityRow>
+
+    /** Repoint a library uri at whoever the server says owns it now. */
+    @Query("UPDATE artists SET name = :name, mbid = :mbid WHERE uri = :uri")
+    suspend fun replaceArtistIdentity(uri: String, name: String, mbid: String?)
+
+    /** Drop the genres attached to a uri, for when that uri turned out to be someone else. */
+    @Query("DELETE FROM artist_genres WHERE artist_uri = :uri")
+    suspend fun deleteArtistGenres(uri: String)
+
     @Query("SELECT uri FROM artists WHERE name = :name")
     suspend fun getArtistUrisByName(name: String): List<String>
 
@@ -876,6 +887,12 @@ data class ArtistPlayTimestamp(
 data class ArtistNameUri(
     val name: String,
     val uri: String
+)
+
+data class ArtistIdentityRow(
+    val uri: String,
+    val name: String,
+    val mbid: String?
 )
 
 data class ArtistNeedingGenres(
