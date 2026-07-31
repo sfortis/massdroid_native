@@ -115,13 +115,25 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                 dao.insertTrackArtist(TrackArtistEntity(trackUri = trackKey, artistUri = artistKey))
             }
 
+            // A track's genres describe the TRACK, and are attributed to the
+            // PRIMARY artist only. Writing them to every credited artist made
+            // genres bleed between unrelated acts: this provider files some
+            // Last Shadow Puppets songs under Lindstrøm as well, so the disco
+            // producer collected "indie rock" and the indie band collected
+            // "space disco" - and a Smart Mix cluster then merged 70s disco,
+            // UK indie and mainstream pop into one "pop" family.
+            //
+            // Featured and credited artists keep their own genres, which come
+            // from MusicBrainz per ENTITY rather than from whatever they were
+            // credited on.
+            val primaryArtistKey = artistsToPersist.firstOrNull()?.first
             for (genre in track.genres) {
                 val normalized = normalizeGenre(genre)
                 if (normalized.isNotBlank()) {
                     dao.insertGenre(GenreEntity(name = normalized))
                     dao.insertTrackGenre(TrackGenreEntity(trackUri = trackKey, genreName = normalized))
-                    for ((artistKey, _) in artistsToPersist) {
-                        dao.insertArtistGenre(ArtistGenreEntity(artistUri = artistKey, genreName = normalized))
+                    primaryArtistKey?.let {
+                        dao.insertArtistGenre(ArtistGenreEntity(artistUri = it, genreName = normalized))
                     }
                 }
             }
