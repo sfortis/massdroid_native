@@ -277,7 +277,22 @@ internal fun strictnessWeightedOrder(
  */
 @VisibleForTesting
 internal fun mixLabel(seedGenres: List<List<String>>, family: String?): String? {
-    val votes = seedGenres.mapNotNull { dominantGenre(it) }.groupingBy { it }.eachCount()
+    // The PRIMARY seed is what the cluster was built around, so it names the
+    // mix. A majority vote across all seeds sounds fairer but is not: umbrella
+    // tags like "alternative" and "indie" appear as the lead genre of a great
+    // many artists, so they win the vote in almost any rock-ish cluster. A
+    // progressive-rock mix around Gazpacho (progressive rock / art rock /
+    // crossover prog) came out named "alternative", as did a post-rock one
+    // around Pg.lost, which tells the listener nothing about either.
+    val primary = seedGenres.firstOrNull()?.let { dominantGenre(it) }
+    if (primary != null && primary !in UMBRELLA_LABELS) return primary
+
+    // The primary itself is an umbrella (or has no mapped genre): fall back to
+    // what the rest of the cluster agrees on, then to the family.
+    val votes = seedGenres.drop(1).mapNotNull { dominantGenre(it) }
+        .filterNot { it in UMBRELLA_LABELS }
+        .groupingBy { it }
+        .eachCount()
     // maxByOrNull on a map is order-dependent on ties; sort the tie away so the
     // same cluster always produces the same name.
     val winner = votes.entries
@@ -285,11 +300,21 @@ internal fun mixLabel(seedGenres: List<List<String>>, family: String?): String? 
         .firstOrNull()
     return when {
         winner != null && winner.value >= MIX_LABEL_MIN_AGREEMENT -> winner.key
-        else -> family
+        else -> primary ?: family
     }
 }
 
 private const val MIX_LABEL_MIN_AGREEMENT = 2
+
+/**
+ * Genres too broad to name a mix after. They are real genres and stay perfectly
+ * usable for gating; they just say nothing when shown to a listener, and they
+ * are common enough as a lead tag to win any vote they take part in.
+ */
+private val UMBRELLA_LABELS = setOf(
+    "alternative", "alternative rock", "indie", "rock", "pop", "electronic",
+    "electronica", "dance", "experimental", "instrumental", "world"
+)
 
 /**
  * Rows of the seed pool reserved for confirmed taste (replayed tracks), scaled
