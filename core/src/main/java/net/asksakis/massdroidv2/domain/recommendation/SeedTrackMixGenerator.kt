@@ -482,9 +482,16 @@ internal fun shouldHopFamily(variety: Double, random: kotlin.random.Random): Boo
     random.nextDouble() < variety.coerceIn(0.0, 1.0)
 
 /**
- * Is this candidate primary what the mix is looking for? With [hop] it wants a
- * DIFFERENT family than the recent mixes (exploration), without it the SAME one
- * (drift inside the current neighbourhood, no whiplash to unrelated genres).
+ * Is this candidate primary what the mix is looking for?
+ *
+ * Only ever asked with [hop] true, i.e. "give me a different family than the
+ * recent mixes". The `hop = false` arm exists for the tests that pin it, but
+ * the caller no longer uses it: preferring the RECENT family was what pinned
+ * half of all mixes to rock, since that family holds prog, shoegaze, post-punk,
+ * garage and dream pop and staying in it is not staying in a sound. Rotation
+ * inside a family is handled per genre instead, which is fine-grained enough to
+ * drift without whiplash.
+ *
  * With no recent families there is no preference (returns false), so the caller
  * falls back to the plain fresh pool.
  */
@@ -1314,13 +1321,27 @@ class SeedTrackMixGenerator @Inject constructor(
         // the two rules have narrowed the field to a near-deterministic pick, so
         // we drop the family preference (then exact freshness, then the whole
         // window) rather than hand back the same cluster as last time.
+        // Rotation is per GENRE: a primary whose genres all appeared in recent
+        // mixes is skipped, so consecutive mixes move even inside one family
+        // (deep house -> techno -> nu disco).
+        //
+        // Families are far too coarse to rotate on. "rock" holds prog, shoegaze,
+        // post-punk, garage and dream pop, so staying in it is not staying in a
+        // sound - yet the old rule actively PREFERRED the recent family whenever
+        // the variety dice said "no hop", which was half the time. Measured over
+        // 23 mixes: 11 landed in rock and the listener saw "alternative" again
+        // and again. Variety now only ever pushes AWAY, never back.
         val recentFamilies = genreFamilies(recency.recentClusterGenres)
         val hop = shouldHopFamily(tuning.variety, random)
         val exactFresh = primaryPool.filter { seed ->
             coherenceGenres(seed).none { it in recency.recentClusterGenres }
         }
-        val preferred = exactFresh.filter { seed ->
-            prefersCandidateFamily(genreFamilies(coherenceGenres(seed)), recentFamilies, hop)
+        val preferred = if (hop) {
+            exactFresh.filter { seed ->
+                prefersCandidateFamily(genreFamilies(coherenceGenres(seed)), recentFamilies, hop = true)
+            }
+        } else {
+            exactFresh
         }
         val freshPool = when {
             preferred.size >= PRIMARY_PREFERENCE_MIN -> preferred
