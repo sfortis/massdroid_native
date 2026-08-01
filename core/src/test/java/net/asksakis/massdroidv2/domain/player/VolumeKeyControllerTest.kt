@@ -54,8 +54,11 @@ class VolumeKeyControllerTest {
     )
 
     /** A repository that keeps the optimistic level, as the real one does. */
-    private fun repo(selected: Player?, all: List<Player> = listOfNotNull(selected)): PlayerRepository {
-        val selectedFlow = MutableStateFlow(selected)
+    private fun repo(
+        selected: Player?,
+        all: List<Player> = listOfNotNull(selected),
+        selectedFlow: MutableStateFlow<Player?> = MutableStateFlow(selected),
+    ): PlayerRepository {
         val playersFlow = MutableStateFlow(all)
         val repository = mockk<PlayerRepository>(relaxed = true)
         every { repository.selectedPlayer } returns selectedFlow
@@ -180,6 +183,28 @@ class VolumeKeyControllerTest {
 
         coVerify { repository.setGroupVolume("syncgroup", 36) }
         coVerify(exactly = 0) { repository.setVolume("syncgroup", any()) }
+    }
+
+    @Test
+    fun `switching player mid-hold sends the level the old one was holding`() = runTest {
+        // Found in review. A single pending slot was overwritten by the new
+        // player's step, so the previous player's last change never reached the
+        // server - it only ever existed as an optimistic value on screen.
+        val kitchen = player("kitchen", volume = 20)
+        val selected = MutableStateFlow<Player?>(phone)
+        val repository = repo(phone, listOf(phone, kitchen), selected)
+        var clock = 0L
+        val controller = controller(repository) { clock }
+
+        controller.step(up = true)                 // phone -> 43, sent
+        clock = 40
+        controller.step(up = true)                 // phone -> 46, throttled
+        selected.value = kitchen
+        controller.step(up = true)                 // kitchen -> 23
+        advanceUntilIdle()
+
+        coVerify { repository.setVolume("phone", 46) }
+        coVerify { repository.setVolume("kitchen", 23) }
     }
 
     // --- mute ---

@@ -292,6 +292,18 @@ interface PlayHistoryDao {
     @Query("UPDATE tracks SET score = :score WHERE uri = :trackUri")
     suspend fun setTrackScore(trackUri: String, score: Double)
 
+    /**
+     * Restores a score only if nothing has touched it since.
+     *
+     * An undo puts back an absolute value, so it would otherwise silently
+     * discard whatever happened in between: dislike a track at 0.0, listen to it
+     * again for +0.5, then undo, and the score returns to 0.0 rather than 0.5.
+     * Comparing against the value the dislike wrote makes the update a
+     * compare-and-set, so a newer opinion always wins over an older undo.
+     */
+    @Query("UPDATE tracks SET score = :restore WHERE uri = :trackUri AND score = :expected")
+    suspend fun restoreTrackScoreIfUnchanged(trackUri: String, expected: Double, restore: Double): Int
+
     /** Undo support: removes exactly the rows one action wrote. */
     @Query("DELETE FROM smart_feedback WHERE track_uri = :trackUri AND action = :action AND created_at = :createdAt")
     suspend fun deleteSmartFeedback(trackUri: String, action: String, createdAt: Long)

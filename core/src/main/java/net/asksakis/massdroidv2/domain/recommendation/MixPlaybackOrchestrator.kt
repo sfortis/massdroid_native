@@ -454,8 +454,15 @@ class MixPlaybackOrchestrator @Inject constructor(
      *
      * There is no cheap way to spot the bad item in advance (get_track on it
      * succeeds; only loading its album fails), so this pays nothing in the
-     * normal case and only splits into chunks after a failure, dropping just
-     * the chunk that cannot load.
+     * normal case and only splits after a failure: first into chunks, then, for
+     * a chunk that also fails, one track at a time, so only the genuinely
+     * unloadable item is lost.
+     *
+     * The listener's existing queue is assumed intact after a rejected replace.
+     * That holds for this failure: the server raises while RESOLVING the items,
+     * before it touches the queue, and a successful replace on MA 2.9.1+ is
+     * atomic (upstream PR #3753). If a future failure mode ever reported
+     * otherwise, this would need to verify the queue rather than assume it.
      */
     private suspend fun playMediaSalvagingBadItems(queueId: String, uris: List<String>) {
         if (uris.isEmpty()) return
@@ -472,26 +479,44 @@ class MixPlaybackOrchestrator @Inject constructor(
         var dropped = 0
         var first = true
         for (chunk in uris.chunked(PLAY_MEDIA_SALVAGE_CHUNK)) {
-            try {
-                // The first chunk that lands owns the queue; the rest append to it.
-                musicRepository.playMedia(
-                    queueId = queueId,
-                    uris = chunk,
-                    option = if (first) "replace" else "add",
-                    awaitResponse = true
-                )
+            // The first chunk that lands owns the queue; the rest append to it.
+            if (sendChunk(queueId, chunk, first)) {
                 queued += chunk.size
                 first = false
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                dropped += chunk.size
-                Log.w(TAG, "dropped ${chunk.size} tracks the server could not load: ${e.message}")
+                continue
+            }
+            // One unloadable track fails the whole request it travels in, so a
+            // failed chunk is retried a track at a time rather than written off:
+            // otherwise a single bad item silently costs up to four good ones.
+            for (uri in chunk) {
+                if (sendChunk(queueId, listOf(uri), first)) {
+                    queued++
+                    first = false
+                } else {
+                    dropped++
+                }
             }
         }
         Log.d(TAG, "play_media salvage: queued $queued, dropped $dropped")
         if (queued == 0) error("Music Assistant rejected every track in this mix")
     }
+
+    /** One salvage attempt. False means the server would not take these tracks. */
+    private suspend fun sendChunk(queueId: String, uris: List<String>, owns: Boolean): Boolean =
+        try {
+            musicRepository.playMedia(
+                queueId = queueId,
+                uris = uris,
+                option = if (owns) "replace" else "add",
+                awaitResponse = true
+            )
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "server would not load ${uris.size} track(s): ${e.message}")
+            false
+        }
 
     private suspend fun playGeneratedMix(
         queueId: String,

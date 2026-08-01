@@ -185,7 +185,6 @@ class LibraryGenreEnricher @Inject constructor(
      */
     private suspend fun syncLibraryArtists() {
         try {
-            val existingNames = dao.getAllArtistNames().toSet()
             var offset = 0
             var inserted = 0
             var repointed = 0
@@ -198,12 +197,22 @@ class LibraryGenreEnricher @Inject constructor(
                     val local = known[artist.uri]
                     when {
                         local == null -> {
-                            if (artist.name !in existingNames) {
-                                dao.insertArtist(
-                                    ArtistEntity(uri = artist.uri, name = artist.name, mbid = artist.mbid)
-                                )
-                                inserted++
-                            }
+                            // Inserted whether or not the name is already known
+                            // under some other uri. One artist legitimately has
+                            // several - `library://artist/59` and
+                            // `deezer://artist/1201` are the same person - and
+                            // the library one is the one that matters: it is
+                            // what resolves provider uris back to the library,
+                            // and only library items answer `similar_artists`.
+                            // Skipping it on a name collision left the artist
+                            // reachable solely through the weaker
+                            // `similar_tracks` route (measured against a real
+                            // server: 1 of 167 library artists, Rae & Christian,
+                            // known locally only as a Deezer uri).
+                            dao.insertArtist(
+                                ArtistEntity(uri = artist.uri, name = artist.name, mbid = artist.mbid)
+                            )
+                            inserted++
                         }
                         // Same uri, different occupant: the id was recycled.
                         !local.name.equals(artist.name, ignoreCase = true) -> {

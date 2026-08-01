@@ -117,14 +117,17 @@ class SmartListeningRepositoryImpl @Inject constructor(
         if (normalized.isEmpty()) return null
 
         val now = System.currentTimeMillis()
-        val previousScore = dao.getTrackScore(trackKey) ?: 0.0
         // The artist is only brushed, using the same dampening a skip gets: one
         // bad track is not a verdict on whoever made it. Rejecting the artist
         // outright is what the block list is for.
         val artistSignal = UNLIKE_ARTIST_SIGNAL * SKIP_ARTIST_DAMPENING
         // One transaction: a dislike that filed its feedback but failed to bury
         // the track would leave it playable with a negative mark against it.
-        transactions.inTransaction {
+        // The score is read in here too, so two dislikes of the same track
+        // cannot both snapshot the same starting value and hand out receipts
+        // that undo to the wrong place.
+        val previousScore = transactions.inTransaction {
+            val before = dao.getTrackScore(trackKey) ?: 0.0
             insertArtistSignals(
                 track = track,
                 artists = artists,
@@ -136,6 +139,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
             // Set, not adjust: the track has to end up below the suppression
             // line whatever it scored before, so it never comes back in a mix.
             dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE)
+            before
         }
         Log.d(TAG, "Disliked $trackKey (score $previousScore -> $DISLIKE_TRACK_SCORE)")
         return DislikeReceipt(
@@ -148,11 +152,24 @@ class SmartListeningRepositoryImpl @Inject constructor(
     }
 
     override suspend fun undoDislike(receipt: DislikeReceipt) {
-        transactions.inTransaction {
-            dao.setTrackScore(receipt.trackKey, receipt.previousScore)
+        val restored = transactions.inTransaction {
+            // Compare-and-set, not a blind write: if anything has scored this
+            // track since the dislike, that opinion is newer than the undo and
+            // keeps precedence. The feedback row goes either way, since the
+            // listener did take the dislike back.
+            val changed = dao.restoreTrackScoreIfUnchanged(
+                trackUri = receipt.trackKey,
+                expected = DISLIKE_TRACK_SCORE,
+                restore = receipt.previousScore,
+            )
             dao.deleteSmartFeedback(receipt.trackKey, "dislike", receipt.createdAt)
+            changed > 0
         }
-        Log.d(TAG, "Undid dislike for ${receipt.trackKey} (score back to ${receipt.previousScore})")
+        Log.d(
+            TAG,
+            if (restored) "Undid dislike for ${receipt.trackKey} (score back to ${receipt.previousScore})"
+            else "Undid dislike for ${receipt.trackKey}; score left alone, something scored it since"
+        )
     }
 
     override suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean) {

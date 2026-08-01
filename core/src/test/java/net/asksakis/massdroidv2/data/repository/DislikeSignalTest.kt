@@ -105,11 +105,14 @@ class DislikeSignalTest {
     @Test
     fun `undo restores the exact score and removes exactly the rows written`() = runTest {
         coEvery { dao.getTrackScore(any()) } returns 1.75
+        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any()) } returns 1
         val receipt = repo.recordDislike(track, artists)!!
 
         repo.undoDislike(receipt)
 
-        coVerify { dao.setTrackScore("library://track/1", 1.75) }
+        // Conditional on the score still being the one the dislike wrote, so a
+        // newer opinion is never silently rolled back by an older undo.
+        coVerify { dao.restoreTrackScoreIfUnchanged("library://track/1", -2.0, 1.75) }
         // Matched on the same timestamp the rows were written with, so an undo
         // cannot take out an older dislike of the same track.
         coVerify { dao.deleteSmartFeedback("library://track/1", "dislike", receipt.createdAt) }
@@ -126,6 +129,23 @@ class DislikeSignalTest {
         // Without this the undo would delete nothing and the artist would keep
         // a penalty the listener took back.
         assertThat(rows.captured.map { it.createdAt }).containsExactly(receipt.createdAt)
+    }
+
+    @Test
+    fun `an undo whose track was scored again leaves the newer score alone`() = runTest {
+        // Found in review: the undo used to write the old score unconditionally,
+        // so disliking a track, listening to it again and then undoing threw
+        // away the listen.
+        coEvery { dao.getTrackScore(any()) } returns 0.0
+        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any()) } returns 0
+        val receipt = repo.recordDislike(track, artists)!!
+
+        repo.undoDislike(receipt)
+
+        // The feedback row still goes: the listener did take the dislike back.
+        coVerify { dao.deleteSmartFeedback("library://track/1", "dislike", receipt.createdAt) }
+        // But no blind write to the score.
+        coVerify(exactly = 1) { dao.setTrackScore(any(), any()) }   // only the dislike itself
     }
 
     @Test

@@ -110,6 +110,10 @@ class VolumeKeyController internal constructor(
             isGroup = isGroup,
             isMuted = false,
         )
+        // A held level belongs to the player it was chosen for. Overwriting it
+        // when the selection changes mid-hold would drop that player's last
+        // step without ever sending it, so it goes out first.
+        pending?.takeIf { it.playerId != player.playerId }?.let { send(it.playerId, it.isGroup, it.level) }
         pending = PendingVolume(player.playerId, level, isGroup)
 
         if (pacer.tryAcquire(now())) {
