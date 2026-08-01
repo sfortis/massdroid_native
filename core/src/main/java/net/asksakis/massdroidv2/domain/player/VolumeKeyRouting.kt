@@ -57,3 +57,64 @@ fun remoteVolumeStep(player: Player, isGroup: Boolean, delta: Int): Int {
 }
 
 private const val MAX_PLAYER_VOLUME = 100
+
+/** What to do with one volume key event. */
+enum class VolumeKeyStep {
+    /** Move the level and push it to the server now. */
+    SEND_NOW,
+
+    /** Move the level, but only push if the throttle window has elapsed. */
+    SEND_THROTTLED,
+
+    /** This press was already counted on its DOWN edge; push the final level. */
+    FLUSH_ONLY,
+
+    /** Not a press we act on. */
+    IGNORE
+}
+
+/**
+ * Decide how to treat a volume key event.
+ *
+ * Both edges have to work, because which one arrives depends on the situation:
+ * with the app in front, Android delivers ACTION_DOWN plus a repeat stream plus
+ * ACTION_UP (measured: repeat counts 0..63 over a three-second hold); in other
+ * states only ACTION_UP reaches the activity (measured: 47 UP, zero DOWN, while
+ * the launcher was in front). Acting on one edge alone therefore either loses
+ * press-and-hold or loses the key entirely.
+ *
+ * Acting on both naively would double every press, so [downTime] - identical for
+ * the DOWN and UP of one physical press - identifies the press: an UP whose
+ * press was already counted only flushes the final level.
+ *
+ * The repeats are throttled because they arrive about every 50 ms. Each one is a
+ * server command, and on a real setup that meant 70 volume_set calls in 20
+ * seconds to a Sonos over UPnP; Music Assistant runs one asyncio loop, often on
+ * a Raspberry Pi. The level still moves on every event, so the on-screen
+ * response is unchanged - only the network traffic is paced.
+ */
+@Suppress("LongParameterList")
+fun volumeKeyStep(
+    isDown: Boolean,
+    repeatCount: Int,
+    downTime: Long,
+    lastCountedDownTime: Long,
+    nowMs: Long,
+    lastSentAtMs: Long,
+    throttleMs: Long = VOLUME_REPEAT_THROTTLE_MS
+): VolumeKeyStep = when {
+    // First edge of a press: always immediate, so a single tap feels instant.
+    isDown && repeatCount == 0 -> VolumeKeyStep.SEND_NOW
+    isDown -> if (nowMs - lastSentAtMs >= throttleMs) {
+        VolumeKeyStep.SEND_NOW
+    } else {
+        VolumeKeyStep.SEND_THROTTLED
+    }
+    // Release of a press we already counted: the final level must always land.
+    downTime == lastCountedDownTime -> VolumeKeyStep.FLUSH_ONLY
+    // Release of a press whose DOWN never reached us: count it here.
+    else -> VolumeKeyStep.SEND_NOW
+}
+
+/** Repeats arrive about every 50 ms; this paces the server commands, not the UI. */
+const val VOLUME_REPEAT_THROTTLE_MS = 120L

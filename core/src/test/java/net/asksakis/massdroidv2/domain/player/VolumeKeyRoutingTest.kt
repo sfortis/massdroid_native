@@ -96,4 +96,74 @@ class VolumeKeyRoutingTest {
         assertThat(remoteVolumeStep(player("p", volume = 98), isGroup = false, delta = 5)).isEqualTo(100)
         assertThat(remoteVolumeStep(player("p", volume = 2), isGroup = false, delta = -5)).isEqualTo(0)
     }
+
+    // --- which edges act, and how often they reach the server ---
+
+    private fun step(
+        isDown: Boolean,
+        repeat: Int = 0,
+        downTime: Long = 1000,
+        lastCounted: Long = 0,
+        now: Long = 0,
+        lastSent: Long = 0
+    ) = volumeKeyStep(isDown, repeat, downTime, lastCounted, now, lastSent)
+
+    @Test
+    fun `a press acts on its DOWN edge`() {
+        assertThat(step(isDown = true)).isEqualTo(VolumeKeyStep.SEND_NOW)
+    }
+
+    @Test
+    fun `the release of a counted press only flushes, never steps again`() {
+        // Same downTime as the DOWN we already acted on.
+        assertThat(step(isDown = false, downTime = 1000, lastCounted = 1000))
+            .isEqualTo(VolumeKeyStep.FLUSH_ONLY)
+    }
+
+    @Test
+    fun `a release whose DOWN never arrived is counted`() {
+        // The measured state where only ACTION_UP reaches the activity: without
+        // this the key would do nothing at all.
+        assertThat(step(isDown = false, downTime = 1000, lastCounted = 0))
+            .isEqualTo(VolumeKeyStep.SEND_NOW)
+    }
+
+    @Test
+    fun `holding sends at most one command per throttle window`() {
+        // Repeats arrive about every 50 ms.
+        assertThat(step(isDown = true, repeat = 1, now = 50, lastSent = 0))
+            .isEqualTo(VolumeKeyStep.SEND_THROTTLED)
+        assertThat(step(isDown = true, repeat = 2, now = 100, lastSent = 0))
+            .isEqualTo(VolumeKeyStep.SEND_THROTTLED)
+        assertThat(step(isDown = true, repeat = 3, now = 150, lastSent = 0))
+            .isEqualTo(VolumeKeyStep.SEND_NOW)
+    }
+
+    @Test
+    fun `the first event of a press is never throttled`() {
+        // Even immediately after another press, a fresh tap must feel instant.
+        assertThat(step(isDown = true, repeat = 0, now = 10, lastSent = 0))
+            .isEqualTo(VolumeKeyStep.SEND_NOW)
+    }
+
+    @Test
+    fun `a three second hold sends far fewer commands than it receives`() {
+        // Replays the measured stream: repeat 0..63, one event every 50 ms.
+        var lastSent = 0L
+        var sent = 0
+        for (repeat in 0..63) {
+            val now = repeat * 50L
+            val decision = volumeKeyStep(
+                isDown = true, repeatCount = repeat, downTime = 1000,
+                lastCountedDownTime = 0, nowMs = now, lastSentAtMs = lastSent
+            )
+            if (decision == VolumeKeyStep.SEND_NOW) {
+                sent++
+                lastSent = now
+            }
+        }
+        assertThat(sent).isLessThan(30)
+        // Still responsive: roughly one command per throttle window.
+        assertThat(sent).isAtLeast(20)
+    }
 }

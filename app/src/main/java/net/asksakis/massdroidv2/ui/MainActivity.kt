@@ -16,6 +16,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.media.AudioManager
 import android.view.KeyEvent
@@ -24,7 +25,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import net.asksakis.massdroidv2.domain.player.VolumeKeyStep
 import net.asksakis.massdroidv2.domain.player.VolumeKeyTarget
+import net.asksakis.massdroidv2.domain.player.volumeKeyStep
 import net.asksakis.massdroidv2.domain.player.remoteVolumeStep
 import net.asksakis.massdroidv2.domain.player.volumeKeyTarget
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -133,6 +136,14 @@ class MainActivity : ComponentActivity() {
 
     private val volumeStep = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
     @Volatile private var cachedSsClientId: String? = null
+
+    // Volume key state. downTime is the identity of one physical press, so a
+    // press counted on its DOWN edge is not counted again on its UP; the other
+    // two pace the server commands during a hold without pacing the UI.
+    private var lastCountedVolumeDownTime = 0L
+    private var lastVolumeSentAt = 0L
+    private var pendingVolumePush: Int? = null
+    private var pendingVolumePushPlayerId: String? = null
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -287,17 +298,40 @@ class MainActivity : ComponentActivity() {
             val target = volumeKeyTarget(player, cachedSsClientId)
             if (target == VolumeKeyTarget.System) return super.dispatchKeyEvent(event)
 
-            // ACTION_UP, not ACTION_DOWN: One UI's volume panel consumes the
-            // DOWN edge before an activity sees it, so a handler keyed to DOWN
-            // silently did nothing while still returning true - the rocker was
-            // swallowed and dead inside the app. Measured on a Samsung S25: 47
-            // ACTION_UP reached here and zero ACTION_DOWN, with no code change
-            // on our side, so a system update is enough to cause it. Every
-            // press yields exactly one UP, which also makes this repeat-safe.
-            if (event.action != KeyEvent.ACTION_UP) return true
+            // Both edges are handled, because which one arrives depends on the
+            // situation: in front, Android delivers DOWN + a repeat stream + UP;
+            // in other states only UP reaches the activity. downTime identifies
+            // one physical press, so a press counted on DOWN is not counted
+            // again on its UP. See volumeKeyStep.
+            val isDown = event.action == KeyEvent.ACTION_DOWN
+            if (!isDown && event.action != KeyEvent.ACTION_UP) return true
+            val now = SystemClock.uptimeMillis()
+            val step = volumeKeyStep(
+                isDown = isDown,
+                repeatCount = event.repeatCount,
+                downTime = event.downTime,
+                lastCountedDownTime = lastCountedVolumeDownTime,
+                nowMs = now,
+                lastSentAtMs = lastVolumeSentAt
+            )
+            if (step == VolumeKeyStep.FLUSH_ONLY && pendingVolumePush == null) return true
+            // A pending level belongs to the player it was computed for. If the
+            // selection changed mid-hold, flushing it would push one player's
+            // level onto another.
+            if (pendingVolumePushPlayerId != null && pendingVolumePushPlayerId != player?.playerId) {
+                pendingVolumePush = null
+                pendingVolumePushPlayerId = null
+                if (step == VolumeKeyStep.FLUSH_ONLY) return true
+            }
+            if (isDown) lastCountedVolumeDownTime = event.downTime
 
             when (target) {
                 is VolumeKeyTarget.LocalStream -> {
+                    // FLUSH_ONLY is the release of a press already counted on
+                    // its DOWN edge. The remote branch needs it to push the
+                    // final level, but the OS stream has already moved, so
+                    // adjusting again here would step twice per press.
+                    if (step == VolumeKeyStep.FLUSH_ONLY) return true
                     // This phone is the output: let the OS move STREAM_MUSIC and
                     // show its own volume UI. Mirroring to MA happens on the
                     // resulting ContentObserver tick, which is the single
@@ -313,8 +347,17 @@ class MainActivity : ComponentActivity() {
                 }
                 is VolumeKeyTarget.RemotePlayer -> {
                     val current = player ?: return true
-                    val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
-                    val newVol = remoteVolumeStep(current, target.isGroup, delta)
+                    // FLUSH_ONLY means the level already moved on the DOWN edge;
+                    // the release must only make sure the final one reached the
+                    // server, never add another step.
+                    val newVol = if (step == VolumeKeyStep.FLUSH_ONLY) {
+                        pendingVolumePush ?: return true
+                    } else {
+                        val delta = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeStep else -volumeStep
+                        remoteVolumeStep(current, target.isGroup, delta)
+                    }
+                    pendingVolumePush = newVol
+                    pendingVolumePushPlayerId = current.playerId
                     playerRepository.applyVolumeOptimistic(current.playerId, newVol)
                     // The system volume bar covers STREAM_MUSIC only, and a
                     // remote player has no OS-level surface, so without this the
@@ -325,6 +368,14 @@ class MainActivity : ComponentActivity() {
                         isGroup = target.isGroup,
                         isMuted = current.volumeMuted,
                     )
+                    // Repeats arrive every ~50 ms and each one is a server
+                    // command; a Sonos over UPnP saw 70 in 20 seconds. The level
+                    // and the on-screen readout still move on every event, so
+                    // only the network traffic is paced.
+                    if (step == VolumeKeyStep.SEND_THROTTLED) return true
+                    lastVolumeSentAt = now
+                    pendingVolumePush = null
+                    pendingVolumePushPlayerId = null
                     lifecycleScope.launch {
                         try {
                             if (target.isGroup) {
