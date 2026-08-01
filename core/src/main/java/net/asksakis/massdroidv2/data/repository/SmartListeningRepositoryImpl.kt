@@ -39,6 +39,10 @@ class SmartListeningRepositoryImpl @Inject constructor(
 
         private const val SKIP_ARTIST_SIGNAL = -0.50
         private const val SKIP_ARTIST_DAMPENING = 0.25
+        /** Below this a skip reads as outright rejection. */
+        private const val HARD_SKIP_SEC = 15.0
+        /** Below this it still reads as dislike, just a milder one. */
+        private const val SOFT_SKIP_SEC = 30.0
         private const val LISTEN_ARTIST_SIGNAL = 0.20
         private const val LIKE_ARTIST_SIGNAL = 0.60
         private const val UNLIKE_ARTIST_SIGNAL = -0.70
@@ -148,8 +152,14 @@ class SmartListeningRepositoryImpl @Inject constructor(
         val listenedSec = listenedMs / 1000.0
         val ratio = listenedSec / durationSec
         return when {
-            listenedSec < 5.0 -> -0.60
-            listenedSec < 15.0 -> -0.45
+            // A skip inside the first quarter-minute is a judgement about the
+            // track; the boundaries used to sit at 5s and 15s, which asked the
+            // listener to react faster than anyone reasonably does. Measured on
+            // a real history: 15% of skips landed under 5s and were dominated by
+            // navigation rather than dislike (the `previous` button used to file
+            // one of these too, and that is where the noise came from).
+            listenedSec < HARD_SKIP_SEC -> -0.60
+            listenedSec < SOFT_SKIP_SEC -> -0.45
             ratio < 0.25 -> -0.35
             ratio < 0.50 -> -0.20
             ratio < 0.75 -> -0.08

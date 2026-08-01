@@ -28,14 +28,19 @@ class SmartListeningSignalsTest {
     }
 
     @Test
-    fun `scaleSkipSignal is harshest for an immediate skip`() {
-        assertThat(repo.scaleSkipSignal(3_000, dur)).isEqualTo(-0.60)   // < 5s
-        assertThat(repo.scaleSkipSignal(10_000, dur)).isEqualTo(-0.45)  // < 15s
+    fun `scaleSkipSignal is harshest for an early skip`() {
+        // The boundaries sit at 15s and 30s. They used to be 5s and 15s, which
+        // asked the listener to decide faster than anyone does: a real history
+        // put 15% of skips under 5s, and they were mostly navigation.
+        assertThat(repo.scaleSkipSignal(3_000, dur)).isEqualTo(-0.60)
+        assertThat(repo.scaleSkipSignal(14_000, dur)).isEqualTo(-0.60)
+        assertThat(repo.scaleSkipSignal(20_000, dur)).isEqualTo(-0.45)
+        assertThat(repo.scaleSkipSignal(29_000, dur)).isEqualTo(-0.45)
     }
 
     @Test
     fun `scaleSkipSignal softens as more of the track is heard`() {
-        assertThat(repo.scaleSkipSignal(30_000, dur)).isEqualTo(-0.35)  // ratio < 0.25
+        assertThat(repo.scaleSkipSignal(31_000, dur)).isEqualTo(-0.35)  // ratio < 0.25
         assertThat(repo.scaleSkipSignal(80_000, dur)).isEqualTo(-0.20)  // ratio < 0.50
         assertThat(repo.scaleSkipSignal(120_000, dur)).isEqualTo(-0.08) // ratio < 0.75
         assertThat(repo.scaleSkipSignal(170_000, dur)).isEqualTo(-0.03) // near-complete

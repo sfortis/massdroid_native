@@ -1509,7 +1509,7 @@ class PlayerRepositoryImpl @Inject constructor(
     override suspend fun previous(playerId: String) {
         if (audiobookChapterSkip(playerId, forward = false)) return
         Log.d("sendspindbg", "WS>>> previous($playerId)")
-        maybeRecordManualSkip(playerId)
+        markManualTransition(playerId)
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.PREVIOUS))
         playerCmd("previous", playerId)
     }
@@ -1917,6 +1917,22 @@ class PlayerRepositoryImpl @Inject constructor(
             MaCommands.Players.REMOVE_GROUP,
             RemoveGroupPlayerArgs(playerId = playerId)
         )
+    }
+
+    /**
+     * Marks that the listener left this track by hand, so it is not filed as a
+     * play, without reading anything into why.
+     *
+     * This is what `previous` does: going back means "I want the one before",
+     * not "I dislike this". It used to record a full skip, and since you press
+     * it within a second or two of the next track starting, that filed the
+     * harshest signal the engine has against a track the listener had not even
+     * heard. On a real history 15% of all skips sat in that bucket.
+     */
+    private fun markManualTransition(playerId: String) {
+        val current = queueTracking[playerId] ?: return
+        if (!smartListeningEnabledSnapshot) return
+        manualSkipByQueue[playerId] = current.track.uri
     }
 
     private fun maybeRecordManualSkip(playerId: String) {
