@@ -54,7 +54,7 @@ class AndroidAutoController(
     private val sendspinController: () -> SendspinAudioController?,
     private val shouldRouteToSendspin: () -> Boolean,
     private val activePlayerId: () -> String?,
-    private val sendVolumeCommand: (String, Int) -> Unit,
+    private val volumeKeyController: net.asksakis.massdroidv2.domain.player.VolumeKeyController,
     private val onPlaybackStopped: (String) -> Unit,
     private val trackedBrowsePaths: () -> Set<String>,
 ) {
@@ -237,50 +237,28 @@ class AndroidAutoController(
                 id ?: return@RemoteControlPlayer
                 scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
             },
-            onVolumeUp = {
-                val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) + VOLUME_STEP)
-            },
-            onVolumeDown = {
-                val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                pushPlayerVolume(player, currentVolumeBase(baseVolume(player)) - VOLUME_STEP)
-            },
-            onVolumeSet = { volume ->
-                val player = playerRepository.selectedPlayer.value ?: return@RemoteControlPlayer
-                pushPlayerVolume(player, volume)
-            }
+            // An active REMOTE-volume session captures the hardware rocker
+            // system-wide, so these fire whenever the app is not in front - the
+            // same presses MainActivity handles when it is. They therefore go
+            // through the same controller: it owns the step, the group vs player
+            // command, the unmute and the pacing. This path once had its own
+            // copy of all that and no pacing at all, which sent 18 group_volume
+            // commands in 700 ms and dropped a group from 36 to 0.
+            onVolumeUp = { noteVolume(volumeKeyController.step(up = true)) },
+            onVolumeDown = { noteVolume(volumeKeyController.step(up = false)) },
+            onVolumeSet = { volume -> noteVolume(volumeKeyController.setLevel(volume)) }
         )
     }
 
-    private fun currentVolumeBase(serverVolume: Int): Int {
-        val override = volumeOverride.value ?: return serverVolume
-        return if (System.currentTimeMillis() < override.second) override.first else serverVolume
-    }
-
-    /** Volume the rocker/AA slider works from: the group volume for a group, else the own level. */
-    private fun baseVolume(player: net.asksakis.massdroidv2.domain.model.Player): Int =
-        player.groupVolume ?: player.volumeLevel
-
-    /** A group-type parent (has members other than itself). Mirrors MainActivity's HW-key path. */
-    private fun isGroupPlayer(player: net.asksakis.massdroidv2.domain.model.Player): Boolean =
-        player.groupChilds.any { it != player.playerId }
-
-    private fun pushPlayerVolume(player: net.asksakis.massdroidv2.domain.model.Player, rawVolume: Int) {
-        val volume = rawVolume.coerceIn(0, RemoteControlPlayer.MAX_VOLUME)
-        // Optimistic AA-side update: bump the override flow so the master combine
-        // emits with the new value and AA/MediaSession device-volume settles
-        // immediately. The actual MA echo arrives via PLAYER_UPDATED and overwrites
-        // the override once it expires.
+    /**
+     * Optimistic AA-side update: bump the override flow so the master combine
+     * emits with the new value and the AA/MediaSession device volume settles
+     * immediately. The MA echo arrives via PLAYER_UPDATED and takes over once
+     * the override expires. Null means there was no player to act on.
+     */
+    private fun noteVolume(level: Int?) {
+        val volume = level ?: return
         volumeOverride.value = volume to (System.currentTimeMillis() + VOLUME_OVERRIDE_MS)
-        if (isGroupPlayer(player)) {
-            // A group player reports volume_level=null and is driven via MA's
-            // cmd/group_volume (which fans out to members). `volume_set` on the
-            // group id is a no-op, which is why the hardware rocker did nothing
-            // when a group was selected (the in-app slider already used group_volume).
-            scope.launch { runCatching { playerRepository.setGroupVolume(player.playerId, volume) } }
-        } else {
-            sendVolumeCommand(player.playerId, volume)
-        }
     }
 
     private fun playQueueIndex(index: Int, reason: String) {
@@ -737,7 +715,6 @@ class AndroidAutoController(
         private const val TAG = "AndroidAutoController"
         // MA-volume units added/removed per hardware-rocker press. Independent of
         // the device-volume mapping (now 1:1 with MA), so it can be tuned freely.
-        private const val VOLUME_STEP = net.asksakis.massdroidv2.ROCKER_VOLUME_STEP
         private const val VOLUME_OVERRIDE_MS = 15_000L
         private const val ARTWORK_FETCH_TIMEOUT_S = 8L
     }

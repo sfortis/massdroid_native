@@ -42,6 +42,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
+    @Inject lateinit var volumeKeyController: net.asksakis.massdroidv2.domain.player.VolumeKeyController
     @Inject lateinit var sendspinManager: SendspinManager
     @Inject lateinit var sendspinVolumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
     @Inject lateinit var sleepTimerBridge: SleepTimerBridge
@@ -128,7 +129,7 @@ class PlaybackService : MediaLibraryService() {
             sendspinController = { sendspinCoordinator.controller },
             shouldRouteToSendspin = { sendspinCoordinator.shouldRouteToSendspin() },
             activePlayerId = { activePlayerId() },
-            sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
+            volumeKeyController = volumeKeyController,
             onPlaybackStopped = { /* Follow Me's no-room-stop timer self-guards on playback state (now in FollowMeService) */ },
             trackedBrowsePaths = { androidAutoBrowseController.trackedParentIds() },
         )
