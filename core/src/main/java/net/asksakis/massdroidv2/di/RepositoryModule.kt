@@ -51,8 +51,15 @@ object RepositoryModule {
     fun provideSmartListeningRepository(
         dao: PlayHistoryDao,
         settingsRepository: SettingsRepository,
+        transactions: net.asksakis.massdroidv2.data.database.TransactionRunner
+    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository, transactions)
+
+    @Provides
+    @Singleton
+    fun provideTransactionRunner(
         appDatabase: AppDatabase
-    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository, appDatabase)
+    ): net.asksakis.massdroidv2.data.database.TransactionRunner =
+        net.asksakis.massdroidv2.data.database.RoomTransactionRunner(appDatabase)
 
     @Provides
     @Singleton

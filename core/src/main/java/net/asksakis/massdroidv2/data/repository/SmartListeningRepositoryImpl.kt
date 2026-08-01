@@ -5,9 +5,8 @@ import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
-import androidx.room.withTransaction
 import net.asksakis.massdroidv2.data.database.AlbumEntity
-import net.asksakis.massdroidv2.data.database.AppDatabase
+import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.data.database.ArtistFeedbackSignalRow
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
@@ -30,7 +29,7 @@ import kotlin.math.exp
 class SmartListeningRepositoryImpl @Inject constructor(
     private val dao: PlayHistoryDao,
     private val settingsRepository: SettingsRepository,
-    private val appDatabase: AppDatabase
+    private val transactions: TransactionRunner
 ) : SmartListeningRepository {
 
     companion object {
@@ -123,17 +122,21 @@ class SmartListeningRepositoryImpl @Inject constructor(
         // bad track is not a verdict on whoever made it. Rejecting the artist
         // outright is what the block list is for.
         val artistSignal = UNLIKE_ARTIST_SIGNAL * SKIP_ARTIST_DAMPENING
-        insertArtistSignals(
-            track = track,
-            artists = artists,
-            action = "dislike",
-            signalPerArtist = artistSignal,
-            trackSignalOverride = 0.0,
-            now = now
-        )
-        // Set, not adjust: the track has to end up below the suppression line
-        // whatever it scored before, so it never comes back in a mix.
-        dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE)
+        // One transaction: a dislike that filed its feedback but failed to bury
+        // the track would leave it playable with a negative mark against it.
+        transactions.inTransaction {
+            insertArtistSignals(
+                track = track,
+                artists = artists,
+                action = "dislike",
+                signalPerArtist = artistSignal,
+                trackSignalOverride = 0.0,
+                now = now
+            )
+            // Set, not adjust: the track has to end up below the suppression
+            // line whatever it scored before, so it never comes back in a mix.
+            dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE)
+        }
         Log.d(TAG, "Disliked $trackKey (score $previousScore -> $DISLIKE_TRACK_SCORE)")
         return DislikeReceipt(
             trackKey = trackKey,
@@ -145,7 +148,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
     }
 
     override suspend fun undoDislike(receipt: DislikeReceipt) {
-        appDatabase.withTransaction {
+        transactions.inTransaction {
             dao.setTrackScore(receipt.trackKey, receipt.previousScore)
             dao.deleteSmartFeedback(receipt.trackKey, "dislike", receipt.createdAt)
         }
@@ -258,7 +261,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
             )
         }
         val trackScore = trackSignalOverride ?: signalPerArtist
-        appDatabase.withTransaction {
+        transactions.inTransaction {
             if (!albumKey.isNullOrBlank()) {
                 dao.insertAlbum(
                     AlbumEntity(
@@ -282,7 +285,11 @@ class SmartListeningRepositoryImpl @Inject constructor(
                 dao.insertArtist(ArtistEntity(uri = artistUri, name = artistName.ifBlank { "Artist" }))
             }
             dao.insertSmartFeedback(feedback)
-            dao.adjustTrackScore(trackKey, trackScore)
+            // A zero delta is not a score change. The dislike path passes one
+            // because it sets the score absolutely instead, and issuing the
+            // no-op write anyway just puts a second, contradictory-looking
+            // statement about the same track in the same transaction.
+            if (trackScore != 0.0) dao.adjustTrackScore(trackKey, trackScore)
         }
         val artistNames = normalized.joinToString(", ") { it.second }
         val label = when {

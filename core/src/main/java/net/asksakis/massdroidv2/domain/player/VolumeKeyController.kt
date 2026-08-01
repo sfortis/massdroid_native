@@ -30,15 +30,31 @@ import javax.inject.Singleton
  * Everything a step does now lives here so there is nothing left to diverge.
  */
 @Singleton
-class VolumeKeyController @Inject constructor(
+class VolumeKeyController internal constructor(
     private val playerRepository: PlayerRepository,
+    /**
+     * Where the sends and the trailing flush run. Injected rather than created
+     * here so a test can drive the flush with virtual time instead of waiting
+     * out a real 120 ms.
+     */
+    private val scope: CoroutineScope,
+    /**
+     * Monotonic milliseconds. Injected for the same reason: under
+     * `unitTests.isReturnDefaultValues` the real `SystemClock.uptimeMillis()`
+     * answers 0 forever, which would let a test pass while measuring nothing.
+     */
+    private val now: () -> Long,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    @Inject
+    constructor(playerRepository: PlayerRepository) : this(
+        playerRepository,
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        SystemClock::uptimeMillis,
+    )
 
     // Touched only from the main thread: both entry points are main-thread
     // callbacks and the coroutines below are Main.immediate.
-    private var pendingLevel: Int? = null
-    private var pendingPlayerId: String? = null
+    private var pending: PendingVolume? = null
     private val pacer = VolumeSendPacer()
     private var trailingFlush: Job? = null
 
@@ -75,10 +91,12 @@ class VolumeKeyController @Inject constructor(
      * the final level reach the server as soon as the user lets go.
      */
     fun flush() {
-        val level = pendingLevel ?: return
-        val playerId = pendingPlayerId ?: return
-        val player = playerRepository.players.value.firstOrNull { it.playerId == playerId }
-        send(playerId, player?.let { isGroupPlayer(it) } ?: false, level)
+        // Carries its own isGroup: recomputing it here read from the player list,
+        // which silently answered "not a group" whenever the player was missing
+        // from it, and a group sent `volume_set` instead of `group_volume` - a
+        // no-op on a group parent, so the final level of a hold vanished.
+        val held = pending ?: return
+        send(held.playerId, held.isGroup, held.level)
     }
 
     private fun apply(player: Player, isGroup: Boolean, level: Int): Int {
@@ -92,10 +110,9 @@ class VolumeKeyController @Inject constructor(
             isGroup = isGroup,
             isMuted = false,
         )
-        pendingLevel = level
-        pendingPlayerId = player.playerId
+        pending = PendingVolume(player.playerId, level, isGroup)
 
-        if (pacer.tryAcquire(SystemClock.uptimeMillis())) {
+        if (pacer.tryAcquire(now())) {
             send(player.playerId, isGroup, level)
         }
         scheduleTrailingFlush()
@@ -116,9 +133,8 @@ class VolumeKeyController @Inject constructor(
     }
 
     private fun send(playerId: String, isGroup: Boolean, level: Int) {
-        pacer.markSent(SystemClock.uptimeMillis())
-        pendingLevel = null
-        pendingPlayerId = null
+        pacer.markSent(now())
+        pending = null
         scope.launch {
             runCatching {
                 if (isGroup) {
@@ -157,6 +173,9 @@ class VolumeKeyController @Inject constructor(
 
     private fun isGroupPlayer(player: Player): Boolean =
         player.groupChilds.any { it != player.playerId }
+
+    /** A level chosen but not yet sent, with everything needed to send it. */
+    private data class PendingVolume(val playerId: String, val level: Int, val isGroup: Boolean)
 }
 
 /**

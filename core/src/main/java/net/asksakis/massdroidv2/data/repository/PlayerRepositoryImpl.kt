@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -629,11 +630,10 @@ class PlayerRepositoryImpl @Inject constructor(
 
         val prev = queueTracking[queueId]
         if (prev != null && prev.track.uri != trackUri) {
-            // Track changed: record previous if listened >30s, not manually skipped, and not queue replacement.
             val listenedMs = now - prev.startTime
             val wasManualSkip = manualSkipByQueue.remove(queueId) == prev.track.uri
             val wasQueueReplacement = queueReplacementByQueue.remove(queueId) == prev.track.uri
-            if (listenedMs > 30_000L && !wasManualSkip && !wasQueueReplacement) {
+            if (shouldRecordPlay(listenedMs, wasManualSkip, wasQueueReplacement)) {
                 scope.launch {
                     try {
                         val enrichedTrack = enrichTrackGenresForHistory(prev.track, prev.artists)
@@ -2152,3 +2152,26 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
         )
     }
 )
+
+/** Below this a track was passed through, not listened to. */
+private const val PLAY_HISTORY_MIN_LISTENED_MS = 30_000L
+
+/**
+ * Whether a track the queue just moved off counts as listened to.
+ *
+ * Top-level so it can be tested without standing up a repository: constructing
+ * one starts its event collectors, and against mocked flows those throw on a
+ * background dispatcher and surface as a failure in whatever test runs next.
+ *
+ * All three conditions matter, and the middle one is why every transport command
+ * that leaves a track by hand must still mark the transition even when it
+ * records no opinion: `previous` deliberately files no skip, but if it also
+ * stopped marking the move, going back after half a song would be recorded as a
+ * genuine play and teach the engine the opposite of what happened.
+ */
+@VisibleForTesting
+internal fun shouldRecordPlay(
+    listenedMs: Long,
+    wasManualSkip: Boolean,
+    wasQueueReplacement: Boolean
+): Boolean = listenedMs > PLAY_HISTORY_MIN_LISTENED_MS && !wasManualSkip && !wasQueueReplacement

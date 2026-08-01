@@ -14,7 +14,9 @@ class SmartListeningSignalsTest {
     private val repo = SmartListeningRepositoryImpl(
         dao = mockk(relaxed = true),
         settingsRepository = mockk(relaxed = true),
-        appDatabase = mockk(relaxed = true),
+        transactions = object : net.asksakis.massdroidv2.data.database.TransactionRunner {
+            override suspend fun <R> inTransaction(block: suspend () -> R): R = block()
+        },
     )
 
     private val dur = 180.0
