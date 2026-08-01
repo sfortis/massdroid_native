@@ -1502,6 +1502,19 @@ class PlayerRepositoryImpl @Inject constructor(
         if (audiobookChapterSkip(playerId, forward = true)) return
         Log.d("sendspindbg", "WS>>> next($playerId)")
         maybeRecordManualSkip(playerId)
+        advanceToNext(playerId)
+    }
+
+    override suspend fun skipWithoutSignal(playerId: String) {
+        if (audiobookChapterSkip(playerId, forward = true)) return
+        Log.d("sendspindbg", "WS>>> skipWithoutSignal($playerId)")
+        // The caller has already said what it thinks of the track. Filing a
+        // skip on top would count one judgement twice.
+        markManualTransition(playerId)
+        advanceToNext(playerId)
+    }
+
+    private suspend fun advanceToNext(playerId: String) {
         _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, PlayerDiscontinuityCommand.Kind.NEXT))
         playerCmd("next", playerId)
     }

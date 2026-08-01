@@ -281,6 +281,21 @@ interface PlayHistoryDao {
     @Query("UPDATE tracks SET score = score + :delta WHERE uri = :trackUri")
     suspend fun adjustTrackScore(trackUri: String, delta: Double)
 
+    @Query("SELECT score FROM tracks WHERE uri = :trackUri")
+    suspend fun getTrackScore(trackUri: String): Double?
+
+    /**
+     * Sets a score outright rather than nudging it. An explicit dislike has to
+     * bury the track whatever it scored before, which a delta cannot promise:
+     * a track the listener once loved can sit well above the suppression line.
+     */
+    @Query("UPDATE tracks SET score = :score WHERE uri = :trackUri")
+    suspend fun setTrackScore(trackUri: String, score: Double)
+
+    /** Undo support: removes exactly the rows one action wrote. */
+    @Query("DELETE FROM smart_feedback WHERE track_uri = :trackUri AND action = :action AND created_at = :createdAt")
+    suspend fun deleteSmartFeedback(trackUri: String, action: String, createdAt: Long)
+
     @Query("SELECT uri FROM tracks WHERE score < :threshold")
     suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
 

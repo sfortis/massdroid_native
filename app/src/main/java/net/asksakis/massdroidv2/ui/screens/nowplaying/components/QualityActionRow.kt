@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +34,13 @@ import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingViewModel
  * Action row that sits between the seek bar and the transport controls.
  * Left side: Add-to-playlist + Lyrics. Centre: audio quality badge (taps
  * open the Streaming Status sheet when the local Sendspin player is
- * selected). Right side: Queue + Favorite toggle.
+ * selected). Right side: Queue + Dislike + Favorite.
+ *
+ * Dislike sits next to the heart on purpose: it is the only negative
+ * signal the engine does not have to infer, and it has to be as cheap to
+ * give as the positive one. Buried in a menu it would never be used, and
+ * the alternative the app offered - blocking the whole artist - is far
+ * too blunt for one bad track.
  */
 @Composable
 internal fun QualityActionRow(
@@ -138,6 +145,21 @@ internal fun QualityActionRow(
                     Icon(
                         Icons.Default.QueueMusic,
                         contentDescription = "Queue",
+                        modifier = Modifier.size(actionIconSize),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                MdIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.dislikeCurrentTrack()
+                    },
+                    modifier = Modifier.size(actionButtonSize),
+                    enabled = enabled
+                ) {
+                    Icon(
+                        Icons.Default.ThumbDown,
+                        contentDescription = "Not for me",
                         modifier = Modifier.size(actionIconSize),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )

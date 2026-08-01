@@ -239,6 +239,19 @@ fun NowPlayingScreen(
         }
     }
 
+    // A dislike buries the track permanently and skips past it, so it needs a
+    // way back: it is one tap next to the heart and the two are easy to confuse.
+    LaunchedEffect(Unit) {
+        viewModel.dislikeUndo.collectLatest { undo ->
+            val result = snackbarHostState.showSnackbar(
+                message = "Won't play \"${undo.trackName}\" again",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) viewModel.undoDislike(undo)
+        }
+    }
+
     val isDark = isSystemInDarkTheme()
     val surfaceColor = MaterialTheme.colorScheme.surface
     val dominantColor by extractDominantColor(imageUrl, isDark)

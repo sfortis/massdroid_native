@@ -212,6 +212,10 @@ class NowPlayingViewModel @Inject constructor(
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+
+    /** Emitted after a dislike so the screen can offer to take it back. */
+    private val _dislikeUndo = MutableSharedFlow<DislikeUndo>(extraBufferCapacity = 1)
+    val dislikeUndo: SharedFlow<DislikeUndo> = _dislikeUndo.asSharedFlow()
     private val _sendspinStatus = MutableStateFlow<SendspinStatusUi?>(null)
     val sendspinStatus: StateFlow<SendspinStatusUi?> = _sendspinStatus.asStateFlow()
     /**
@@ -779,6 +783,48 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Reject the playing track outright and move on.
+     *
+     * The only negative signal the engine does not have to infer. Every other
+     * one is read out of behaviour, and a skip in particular is ambiguous:
+     * it can mean "not this song", "not right now", or nothing at all. The
+     * track is buried, its artist is only brushed, and the whole thing is
+     * undoable because it is one tap next to the heart.
+     */
+    fun dislikeCurrentTrack() {
+        val track = queueState.value?.currentItem?.track ?: return
+        val player = selectedPlayer.value
+        viewModelScope.launch {
+            try {
+                val artists = trackArtists(track.artistItemId, track.artistUri, track.artistNames)
+                val receipt = smartListeningRepository.recordDislike(track, artists)
+                if (receipt == null) {
+                    _error.tryEmit("Smart Listening is off")
+                    return@launch
+                }
+                _dislikeUndo.tryEmit(DislikeUndo(receipt, track.name))
+                // Skipping past it is the point, but the skip must not be filed
+                // as a second negative signal on top of the dislike.
+                player?.let { playerRepository.skipWithoutSignal(it.playerId) }
+            } catch (e: Exception) {
+                Log.w(TAG, "dislikeCurrentTrack failed: ${e.message}")
+                _error.tryEmit("Failed to record dislike")
+            }
+        }
+    }
+
+    fun undoDislike(undo: DislikeUndo) {
+        viewModelScope.launch {
+            try {
+                smartListeningRepository.undoDislike(undo.receipt)
+            } catch (e: Exception) {
+                Log.w(TAG, "undoDislike failed: ${e.message}")
+                _error.tryEmit("Failed to undo")
+            }
+        }
+    }
+
     fun toggleCurrentArtistBlocked() {
         val track = queueState.value?.currentItem?.track ?: return
         val artistUri = MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri) ?: return
@@ -1183,3 +1229,9 @@ class NowPlayingViewModel @Inject constructor(
         )
     }
 }
+
+/** A dislike that can still be taken back, with the track name to name it by. */
+data class DislikeUndo(
+    val receipt: net.asksakis.massdroidv2.domain.repository.DislikeReceipt,
+    val trackName: String,
+)

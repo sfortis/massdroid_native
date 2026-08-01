@@ -23,6 +23,18 @@ interface SmartListeningRepository {
     suspend fun recordLike(track: Track, artists: List<Pair<String, String>>)
     suspend fun recordUnlike(track: Track, artists: List<Pair<String, String>>)
 
+    /**
+     * An explicit "not this one". The only negative signal that needs no
+     * interpretation: every other one is inferred from behaviour, and until this
+     * existed the only way to reject a track was to skip it (ambiguous) or block
+     * its artist (far too broad). Returns a receipt for [undoDislike], or null
+     * if nothing was recorded.
+     */
+    suspend fun recordDislike(track: Track, artists: List<Pair<String, String>>): DislikeReceipt?
+
+    /** Puts back exactly what [recordDislike] changed. */
+    suspend fun undoDislike(receipt: DislikeReceipt)
+
     suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean)
     suspend fun getBlockedArtistUris(): Set<String>
     suspend fun getBlockedArtists(): List<BlockedArtistInfo>
@@ -30,3 +42,18 @@ interface SmartListeningRepository {
     suspend fun getSuppressedArtistUris(days: Int = 120): Set<String>
     suspend fun getSuppressedTrackUris(): Set<String>
 }
+
+/**
+ * What a dislike changed, so it can be put back exactly.
+ *
+ * The track score is restored rather than nudged back, because a dislike SETS
+ * the score instead of adding to it: a delta could not promise to bury a track
+ * the listener had previously loved.
+ */
+data class DislikeReceipt(
+    val trackKey: String,
+    val previousScore: Double,
+    val artistSignal: Double,
+    val artistUris: List<String>,
+    val createdAt: Long,
+)

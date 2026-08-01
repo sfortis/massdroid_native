@@ -17,6 +17,7 @@ import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistLearningMetrics
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
+import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -46,6 +47,13 @@ class SmartListeningRepositoryImpl @Inject constructor(
         private const val LISTEN_ARTIST_SIGNAL = 0.20
         private const val LIKE_ARTIST_SIGNAL = 0.60
         private const val UNLIKE_ARTIST_SIGNAL = -0.70
+
+        /**
+         * Where an explicitly disliked track lands. Comfortably under the
+         * suppression line (-0.15) so no later positive signal can drag it back
+         * into a mix by accident.
+         */
+        private const val DISLIKE_TRACK_SCORE = -2.0
 
         private const val SUPPRESS_SCORE_THRESHOLD = -1.5
         private const val SUPPRESS_NEGATIVE_MIN = 3
@@ -98,6 +106,50 @@ class SmartListeningRepositoryImpl @Inject constructor(
             action = "unlike",
             signalPerArtist = UNLIKE_ARTIST_SIGNAL
         )
+    }
+
+    override suspend fun recordDislike(
+        track: Track,
+        artists: List<Pair<String, String>>
+    ): DislikeReceipt? {
+        if (!settingsRepository.smartListeningEnabled.first()) return null
+        val trackKey = MediaIdentity.canonicalTrackKey(track.itemId, track.uri) ?: return null
+        val normalized = normalizeArtists(track, artists)
+        if (normalized.isEmpty()) return null
+
+        val now = System.currentTimeMillis()
+        val previousScore = dao.getTrackScore(trackKey) ?: 0.0
+        // The artist is only brushed, using the same dampening a skip gets: one
+        // bad track is not a verdict on whoever made it. Rejecting the artist
+        // outright is what the block list is for.
+        val artistSignal = UNLIKE_ARTIST_SIGNAL * SKIP_ARTIST_DAMPENING
+        insertArtistSignals(
+            track = track,
+            artists = artists,
+            action = "dislike",
+            signalPerArtist = artistSignal,
+            trackSignalOverride = 0.0,
+            now = now
+        )
+        // Set, not adjust: the track has to end up below the suppression line
+        // whatever it scored before, so it never comes back in a mix.
+        dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE)
+        Log.d(TAG, "Disliked $trackKey (score $previousScore -> $DISLIKE_TRACK_SCORE)")
+        return DislikeReceipt(
+            trackKey = trackKey,
+            previousScore = previousScore,
+            artistSignal = artistSignal,
+            artistUris = normalized.map { it.first },
+            createdAt = now,
+        )
+    }
+
+    override suspend fun undoDislike(receipt: DislikeReceipt) {
+        appDatabase.withTransaction {
+            dao.setTrackScore(receipt.trackKey, receipt.previousScore)
+            dao.deleteSmartFeedback(receipt.trackKey, "dislike", receipt.createdAt)
+        }
+        Log.d(TAG, "Undid dislike for ${receipt.trackKey} (score back to ${receipt.previousScore})")
     }
 
     override suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean) {
@@ -186,9 +238,11 @@ class SmartListeningRepositoryImpl @Inject constructor(
         action: String,
         signalPerArtist: Double,
         trackSignalOverride: Double? = null,
-        listenedMs: Long? = null
+        listenedMs: Long? = null,
+        // Passed in when the caller needs the rows to carry a timestamp it can
+        // find again, which is how a dislike is undone.
+        now: Long = System.currentTimeMillis()
     ) {
-        val now = System.currentTimeMillis()
         val trackKey = MediaIdentity.canonicalTrackKey(track.itemId, track.uri) ?: return
         val albumKey = MediaIdentity.canonicalAlbumKey(track.albumItemId, track.albumUri)
         val normalized = normalizeArtists(track, artists)

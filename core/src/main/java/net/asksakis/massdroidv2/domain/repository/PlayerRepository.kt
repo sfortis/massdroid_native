@@ -142,6 +142,14 @@ interface PlayerRepository {
     fun isArtistBlocked(artistName: String, artistUri: String): Boolean
     fun hasBlockedArtists(): Boolean
     suspend fun next(playerId: String)
+
+    /**
+     * Move on without reading anything into it.
+     *
+     * For callers that have already recorded what the listener meant, so the
+     * move itself must not be filed as a second, weaker signal.
+     */
+    suspend fun skipWithoutSignal(playerId: String)
     suspend fun previous(playerId: String)
     suspend fun seek(playerId: String, position: Double)
     /**
