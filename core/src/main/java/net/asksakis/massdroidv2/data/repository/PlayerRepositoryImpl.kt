@@ -41,6 +41,7 @@ class PlayerRepositoryImpl @Inject constructor(
         private const val TAG = "PlayerRepo"
         // MA RPC error code for "no more tracks available" (queue exhausted).
         private const val NO_MORE_TRACKS_CODE = 11
+        private const val LIBRARY_URI_PREFIX = "library://"
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
         // How long the one-time blocked-alias backfill waits for a queue to
         // appear before giving up on cleaning it; the next queue event does it.
@@ -312,25 +313,6 @@ class PlayerRepositoryImpl @Inject constructor(
                             libraryArtistUriCache.putAll(
                                 playHistoryRepository.getLibraryArtistUriMap()
                             )
-                        }
-                        // Blocks made before an artist's other uris were recorded
-                        // only match the one uri they were stored under, so the
-                        // artist keeps playing from any other provider. Needs the
-                        // server, so it waits for a connection; it is a one-time
-                        // pass and does nothing once it has run.
-                        scope.launch {
-                            runCatching {
-                                smartListeningRepository.backfillBlockedArtistAliases()
-                                // The blocked-uri flow does re-run the queue
-                                // cleanup, but at this point in the connect there
-                                // is usually no queue yet for it to clean, so the
-                                // newly-expanded blocks would sit unapplied until
-                                // something else happened to touch the queue.
-                                // Bounded wait, then one forced pass.
-                                withTimeoutOrNull(BLOCKED_BACKFILL_QUEUE_WAIT_MS) {
-                                    _queueState.filterNotNull().first()
-                                }?.let { scheduleBlockedQueueCleanup(it.queueId, "alias_backfill", force = true) }
-                            }.onFailure { Log.w(TAG, "Blocked-artist backfill failed: ${it.message}") }
                         }
                         // Clear stale queue snapshot immediately after reconnect so the UI
                         // falls back to fresh player media instead of showing pre-restart data.
@@ -1058,14 +1040,21 @@ class PlayerRepositoryImpl @Inject constructor(
                             ?.let { add(it) }
                     }
                 }
-                val resolvedArtistKeys = rawArtistKeys.mapNotNull { rawKey ->
-                    if (rawKey.startsWith("library://")) {
-                        rawKey
+                // The name-resolved library uri is an ADDITION, never a
+                // replacement. It used to substitute for the provider uri, so a
+                // stale name -> library mapping (the cache is filled once per
+                // connect, and library ids get reused) threw away the very uri
+                // the block was stored under: a blocked artist kept a track in
+                // the queue because their provider uri was resolved to a library
+                // id that now belongs to somebody else.
+                val candidateKeys = rawArtistKeys + rawArtistKeys.mapNotNull { rawKey ->
+                    if (rawKey.startsWith(LIBRARY_URI_PREFIX)) {
+                        null
                     } else {
-                        resolveLibraryArtistUri(track.artistNames, rawKey)
+                        resolveLibraryArtistUri(track.artistNames, rawKey).takeIf { it != rawKey }
                     }
                 }
-                if (resolvedArtistKeys.any { it in filteredArtists }) item.queueItemId else null
+                if (candidateKeys.any { it in filteredArtists }) item.queueItemId else null
             }
             if (removeQueueItemIds.isEmpty()) return
 

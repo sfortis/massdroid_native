@@ -38,10 +38,15 @@ interface SmartListeningRepository {
     suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean)
 
     /**
-     * One-time catch-up for blocks stored before an artist's other uris were
-     * recorded. Safe to call repeatedly; it does nothing once it has run.
+     * Expands stored blocks to every uri the server currently knows for each
+     * artist.
+     *
+     * [providersFingerprint] identifies the server's music providers. The work
+     * is skipped while it matches what the last expansion saw, and repeats when
+     * it changes, because a newly added provider gives blocked artists uris that
+     * nobody has blocked. Returns true when something was actually expanded.
      */
-    suspend fun backfillBlockedArtistAliases()
+    suspend fun backfillBlockedArtistAliases(providersFingerprint: String): Boolean
     suspend fun getBlockedArtistUris(): Set<String>
     suspend fun getBlockedArtists(): List<BlockedArtistInfo>
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>

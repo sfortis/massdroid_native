@@ -16,13 +16,17 @@ interface SettingsRepository {
     val smartListeningEnabled: Flow<Boolean>
 
     /**
-     * Whether existing blocked artists have been expanded to every uri the
-     * server knows for them. Blocks stored before that expansion existed hold a
-     * single uri and silently fail to match the same artist arriving from a
-     * different provider, so they need one pass to catch up.
+     * The set of music providers the blocked-artist uris were last expanded
+     * against.
+     *
+     * A block is stored under every uri the server knows for that artist, which
+     * is a snapshot: add a provider later and the artist gains a uri nobody
+     * blocked, so they start playing again from the new one. Remembering WHICH
+     * providers the expansion saw turns "run once ever" into "run again when
+     * the answer could have changed".
      */
-    val blockedArtistAliasesBackfilled: Flow<Boolean>
-    suspend fun setBlockedArtistAliasesBackfilled(done: Boolean)
+    val blockedArtistAliasProviders: Flow<String>
+    suspend fun setBlockedArtistAliasProviders(fingerprint: String)
     /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
     val smartMixVariety: Flow<Float>
     /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */

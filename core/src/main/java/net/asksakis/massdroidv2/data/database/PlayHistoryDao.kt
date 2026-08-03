@@ -269,6 +269,7 @@ interface PlayHistoryDao {
     @Query("SELECT artist_uri FROM blocked_artists")
     fun observeBlockedArtistUris(): Flow<List<String>>
 
+    /** Every stored row, one per uri. For expansion and matching, not for display. */
     @Query(
         """
         SELECT artist_uri AS artistUri, artist_name AS artistName, blocked_at AS blockedAt
@@ -277,6 +278,37 @@ interface PlayHistoryDao {
         """
     )
     suspend fun getBlockedArtists(): List<BlockedArtistRow>
+
+    /**
+     * One row per artist, for the list a person reads.
+     *
+     * A block is stored under every uri the server knows for that artist, so the
+     * raw table holds several rows for one act and showed them as duplicates.
+     * Grouping by name is right HERE and nowhere else: this is a list of people,
+     * and two same-named acts appearing once is a display detail, while matching
+     * them as one artist would be a real mistake.
+     */
+    @Query(
+        """
+        SELECT MIN(artist_uri) AS artistUri, artist_name AS artistName, MAX(blocked_at) AS blockedAt
+        FROM blocked_artists
+        WHERE artist_name IS NOT NULL AND artist_name != ''
+        GROUP BY artist_name
+        ORDER BY blockedAt DESC
+        """
+    )
+    suspend fun getBlockedArtistsForDisplay(): List<BlockedArtistRow>
+
+    /** Blocks with no name attached cannot be grouped, so they are listed as they are. */
+    @Query(
+        """
+        SELECT artist_uri AS artistUri, artist_name AS artistName, blocked_at AS blockedAt
+        FROM blocked_artists
+        WHERE artist_name IS NULL OR artist_name = ''
+        ORDER BY blocked_at DESC
+        """
+    )
+    suspend fun getUnnamedBlockedArtists(): List<BlockedArtistRow>
 
     @Query("UPDATE tracks SET score = score + :delta WHERE uri = :trackUri")
     suspend fun adjustTrackScore(trackUri: String, delta: Double)

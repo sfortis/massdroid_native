@@ -81,14 +81,14 @@ class BlockedArtistAliasTest {
     // --- one-time catch-up for blocks stored before any of this existed ---
 
     @Test
-    fun `the backfill expands existing blocks and only runs once`() = runTest {
-        every { settings.blockedArtistAliasesBackfilled } returns flowOf(false)
+    fun `the backfill expands existing blocks and remembers the providers it saw`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("")
         coEvery { dao.getBlockedArtists() } returns listOf(
             BlockedArtistRow(libraryUri, "The Midnight", 1_700_000_000_000)
         )
         val repo = repo { uri -> if (uri == libraryUri) listOf(providerUri) else emptyList() }
 
-        repo.backfillBlockedArtistAliases()
+        repo.backfillBlockedArtistAliases("acme,other")
 
         val rows = slot<List<BlockedArtistEntity>>()
         coVerify { dao.upsertBlockedArtists(capture(rows)) }
@@ -96,25 +96,67 @@ class BlockedArtistAliasTest {
         // The original blocked_at is kept, so the list stays in the order the
         // listener built it.
         assertThat(rows.captured.single().blockedAt).isEqualTo(1_700_000_000_000)
-        coVerify { settings.setBlockedArtistAliasesBackfilled(true) }
+        coVerify { settings.setBlockedArtistAliasProviders("acme,other") }
     }
 
     @Test
-    fun `the backfill does nothing once it has run`() = runTest {
-        every { settings.blockedArtistAliasesBackfilled } returns flowOf(true)
+    fun `nothing is redone while the providers are the ones already expanded against`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme,other")
 
-        repo { error("must not resolve") }.backfillBlockedArtistAliases()
+        val expanded = repo { error("must not resolve") }
+            .backfillBlockedArtistAliases("acme,other")
 
+        assertThat(expanded).isFalse()
         coVerify(exactly = 0) { dao.getBlockedArtists() }
     }
 
     @Test
-    fun `an install with no blocks is marked done rather than rechecked forever`() = runTest {
-        every { settings.blockedArtistAliasesBackfilled } returns flowOf(false)
+    fun `adding a provider expands the blocks again`() = runTest {
+        // The point of remembering the set rather than a done flag: a new
+        // provider gives blocked artists a uri nobody has blocked, and they
+        // start playing again from it.
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 1_700_000_000_000)
+        )
+
+        val expanded = repo { listOf(providerUri) }.backfillBlockedArtistAliases("acme,newone")
+
+        assertThat(expanded).isTrue()
+        coVerify { settings.setBlockedArtistAliasProviders("acme,newone") }
+    }
+
+    @Test
+    fun `an unread provider list is not recorded as an expansion`() = runTest {
+        // Otherwise the app would remember "expanded against nothing" and never
+        // run again on this install.
+        every { settings.blockedArtistAliasProviders } returns flowOf("")
+
+        assertThat(repo { error("must not resolve") }.backfillBlockedArtistAliases("")).isFalse()
+        coVerify(exactly = 0) { settings.setBlockedArtistAliasProviders(any()) }
+    }
+
+    @Test
+    fun `an install with no blocks still records the providers it checked`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("")
         coEvery { dao.getBlockedArtists() } returns emptyList()
 
-        repo { error("must not resolve") }.backfillBlockedArtistAliases()
+        repo { error("must not resolve") }.backfillBlockedArtistAliases("acme")
 
-        coVerify { settings.setBlockedArtistAliasesBackfilled(true) }
+        coVerify { settings.setBlockedArtistAliasProviders("acme") }
+    }
+
+    @Test
+    fun `the list a person reads shows one row per artist`() = runTest {
+        // The table holds one row per uri, so an artist blocked under two
+        // providers appeared twice in the blocked list.
+        coEvery { dao.getBlockedArtistsForDisplay() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000)
+        )
+        coEvery { dao.getUnnamedBlockedArtists() } returns emptyList()
+
+        val shown = repo { emptyList() }.getBlockedArtists()
+
+        assertThat(shown.map { it.artistName }).containsExactly("The Midnight")
     }
 }

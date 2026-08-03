@@ -212,14 +212,16 @@ class SmartListeningRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun backfillBlockedArtistAliases() {
-        if (settingsRepository.blockedArtistAliasesBackfilled.first()) return
+    override suspend fun backfillBlockedArtistAliases(providersFingerprint: String): Boolean {
+        // An empty fingerprint means the provider list has not been read yet.
+        // Expanding now would record "expanded against nothing" and then never
+        // run again, which is worse than waiting for the next connect.
+        if (providersFingerprint.isBlank()) return false
+        if (settingsRepository.blockedArtistAliasProviders.first() == providersFingerprint) return false
         val existing = dao.getBlockedArtists()
-        // Mark it done even when there is nothing to do, so an install with no
-        // blocks does not re-check on every launch.
         if (existing.isEmpty()) {
-            settingsRepository.setBlockedArtistAliasesBackfilled(true)
-            return
+            settingsRepository.setBlockedArtistAliasProviders(providersFingerprint)
+            return false
         }
         var added = 0
         for (row in existing) {
@@ -238,20 +240,23 @@ class SmartListeningRepositoryImpl @Inject constructor(
             )
             added += aliases.size
         }
-        settingsRepository.setBlockedArtistAliasesBackfilled(true)
-        Log.d(TAG, "Blocked-artist backfill: ${existing.size} blocks expanded by $added uri(s)")
+        settingsRepository.setBlockedArtistAliasProviders(providersFingerprint)
+        Log.d(TAG, "Blocked-artist expansion for [$providersFingerprint]: ${existing.size} blocks, +$added uri(s)")
+        return added > 0
     }
 
     override suspend fun getBlockedArtistUris(): Set<String> = dao.getBlockedArtistUris().toSet()
 
     override suspend fun getBlockedArtists(): List<BlockedArtistInfo> =
-        dao.getBlockedArtists().map {
-            BlockedArtistInfo(
-                artistUri = it.artistUri,
-                artistName = it.artistName,
-                blockedAt = it.blockedAt
-            )
-        }
+        (dao.getBlockedArtistsForDisplay() + dao.getUnnamedBlockedArtists())
+            .sortedByDescending { it.blockedAt }
+            .map {
+                BlockedArtistInfo(
+                    artistUri = it.artistUri,
+                    artistName = it.artistName,
+                    blockedAt = it.blockedAt
+                )
+            }
 
     override suspend fun getArtistMetrics(days: Int): Map<String, ArtistLearningMetrics> {
         val since = System.currentTimeMillis() - days * MILLIS_PER_DAY

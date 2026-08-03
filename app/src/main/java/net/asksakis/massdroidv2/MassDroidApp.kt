@@ -35,6 +35,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     lateinit var providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
 
     @Inject
+    lateinit var smartListeningRepository: net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+
+    @Inject
     lateinit var json: kotlinx.serialization.json.Json
 
     @Inject
@@ -132,6 +135,24 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             Log.d("MassDroidApp", "Token saved to DataStore")
                         }
                         providerManifestCache.fetchManifests(wsClient, json)
+                        // Blocked artists are stored under every uri the server
+                        // knows for them, which is a snapshot of the providers
+                        // configured at the time. Re-expanding whenever that set
+                        // changes is what keeps a blocked artist blocked after a
+                        // new provider gives them a uri nobody blocked. Runs here
+                        // because the fingerprint is only known once the provider
+                        // list above has been read.
+                        appScope.launch {
+                            val fingerprint = providerManifestCache.musicProviders
+                                .map { it.instanceId }
+                                .sorted()
+                                .joinToString(",")
+                            runCatching {
+                                smartListeningRepository.backfillBlockedArtistAliases(fingerprint)
+                            }.onFailure {
+                                Log.w("MassDroidApp", "Blocked-artist expansion failed: ${it.message}")
+                            }
+                        }
                         // Defer the library enrichment past the cold-start RPC burst
                         // (auth, providers, players, queue refresh, blocked-queue
                         // cleanup) so we don't pile a paginated music/artists/library_items
