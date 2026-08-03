@@ -36,6 +36,12 @@ interface SmartListeningRepository {
     suspend fun undoDislike(receipt: DislikeReceipt)
 
     suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean)
+
+    /**
+     * One-time catch-up for blocks stored before an artist's other uris were
+     * recorded. Safe to call repeatedly; it does nothing once it has run.
+     */
+    suspend fun backfillBlockedArtistAliases()
     suspend fun getBlockedArtistUris(): Set<String>
     suspend fun getBlockedArtists(): List<BlockedArtistInfo>
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>

@@ -310,6 +310,15 @@ class PlayerRepositoryImpl @Inject constructor(
                                 playHistoryRepository.getLibraryArtistUriMap()
                             )
                         }
+                        // Blocks made before an artist's other uris were recorded
+                        // only match the one uri they were stored under, so the
+                        // artist keeps playing from any other provider. Needs the
+                        // server, so it waits for a connection; it is a one-time
+                        // pass and does nothing once it has run.
+                        scope.launch {
+                            runCatching { smartListeningRepository.backfillBlockedArtistAliases() }
+                                .onFailure { Log.w(TAG, "Blocked-artist backfill failed: ${it.message}") }
+                        }
                         // Clear stale queue snapshot immediately after reconnect so the UI
                         // falls back to fresh player media instead of showing pre-restart data.
                         _queueState.value = null

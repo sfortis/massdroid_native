@@ -38,6 +38,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_USERNAME = stringPreferencesKey("username")
         private val KEY_PASSWORD = stringPreferencesKey("password")
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
+        private val KEY_BLOCKED_ALIASES_BACKFILLED = booleanPreferencesKey("blocked_artist_aliases_backfilled")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
@@ -149,6 +150,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSmartListeningEnabled(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SMART_LISTENING_ENABLED] = enabled }
+    }
+
+    override val blockedArtistAliasesBackfilled: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_BLOCKED_ALIASES_BACKFILLED] ?: false
+    }
+
+    override suspend fun setBlockedArtistAliasesBackfilled(done: Boolean) {
+        context.dataStore.edit { it[KEY_BLOCKED_ALIASES_BACKFILLED] = done }
     }
 
     override val smartMixVariety: Flow<Float> = safeData.map { prefs ->

@@ -707,9 +707,25 @@ class MusicRepositoryImpl @Inject constructor(
             mbid = externalIds
                 .firstOrNull { it.size >= 2 && it[0] == MUSICBRAINZ_ARTIST_ID }
                 ?.get(1)
-                ?.takeIf { it.isNotBlank() }
+                ?.takeIf { it.isNotBlank() },
+            providerUris = artistProviderUris()
         )
     }
+
+    /**
+     * The uris of this artist under each provider that carries them.
+     *
+     * A library artist's own uri says nothing about how it will arrive from a
+     * queue event, where the provider's uri is what turns up. `provider_mappings`
+     * is the server's own statement that these are the same artist, so it beats
+     * matching on the name, which is not unique.
+     */
+    private fun ServerMediaItem.artistProviderUris(): List<String> =
+        providerMappings
+            .filter { it.providerInstance.isNotBlank() && it.itemId.isNotBlank() }
+            .map { "${it.providerInstance}://artist/${it.itemId}" }
+            .filter { it != uri }
+            .distinct()
 
     private fun ServerMediaItem.toAlbum(): Album? {
         if (mediaType.isNotEmpty() && mediaType != "album") return null

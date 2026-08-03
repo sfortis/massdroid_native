@@ -38,7 +38,7 @@ class DislikeSignalTest {
         every { it.smartListeningEnabled } returns flowOf(true)
     }
 
-    private val repo = SmartListeningRepositoryImpl(dao, settings, transactions)
+    private val repo = SmartListeningRepositoryImpl(dao, settings, transactions) { emptyList() }
 
     private val track = Track(
         itemId = "t1",

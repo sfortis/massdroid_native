@@ -281,6 +281,13 @@ interface PlayHistoryDao {
     @Query("UPDATE tracks SET score = score + :delta WHERE uri = :trackUri")
     suspend fun adjustTrackScore(trackUri: String, delta: Double)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertBlockedArtists(rows: List<BlockedArtistEntity>)
+
+    /** Unblock fallback when the server could not list an artist's other uris. */
+    @Query("DELETE FROM blocked_artists WHERE artist_name = :artistName")
+    suspend fun deleteBlockedArtistsByName(artistName: String)
+
     @Query("SELECT score FROM tracks WHERE uri = :trackUri")
     suspend fun getTrackScore(trackUri: String): Double?
 

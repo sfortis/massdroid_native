@@ -98,7 +98,18 @@ data class Artist(
      * Scottish singer-songwriter and a Norwegian pop singer both called Annie,
      * a US grunge band and a 60s UK band both called Nirvana).
      */
-    val mbid: String? = null
+    val mbid: String? = null,
+    /**
+     * Every OTHER uri Music Assistant knows this artist by.
+     *
+     * One artist is one person but several uris: the library row and one per
+     * provider that carries them. Which one arrives depends on where you are
+     * looking - the library screen hands out `library://artist/202` while the
+     * same artist reaches the queue as `deezer--GWnPbDSt://artist/6807853` -
+     * so anything that has to recognise "this artist" later, rather than just
+     * display them now, needs all of them.
+     */
+    val providerUris: List<String> = emptyList()
 )
 
 @Serializable

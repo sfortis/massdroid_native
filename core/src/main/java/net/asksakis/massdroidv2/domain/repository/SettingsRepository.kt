@@ -14,6 +14,15 @@ interface SettingsRepository {
     val password: Flow<String>
     val sendspinEnabled: Flow<Boolean>
     val smartListeningEnabled: Flow<Boolean>
+
+    /**
+     * Whether existing blocked artists have been expanded to every uri the
+     * server knows for them. Blocks stored before that expansion existed hold a
+     * single uri and silently fail to match the same artist arriving from a
+     * different provider, so they need one pass to catch up.
+     */
+    val blockedArtistAliasesBackfilled: Flow<Boolean>
+    suspend fun setBlockedArtistAliasesBackfilled(done: Boolean)
     /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
     val smartMixVariety: Flow<Float>
     /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */

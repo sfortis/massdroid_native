@@ -15,6 +15,7 @@ import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistLearningMetrics
+import net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
 import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -29,7 +30,8 @@ import kotlin.math.exp
 class SmartListeningRepositoryImpl @Inject constructor(
     private val dao: PlayHistoryDao,
     private val settingsRepository: SettingsRepository,
-    private val transactions: TransactionRunner
+    private val transactions: TransactionRunner,
+    private val artistAliases: ArtistAliasResolver
 ) : SmartListeningRepository {
 
     companion object {
@@ -172,22 +174,72 @@ class SmartListeningRepositoryImpl @Inject constructor(
         )
     }
 
+    /**
+     * Blocks or unblocks an artist under EVERY uri the server knows for them.
+     *
+     * One artist reaches the app under several uris - the library row and one
+     * per provider carrying them - and which one a screen hands over depends on
+     * where the artist was found. Storing only that one meant a block placed
+     * from the library never matched the same artist arriving from a queue
+     * event, so the "blocked" artist kept playing (reported for The Midnight:
+     * blocked as `library://artist/202`, playing as a Deezer uri).
+     *
+     * Aliases come from Music Assistant, so this stays provider-agnostic. If the
+     * server cannot be reached the caller's own uri is still stored, which is no
+     * worse than the previous behaviour.
+     */
     override suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean) {
         val artistKey = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
+        val name = artistName?.takeIf { it.isNotBlank() }
+        val keys = (listOf(artistKey) + artistAliases.aliasesFor(artistKey))
+            .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
+            .distinct()
         if (blocked) {
-            dao.upsertBlockedArtist(
-                BlockedArtistEntity(
-                    artistUri = artistKey,
-                    artistName = artistName?.takeIf { it.isNotBlank() },
-                    blockedAt = System.currentTimeMillis()
-                )
+            val now = System.currentTimeMillis()
+            dao.upsertBlockedArtists(
+                keys.map { BlockedArtistEntity(artistUri = it, artistName = name, blockedAt = now) }
             )
-            val verify = dao.getBlockedArtistUris()
-            Log.d(TAG, "Blocked artist: $artistKey (total blocked: ${verify.size}, contains=${ artistKey in verify})")
+            Log.d(TAG, "Blocked artist ${name ?: artistKey} under ${keys.size} uri(s): $keys")
         } else {
-            dao.deleteBlockedArtist(artistKey)
-            Log.d(TAG, "Unblocked artist: $artistKey")
+            for (key in keys) dao.deleteBlockedArtist(key)
+            // Aliases are resolved from the server, so an unblock made offline
+            // would leave the other uris blocked and the artist still silenced
+            // with no way to tell why. Clearing by name as well is the forgiving
+            // direction: the worst case is releasing a same-named artist the
+            // listener also blocked, rather than a block that cannot be undone.
+            name?.let { dao.deleteBlockedArtistsByName(it) }
+            Log.d(TAG, "Unblocked artist ${name ?: artistKey}")
         }
+    }
+
+    override suspend fun backfillBlockedArtistAliases() {
+        if (settingsRepository.blockedArtistAliasesBackfilled.first()) return
+        val existing = dao.getBlockedArtists()
+        // Mark it done even when there is nothing to do, so an install with no
+        // blocks does not re-check on every launch.
+        if (existing.isEmpty()) {
+            settingsRepository.setBlockedArtistAliasesBackfilled(true)
+            return
+        }
+        var added = 0
+        for (row in existing) {
+            val aliases = artistAliases.aliasesFor(row.artistUri)
+                .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
+                .filter { it != row.artistUri }
+            if (aliases.isEmpty()) continue
+            dao.upsertBlockedArtists(
+                aliases.map {
+                    BlockedArtistEntity(
+                        artistUri = it,
+                        artistName = row.artistName,
+                        blockedAt = row.blockedAt
+                    )
+                }
+            )
+            added += aliases.size
+        }
+        settingsRepository.setBlockedArtistAliasesBackfilled(true)
+        Log.d(TAG, "Blocked-artist backfill: ${existing.size} blocks expanded by $added uri(s)")
     }
 
     override suspend fun getBlockedArtistUris(): Set<String> = dao.getBlockedArtistUris().toSet()

@@ -51,8 +51,17 @@ object RepositoryModule {
     fun provideSmartListeningRepository(
         dao: PlayHistoryDao,
         settingsRepository: SettingsRepository,
-        transactions: net.asksakis.massdroidv2.data.database.TransactionRunner
-    ): SmartListeningRepository = SmartListeningRepositoryImpl(dao, settingsRepository, transactions)
+        transactions: net.asksakis.massdroidv2.data.database.TransactionRunner,
+        artistAliases: net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver
+    ): SmartListeningRepository =
+        SmartListeningRepositoryImpl(dao, settingsRepository, transactions, artistAliases)
+
+    @Provides
+    @Singleton
+    fun provideArtistAliasResolver(
+        musicRepository: MusicRepository
+    ): net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver =
+        net.asksakis.massdroidv2.data.repository.MaArtistAliasResolver(musicRepository)
 
     @Provides
     @Singleton
