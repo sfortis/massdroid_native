@@ -42,6 +42,9 @@ class PlayerRepositoryImpl @Inject constructor(
         // MA RPC error code for "no more tracks available" (queue exhausted).
         private const val NO_MORE_TRACKS_CODE = 11
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
+        // How long the one-time blocked-alias backfill waits for a queue to
+        // appear before giving up on cleaning it; the next queue event does it.
+        private const val BLOCKED_BACKFILL_QUEUE_WAIT_MS = 15_000L
         private const val BLOCKED_QUEUE_CLEANUP_COOLDOWN_MS = 2_000L
         private const val BLOCKED_QUEUE_ITEMS_LIMIT = 500
         private const val HISTORY_GENRE_LOOKUP_TIMEOUT_MS = 1_200L
@@ -316,8 +319,18 @@ class PlayerRepositoryImpl @Inject constructor(
                         // server, so it waits for a connection; it is a one-time
                         // pass and does nothing once it has run.
                         scope.launch {
-                            runCatching { smartListeningRepository.backfillBlockedArtistAliases() }
-                                .onFailure { Log.w(TAG, "Blocked-artist backfill failed: ${it.message}") }
+                            runCatching {
+                                smartListeningRepository.backfillBlockedArtistAliases()
+                                // The blocked-uri flow does re-run the queue
+                                // cleanup, but at this point in the connect there
+                                // is usually no queue yet for it to clean, so the
+                                // newly-expanded blocks would sit unapplied until
+                                // something else happened to touch the queue.
+                                // Bounded wait, then one forced pass.
+                                withTimeoutOrNull(BLOCKED_BACKFILL_QUEUE_WAIT_MS) {
+                                    _queueState.filterNotNull().first()
+                                }?.let { scheduleBlockedQueueCleanup(it.queueId, "alias_backfill", force = true) }
+                            }.onFailure { Log.w(TAG, "Blocked-artist backfill failed: ${it.message}") }
                         }
                         // Clear stale queue snapshot immediately after reconnect so the UI
                         // falls back to fresh player media instead of showing pre-restart data.
