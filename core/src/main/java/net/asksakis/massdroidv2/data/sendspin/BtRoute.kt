@@ -16,6 +16,31 @@ internal fun isBluetoothSink(type: Int): Boolean =
         type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
         type == AudioDeviceInfo.TYPE_BLE_SPEAKER
 
+/**
+ * Whether Bluetooth playback should hold off a Follow Me room switch.
+ *
+ * The point of the hold is "do not yank the player out from under someone who
+ * is listening over Bluetooth", most obviously while driving. Both halves of
+ * that matter and both used to be approximated badly: the previous rule asked
+ * whether ANY Bluetooth output was *available* and whether the Sendspin client
+ * was *connected to the server*.
+ *
+ * Neither says anything about what is actually happening. Measured on a device:
+ * the audio had moved back to the phone speaker five minutes earlier
+ * (`Audio route changed: BT -> SPEAKER`), Sendspin sat at `playback=IDLE`, the
+ * car lock had already been released - and a confirmed room still refused to
+ * select, because a Bluetooth device was merely connected somewhere. That is
+ * exactly the inference the project's own rule forbids: the active route comes
+ * from the routed device, never from the connected ones.
+ *
+ * @param routedDeviceType the device the output stream is actually bound to, or
+ *   null when nothing is playing.
+ * @param audioFlowing whether audio is actually flowing right now, as opposed to
+ *   a client that happens to be connected.
+ */
+fun bluetoothHoldsRoomSwitch(routedDeviceType: Int?, audioFlowing: Boolean): Boolean =
+    audioFlowing && routedDeviceType != null && isBluetoothSink(routedDeviceType)
+
 /** True if any connected output device is a Bluetooth sink. */
 internal fun AudioManager.anyBluetoothSinkConnected(): Boolean =
     getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { isBluetoothSink(it.type) }

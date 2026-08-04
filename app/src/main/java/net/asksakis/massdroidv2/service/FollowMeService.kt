@@ -19,8 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.proximity.MotionGate
@@ -122,6 +122,17 @@ class FollowMeService : Service() {
             sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
         ).also { it.start() }
 
+        // Getting out of the car is the moment the hold above stops applying,
+        // and by then the room has usually already been confirmed - so nothing
+        // would revisit it. Audio stopping flowing is that moment: it covers a
+        // Bluetooth disconnect, a pause, and a route change back to the phone
+        // alike, without this service having to track any of them.
+        scope.launch {
+            sendspinManager.audioResourcesActive.collect { flowing ->
+                if (!flowing) proximityController?.reapplyConfirmedRoom("bt-audio-released")
+            }
+        }
+
         // Hold the foreground notification only while Follow Me is enabled; tear down when disabled.
         // Gate on load() first: config starts as the disabled-by-default value and is populated
         // asynchronously from disk. On a START_STICKY background restart there is no Activity to load
@@ -170,12 +181,11 @@ class FollowMeService : Service() {
     }
 
     /** Reconstructed from singletons so we do not depend on the PlaybackService-local SendspinCoordinator. */
-    private fun shouldBlockProximitySelectionForBt(): Boolean {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
-        val btA2dpActive = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-        return btA2dpActive && sendspinManager.connectionState.value != SendspinState.DISCONNECTED
-    }
+    private fun shouldBlockProximitySelectionForBt(): Boolean =
+        net.asksakis.massdroidv2.data.sendspin.bluetoothHoldsRoomSwitch(
+            routedDeviceType = sendspinManager.getRoutedDeviceType(),
+            audioFlowing = sendspinManager.audioResourcesActive.value,
+        )
 
     private fun sendVolumeCommand(playerId: String, volume: Int) {
         scope.launch(Dispatchers.IO) {

@@ -897,6 +897,24 @@ class ProximityController(
         getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
     }
 
+    /**
+     * Re-apply the room already confirmed, for when whatever was blocking the
+     * switch has gone.
+     *
+     * A room is confirmed once. If the Bluetooth hold was up at that moment the
+     * selection is skipped and nothing ever revisits it, so parking the car and
+     * walking into a room the app had already recognised left the wrong player
+     * selected until the room changed again. The detector still holds the
+     * confirmed room, so re-applying needs no extra state.
+     */
+    fun reapplyConfirmedRoom(reason: String) {
+        val detected = roomDetector.currentRoom.value ?: return
+        if (!shouldRunProximity(proximityConfigStore.config.value)) return
+        if (!isWithinSchedule()) return
+        if (playerRepository.selectedPlayer.value?.playerId == detected.playerId) return
+        selectProximityPlayer(detected, reason)
+    }
+
     fun reevaluate(reason: String) {
         val config = proximityConfigStore.config.value
         if (shouldRunProximity(config)) {
