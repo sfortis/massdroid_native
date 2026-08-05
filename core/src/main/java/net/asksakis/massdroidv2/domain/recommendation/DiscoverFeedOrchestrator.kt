@@ -35,8 +35,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
     private val genreRepository: GenreRepository,
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    lastFmSimilarResolver: LastFmSimilarResolver,
-    lastFmGenreResolver: LastFmGenreResolver,
+    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val libraryGenreEnricher: LibraryGenreEnricher,
     providerHealthReporter: ProviderHealthReporter,
     private val sectionBuilder: DiscoverSectionBuilder,
@@ -47,8 +46,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
         musicRepository = musicRepository,
         playHistoryRepository = playHistoryRepository,
         genreRepository = genreRepository,
-        lastFmSimilarResolver = lastFmSimilarResolver,
-        lastFmGenreResolver = lastFmGenreResolver,
+        musicBrainzGenreResolver = musicBrainzGenreResolver,
         providerHealthReporter = providerHealthReporter,
     )
 

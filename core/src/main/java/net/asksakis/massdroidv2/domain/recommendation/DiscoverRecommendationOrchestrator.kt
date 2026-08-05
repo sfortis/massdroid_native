@@ -20,6 +20,7 @@ import kotlin.random.Random
 
 private const val ORCHESTRATOR_TAG = "DiscoverReco"
 private const val DISCOVERY_SEED_LIMIT = 8
+private const val LIBRARY_PROVIDER = "library"
 private const val DISCOVERY_PER_SEED_SIMILARS = 4
 private const val DISCOVERY_RESOLVE_BUDGET = 25
 private const val DISCOVERY_VOTE_WEIGHT = 0.2
@@ -46,8 +47,7 @@ class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val lastFmSimilarResolver: LastFmSimilarResolver,
-    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 ) {
 
@@ -102,12 +102,25 @@ class DiscoverRecommendationOrchestrator(
 
         Log.d(
             ORCHESTRATOR_TAG,
-            "Discovery: artists lastFm=${artistsLastFm.size} fallback=${artistsFallback.size} final=${artists.size}; " +
-                "albums lastFm=${albumsLastFm.size} fallback=${albumsFallback.size} final=${albums.size}"
+            "Discovery: artists similar=${artistsLastFm.size} fallback=${artistsFallback.size} final=${artists.size}; " +
+                "albums similar=${albumsLastFm.size} fallback=${albumsFallback.size} final=${albums.size}"
         )
         return DiscoveryResult(artists = artists, albums = albums)
     }
 
+    /**
+     * Candidates from Music Assistant's own `similar_artists`.
+     *
+     * This used to ask Last.fm for NAMES and then search every provider for
+     * each one, which needed an API key the listener had to go and create, and
+     * still lost candidates whose name did not match exactly. Music Assistant
+     * answers with fully formed, playable items, so the whole name-resolution
+     * stage is gone: no key, no search per candidate, no near-miss.
+     *
+     * Its answers are Last.fm's, fetched with Music Assistant's own built-in
+     * key, so the quality is unchanged for someone who never configures
+     * anything.
+     */
     private suspend fun buildEnrichedCandidatePool(
         libraryNames: Set<String>,
         excludedArtistUris: Set<String>
@@ -121,53 +134,75 @@ class DiscoverRecommendationOrchestrator(
         )
 
         val similarsBySeed = seeds.map { seed ->
-            async {
-                try {
-                    seed to lastFmSimilarResolver.resolve(seed.artistName, limit = DISCOVERY_PER_SEED_SIMILARS)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(ORCHESTRATOR_TAG, "Last.fm similar fetch failed for ${seed.artistName}: ${e.message}")
-                    seed to emptyList()
-                }
-            }
+            async { seed to similarArtistsForSeed(seed) }
         }.awaitAll()
 
-        val candidatesByName = mutableMapOf<String, DiscoveryCandidate>()
+        val candidatesByUri = LinkedHashMap<String, DiscoveryCandidate>()
+        val artistByUri = HashMap<String, Artist>()
         for ((seed, similars) in similarsBySeed) {
-            for (similar in similars) {
-                val name = similar.name.lowercase()
-                if (name in libraryNames) continue
-                if (similar.matchScore <= 0.0) continue
-                val candidate = candidatesByName.getOrPut(name) { DiscoveryCandidate(name) }
-                candidate.bestMatchScore = maxOf(candidate.bestMatchScore, similar.matchScore)
+            similars.forEachIndexed { rank, artist ->
+                if (artist.uri.isBlank()) return@forEachIndexed
+                if (artist.name.lowercase() in libraryNames) return@forEachIndexed
+                if (isExcluded(artist, excludedArtistUris)) return@forEachIndexed
+                // The server's ordering is the only similarity measure this
+                // route has; position stands in for the match score Last.fm
+                // used to hand over.
+                val closeness = 1.0 - (rank.toDouble() / DISCOVERY_PER_SEED_SIMILARS).coerceIn(0.0, 1.0)
+                artistByUri.putIfAbsent(artist.uri, artist)
+                val candidate = candidatesByUri.getOrPut(artist.uri) { DiscoveryCandidate(artist.name) }
+                candidate.bestMatchScore = maxOf(candidate.bestMatchScore, closeness)
                 candidate.voters.add(seed.artistName)
                 candidate.seedBllSum += seed.score
             }
         }
+        if (candidatesByUri.isEmpty()) return@coroutineScope emptyList()
 
-        if (candidatesByName.isEmpty()) return@coroutineScope emptyList()
-
-        val toResolve = candidatesByName.values
-            .sortedByDescending { it.compositeScore() }
+        val picked = candidatesByUri.entries
+            .sortedByDescending { it.value.compositeScore() }
             .take(DISCOVERY_RESOLVE_BUDGET)
+            .mapNotNull { (uri, cand) -> artistByUri[uri]?.let { cand to it } }
+            .filter { (_, artist) -> artist.imageUrl != null }
 
-        val resolved = toResolve.mapMaBounded { candidate ->
-            candidate to resolveLastFmCandidate(candidate.name)
-        }
-
-        val filtered = resolved
-            .mapNotNull { (candidate, artist) -> if (artist != null) candidate to artist else null }
-            .filter { (_, artist) ->
-                artist.imageUrl != null &&
-                    !isExcluded(artist, excludedArtistUris) &&
-                    artist.name.lowercase() !in libraryNames
-            }
-            .distinctBy { it.second.uri }
-
-        val enriched = enrichGenresViaLastFm(filtered)
+        val enriched = enrichGenres(picked)
         Log.d(ORCHESTRATOR_TAG, "Enriched candidate pool size: ${enriched.size}")
         enriched
+    }
+
+    /**
+     * One seed's similar artists, cached the same way the Smart Mix engine
+     * caches them.
+     *
+     * Only a library item answers `similar_artists`; a provider item returns
+     * nothing (measured: 25 results for the library uri of an artist, 0 for the
+     * same artist's Deezer uri). Music Assistant resolves a provider item to its
+     * library counterpart on `get_artist`, so asking it first is what makes a
+     * provider-uri seed usable at all.
+     */
+    private suspend fun similarArtistsForSeed(
+        seed: net.asksakis.massdroidv2.domain.repository.ArtistScore
+    ): List<Artist> {
+        val ref = maItemRef(seed.artistUri) ?: return emptyList()
+        return try {
+            val resolved = if (ref.second == LIBRARY_PROVIDER) {
+                ref
+            } else {
+                val artist = musicRepository.getArtist(ref.first, ref.second) ?: return emptyList()
+                maItemRef(artist.uri) ?: (artist.itemId to artist.provider)
+            }
+            musicRepository.getSimilarArtists(resolved.first, resolved.second, DISCOVERY_PER_SEED_SIMILARS)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(ORCHESTRATOR_TAG, "similar_artists failed for ${seed.artistName}: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** `provider://artist/id` -> (id, provider). Provider-agnostic. */
+    private fun maItemRef(uri: String): Pair<String, String>? {
+        val provider = uri.substringBefore("://", "").trim()
+        val itemId = uri.substringAfter("://", "").trim('/').substringAfterLast('/').trim()
+        return if (provider.isEmpty() || itemId.isEmpty()) null else itemId to provider
     }
 
     private fun rankArtistsFromPool(
@@ -378,7 +413,14 @@ class DiscoverRecommendationOrchestrator(
         private val REGGAE_GENRES = setOf("reggae", "ska", "dub", "dancehall")
     }
 
-    private suspend fun enrichGenresViaLastFm(
+    /**
+     * Fill in genres Music Assistant did not carry, from MusicBrainz.
+     *
+     * MusicBrainz needs no key and identifies artists by MBID, which Music
+     * Assistant reports for most items. It also describes scenes Last.fm barely
+     * covers: measured earlier on non-western catalogues, 95% against 0%.
+     */
+    private suspend fun enrichGenres(
         candidates: List<Pair<DiscoveryCandidate, Artist>>
     ): List<Pair<DiscoveryCandidate, Artist>> = coroutineScope {
         candidates.map { (cand, artist) ->
@@ -387,7 +429,7 @@ class DiscoverRecommendationOrchestrator(
                     cand to artist
                 } else {
                     val tags = try {
-                        lastFmGenreResolver.resolve(artist.name)
+                        musicBrainzGenreResolver.resolve(artist.name, artist.mbid)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -459,37 +501,6 @@ class DiscoverRecommendationOrchestrator(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun resolveLastFmCandidate(similarName: String): Artist? {
-        return try {
-            // Short timeout: `music/search` gathers every provider server-side with no per-provider
-            // timeout, so a slow/throttled provider would hang this for minutes. On timeout we skip
-            // the candidate and flag the degraded state so the user gets a single transient notice.
-            val results = withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
-                musicRepository.search(similarName, listOf(MediaType.ARTIST), limit = 5)
-            }
-            if (results == null) {
-                providerHealthReporter.reportSearchTimeout()
-                return null
-            }
-            val match = results.artists.firstOrNull { it.name.equals(similarName, ignoreCase = true) }
-                ?: return null
-            try {
-                withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
-                    musicRepository.getArtist(match.itemId, match.provider)
-                } ?: match
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                match
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(ORCHESTRATOR_TAG, "Resolve failed for $similarName: ${e.message}")
-            null
-        }
-    }
-
     private fun buildProviderArtistsFallback(
         serverFolders: List<RecommendationFolder>,
         libraryNames: Set<String>,
