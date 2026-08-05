@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.DeviceInfo
+import net.asksakis.massdroidv2.domain.player.ROCKER_VOLUME_STEP
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -462,6 +463,9 @@ class RemoteControlPlayer(
         return Futures.immediateVoidFuture()
     }
 
+    /** The notch the advertised grid is currently showing. */
+    private fun currentDeviceVolumeNotch(): Int = deviceVolume
+
     override fun handleIncreaseDeviceVolume(flags: Int): ListenableFuture<*> {
         Log.d("RemoteControlPlayer", "handleIncreaseDeviceVolume flags=$flags")
         onVolumeUp()
@@ -476,7 +480,13 @@ class RemoteControlPlayer(
 
     override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
         Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
+        // The grid is coarser than the MA scale, so the value we advertise is
+        // rounded down. A controller that echoes the number it was shown (rather
+        // than asking for a relative change) would otherwise walk the real
+        // volume down: 47 shows as 23, and 23 written back means 46. Ignore an
+        // absolute set that lands on the notch the player is already on.
         val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
+        if (volume == currentDeviceVolumeNotch()) return Futures.immediateVoidFuture()
         onVolumeSet(maVolume)
         return Futures.immediateVoidFuture()
     }
@@ -489,7 +499,7 @@ class RemoteControlPlayer(
          * [MAX_VOLUME] exactly and must equal the hardware-rocker step, or the
          * system volume bar drifts away from the real volume as you press.
          */
-        internal const val VOLUME_SCALE = 2
+        internal const val VOLUME_SCALE = ROCKER_VOLUME_STEP
         internal const val SESSION_MAX_VOLUME = MAX_VOLUME / VOLUME_SCALE
         // Queue (timeline) titles surfaced to the car as the playlist metadata title.
         private const val UP_NEXT_TITLE = "Up next"

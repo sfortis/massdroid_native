@@ -89,28 +89,37 @@ class MusicBrainzGenreResolver @Inject constructor(
     }
 
     /**
-     * The keys we have a fresh answer for, INCLUDING the answers that were "no
-     * genres".
+     * Which of [artists] are still worth asking MusicBrainz about.
      *
-     * [cachedGenresFor] deliberately hides those, because a caller asking for
-     * genres wants genres. A caller deciding what still needs looking up wants
-     * the opposite: an artist MusicBrainz has already told us it does not know
-     * is not work, it is a settled question, and re-listing it every startup
-     * makes the enricher report hundreds of artists to do and then zero done.
+     * An artist MusicBrainz has already told us it does not know is a settled
+     * question, not outstanding work: [cachedGenresFor] hides those because a
+     * caller wanting genres wants genres, and a caller deciding what to look up
+     * needs the opposite. Without this the enricher re-listed the same artists
+     * on every start and reported none enriched, which reads as a broken engine
+     * (measured: all 586 of the reported gaps had already been answered).
+     *
+     * Takes and returns [ArtistRef] rather than cache keys on purpose. The key
+     * format is this class's business; a caller that had to reproduce it would
+     * be one edit away from silently matching nothing.
      */
-    suspend fun answeredKeys(artists: Collection<ArtistRef>): Set<String> {
-        val keys = artists.map { cacheKey(it.name, it.mbid) }.filter { it.isNotEmpty() }.distinct()
-        if (keys.isEmpty()) return emptySet()
+    suspend fun stillWorthAsking(artists: Collection<ArtistRef>): List<ArtistRef> {
+        if (artists.isEmpty()) return emptyList()
+        val byKey = artists.associateBy { cacheKey(it.name, it.mbid) }
+            .filterKeys { it.isNotEmpty() }
+        if (byKey.isEmpty()) return emptyList()
         val rows = try {
-            dao.getMusicBrainzTagsFor(keys)
+            dao.getMusicBrainzTagsFor(byKey.keys.toList())
         } catch (_: Exception) {
-            return emptySet()
+            // Unable to read the cache: better to ask again than to skip
+            // everything and report nothing to do.
+            return artists.toList()
         }
         val now = System.currentTimeMillis()
-        return rows.mapNotNullTo(mutableSetOf()) { row ->
+        val answered = rows.mapNotNullTo(mutableSetOf()) { row ->
             val ttl = if (row.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
             row.artistName.takeIf { now - row.fetchedAt <= ttl }
         }
+        return byKey.filterKeys { it !in answered }.values.toList()
     }
 
     /**

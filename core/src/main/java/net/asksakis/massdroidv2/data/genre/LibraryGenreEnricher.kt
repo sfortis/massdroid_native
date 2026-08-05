@@ -136,18 +136,15 @@ class LibraryGenreEnricher @Inject constructor(
                 syncLibraryArtists()
                 val allGaps = dao.getArtistsWithoutGenres()
                 // An artist MusicBrainz has already said it does not know is not
-                // outstanding work. Without this the enricher re-listed every
-                // one of them on each start, reported hundreds to do, then zero
-                // done - which reads as a broken engine rather than a settled
-                // question. Measured on a real library: 586 "gaps", all 586
-                // already answered.
-                val answered = musicBrainzGenreResolver.answeredKeys(
-                    allGaps.map { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) }
-                )
-                val gaps = allGaps.filterNot { gap ->
-                    val key = gap.mbid?.trim()?.takeIf { it.isNotEmpty() } ?: gap.name.trim().lowercase()
-                    key in answered
-                }
+                // outstanding work. Without this the enricher re-listed every one
+                // of them on each start, reported hundreds to do, then zero done -
+                // which reads as a broken engine rather than a settled question.
+                // The resolver owns the decision so the cache-key format stays in
+                // one place.
+                val byName = allGaps.associateBy { it.name }
+                val gaps = musicBrainzGenreResolver
+                    .stillWorthAsking(allGaps.map { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) })
+                    .mapNotNull { byName[it.name] }
                 if (gaps.isEmpty()) {
                     Log.d(TAG, "No artists left to enrich (${allGaps.size} already answered)")
                     return@launch

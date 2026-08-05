@@ -56,7 +56,12 @@ class VolumeKeyController internal constructor(
     // Touched only from the main thread: both entry points are main-thread
     // callbacks and the coroutines below are Main.immediate.
     private var pending: PendingVolume? = null
-    private var queued: PendingVolume? = null
+    // Keyed by player: conflation must never cross players. A single slot meant
+    // that switching player while a request was in flight overwrote the level the
+    // previous player was still waiting to send, and its trailing flush had
+    // already been cancelled - so that level was lost with the screen still
+    // showing it. Found in review.
+    private val queued = LinkedHashMap<String, PendingVolume>()
     private var sendJob: Job? = null
     private val pacer = VolumeSendPacer()
     private var trailingFlush: Job? = null
@@ -157,12 +162,13 @@ class VolumeKeyController internal constructor(
     private fun send(playerId: String, isGroup: Boolean, level: Int) {
         pacer.markSent(now())
         pending = null
-        queued = PendingVolume(playerId, level, isGroup)
+        // Newest wins PER PLAYER: the intermediate steps of a hold are worthless
+        // once a newer one exists, but another player's pending level is not.
+        queued[playerId] = PendingVolume(playerId, level, isGroup)
         if (sendJob?.isActive == true) return
         sendJob = scope.launch {
             while (true) {
-                val next = queued ?: break
-                queued = null
+                val next = queued.keys.firstOrNull()?.let { queued.remove(it) } ?: break
                 runCatching {
                     if (next.isGroup) {
                         playerRepository.setGroupVolume(next.playerId, next.level)

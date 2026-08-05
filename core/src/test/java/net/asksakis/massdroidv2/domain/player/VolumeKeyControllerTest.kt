@@ -183,6 +183,39 @@ class VolumeKeyControllerTest {
             .containsExactly(40 + ROCKER_VOLUME_STEP, 40 + 3 * ROCKER_VOLUME_STEP).inOrder()
     }
 
+    @Test
+    fun `switching player while a command is in flight loses neither level`() = runTest {
+        // Found in review. Conflation used a single slot for all players, so the
+        // level the previous player was still waiting to send was overwritten -
+        // and its trailing flush had already been cancelled by the new player's
+        // step, so nothing recovered it. The screen kept showing it.
+        val kitchen = player("kitchen", volume = 20)
+        val selected = MutableStateFlow<Player?>(phone)
+        val repository = repo(phone, listOf(phone, kitchen), selected)
+        val started = mutableListOf<Pair<String, Int>>()
+        val gate = CompletableDeferred<Unit>()
+        coEvery { repository.setVolume(any(), any()) } coAnswers {
+            started += firstArg<String>() to secondArg<Int>()
+            if (started.size == 1) gate.await()   // hold the first one open
+        }
+        var clock = 0L
+        val controller = controller(repository) { clock }
+
+        controller.step(up = true)          // phone step 1 -> in flight, blocks
+        clock = 40
+        controller.step(up = true)          // phone step 2 -> throttled, pending
+        selected.value = kitchen
+        controller.step(up = true)          // kitchen -> flushes phone, queues itself
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        // Both players' levels reach the server; neither is silently dropped.
+        assertThat(started.map { it.first }).containsAtLeast("phone", "kitchen")
+        assertThat(started).contains("phone" to 40 + 2 * ROCKER_VOLUME_STEP)
+        assertThat(started).contains("kitchen" to 20 + ROCKER_VOLUME_STEP)
+    }
+
     // --- group vs single player ---
 
     @Test
