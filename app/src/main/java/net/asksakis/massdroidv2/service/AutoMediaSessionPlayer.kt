@@ -489,7 +489,7 @@ class RemoteControlPlayer(
          * [MAX_VOLUME] exactly and must equal the hardware-rocker step, or the
          * system volume bar drifts away from the real volume as you press.
          */
-        internal const val VOLUME_SCALE = 4
+        internal const val VOLUME_SCALE = 2
         internal const val SESSION_MAX_VOLUME = MAX_VOLUME / VOLUME_SCALE
         // Queue (timeline) titles surfaced to the car as the playlist metadata title.
         private const val UP_NEXT_TITLE = "Up next"

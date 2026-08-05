@@ -253,4 +253,4 @@ internal class VolumeSendPacer(private val throttleMs: Long = VOLUME_REPEAT_THRO
  * bar disagree with the actual volume - which is what a step of 3 against a
  * 0..100 grid did.
  */
-const val ROCKER_VOLUME_STEP = 4
+const val ROCKER_VOLUME_STEP = 2
