@@ -246,5 +246,11 @@ internal class VolumeSendPacer(private val throttleMs: Long = VOLUME_REPEAT_THRO
  * Volume increment (in MA's 0-100 units) applied per hardware-rocker press,
  * wherever that press comes from. Single source of truth: the phone rocker and
  * the Android Auto rocker used to carry their own and drifted apart (2 vs 3).
+ *
+ * It must stay equal to `RemoteControlPlayer.VOLUME_SCALE` and divide 100
+ * exactly. Android treats one press as one notch of the grid the MediaSession
+ * advertises, so a step that does not match that grid makes the system volume
+ * bar disagree with the actual volume - which is what a step of 3 against a
+ * 0..100 grid did.
  */
-const val ROCKER_VOLUME_STEP = 3
+const val ROCKER_VOLUME_STEP = 4

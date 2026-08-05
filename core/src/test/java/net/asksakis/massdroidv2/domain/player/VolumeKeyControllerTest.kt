@@ -102,8 +102,8 @@ class VolumeKeyControllerTest {
         }
         advanceUntilIdle()
 
-        // Every repeat moved the level: 40 + 10*3.
-        assertThat(last).isEqualTo(70)
+        // Every repeat moved the level, one step each.
+        assertThat(last).isEqualTo(40 + 10 * ROCKER_VOLUME_STEP)
         // But only the ones a throttle window apart reached the server.
         coVerify(atMost = 5) { repository.setVolume("phone", any()) }
         coVerify(atLeast = 2) { repository.setVolume("phone", any()) }
@@ -115,13 +115,13 @@ class VolumeKeyControllerTest {
         var clock = 0L
         val controller = controller(repository) { clock }
 
-        controller.step(up = true)          // 43, sent immediately
+        controller.step(up = true)          // one step, sent immediately
         clock = 40
-        val last = controller.step(up = true)!!  // 46, inside the throttle window
+        val last = controller.step(up = true)!!  // two steps, inside the throttle window
         advanceUntilIdle()                  // lets the trailing flush fire
 
-        assertThat(last).isEqualTo(46)
-        coVerify { repository.setVolume("phone", 46) }
+        assertThat(last).isEqualTo(40 + 2 * ROCKER_VOLUME_STEP)
+        coVerify { repository.setVolume("phone", 40 + 2 * ROCKER_VOLUME_STEP) }
     }
 
     @Test
@@ -136,7 +136,7 @@ class VolumeKeyControllerTest {
         controller.flush()
         advanceUntilIdle()
 
-        coVerify { repository.setVolume("phone", 46) }
+        coVerify { repository.setVolume("phone", 40 + 2 * ROCKER_VOLUME_STEP) }
     }
 
     @Test
@@ -167,19 +167,20 @@ class VolumeKeyControllerTest {
         var clock = 0L
         val controller = controller(repository) { clock }
 
-        controller.step(up = true)      // 43 -> goes out, then blocks
+        controller.step(up = true)      // one step -> goes out, then blocks
         clock = 200
-        controller.step(up = true)      // 46 -> queued behind it
+        controller.step(up = true)      // two steps -> queued behind it
         clock = 400
-        controller.step(up = true)      // 49 -> replaces 46, it is newer
+        controller.step(up = true)      // three steps -> replaces the queued one
         advanceUntilIdle()
 
-        assertThat(started).containsExactly(43)   // nothing else started yet
+        assertThat(started).containsExactly(40 + ROCKER_VOLUME_STEP)   // nothing else started yet
         gate.complete(Unit)
         advanceUntilIdle()
 
-        // 46 never goes out: it was obsolete before the line was free.
-        assertThat(started).containsExactly(43, 49).inOrder()
+        // The middle value never goes out: obsolete before the line was free.
+        assertThat(started)
+            .containsExactly(40 + ROCKER_VOLUME_STEP, 40 + 3 * ROCKER_VOLUME_STEP).inOrder()
     }
 
     // --- group vs single player ---
@@ -192,9 +193,9 @@ class VolumeKeyControllerTest {
         val level = controller.step(up = true)
         advanceUntilIdle()
 
-        // 30 (the group level), not 0 (the parent's own).
-        assertThat(level).isEqualTo(33)
-        coVerify { repository.setGroupVolume("syncgroup", 33) }
+        // From the GROUP level (30), not the parent's own (0).
+        assertThat(level).isEqualTo(30 + ROCKER_VOLUME_STEP)
+        coVerify { repository.setGroupVolume("syncgroup", 30 + ROCKER_VOLUME_STEP) }
         coVerify(exactly = 0) { repository.setVolume("syncgroup", any()) }
     }
 
@@ -213,7 +214,7 @@ class VolumeKeyControllerTest {
         controller.step(up = true)   // throttled, only the trailing flush sends it
         advanceUntilIdle()
 
-        coVerify { repository.setGroupVolume("syncgroup", 36) }
+        coVerify { repository.setGroupVolume("syncgroup", 30 + 2 * ROCKER_VOLUME_STEP) }
         coVerify(exactly = 0) { repository.setVolume("syncgroup", any()) }
     }
 
@@ -228,15 +229,15 @@ class VolumeKeyControllerTest {
         var clock = 0L
         val controller = controller(repository) { clock }
 
-        controller.step(up = true)                 // phone -> 43, sent
+        controller.step(up = true)                 // phone, one step, sent
         clock = 40
-        controller.step(up = true)                 // phone -> 46, throttled
+        controller.step(up = true)                 // phone, two steps, throttled
         selected.value = kitchen
-        controller.step(up = true)                 // kitchen -> 23
+        controller.step(up = true)                 // kitchen, one step
         advanceUntilIdle()
 
-        coVerify { repository.setVolume("phone", 46) }
-        coVerify { repository.setVolume("kitchen", 23) }
+        coVerify { repository.setVolume("phone", 40 + 2 * ROCKER_VOLUME_STEP) }
+        coVerify { repository.setVolume("kitchen", 20 + ROCKER_VOLUME_STEP) }
     }
 
     // --- mute ---

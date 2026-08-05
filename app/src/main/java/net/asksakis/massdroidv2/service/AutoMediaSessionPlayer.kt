@@ -294,11 +294,16 @@ class RemoteControlPlayer(
             .setPlaylist(playlist)
             .setPlaylistMetadata(playlistMetadata)
             .setCurrentMediaItemIndex(effectiveIndex)
-            // 1:1 with the MA player volume (0..100): the device-volume scale IS the
-            // MA scale, so every value round-trips exactly with no integer-division
-            // rounding. (The old 0..20 scale truncated any non-multiple-of-5 MA value.)
-            .setDeviceInfo(DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(MAX_VOLUME).build())
-            .setDeviceVolume(playback.volumeLevel)
+            // The grid Android draws its volume bar on, and it has to be the grid
+            // the hardware keys move in: the system treats one key press as one
+            // unit of THIS scale. Advertising the MA scale (0..100) while a press
+            // moved 3 made the bar and the real volume disagree on every press.
+            // VOLUME_SCALE divides 100 exactly, so a press is one notch and the
+            // level it sends is exact; only the number the bar draws is rounded.
+            .setDeviceInfo(
+                DeviceInfo.Builder(playbackType).setMinVolume(0).setMaxVolume(SESSION_MAX_VOLUME).build()
+            )
+            .setDeviceVolume(playback.volumeLevel / VOLUME_SCALE)
             .setIsDeviceMuted(playback.isMuted)
             .build()
     }
@@ -471,7 +476,7 @@ class RemoteControlPlayer(
 
     override fun handleSetDeviceVolume(volume: Int, flags: Int): ListenableFuture<*> {
         Log.d("RemoteControlPlayer", "handleSetDeviceVolume volume=$volume flags=$flags")
-        val maVolume = volume.coerceIn(0, MAX_VOLUME)
+        val maVolume = (volume * VOLUME_SCALE).coerceIn(0, MAX_VOLUME)
         onVolumeSet(maVolume)
         return Futures.immediateVoidFuture()
     }
@@ -479,6 +484,13 @@ class RemoteControlPlayer(
     companion object {
         private const val C_TIME_UNSET = Long.MIN_VALUE + 1
         internal const val MAX_VOLUME = 100
+        /**
+         * MA units per notch of the MediaSession volume grid. Must divide
+         * [MAX_VOLUME] exactly and must equal the hardware-rocker step, or the
+         * system volume bar drifts away from the real volume as you press.
+         */
+        internal const val VOLUME_SCALE = 4
+        internal const val SESSION_MAX_VOLUME = MAX_VOLUME / VOLUME_SCALE
         // Queue (timeline) titles surfaced to the car as the playlist metadata title.
         private const val UP_NEXT_TITLE = "Up next"
         private const val CHAPTERS_TITLE = "Chapters"
