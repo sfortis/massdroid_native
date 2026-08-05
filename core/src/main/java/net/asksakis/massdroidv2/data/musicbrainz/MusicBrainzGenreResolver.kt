@@ -89,6 +89,31 @@ class MusicBrainzGenreResolver @Inject constructor(
     }
 
     /**
+     * The keys we have a fresh answer for, INCLUDING the answers that were "no
+     * genres".
+     *
+     * [cachedGenresFor] deliberately hides those, because a caller asking for
+     * genres wants genres. A caller deciding what still needs looking up wants
+     * the opposite: an artist MusicBrainz has already told us it does not know
+     * is not work, it is a settled question, and re-listing it every startup
+     * makes the enricher report hundreds of artists to do and then zero done.
+     */
+    suspend fun answeredKeys(artists: Collection<ArtistRef>): Set<String> {
+        val keys = artists.map { cacheKey(it.name, it.mbid) }.filter { it.isNotEmpty() }.distinct()
+        if (keys.isEmpty()) return emptySet()
+        val rows = try {
+            dao.getMusicBrainzTagsFor(keys)
+        } catch (_: Exception) {
+            return emptySet()
+        }
+        val now = System.currentTimeMillis()
+        return rows.mapNotNullTo(mutableSetOf()) { row ->
+            val ttl = if (row.tags.isBlank()) EMPTY_CACHE_MS else CACHE_MS
+            row.artistName.takeIf { now - row.fetchedAt <= ttl }
+        }
+    }
+
+    /**
      * Fetch and cache genres for [artistName]. Rate-limited to MusicBrainz's
      * 1 req/s, so callers must treat this as background work, never inline in a
      * mix build.

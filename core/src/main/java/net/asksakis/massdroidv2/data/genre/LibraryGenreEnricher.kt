@@ -7,6 +7,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.database.ArtistEntity
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
@@ -133,12 +134,25 @@ class LibraryGenreEnricher @Inject constructor(
         enrichJob = scope.launch {
             try {
                 syncLibraryArtists()
-                val gaps = dao.getArtistsWithoutGenres()
+                val allGaps = dao.getArtistsWithoutGenres()
+                // An artist MusicBrainz has already said it does not know is not
+                // outstanding work. Without this the enricher re-listed every
+                // one of them on each start, reported hundreds to do, then zero
+                // done - which reads as a broken engine rather than a settled
+                // question. Measured on a real library: 586 "gaps", all 586
+                // already answered.
+                val answered = musicBrainzGenreResolver.answeredKeys(
+                    allGaps.map { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) }
+                )
+                val gaps = allGaps.filterNot { gap ->
+                    val key = gap.mbid?.trim()?.takeIf { it.isNotEmpty() } ?: gap.name.trim().lowercase()
+                    key in answered
+                }
                 if (gaps.isEmpty()) {
-                    Log.d(TAG, "No artists without genres")
+                    Log.d(TAG, "No artists left to enrich (${allGaps.size} already answered)")
                     return@launch
                 }
-                Log.d(TAG, "Enriching ${gaps.size} artists that have no genres yet")
+                Log.d(TAG, "Enriching ${gaps.size} artists (${allGaps.size - gaps.size} already answered)")
                 _progress.value = EnrichmentProgress(total = gaps.size, isRunning = true)
                 var enriched = 0
                 var processed = 0
