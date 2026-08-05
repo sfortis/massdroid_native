@@ -165,11 +165,19 @@ class DiscoverRecommendationOrchestrator(
             Log.d(ORCHESTRATOR_TAG, "Discovery seeds with no similars: $silent/${seeds.size}")
         }
 
+        // The seeds are the listener's OWN most-played artists, so suggesting them
+        // back is not discovery. They were only excluded via `libraryNames`, which
+        // assumed a seed is a library artist - and most are not: measured, Roo
+        // Panes and Twin Tribes seeded a build AND appeared in its suggestions,
+        // because neither has a library row. That is a large part of why the
+        // section felt like it never changed.
+        val seedNames = seeds.mapTo(mutableSetOf()) { it.artistName.trim().lowercase() }
         val candidatesByUri = LinkedHashMap<String, DiscoveryCandidate>()
         val artistByUri = HashMap<String, Artist>()
         for ((seed, similars) in similarsBySeed) {
             similars.forEachIndexed { rank, artist ->
                 if (artist.uri.isBlank()) return@forEachIndexed
+                if (artist.name.trim().lowercase() in seedNames) return@forEachIndexed
                 if (artist.name.lowercase() in libraryNames) return@forEachIndexed
                 if (isExcluded(artist, excludedArtistUris)) return@forEachIndexed
                 // The server's ordering is the only similarity measure this
