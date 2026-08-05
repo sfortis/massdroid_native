@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.player
 
 import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,6 +56,8 @@ class VolumeKeyController internal constructor(
     // Touched only from the main thread: both entry points are main-thread
     // callbacks and the coroutines below are Main.immediate.
     private var pending: PendingVolume? = null
+    private var queued: PendingVolume? = null
+    private var sendJob: Job? = null
     private val pacer = VolumeSendPacer()
     private var trailingFlush: Job? = null
 
@@ -136,20 +139,44 @@ class VolumeKeyController internal constructor(
         }
     }
 
+    /**
+     * Hands a level to the server, one at a time and newest-wins.
+     *
+     * Every command waits for a reply, so firing each in its own coroutine put
+     * several in flight at once during a hold and let the server apply them in
+     * whatever order the replies happened to land. Measured on a device: eight
+     * commands went out descending to 30 and the speaker settled on 36, a value
+     * from the middle of the sequence, because a later write was overtaken by an
+     * earlier one.
+     *
+     * So at most one is in flight. A level chosen while one is running REPLACES
+     * any level already waiting rather than joining a queue: the intermediate
+     * steps of a hold are worth nothing once a newer one exists, and sending
+     * them would only be more traffic for a server that is single-threaded.
+     */
     private fun send(playerId: String, isGroup: Boolean, level: Int) {
         pacer.markSent(now())
         pending = null
-        scope.launch {
-            runCatching {
-                if (isGroup) {
-                    playerRepository.setGroupVolume(playerId, level)
-                } else {
-                    playerRepository.setVolume(playerId, level)
+        queued = PendingVolume(playerId, level, isGroup)
+        if (sendJob?.isActive == true) return
+        sendJob = scope.launch {
+            while (true) {
+                val next = queued ?: break
+                queued = null
+                runCatching {
+                    if (next.isGroup) {
+                        playerRepository.setGroupVolume(next.playerId, next.level)
+                    } else {
+                        playerRepository.setVolume(next.playerId, next.level)
+                    }
+                }.onFailure { e ->
+                    // An unreachable speaker makes MA time out (~30 s). That must
+                    // not take the app with it, but it must not be silent either:
+                    // without this line a rejected volume looked exactly like a
+                    // speaker that ignores the buttons.
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Log.w(TAG, "Volume push failed for ${next.playerId}: ${e.message}")
                 }
-            }.onFailure { e ->
-                // An unreachable speaker makes MA time out after ~10 s. That
-                // must not take the app with it.
-                if (e is kotlinx.coroutines.CancellationException) throw e
             }
         }
     }
@@ -180,6 +207,10 @@ class VolumeKeyController internal constructor(
 
     /** A level chosen but not yet sent, with everything needed to send it. */
     private data class PendingVolume(val playerId: String, val level: Int, val isGroup: Boolean)
+
+    private companion object {
+        const val TAG = "VolumeKeys"
+    }
 }
 
 /**

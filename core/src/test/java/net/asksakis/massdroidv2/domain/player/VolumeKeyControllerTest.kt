@@ -7,6 +7,7 @@ import io.mockk.every
 import io.mockk.coEvery
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -148,6 +149,37 @@ class VolumeKeyControllerTest {
 
         coVerify(exactly = 0) { repository.setVolume(any(), any()) }
         coVerify(exactly = 0) { repository.setGroupVolume(any(), any()) }
+    }
+
+    @Test
+    fun `only one command is in flight, and the last level always wins`() = runTest {
+        // Found on a device: every send ran in its own coroutine and each waits
+        // for a reply, so a hold put several in flight and the speaker settled
+        // on a value from the MIDDLE of the sequence - a later write overtaken
+        // by an earlier one.
+        val repository = repo(phone)
+        val started = mutableListOf<Int>()
+        val gate = CompletableDeferred<Unit>()
+        coEvery { repository.setVolume(any(), any()) } coAnswers {
+            started += secondArg<Int>()
+            gate.await()          // hold the first command open
+        }
+        var clock = 0L
+        val controller = controller(repository) { clock }
+
+        controller.step(up = true)      // 43 -> goes out, then blocks
+        clock = 200
+        controller.step(up = true)      // 46 -> queued behind it
+        clock = 400
+        controller.step(up = true)      // 49 -> replaces 46, it is newer
+        advanceUntilIdle()
+
+        assertThat(started).containsExactly(43)   // nothing else started yet
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        // 46 never goes out: it was obsolete before the line was free.
+        assertThat(started).containsExactly(43, 49).inOrder()
     }
 
     // --- group vs single player ---
