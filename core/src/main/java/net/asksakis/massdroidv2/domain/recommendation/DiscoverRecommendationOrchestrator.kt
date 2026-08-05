@@ -236,17 +236,16 @@ class DiscoverRecommendationOrchestrator(
      *
      * Track similarity needs a track, so one of the seed artist's own TOP tracks
      * stands in for them. `top_tracks` and not `artist_tracks`: the unbounded
-     * listing sends every track an artist has over the wire and the Smart Mix
-     * engine already measured it at ~1.5 s each, enough on its own to make a
-     * build take 70 s. Asked for it here anyway and it timed out on a real
-     * server, which is what left the Discover refresh spinning.
+     * listing sends every track an artist has over the wire, measured at ~1.5 s
+     * each by the Smart Mix engine, and asking for it here timed out on a real
+     * server and left the Discover refresh spinning.
      *
-     * The tracks that come back name their artists but carry no artist artwork,
-     * and a Discover card without art is not worth showing, so each distinct
-     * artist is looked up by ID - a lookup, not the name search the Last.fm
-     * route needed. Every call is time-boxed, because Music Assistant gathers
-     * providers server-side with no per-provider timeout, so one slow provider
-     * would otherwise hold the whole feed open.
+     * The artists are built FROM the tracks, with the track's own artwork as the
+     * card image, and nothing is looked up. Resolving each artist by id for a
+     * proper artist photo cost 17 requests on a real build - and those requests
+     * were followed by eight full reloads of the favourite-tracks section, which
+     * together were 24 of the 31 seconds a refresh took. A card showing the
+     * artwork of the song that led there is a fair trade for that.
      */
     private suspend fun artistsViaSimilarTracks(seedRef: Pair<String, String>): List<Artist> {
         val seedTrack = withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
@@ -256,23 +255,22 @@ class DiscoverRecommendationOrchestrator(
         val similar = withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
             musicRepository.getSimilarTracks(trackRef.first, trackRef.second, DISCOVERY_SIMILAR_TRACKS_PER_SEED)
         } ?: return emptyList()
-        val artistRefs = similar
-            .mapNotNull { it.artistUri?.takeIf { uri -> uri.isNotBlank() } }
-            .distinct()
-            .take(DISCOVERY_PER_SEED_SIMILARS)
-            .mapNotNull { maItemRef(it) }
-        if (artistRefs.isEmpty()) return emptyList()
-        return artistRefs.mapMaBounded { (itemId, provider) ->
-            withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
-                try {
-                    musicRepository.getArtist(itemId, provider)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            }
-        }.filterNotNull()
+        val seen = mutableSetOf<String>()
+        return similar.mapNotNull { track ->
+            val uri = track.artistUri?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val name = track.artistNames.split(",").firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return@mapNotNull null
+            val image = track.imageUrl?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val ref = maItemRef(uri) ?: return@mapNotNull null
+            if (!seen.add(uri)) return@mapNotNull null
+            Artist(
+                itemId = ref.first,
+                provider = ref.second,
+                name = name,
+                uri = uri,
+                imageUrl = image,
+            )
+        }.take(DISCOVERY_PER_SEED_SIMILARS)
     }
 
     /** `provider://artist/id` -> (id, provider). Provider-agnostic. */
