@@ -64,14 +64,14 @@ class DiscoverRecommendationOrchestrator(
 
         val pool = buildEnrichedCandidatePool(libraryNames, excludedArtistUris)
 
-        val artistsLastFm = rankArtistsFromPool(pool)
+        val artistsSimilar = rankArtistsFromPool(pool)
         val artistsFallback = buildProviderArtistsFallback(
             serverFolders,
             libraryNames,
             excludedArtistUris,
-            alreadyPickedNames = artistsLastFm.mapTo(mutableSetOf()) { it.name.lowercase() }
+            alreadyPickedNames = artistsSimilar.mapTo(mutableSetOf()) { it.name.lowercase() }
         )
-        val artists = (artistsLastFm + artistsFallback)
+        val artists = (artistsSimilar + artistsFallback)
             .distinctBy { it.uri.ifBlank { it.name.lowercase() } }
             .take(artistCount)
 
@@ -85,23 +85,23 @@ class DiscoverRecommendationOrchestrator(
             emptySet()
         }
 
-        val albumsLastFm = buildLastFmAlbums(pool, recentAlbumKeys)
+        val albumsSimilar = buildAlbumsFromPool(pool, recentAlbumKeys)
         val albumsFallback = buildProviderAlbumsFallback(
             serverFolders,
             libraryArtists,
             recentAlbumKeys,
-            alreadyPickedAlbumKeys = albumsLastFm.mapNotNullTo(mutableSetOf()) {
+            alreadyPickedAlbumKeys = albumsSimilar.mapNotNullTo(mutableSetOf()) {
                 MediaIdentity.canonicalAlbumKey(uri = it.uri) ?: it.uri.ifBlank { null }
             }
         )
-        val albums = (albumsLastFm + albumsFallback)
+        val albums = (albumsSimilar + albumsFallback)
             .distinctBy { MediaIdentity.canonicalAlbumKey(uri = it.uri) ?: it.uri.ifBlank { it.name.lowercase() } }
             .take(albumCount)
 
         Log.d(
             ORCHESTRATOR_TAG,
-            "Discovery: artists similar=${artistsLastFm.size} fallback=${artistsFallback.size} final=${artists.size}; " +
-                "albums similar=${albumsLastFm.size} fallback=${albumsFallback.size} final=${albums.size}"
+            "Discovery: artists similar=${artistsSimilar.size} fallback=${artistsFallback.size} final=${artists.size}; " +
+                "albums similar=${albumsSimilar.size} fallback=${albumsFallback.size} final=${albums.size}"
         )
         return DiscoveryResult(artists = artists, albums = albums)
     }
@@ -213,7 +213,7 @@ class DiscoverRecommendationOrchestrator(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun buildLastFmAlbums(
+    private suspend fun buildAlbumsFromPool(
         pool: List<Pair<DiscoveryCandidate, Artist>>,
         recentAlbumKeys: Set<String>
     ): List<Album> {
