@@ -5,6 +5,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.util.mapMaBounded
 import net.asksakis.massdroidv2.domain.model.Album
@@ -26,6 +31,9 @@ private const val DISCOVERY_PER_SEED_SIMILARS = 4
 private const val DISCOVERY_SIMILAR_TRACKS_PER_SEED = 15
 // How many seeds may fall back to the track route in one build.
 private const val DISCOVERY_TRACK_ROUTE_SEEDS = 4
+// Artists warmed per feed build. At 1 req/s this is ~30s of background work;
+// the rest are picked up by later builds.
+private const val GENRE_WARM_LIMIT = 20
 private const val DISCOVERY_RESOLVE_BUDGET = 25
 private const val DISCOVERY_VOTE_WEIGHT = 0.2
 private const val DISCOVERY_TOP_GENRES_FOR_SEEDS = 8
@@ -51,11 +59,14 @@ class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
+    private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 ) {
 
     // Seeds still allowed to take the expensive track route this build.
+    // Background genre warming outlives one feed build on purpose.
+    private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val trackRouteBudget = java.util.concurrent.atomic.AtomicInteger(0)
 
     suspend fun buildDiscovery(
@@ -489,32 +500,69 @@ class DiscoverRecommendationOrchestrator(
     }
 
     /**
-     * Fill in genres Music Assistant did not carry, from MusicBrainz.
+     * Fill in genres Music Assistant did not carry, from the MusicBrainz CACHE
+     * only, and warm the misses in the background.
      *
-     * MusicBrainz needs no key and identifies artists by MBID, which Music
-     * Assistant reports for most items. It also describes scenes Last.fm barely
-     * covers: measured earlier on non-western catalogues, 95% against 0%.
+     * MusicBrainz allows one request per second, so looking up the misses inline
+     * put the whole feed behind them: measured on a real refresh, this phase alone
+     * was 17.6 of the 28 seconds a manual refresh took, for about a dozen artists.
+     * A feed that arrives in seconds with some genres missing is worth more than a
+     * complete one nobody waits for, and the misses are on disk by the next
+     * refresh - which is the same trade the Smart Mix engine already makes.
      */
     private suspend fun enrichGenres(
         candidates: List<Pair<DiscoveryCandidate, Artist>>
-    ): List<Pair<DiscoveryCandidate, Artist>> = coroutineScope {
-        candidates.map { (cand, artist) ->
-            async {
-                if (artist.genres.isNotEmpty()) {
-                    cand to artist
-                } else {
-                    val tags = try {
-                        musicBrainzGenreResolver.resolve(artist.name, artist.mbid)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(ORCHESTRATOR_TAG, "Genre enrich failed for ${artist.name}: ${e.message}")
-                        emptyList()
-                    }
-                    cand to if (tags.isNotEmpty()) artist.copy(genres = tags) else artist
+    ): List<Pair<DiscoveryCandidate, Artist>> {
+        val missing = candidates.filter { (_, artist) -> artist.genres.isEmpty() }
+        if (missing.isEmpty()) return candidates
+        val cached = try {
+            musicBrainzGenreResolver.cachedGenresFor(
+                missing.map { (_, artist) ->
+                    MusicBrainzGenreResolver.ArtistRef(artist.name, artist.mbid)
                 }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        var filled = 0
+        val result = candidates.map { (candidate, artist) ->
+            if (artist.genres.isNotEmpty()) return@map candidate to artist
+            val key = artist.mbid?.trim()?.takeIf { it.isNotEmpty() }
+                ?: artist.name.trim().lowercase()
+            val tags = cached[key]
+            if (tags.isNullOrEmpty()) candidate to artist
+            else {
+                filled++
+                candidate to artist.copy(genres = tags)
             }
-        }.awaitAll()
+        }
+        val stillMissing = result.filter { (_, artist) -> artist.genres.isEmpty() }
+        Log.d(
+            ORCHESTRATOR_TAG,
+            "Genres: $filled filled from cache, ${stillMissing.size} queued for MusicBrainz"
+        )
+        warmGenresInBackground(
+            stillMissing.map { (_, artist) -> MusicBrainzGenreResolver.ArtistRef(artist.name, artist.mbid) }
+        )
+        return result
+    }
+
+    /**
+     * Look the misses up off the critical path, so the NEXT feed has them.
+     *
+     * Deliberately not awaited: the caller is building a screen and one request
+     * per second is not something a screen can wait for.
+     */
+    private fun warmGenresInBackground(artists: List<MusicBrainzGenreResolver.ArtistRef>) {
+        val targets = artists.filter { it.name.isNotBlank() }.distinctBy { it.mbid ?: it.name }
+        if (targets.isEmpty()) return
+        warmScope.launch {
+            for (target in targets.take(GENRE_WARM_LIMIT)) {
+                runCatching { musicBrainzGenreResolver.resolve(target.name, target.mbid) }
+            }
+        }
     }
 
     private suspend fun buildDiverseSeeds(): List<net.asksakis.massdroidv2.domain.repository.ArtistScore> {
