@@ -65,6 +65,13 @@ class ImageUrlResolver @Inject constructor(
         val p = image.path.trim()
         if (p.isEmpty()) return null
         if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
+        // A provider saying "I have no picture" by serving one anyway. Deezer
+        // builds its image paths from a content hash and uses the hash of the
+        // EMPTY string when there is nothing to hash, so this path is a
+        // guaranteed generic avatar. Verified: it returns the same 9622 bytes as
+        // the placeholder every other pictureless artist gets. Treated as no
+        // image so the caller can fall back to something real.
+        if (p.contains(EMPTY_CONTENT_HASH)) return null
         // (1) proxy_id: the canonical MA 2.9+ route on our own (external) server URL. The server
         // resolves the real path internally (SSRF-safe) and it is the ONLY way LAN/local provider
         // art (Jellyfin, filesystem, Plex, subsonic cover_art) loads on 2.9+. Best whenever present.
@@ -147,6 +154,8 @@ class ImageUrlResolver @Inject constructor(
 
     private companion object {
         const val DEFAULT_SIZE = 512
+        /** md5(""), which a provider uses as the path of "no image here". */
+        const val EMPTY_CONTENT_HASH = "d41d8cd98f00b204e9800998ecf8427e"
         const val IMAGEPROXY_SEGMENT = "/imageproxy"
         // MA API schema at/after which the proxy_id imageproxy route exists and the legacy
         // path route rejects private/non-http paths (the MA 2.9 line).

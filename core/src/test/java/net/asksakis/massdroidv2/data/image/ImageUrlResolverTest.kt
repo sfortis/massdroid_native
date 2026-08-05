@@ -133,4 +133,29 @@ class ImageUrlResolverTest {
         val url = resolver(30).resolveItemWithUriFallback(imageless)
         assertThat(url).startsWith("$serverBase/imageproxy?path=")
     }
+
+    @Test
+    fun `a provider's no-image placeholder counts as no image`() {
+        // Deezer names its image paths after a content hash and uses the hash of
+        // the EMPTY string when the artist has no picture. Verified against the
+        // live CDN: that path and a pictureless artist's own path return the
+        // same 9622 bytes, so showing it is showing a grey avatar. Returning
+        // null lets the caller fall back to an album cover instead.
+        val placeholder = img(
+            "https://cdn-images.dzcdn.net/images/artist/d41d8cd98f00b204e9800998ecf8427e/500x500-000000-80-0-0.jpg",
+            remote = true,
+            proxyId = "abc123",
+        )
+        assertThat(resolver(schema = 31).resolve(placeholder)).isNull()
+    }
+
+    @Test
+    fun `a real provider image is still resolved`() {
+        val real = img(
+            "https://cdn-images.dzcdn.net/images/artist/c6b695f353571aed893421a0f135b499/500x500.jpg",
+            remote = true,
+            proxyId = "abc123",
+        )
+        assertThat(resolver(schema = 31).resolve(real)).isNotNull()
+    }
 }
