@@ -73,8 +73,14 @@ class DiscoverRecommendationOrchestrator(
         libraryArtists: List<Artist>,
         serverFolders: List<RecommendationFolder>,
         excludedArtistUris: Set<String>,
-        artistCount: Int = 10,
-        albumCount: Int = 10
+        // The pool routinely holds far more than the row shows: a measured build
+        // had 39 artists and 20 albums ready and displayed 10 of each, throwing
+        // away three quarters of candidates already fetched and ranked. The rows
+        // are horizontal and lazily composed, so the extra items cost nothing to
+        // draw, and 20 sits inside the existing per-genre caps - no additional
+        // requests, no loss of variety.
+        artistCount: Int = 20,
+        albumCount: Int = 20
     ): DiscoveryResult {
         val libraryNames = libraryArtists
             .asSequence()
