@@ -57,7 +57,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_LIBRARY_PROVIDER_FILTERS = stringPreferencesKey("library_provider_filters")
         private val KEY_PLAYLIST_SORT_KEY = stringPreferencesKey("playlist_sort_key")
         private val KEY_PLAYLIST_SORT_DESC = booleanPreferencesKey("playlist_sort_desc")
-        private val KEY_LASTFM_API_KEY = stringPreferencesKey("lastfm_api_key")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
         private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
@@ -257,14 +256,6 @@ class SettingsRepositoryImpl @Inject constructor(
             current[tab] = descending.toString()
             prefs[KEY_LIBRARY_SORT_DESC] = encodeStringMap(current)
         }
-    }
-
-    override val lastFmApiKey: Flow<String> = safeData.map { prefs ->
-        prefs[KEY_LASTFM_API_KEY] ?: ""
-    }
-
-    override suspend fun setLastFmApiKey(key: String) {
-        context.dataStore.edit { it[KEY_LASTFM_API_KEY] = key }
     }
 
     override val themeMode: Flow<String> = safeData.map { prefs ->

@@ -817,7 +817,7 @@ class PlayerRepositoryImpl @Inject constructor(
         if (mergedGenres.isNotEmpty()) {
             Log.d(TAG, "History genres from MA artist metadata for ${track.uri}: $mergedGenres")
         } else {
-            Log.d(TAG, "No genres found (Last.fm + MA) for ${track.uri}")
+            Log.d(TAG, "No genres found (MA + MusicBrainz) for ${track.uri}")
         }
         return track.copy(genres = mergedGenres.toList())
     }

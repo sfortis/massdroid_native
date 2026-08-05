@@ -168,13 +168,6 @@ data class ArtistGenreEntity(
     @ColumnInfo(name = "genre_name") val genreName: String
 )
 
-@Entity(tableName = "lastfm_artist_tags")
-data class LastFmArtistTagsEntity(
-    @PrimaryKey
-    @ColumnInfo(name = "artist_name") val artistName: String,
-    val tags: String,
-    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
-)
 
 @Entity(
     tableName = "blocked_artists"
@@ -187,22 +180,6 @@ data class BlockedArtistEntity(
     @ColumnInfo(name = "blocked_at") val blockedAt: Long
 )
 
-@Entity(
-    tableName = "lastfm_similar_artists",
-    primaryKeys = ["source_artist", "similar_artist"]
-)
-data class LastFmSimilarArtistEntity(
-    @ColumnInfo(name = "source_artist") val sourceArtist: String,
-    @ColumnInfo(name = "similar_artist") val similarArtist: String,
-    @ColumnInfo(name = "match_score") val matchScore: Double,
-    @ColumnInfo(name = "fetched_at") val fetchedAt: Long,
-    @ColumnInfo(name = "resolved_item_id") val resolvedItemId: String? = null,
-    @ColumnInfo(name = "resolved_provider") val resolvedProvider: String? = null,
-    @ColumnInfo(name = "resolved_name") val resolvedName: String? = null,
-    @ColumnInfo(name = "resolved_image_url") val resolvedImageUrl: String? = null,
-    @ColumnInfo(name = "resolved_uri") val resolvedUri: String? = null,
-    @ColumnInfo(name = "resolved_at") val resolvedAt: Long? = null
-)
 
 @Entity(tableName = "artist_track_cache")
 data class ArtistTrackCacheEntity(

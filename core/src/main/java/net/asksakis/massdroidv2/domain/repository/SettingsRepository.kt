@@ -46,7 +46,6 @@ interface SettingsRepository {
     // playlist and persisted across navigation/restart (not per-playlist, not per-tab).
     val playlistSortKey: Flow<String>
     val playlistSortDescending: Flow<Boolean>
-    val lastFmApiKey: Flow<String>
     val themeMode: Flow<String>
     val sendspinAudioFormat: Flow<String>
     /**
@@ -149,7 +148,6 @@ interface SettingsRepository {
     suspend fun setLibraryProviderFilters(tab: Int, instanceIds: Set<String>)
     suspend fun setPlaylistSortKey(key: String)
     suspend fun setPlaylistSortDescending(descending: Boolean)
-    suspend fun setLastFmApiKey(key: String)
     suspend fun setThemeMode(mode: String)
     suspend fun setSendspinAudioFormat(format: String)
     suspend fun setSendspinSyncDelayMs(delayMs: Int)

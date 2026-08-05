@@ -300,6 +300,23 @@ object AppModule {
      * had just created). v10 is what `main` ships, so v10 -> v15 is the only
      * path a real user takes.
      */
+    /**
+     * Drops the Last.fm caches.
+     *
+     * The app no longer asks anyone for a Last.fm API key: similar artists come
+     * from Music Assistant (which carries its own key) and genres from
+     * MusicBrainz, so nothing reads these two tables any more. They are not
+     * small - measured on a real install, 15.8k tag rows and 126k similar-artist
+     * rows - so leaving them behind would be dead weight in every backup and
+     * every VACUUM from here on.
+     */
+    private val MIGRATION_15_16 = object : Migration(15, 16) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP TABLE IF EXISTS lastfm_artist_tags")
+            db.execSQL("DROP TABLE IF EXISTS lastfm_similar_artists")
+        }
+    }
+
     private val MIGRATION_10_15 = object : Migration(10, 15) {
         override fun migrate(database: SupportSQLiteDatabase) {
             // MA similar-artists cache. Uri-keyed on both sides so results can be
@@ -357,7 +374,7 @@ object AppModule {
             DATABASE_NAME
         ).addMigrations(
             MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_15
+            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_15, MIGRATION_15_16
         )
             // Kept so a missing migration cannot brick the app, but no longer
             // silent: see DatabaseResetReporter.

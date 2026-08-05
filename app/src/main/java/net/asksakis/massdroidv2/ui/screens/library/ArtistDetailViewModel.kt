@@ -10,9 +10,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
-import net.asksakis.massdroidv2.data.lastfm.LastFmArtistInfoResolver
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
-import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 import net.asksakis.massdroidv2.data.util.mapMaBounded
 import net.asksakis.massdroidv2.domain.model.*
@@ -34,6 +31,8 @@ private const val SIMILAR_RESOLVE_TIMEOUT_MS = 7_000L
 // "Top Tracks" is a highlights section, not the full catalogue: cap it (artist_tracks can return
 // hundreds). The artist's albums/discography cover the rest. Play-all uses this same capped set.
 private const val ARTIST_TOP_TRACKS_LIMIT = 20
+private const val LIBRARY_PROVIDER = "library"
+private const val SIMILAR_ARTIST_LIMIT = 8
 
 @HiltViewModel
 class ArtistDetailViewModel @Inject constructor(
@@ -41,9 +40,7 @@ class ArtistDetailViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmSimilarResolver: LastFmSimilarResolver,
-    private val lastFmArtistInfoResolver: LastFmArtistInfoResolver,
-    private val lastFmGenreResolver: LastFmGenreResolver,
+    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val dao: PlayHistoryDao,
     private val providerHealthReporter: ProviderHealthReporter
 ) : ViewModel() {
@@ -97,7 +94,6 @@ class ArtistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
-                dao.clearSimilarArtistResolved(_artistName.value.lowercase())
                 _artist.value?.uri?.let { musicRepository.refreshItemByUri(it) }
                     ?: musicRepository.requestLibrarySync(force = true)
                 loadData(lazy = false)
@@ -109,15 +105,7 @@ class ArtistDetailViewModel @Inject constructor(
 
     private suspend fun loadData(lazy: Boolean) {
         try {
-            var artist = musicRepository.getArtist(itemId, provider, lazy = lazy)
-            // Immediately replace genres with cached Last.fm tags if available
-            if (artist != null) {
-                val cached = dao.getLastFmTags(artist.name)
-                if (cached != null) {
-                    val tags = cached.tags.split(",").filter { it.isNotBlank() }
-                    if (tags.isNotEmpty()) artist = artist.copy(genres = tags)
-                }
-            }
+            val artist = musicRepository.getArtist(itemId, provider, lazy = lazy)
             _artist.value = artist
             _albums.value = musicRepository.getArtistAlbums(itemId, provider)
             _tracks.value = musicRepository.getArtistTracks(itemId, provider).take(ARTIST_TOP_TRACKS_LIMIT)
@@ -160,97 +148,51 @@ class ArtistDetailViewModel @Inject constructor(
 
         val name = _artistName.value
         if (name.isNotBlank()) {
-            viewModelScope.launch { loadSimilarArtists(name) }
-            if (_artist.value?.description.isNullOrBlank()) {
-                viewModelScope.launch { loadLastFmBio(name) }
-            }
-            viewModelScope.launch { enrichArtistGenresFromLastFm(name) }
+            viewModelScope.launch { loadSimilarArtists(itemId, provider) }
+            viewModelScope.launch { enrichArtistGenres(name) }
         }
     }
 
-    private suspend fun loadSimilarArtists(artistName: String) {
+    /**
+     * Similar artists, straight from Music Assistant.
+     *
+     * This used to ask Last.fm for names and then search every provider for
+     * each one, keeping a resolution cache and validating matches by genre
+     * overlap because a name match is not an identity match. Music Assistant
+     * answers with playable items, so all of that is gone - along with the API
+     * key the listener had to create for it. The answers are Last.fm's, fetched
+     * with Music Assistant's own built-in key.
+     *
+     * Only a library item answers: a provider item returns nothing (measured:
+     * 25 against 0 for the same artist). `get_artist` on a provider item
+     * resolves to the library one, which is what makes this work either way.
+     */
+    private suspend fun loadSimilarArtists(itemId: String, provider: String) {
         try {
-            val similar = lastFmSimilarResolver.resolve(artistName, limit = 8)
-            if (similar.isEmpty()) return
-            val key = artistName.lowercase()
-            val cached = dao.getSimilarArtists(key)
-            val now = System.currentTimeMillis()
-            val resolveTtl = 7 * 86_400_000L
-            val sourceGenres = lastFmGenreResolver.resolve(artistName).toSet()
-
-            // Resolve candidates in parallel but globally concurrency-capped (mapMaBounded),
-            // so the artist + Discover bulk resolvers can't burst the shared WS pipeline. Each MA
-            // call has a short timeout: a slow/throttled provider makes `music/search` hang (the
-            // server gathers ALL providers), so without this the row hangs then comes back empty.
-            // On timeout we degrade (skip that candidate, don't poison the cache) and flag the row
-            // as unavailable so the UI can explain why instead of silently showing nothing.
-            val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
-            val resolved = similar.mapMaBounded { sim ->
-                try {
-                    val cachedRow = cached.firstOrNull { it.similarArtist == sim.name }
-                    val resolvedAt = cachedRow?.resolvedAt
-                    if (resolvedAt != null && now - resolvedAt < resolveTtl) {
-                        cachedRow.resolvedUri?.let { uri ->
-                            Artist(
-                                itemId = cachedRow.resolvedItemId.orEmpty(),
-                                provider = cachedRow.resolvedProvider.orEmpty(),
-                                name = cachedRow.resolvedName.orEmpty(),
-                                uri = uri,
-                                imageUrl = cachedRow.resolvedImageUrl
-                            )
-                        }
-                    } else {
-                        val searchResult = withTimeoutOrNull(SIMILAR_RESOLVE_TIMEOUT_MS) {
-                            musicRepository.search(sim.name, listOf(MediaType.ARTIST), limit = 5)
-                        }
-                        if (searchResult == null) {
-                            timedOut.set(true)
-                            null
-                        } else {
-                            val candidates = searchResult.artists.filter { it.name.equals(sim.name, ignoreCase = true) }
-                            val matched = if (candidates.isEmpty()) {
-                                null
-                            } else if (sourceGenres.isEmpty()) {
-                                candidates.firstOrNull()
-                            } else {
-                                candidates.firstNotNullOfOrNull { c ->
-                                    val detail = withTimeoutOrNull(SIMILAR_RESOLVE_TIMEOUT_MS) {
-                                        musicRepository.getArtist(c.itemId, c.provider)
-                                    } ?: run { timedOut.set(true); return@firstNotNullOfOrNull null }
-                                    val cGenres = detail.genres.map { normalizeGenre(it) }.toSet()
-                                    when {
-                                        cGenres.isEmpty() -> detail
-                                        cGenres.any { it in sourceGenres } -> detail
-                                        else -> null
-                                    }
-                                }
-                            }
-                            dao.updateSimilarArtistResolved(
-                                sourceArtist = key, similarArtist = sim.name,
-                                itemId = matched?.itemId, provider = matched?.provider,
-                                name = matched?.name, imageUrl = matched?.imageUrl, uri = matched?.uri,
-                                resolvedAt = now
-                            )
-                            matched
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Resolve similar '${sim.name}' failed: ${e.message}")
-                    null
-                }
-            }.filterNotNull()
-            _similarArtists.value = resolved
-            if (resolved.isEmpty() && timedOut.get()) providerHealthReporter.reportSearchTimeout()
+            val resolved = if (provider == LIBRARY_PROVIDER) {
+                itemId to provider
+            } else {
+                val artist = musicRepository.getArtist(itemId, provider) ?: return
+                val uri = artist.uri
+                val p = uri.substringBefore("://", "").ifBlank { artist.provider }
+                val id = uri.substringAfter("://", "").trim('/').substringAfterLast('/')
+                    .ifBlank { artist.itemId }
+                id to p
+            }
+            val similar = musicRepository
+                .getSimilarArtists(resolved.first, resolved.second, limit = SIMILAR_ARTIST_LIMIT)
+                .filter { it.imageUrl != null }
+            _similarArtists.value = similar
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Load similar artists failed: ${e.message}")
         }
     }
 
-    private suspend fun enrichArtistGenresFromLastFm(artistName: String) {
+    private suspend fun enrichArtistGenres(artistName: String) {
         try {
-            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            val lastFmGenres = musicBrainzGenreResolver.resolve(artistName, _artist.value?.mbid)
             if (lastFmGenres.isNotEmpty()) {
                 _artist.update { current ->
                     current?.copy(genres = lastFmGenres)
@@ -258,15 +200,6 @@ class ArtistDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Enrich artist genres failed: ${e.message}")
-        }
-    }
-
-    private suspend fun loadLastFmBio(artistName: String) {
-        try {
-            val bio = lastFmArtistInfoResolver.resolve(artistName) ?: return
-            _artist.update { it?.copy(description = bio) }
-        } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm bio failed: ${e.message}")
         }
     }
 

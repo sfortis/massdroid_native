@@ -6,9 +6,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.util.mapMaBounded
-import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType

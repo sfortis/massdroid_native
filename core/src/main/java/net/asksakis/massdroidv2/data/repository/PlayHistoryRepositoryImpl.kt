@@ -345,13 +345,6 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String? =
-        dao.getResolvedUriBySimilarName(name, System.currentTimeMillis() - maxAgeMs)
-
-    override suspend fun cacheResolvedArtistUri(name: String, uri: String) {
-        dao.cacheResolvedUriBySimilarName(name, uri, System.currentTimeMillis())
-    }
-
     override suspend fun getSeedTracks(
         sinceMs: Long,
         minListenedMs: Long,

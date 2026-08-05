@@ -7,8 +7,6 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.data.lastfm.LastFmAlbumInfoResolver
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -24,8 +22,7 @@ class AlbumDetailViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmAlbumInfoResolver: LastFmAlbumInfoResolver,
-    private val lastFmGenreResolver: LastFmGenreResolver
+    private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
@@ -116,18 +113,19 @@ class AlbumDetailViewModel @Inject constructor(
         val album = _album.value ?: return
         val artistName = album.artistNames.split(",").firstOrNull()?.trim().orEmpty()
         if (artistName.isNotBlank()) {
-            val needsBio = album.description.isNullOrBlank()
-            val needsYear = album.year == null
-            if (needsBio || needsYear) {
-                viewModelScope.launch { loadLastFmAlbumInfo(artistName, album.name, needsBio, needsYear) }
-            }
-            viewModelScope.launch { enrichGenresFromLastFm(artistName) }
+            // Album descriptions used to come from Last.fm when Music Assistant
+            // had none. They are the one thing dropping the API key genuinely
+            // costs (measured: Music Assistant carries one for 6% of albums),
+            // and an absent paragraph is a quieter failure than asking every
+            // listener to go and create an API key. The year is unaffected -
+            // Music Assistant reports it for every album measured.
+            viewModelScope.launch { enrichGenres(artistName) }
         }
     }
 
-    private suspend fun enrichGenresFromLastFm(artistName: String) {
+    private suspend fun enrichGenres(artistName: String) {
         try {
-            val lastFmGenres = lastFmGenreResolver.resolve(artistName)
+            val lastFmGenres = musicBrainzGenreResolver.resolve(artistName, null)
             if (lastFmGenres.isNotEmpty()) {
                 _album.update { current ->
                     val merged = (current?.genres.orEmpty() + lastFmGenres).distinctBy { it.lowercase() }
@@ -136,25 +134,6 @@ class AlbumDetailViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Enrich genres failed: ${e.message}")
-        }
-    }
-
-    private suspend fun loadLastFmAlbumInfo(
-        artistName: String,
-        albumName: String,
-        needsBio: Boolean,
-        needsYear: Boolean
-    ) {
-        try {
-            val info = lastFmAlbumInfoResolver.resolve(artistName, albumName) ?: return
-            _album.update { current ->
-                current?.copy(
-                    description = if (needsBio && info.summary != null) info.summary else current.description,
-                    year = if (needsYear && info.year != null) info.year else current.year
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Load Last.fm album info failed: ${e.message}")
         }
     }
 

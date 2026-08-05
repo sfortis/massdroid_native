@@ -9,7 +9,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -43,7 +42,6 @@ class SettingsViewModel @Inject constructor(
     private val sendspinManager: SendspinManager,
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository,
-    private val lastFmGenreResolver: LastFmGenreResolver,
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
@@ -216,9 +214,6 @@ class SettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         UpdateUiState(appVersion = appUpdateChecker.getCurrentVersion())
     )
-
-    val lastFmApiKey = settingsRepository.lastFmApiKey
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     val savedUsername = settingsRepository.username
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -495,36 +490,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private val _lastFmValidation = MutableStateFlow<LastFmValidation>(LastFmValidation.Idle)
-    val lastFmValidation: StateFlow<LastFmValidation> = _lastFmValidation.asStateFlow()
-
-    fun setLastFmApiKey(key: String) {
-        val trimmed = key.trim()
-        if (trimmed.isBlank()) {
-            Log.d(TAG, "Last.fm API key cleared")
-            viewModelScope.launch { settingsRepository.setLastFmApiKey("") }
-            _lastFmValidation.value = LastFmValidation.Idle
-            return
-        }
-        Log.d(TAG, "Validating Last.fm API key...")
-        _lastFmValidation.value = LastFmValidation.Validating
-        viewModelScope.launch {
-            val error = lastFmGenreResolver.validateApiKey(trimmed)
-            if (error == null) {
-                Log.d(TAG, "Last.fm API key validated, saving")
-                settingsRepository.setLastFmApiKey(trimmed)
-                _lastFmValidation.value = LastFmValidation.Valid
-            } else {
-                Log.w(TAG, "Last.fm API key validation failed: $error")
-                _lastFmValidation.value = LastFmValidation.Invalid(error)
-            }
-        }
-    }
-
-    fun clearLastFmValidation() {
-        _lastFmValidation.value = LastFmValidation.Idle
-    }
-
     fun clearRecommendationMessage() {
         _recommendationMessage.value = null
     }
@@ -591,11 +556,4 @@ class SettingsViewModel @Inject constructor(
         _topGenres.value = genresDef.await()
         _blockedArtists.value = blockedDef.await()
     }
-}
-
-sealed interface LastFmValidation {
-    data object Idle : LastFmValidation
-    data object Validating : LastFmValidation
-    data object Valid : LastFmValidation
-    data class Invalid(val reason: String) : LastFmValidation
 }

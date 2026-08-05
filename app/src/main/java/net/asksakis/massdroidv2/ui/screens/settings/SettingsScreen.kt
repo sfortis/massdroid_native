@@ -417,7 +417,7 @@ private fun RecommendationsScreen(
         SmartListeningCard(viewModel = viewModel)
         SmartMixTuningCard(viewModel = viewModel)
         InsightsCard(viewModel = viewModel, onOpen = onOpenInsights)
-        LastFmCard(viewModel = viewModel)
+        GenreEnrichmentCard(viewModel = viewModel)
     }
 }
 
@@ -1085,10 +1085,7 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun LastFmCard(viewModel: SettingsViewModel) {
-    val lastFmApiKey by viewModel.lastFmApiKey.collectAsStateWithLifecycle()
-    val lastFmValidation by viewModel.lastFmValidation.collectAsStateWithLifecycle()
-
+private fun GenreEnrichmentCard(viewModel: SettingsViewModel) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
@@ -1100,94 +1097,12 @@ private fun LastFmCard(viewModel: SettingsViewModel) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Last.fm Genre Enrichment", style = MaterialTheme.typography.titleSmall)
+            Text("Genre enrichment", style = MaterialTheme.typography.titleSmall)
             Text(
-                "Enrich genre data using Last.fm. Get your API key from last.fm/api",
+                "Genres come from Music Assistant and MusicBrainz. Nothing to set up.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            var apiKeyInput by remember(lastFmApiKey) { mutableStateOf(lastFmApiKey) }
-            var apiKeyVisible by remember { mutableStateOf(false) }
-            val isValidating = lastFmValidation is LastFmValidation.Validating
-            OutlinedTextField(
-                value = apiKeyInput,
-                onValueChange = {
-                    apiKeyInput = it
-                    viewModel.clearLastFmValidation()
-                },
-                label = { Text("API Key") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth()
-                    .semantics { contentType = ContentType.Password },
-                visualTransformation = if (apiKeyVisible) {
-                    VisualTransformation.None
-                } else {
-                    PasswordVisualTransformation()
-                },
-                trailingIcon = {
-                    Row {
-                        if (apiKeyInput.isNotBlank()) {
-                            MdIconButton(onClick = {
-                                apiKeyInput = ""
-                                viewModel.clearLastFmValidation()
-                            }) {
-                                Icon(Icons.Filled.Close, contentDescription = "Clear")
-                            }
-                        }
-                        MdIconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
-                            Icon(
-                                if (apiKeyVisible) Icons.Filled.VisibilityOff
-                                else Icons.Filled.Visibility,
-                                contentDescription = null
-                            )
-                        }
-                    }
-                },
-                isError = lastFmValidation is LastFmValidation.Invalid,
-                supportingText = when (lastFmValidation) {
-                    is LastFmValidation.Valid -> {
-                        { Text("API key verified", color = MaterialTheme.colorScheme.primary) }
-                    }
-                    is LastFmValidation.Invalid -> {
-                        { Text("Validation failed", color = MaterialTheme.colorScheme.error) }
-                    }
-                    else -> null
-                }
-            )
-            if (lastFmValidation is LastFmValidation.Invalid) {
-                val reason = (lastFmValidation as LastFmValidation.Invalid).reason
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    ),
-                    shape = MaterialTheme.shapes.small
-                ) {
-                    Text(
-                        reason,
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            }
-            MdButton(
-                onClick = { viewModel.setLastFmApiKey(apiKeyInput) },
-                enabled = apiKeyInput.trim() != lastFmApiKey && !isValidating
-            ) {
-                if (isValidating) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Validating...")
-                } else {
-                    Text("Save")
-                }
-            }
-
             val enrichProgress by viewModel.enrichmentProgress.collectAsStateWithLifecycle()
             if (enrichProgress.isRunning) {
                 HorizontalDivider()

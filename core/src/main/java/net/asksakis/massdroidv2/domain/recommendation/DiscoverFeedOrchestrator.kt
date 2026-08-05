@@ -4,9 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.genre.GenreRepository
-import net.asksakis.massdroidv2.data.lastfm.LastFmGenreResolver
 import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
-import net.asksakis.massdroidv2.data.lastfm.LastFmSimilarResolver
 import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.repository.MusicRepository

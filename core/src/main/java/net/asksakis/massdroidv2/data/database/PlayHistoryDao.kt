@@ -155,13 +155,6 @@ interface PlayHistoryDao {
     suspend fun searchArtistUrisByGenre(query: String): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertLastFmTags(tags: LastFmArtistTagsEntity)
-
-    @Transaction
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertSimilarArtists(entities: List<LastFmSimilarArtistEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtistTrackCache(cache: ArtistTrackCacheEntity)
 
     // ---- MA similar-artists cache ----
@@ -187,63 +180,7 @@ interface PlayHistoryDao {
 
     // ---- Seed-track generator caches ----
 
-    @Query("SELECT * FROM lastfm_similar_artists WHERE source_artist = :sourceArtist ORDER BY match_score DESC")
-    suspend fun getSimilarArtists(sourceArtist: String): List<LastFmSimilarArtistEntity>
-
-    @Query("SELECT fetched_at FROM lastfm_similar_artists WHERE source_artist = :sourceArtist LIMIT 1")
-    suspend fun getSimilarArtistsFetchedAt(sourceArtist: String): Long?
-
-    @Query(
-        """UPDATE lastfm_similar_artists SET
-           resolved_item_id = :itemId, resolved_provider = :provider, resolved_name = :name,
-           resolved_image_url = :imageUrl, resolved_uri = :uri, resolved_at = :resolvedAt
-           WHERE source_artist = :sourceArtist AND similar_artist = :similarArtist"""
-    )
-    suspend fun updateSimilarArtistResolved(
-        sourceArtist: String, similarArtist: String,
-        itemId: String?, provider: String?, name: String?, imageUrl: String?, uri: String?,
-        resolvedAt: Long
-    )
-
-    @Query(
-        """UPDATE lastfm_similar_artists SET
-           resolved_item_id = NULL, resolved_provider = NULL, resolved_name = NULL,
-           resolved_image_url = NULL, resolved_uri = NULL, resolved_at = NULL
-           WHERE source_artist = :sourceArtist"""
-    )
-    suspend fun clearSimilarArtistResolved(sourceArtist: String)
-
-    /**
-     * Any still-fresh resolved provider URI for a similar-artist NAME (a name can
-     * be similar to several sources; any non-expired resolution is reusable).
-     * Used to skip the slow MA provider search during Smart Mix expansion.
-     */
-    @Query(
-        """SELECT resolved_uri FROM lastfm_similar_artists
-           WHERE similar_artist = :similarArtist
-             AND resolved_uri IS NOT NULL
-             AND resolved_at IS NOT NULL
-             AND resolved_at > :minResolvedAt
-           LIMIT 1"""
-    )
-    suspend fun getResolvedUriBySimilarName(similarArtist: String, minResolvedAt: Long): String?
-
-    /** Cache a resolved provider URI for every edge that shares this similar-artist name. */
-    @Query(
-        """UPDATE lastfm_similar_artists SET resolved_uri = :uri, resolved_at = :resolvedAt
-           WHERE similar_artist = :similarArtist"""
-    )
-    suspend fun cacheResolvedUriBySimilarName(similarArtist: String, uri: String, resolvedAt: Long)
-
-    // COLLATE NOCASE: the table is keyed by the artist name exactly as the
-    // source spelled it, and the same artist reaches us with different casing
-    // from different places ("york" from a provider, "York" from Last.fm), so a
-    // case-sensitive lookup missed a cached artist and made them look untagged
-    // to the Smart Mix genre gate. Reads now find either spelling.
-    @Query("SELECT * FROM lastfm_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
-    suspend fun getLastFmTags(artistName: String): LastFmArtistTagsEntity?
-
-    // COLLATE NOCASE for the same reason as the Last.fm lookup above: the same
+    // COLLATE NOCASE because the same artist reaches us with different casing
     // artist reaches us with different casing depending on the provider.
     @Query("SELECT * FROM musicbrainz_artist_tags WHERE artist_name = :artistName COLLATE NOCASE LIMIT 1")
     suspend fun getMusicBrainzTags(artistName: String): MusicBrainzArtistTagsEntity?
@@ -365,7 +302,7 @@ interface PlayHistoryDao {
     )
     suspend fun getArtistFeedbackSignals(since: Long): List<ArtistFeedbackSignalRow>
 
-    // Top genres by play count (track_genres + artist_genres via Last.fm)
+    // Top genres by play count (track_genres + artist_genres)
     @Query(
         """
         SELECT genre, SUM(cnt) AS playCount FROM (
@@ -843,20 +780,12 @@ interface PlayHistoryDao {
     @Query("DELETE FROM artist_genres")
     suspend fun clearArtistGenres()
 
-    @Query("DELETE FROM lastfm_artist_tags")
-    suspend fun clearLastFmTags()
-
-    @Query("DELETE FROM lastfm_similar_artists")
-    suspend fun clearLastFmSimilarArtists()
-
     @Transaction
     suspend fun clearRecommendationData() {
         clearSmartFeedback()
         clearBlockedArtists()
         clearPlayHistory()
         clearArtistGenres()
-        clearLastFmTags()
-        clearLastFmSimilarArtists()
         clearTrackGenres()
         clearTrackArtists()
         clearTracks()

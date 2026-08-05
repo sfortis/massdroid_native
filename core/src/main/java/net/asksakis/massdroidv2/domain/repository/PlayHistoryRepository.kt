@@ -107,8 +107,6 @@ interface PlayHistoryRepository {
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
     /** Cached provider URI for an artist name resolved by the genre engine (null if absent or stale). */
-    suspend fun getCachedResolvedArtistUri(name: String, maxAgeMs: Long): String?
-    suspend fun cacheResolvedArtistUri(name: String, uri: String)
     /**
      * Seed-track seeds: listened tracks scored at or above [minScore], ordered
      * by preference (score desc, then recency). minScore is the Strictness knob:
