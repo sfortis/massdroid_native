@@ -161,6 +161,13 @@ class MusicBrainzGenreResolver @Inject constructor(
         }
     }
 
+    /**
+     * The name -> MBID step, for callers that need the id rather than the genres.
+     * Exposed so the bio resolver does not reimplement the search, the score bar
+     * or the rate limiting.
+     */
+    suspend fun findMbidForBio(artistName: String): String? = findMbid(artistName)
+
     private suspend fun findMbid(artistName: String): String? {
         // Quoting the name makes this a phrase match; without it Lucene splits
         // on whitespace and "Pale Saints" matches any artist called "Saints".

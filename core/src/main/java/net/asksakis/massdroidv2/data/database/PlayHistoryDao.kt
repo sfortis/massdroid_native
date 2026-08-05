@@ -191,6 +191,35 @@ interface PlayHistoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMusicBrainzTags(entity: MusicBrainzArtistTagsEntity)
 
+    /**
+     * Writes only the bio columns, creating the row if the genre lookup has not
+     * happened yet. A full upsert would blank the tags this row may already hold.
+     */
+    @Transaction
+    suspend fun upsertArtistBio(artistName: String, bio: String, fetchedAt: Long) {
+        val updated = updateArtistBio(artistName, bio, fetchedAt)
+        if (updated == 0) {
+            insertArtistBioRow(
+                MusicBrainzArtistTagsEntity(
+                    artistName = artistName,
+                    mbid = "",
+                    tags = "",
+                    // Not a genre answer: leave the tag timestamp at zero so the
+                    // genre resolver still treats this artist as unasked.
+                    fetchedAt = 0L,
+                    bio = bio,
+                    bioFetchedAt = fetchedAt
+                )
+            )
+        }
+    }
+
+    @Query("UPDATE musicbrainz_artist_tags SET bio = :bio, bio_fetched_at = :fetchedAt WHERE artist_name = :artistName")
+    suspend fun updateArtistBio(artistName: String, bio: String, fetchedAt: Long): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertArtistBioRow(entity: MusicBrainzArtistTagsEntity)
+
     @Query("DELETE FROM artist_genres WHERE artist_uri NOT IN (SELECT DISTINCT uri FROM artists)")
     suspend fun deleteOrphanArtistGenres()
 

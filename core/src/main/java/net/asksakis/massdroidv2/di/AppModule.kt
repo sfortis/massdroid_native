@@ -304,10 +304,18 @@ object AppModule {
      * The same drop, for a device that already ran a v15 build.
      *
      * Only reachable from an unreleased version, so it never runs for anyone
-     * upgrading from a release - they take [MIGRATION_10_16] in one step. It
+     * upgrading from a release - they take [MIGRATION_10_17] in one step. It
      * exists so a tester already on 15 is not thrown at the destructive
      * fallback, which would cost them their listening history.
      */
+    /** Adds the bio cache for a device already on 16. Unreleased path, same reason. */
+    private val MIGRATION_16_17 = object : Migration(16, 17) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `musicbrainz_artist_tags` ADD COLUMN `bio` TEXT")
+            db.execSQL("ALTER TABLE `musicbrainz_artist_tags` ADD COLUMN `bio_fetched_at` INTEGER")
+        }
+    }
+
     private val MIGRATION_15_16 = object : Migration(15, 16) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("DROP TABLE IF EXISTS lastfm_artist_tags")
@@ -315,7 +323,7 @@ object AppModule {
         }
     }
 
-    private val MIGRATION_10_16 = object : Migration(10, 16) {
+    private val MIGRATION_10_17 = object : Migration(10, 17) {
         override fun migrate(database: SupportSQLiteDatabase) {
             // MA similar-artists cache. Uri-keyed on both sides so results can be
             // reused directly for top_tracks without any name resolution.
@@ -359,6 +367,8 @@ object AppModule {
             // single jump.
             database.execSQL("DROP TABLE IF EXISTS `lastfm_artist_tags`")
             database.execSQL("DROP TABLE IF EXISTS `lastfm_similar_artists`")
+            database.execSQL("ALTER TABLE `musicbrainz_artist_tags` ADD COLUMN `bio` TEXT")
+            database.execSQL("ALTER TABLE `musicbrainz_artist_tags` ADD COLUMN `bio_fetched_at` INTEGER")
         }
     }
 
@@ -379,7 +389,7 @@ object AppModule {
             DATABASE_NAME
         ).addMigrations(
             MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_16, MIGRATION_15_16
+            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_15_16, MIGRATION_16_17
         )
             // Kept so a missing migration cannot brick the app, but no longer
             // silent: see DatabaseResetReporter.

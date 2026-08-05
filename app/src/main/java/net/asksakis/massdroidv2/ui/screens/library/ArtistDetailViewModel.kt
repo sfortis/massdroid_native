@@ -41,6 +41,7 @@ class ArtistDetailViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
+    private val artistBioResolver: net.asksakis.massdroidv2.data.musicbrainz.ArtistBioResolver,
     private val dao: PlayHistoryDao,
     private val providerHealthReporter: ProviderHealthReporter
 ) : ViewModel() {
@@ -150,6 +151,12 @@ class ArtistDetailViewModel @Inject constructor(
         if (name.isNotBlank()) {
             viewModelScope.launch { loadSimilarArtists(itemId, provider) }
             viewModelScope.launch { enrichArtistGenres(name) }
+            // Music Assistant only describes LIBRARY artists, so almost everything
+            // opened from a provider arrived with an empty screen. This fills it
+            // with no API key: MusicBrainz by name, then the article it links to.
+            if (_artist.value?.description.isNullOrBlank()) {
+                viewModelScope.launch { loadArtistBio(name) }
+            }
         }
     }
 
@@ -187,6 +194,20 @@ class ArtistDetailViewModel @Inject constructor(
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "Load similar artists failed: ${e.message}")
+        }
+    }
+
+    private suspend fun loadArtistBio(artistName: String) {
+        try {
+            val bio = artistBioResolver.resolve(artistName, _artist.value?.mbid) ?: return
+            // Only fill a still-empty description: a server answer that arrived
+            // meanwhile is the better source.
+            _artist.update { current ->
+                if (current == null || !current.description.isNullOrBlank()) current
+                else current.copy(description = bio)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Load artist bio failed: ${e.message}")
         }
     }
 

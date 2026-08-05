@@ -220,7 +220,15 @@ data class MusicBrainzArtistTagsEntity(
     @ColumnInfo(name = "artist_name") val artistName: String,
     val mbid: String,
     val tags: String,
-    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long,
+    /**
+     * Artist biography, from Wikipedia by way of this row's MBID. Kept here
+     * rather than in a table of its own because it is looked up by the same key,
+     * from the same id, at the same moment - but with its OWN timestamp, so a
+     * cached genre does not make the app believe it already tried for a bio.
+     */
+    val bio: String? = null,
+    @ColumnInfo(name = "bio_fetched_at") val bioFetchedAt: Long? = null
 )
 
 @Entity(tableName = "ma_similar_artists", primaryKeys = ["source_uri", "similar_uri"])
