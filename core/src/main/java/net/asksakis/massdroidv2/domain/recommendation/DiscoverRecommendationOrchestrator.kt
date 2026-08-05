@@ -19,7 +19,11 @@ import kotlin.random.Random
 private const val ORCHESTRATOR_TAG = "DiscoverReco"
 private const val DISCOVERY_SEED_LIMIT = 8
 private const val LIBRARY_PROVIDER = "library"
+private const val LIBRARY_URI_PREFIX = "library://"
 private const val DISCOVERY_PER_SEED_SIMILARS = 4
+// Track neighbours fetched per provider seed; a handful is enough to yield the
+// four artists the pool wants after dedupe.
+private const val DISCOVERY_SIMILAR_TRACKS_PER_SEED = 15
 private const val DISCOVERY_RESOLVE_BUDGET = 25
 private const val DISCOVERY_VOTE_WEIGHT = 0.2
 private const val DISCOVERY_TOP_GENRES_FOR_SEEDS = 8
@@ -196,13 +200,53 @@ class DiscoverRecommendationOrchestrator(
                 val artist = musicRepository.getArtist(ref.first, ref.second) ?: return emptyList()
                 maItemRef(artist.uri) ?: (artist.itemId to artist.provider)
             }
-            musicRepository.getSimilarArtists(resolved.first, resolved.second, DISCOVERY_PER_SEED_SIMILARS)
+            val direct = musicRepository
+                .getSimilarArtists(resolved.first, resolved.second, DISCOVERY_PER_SEED_SIMILARS)
+            // A provider artist with no library counterpart answers nothing here,
+            // and on a real library that was most of the seeds. Track similarity
+            // is the route those providers DO implement, so the seed contributes
+            // through its neighbours' artists instead of contributing nothing.
+            // Same two-route split the Smart Mix engine already uses.
+            direct.ifEmpty { artistsViaSimilarTracks(resolved) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(ORCHESTRATOR_TAG, "similar_artists failed for ${seed.artistName}: ${e.message}")
             emptyList()
         }
+    }
+
+    /**
+     * Candidate artists reached through `similar_tracks`.
+     *
+     * Track similarity needs a track, so one of the seed artist's own tracks
+     * stands in for them. The tracks that come back name their artists but carry
+     * no artist artwork, and a Discover card without art is not worth showing,
+     * so each distinct artist is looked up by ID. That is a lookup, not the
+     * name search the Last.fm route needed: no ambiguity, and it goes through
+     * the shared bulk-RPC cap so it cannot flood the server.
+     */
+    private suspend fun artistsViaSimilarTracks(seedRef: Pair<String, String>): List<Artist> {
+        val seedTrack = musicRepository.getArtistTracks(seedRef.first, seedRef.second)
+            .firstOrNull { it.uri.isNotBlank() } ?: return emptyList()
+        val trackRef = maItemRef(seedTrack.uri) ?: return emptyList()
+        val similar = musicRepository
+            .getSimilarTracks(trackRef.first, trackRef.second, DISCOVERY_SIMILAR_TRACKS_PER_SEED)
+        val artistRefs = similar
+            .mapNotNull { it.artistUri?.takeIf { uri -> uri.isNotBlank() } }
+            .distinct()
+            .take(DISCOVERY_PER_SEED_SIMILARS)
+            .mapNotNull { maItemRef(it) }
+        if (artistRefs.isEmpty()) return emptyList()
+        return artistRefs.mapMaBounded { (itemId, provider) ->
+            try {
+                musicRepository.getArtist(itemId, provider)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }.filterNotNull()
     }
 
     /** `provider://artist/id` -> (id, provider). Provider-agnostic. */
@@ -487,17 +531,62 @@ class DiscoverRecommendationOrchestrator(
                 .distinctBy { it.artistUri }
                 .sortedByDescending { it.score }
                 .take(DISCOVERY_SEED_RANDOMIZATION_POOL)
-            if (pool.isEmpty()) null else pool[Random.nextInt(pool.size)]
+            // Prefer a library artist within the family, because only a library
+            // item answers `similar_artists`. The genre map is dominated by
+            // provider uris, so an unbiased pick here wasted most of the seeds.
+            // Randomisation is kept, just inside the half that can answer.
+            val answerable = pool.filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
+            val draw = answerable.ifEmpty { pool }
+            if (draw.isEmpty()) null else draw[Random.nextInt(draw.size)]
         }.distinctBy { it.artistUri }
 
         val usedUris = perFamilySeeds.mapTo(mutableSetOf()) { it.artistUri }
+        // Library artists first here too, for the same reason.
         val padPool = artistScores
             .filter { it.artistUri !in usedUris }
+            .sortedByDescending { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
             .take(DISCOVERY_PAD_RANDOMIZATION_POOL)
             .shuffled()
+            .sortedByDescending { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
         val pad = padPool.take(DISCOVERY_SEED_LIMIT - perFamilySeeds.size)
 
-        return (perFamilySeeds + pad).take(DISCOVERY_SEED_LIMIT)
+        return preferLibraryUris((perFamilySeeds + pad).take(DISCOVERY_SEED_LIMIT))
+    }
+
+    /**
+     * Point each seed at the artist's library uri when one exists.
+     *
+     * Only a library item answers `similar_artists`; a provider item returns
+     * nothing. The genre map this picks from is dominated by provider uris (a
+     * real library held 4917 provider artist rows against 678 library ones), so
+     * the seeds skewed the wrong way and most of them contributed nothing:
+     * measured, 6 of 20 calls went to a library item while 37 of the 50
+     * candidate artists actually had one.
+     *
+     * Swapping the uri costs nothing - no extra request, same artist, same BLL
+     * score - and it is strictly better than asking the server about an item it
+     * cannot answer for.
+     */
+    private suspend fun preferLibraryUris(
+        seeds: List<net.asksakis.massdroidv2.domain.repository.ArtistScore>
+    ): List<net.asksakis.massdroidv2.domain.repository.ArtistScore> {
+        if (seeds.none { !it.artistUri.startsWith(LIBRARY_URI_PREFIX) }) return seeds
+        val libraryByName = try {
+            playHistoryRepository.getLibraryArtistUriMap()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return seeds
+        }
+        var swapped = 0
+        val mapped = seeds.map { seed ->
+            if (seed.artistUri.startsWith(LIBRARY_URI_PREFIX)) return@map seed
+            val libraryUri = libraryByName[seed.artistName] ?: return@map seed
+            swapped++
+            seed.copy(artistUri = libraryUri)
+        }
+        if (swapped > 0) Log.d(ORCHESTRATOR_TAG, "Seeds repointed to a library uri: $swapped")
+        return mapped
     }
 
     private fun jaccardSimilarity(a: Set<String>, b: Set<String>): Double {
