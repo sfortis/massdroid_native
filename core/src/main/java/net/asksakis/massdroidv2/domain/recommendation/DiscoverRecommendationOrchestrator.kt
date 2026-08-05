@@ -24,6 +24,8 @@ private const val DISCOVERY_PER_SEED_SIMILARS = 4
 // Track neighbours fetched per provider seed; a handful is enough to yield the
 // four artists the pool wants after dedupe.
 private const val DISCOVERY_SIMILAR_TRACKS_PER_SEED = 15
+// How many seeds may fall back to the track route in one build.
+private const val DISCOVERY_TRACK_ROUTE_SEEDS = 4
 private const val DISCOVERY_RESOLVE_BUDGET = 25
 private const val DISCOVERY_VOTE_WEIGHT = 0.2
 private const val DISCOVERY_TOP_GENRES_FOR_SEEDS = 8
@@ -52,6 +54,9 @@ class DiscoverRecommendationOrchestrator(
     private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 ) {
+
+    // Seeds still allowed to take the expensive track route this build.
+    private val trackRouteBudget = java.util.concurrent.atomic.AtomicInteger(0)
 
     suspend fun buildDiscovery(
         libraryArtists: List<Artist>,
@@ -127,6 +132,7 @@ class DiscoverRecommendationOrchestrator(
         libraryNames: Set<String>,
         excludedArtistUris: Set<String>
     ): List<Pair<DiscoveryCandidate, Artist>> = coroutineScope {
+        trackRouteBudget.set(DISCOVERY_TRACK_ROUTE_SEEDS)
         val seeds = buildDiverseSeeds()
         if (seeds.isEmpty()) return@coroutineScope emptyList()
 
@@ -207,7 +213,16 @@ class DiscoverRecommendationOrchestrator(
             // is the route those providers DO implement, so the seed contributes
             // through its neighbours' artists instead of contributing nothing.
             // Same two-route split the Smart Mix engine already uses.
-            direct.ifEmpty { artistsViaSimilarTracks(resolved) }
+            direct.ifEmpty {
+                // Bounded: each fallback seed costs a top_tracks, a similar_tracks
+                // and a lookup per candidate, so letting every seed take it would
+                // trade a thin feed for a slow one.
+                if (trackRouteBudget.decrementAndGet() >= 0) {
+                    artistsViaSimilarTracks(resolved)
+                } else {
+                    emptyList()
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -219,19 +234,28 @@ class DiscoverRecommendationOrchestrator(
     /**
      * Candidate artists reached through `similar_tracks`.
      *
-     * Track similarity needs a track, so one of the seed artist's own tracks
-     * stands in for them. The tracks that come back name their artists but carry
-     * no artist artwork, and a Discover card without art is not worth showing,
-     * so each distinct artist is looked up by ID. That is a lookup, not the
-     * name search the Last.fm route needed: no ambiguity, and it goes through
-     * the shared bulk-RPC cap so it cannot flood the server.
+     * Track similarity needs a track, so one of the seed artist's own TOP tracks
+     * stands in for them. `top_tracks` and not `artist_tracks`: the unbounded
+     * listing sends every track an artist has over the wire and the Smart Mix
+     * engine already measured it at ~1.5 s each, enough on its own to make a
+     * build take 70 s. Asked for it here anyway and it timed out on a real
+     * server, which is what left the Discover refresh spinning.
+     *
+     * The tracks that come back name their artists but carry no artist artwork,
+     * and a Discover card without art is not worth showing, so each distinct
+     * artist is looked up by ID - a lookup, not the name search the Last.fm
+     * route needed. Every call is time-boxed, because Music Assistant gathers
+     * providers server-side with no per-provider timeout, so one slow provider
+     * would otherwise hold the whole feed open.
      */
     private suspend fun artistsViaSimilarTracks(seedRef: Pair<String, String>): List<Artist> {
-        val seedTrack = musicRepository.getArtistTracks(seedRef.first, seedRef.second)
-            .firstOrNull { it.uri.isNotBlank() } ?: return emptyList()
+        val seedTrack = withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
+            musicRepository.getArtistTopTracks(seedRef.first, seedRef.second, limit = 1)
+        }?.firstOrNull { it.uri.isNotBlank() } ?: return emptyList()
         val trackRef = maItemRef(seedTrack.uri) ?: return emptyList()
-        val similar = musicRepository
-            .getSimilarTracks(trackRef.first, trackRef.second, DISCOVERY_SIMILAR_TRACKS_PER_SEED)
+        val similar = withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
+            musicRepository.getSimilarTracks(trackRef.first, trackRef.second, DISCOVERY_SIMILAR_TRACKS_PER_SEED)
+        } ?: return emptyList()
         val artistRefs = similar
             .mapNotNull { it.artistUri?.takeIf { uri -> uri.isNotBlank() } }
             .distinct()
@@ -239,12 +263,14 @@ class DiscoverRecommendationOrchestrator(
             .mapNotNull { maItemRef(it) }
         if (artistRefs.isEmpty()) return emptyList()
         return artistRefs.mapMaBounded { (itemId, provider) ->
-            try {
-                musicRepository.getArtist(itemId, provider)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
+            withTimeoutOrNull(CANDIDATE_RESOLVE_TIMEOUT_MS) {
+                try {
+                    musicRepository.getArtist(itemId, provider)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
             }
         }.filterNotNull()
     }
