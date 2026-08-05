@@ -1084,43 +1084,41 @@ private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
     }
 }
 
+/**
+ * Progress while genres are being filled in, and nothing at all otherwise.
+ *
+ * There used to be an API key to paste here. Now that genres come from Music
+ * Assistant and MusicBrainz there is nothing to configure, and a card whose only
+ * content is a sentence saying so is worse than no card: it takes up a settings
+ * slot to tell the reader they have no decision to make.
+ */
 @Composable
 private fun GenreEnrichmentCard(viewModel: SettingsViewModel) {
+    val progress by viewModel.enrichmentProgress.collectAsStateWithLifecycle()
+    if (!progress.isRunning && progress.total == 0) return
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Genre enrichment", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Genres come from Music Assistant and MusicBrainz. Nothing to set up.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            val enrichProgress by viewModel.enrichmentProgress.collectAsStateWithLifecycle()
-            if (enrichProgress.isRunning) {
-                HorizontalDivider()
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Text(
-                        "Enriching genres: ${enrichProgress.processed}/${enrichProgress.total} (${enrichProgress.enriched} new)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else if (enrichProgress.total > 0) {
+            if (progress.isRunning) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                 Text(
-                    "Genre enrichment complete: ${enrichProgress.enriched} artists enriched",
+                    "Enriching genres: ${progress.processed}/${progress.total} (${progress.enriched} new)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "Genre enrichment complete: ${progress.enriched} artists enriched",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
