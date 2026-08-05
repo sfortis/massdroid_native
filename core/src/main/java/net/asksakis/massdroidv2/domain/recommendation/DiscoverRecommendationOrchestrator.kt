@@ -134,6 +134,15 @@ class DiscoverRecommendationOrchestrator(
         val similarsBySeed = seeds.map { seed ->
             async { seed to similarArtistsForSeed(seed) }
         }.awaitAll()
+        // Only a library item answers `similar_artists`. A seed that could not be
+        // resolved to one contributes nothing, and that is indistinguishable from
+        // "this artist genuinely has no similars" unless it is counted: measured
+        // on a real library, 14 of 20 seeds fell in this hole and the server-folder
+        // fallback was quietly carrying the feature.
+        val silent = similarsBySeed.count { it.second.isEmpty() }
+        if (silent > 0) {
+            Log.d(ORCHESTRATOR_TAG, "Discovery seeds with no similars: $silent/${seeds.size}")
+        }
 
         val candidatesByUri = LinkedHashMap<String, DiscoveryCandidate>()
         val artistByUri = HashMap<String, Artist>()

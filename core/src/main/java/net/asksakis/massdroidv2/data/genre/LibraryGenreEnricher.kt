@@ -141,10 +141,13 @@ class LibraryGenreEnricher @Inject constructor(
                 // which reads as a broken engine rather than a settled question.
                 // The resolver owns the decision so the cache-key format stays in
                 // one place.
-                val byName = allGaps.associateBy { it.name }
+                // Keyed by name AND id: the same artist legitimately appears under
+                // several uris, so two gap rows can share a name, and keying on the
+                // name alone silently kept only the last of them.
+                val byRef = allGaps.associateBy { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) }
                 val gaps = musicBrainzGenreResolver
-                    .stillWorthAsking(allGaps.map { MusicBrainzGenreResolver.ArtistRef(it.name, it.mbid) })
-                    .mapNotNull { byName[it.name] }
+                    .stillWorthAsking(byRef.keys)
+                    .mapNotNull { byRef[it] }
                 if (gaps.isEmpty()) {
                     Log.d(TAG, "No artists left to enrich (${allGaps.size} already answered)")
                     return@launch
