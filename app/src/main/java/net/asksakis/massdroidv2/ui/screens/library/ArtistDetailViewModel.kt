@@ -213,10 +213,10 @@ class ArtistDetailViewModel @Inject constructor(
 
     private suspend fun enrichArtistGenres(artistName: String) {
         try {
-            val lastFmGenres = musicBrainzGenreResolver.resolve(artistName, _artist.value?.mbid)
-            if (lastFmGenres.isNotEmpty()) {
+            val musicBrainzGenres = musicBrainzGenreResolver.resolve(artistName, _artist.value?.mbid)
+            if (musicBrainzGenres.isNotEmpty()) {
                 _artist.update { current ->
-                    current?.copy(genres = lastFmGenres)
+                    current?.copy(genres = musicBrainzGenres)
                 }
             }
         } catch (e: Exception) {

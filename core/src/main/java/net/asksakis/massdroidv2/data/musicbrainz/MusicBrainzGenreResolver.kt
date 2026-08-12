@@ -127,23 +127,74 @@ class MusicBrainzGenreResolver @Inject constructor(
      * 1 req/s, so callers must treat this as background work, never inline in a
      * mix build.
      */
-    suspend fun resolve(artistName: String, mbid: String? = null): List<String> {
+    suspend fun resolve(
+        artistName: String,
+        mbid: String? = null,
+        trackHint: String? = null
+    ): List<String> {
         val key = cacheKey(artistName, mbid)
         if (key.isEmpty()) return emptyList()
         cachedGenres(artistName, mbid)?.let { return it }
         return withContext(Dispatchers.IO) {
-            // With an id from Music Assistant this is an exact lookup. Without
-            // one we have to search by name, and a name is not an identity:
-            // "Annie" scores 100 for a Scottish singer-songwriter and 95 for the
-            // Norwegian pop singer, so the wrong artist's genres win by default.
-            val resolvedMbid = mbid?.takeIf { it.isNotBlank() } ?: findMbid(artistName) ?: run {
-                cache(key, mbid = "", genres = emptyList())
-                return@withContext emptyList()
-            }
+            // Identity, best evidence first.
+            //
+            // 1. An id from Music Assistant is exact. Only library items carry one;
+            //    provider items report `external_ids: []` (verified against the
+            //    server), so most artists reach here without it.
+            // 2. [trackHint] - a recording we know this artist for - is the next
+            //    best thing, because a namesake does not share the recording.
+            //    Measured: "Labelle" name-searches to the American soul group
+            //    LaBelle (score 100, disco/funk/soul) while the artist actually
+            //    played was the Reunion Island electronic producer (score 86, so
+            //    the score bar could never have saved it). The wrong genres then
+            //    became a whole mix's envelope.
+            // 3. Name alone, which is not an identity and is used only as a last
+            //    resort.
+            val resolvedMbid = mbid?.takeIf { it.isNotBlank() }
+                ?: trackHint?.takeIf { it.isNotBlank() }?.let { findMbidByRecording(artistName, it) }
+                ?: findMbid(artistName)
+                ?: run {
+                    cache(key, mbid = "", genres = emptyList())
+                    return@withContext emptyList()
+                }
             val genres = fetchGenres(resolvedMbid)
             cache(key, resolvedMbid, genres)
             genres
         }
+    }
+
+    /**
+     * The artist credited with [trackName], when we know one of their recordings.
+     *
+     * This is the disambiguator a bare name cannot be. Two artists share a name;
+     * they do not share a recording. Returns null when the recording is unknown
+     * or the credit is ambiguous, and the caller falls back to the name search.
+     */
+    private suspend fun findMbidByRecording(artistName: String, trackName: String): String? {
+        val url = "$BASE/recording".toHttpUrlOrNull()?.newBuilder()
+            ?.addQueryParameter("query", "recording:\"$trackName\" AND artist:\"$artistName\"")
+            ?.addQueryParameter("fmt", "json")
+            ?.addQueryParameter("limit", "3")
+            ?.build() ?: return null
+        val body = request(url.toString()) ?: return null
+        val recordings = json.parseToJsonElement(body).jsonObject["recordings"]?.jsonArray.orEmpty()
+        for (recording in recordings) {
+            val obj = recording.jsonObject
+            if ((obj["score"]?.jsonPrimitive?.intOrNull ?: 0) < MIN_MATCH_SCORE) continue
+            val credits = obj["artist-credit"]?.jsonArray.orEmpty()
+            // Only a credit whose NAME still matches is usable: a recording can
+            // credit several artists (features, remixes) and picking the wrong
+            // one would reintroduce exactly the bug this exists to prevent.
+            val match = credits.firstOrNull { credit ->
+                val artist = credit.jsonObject["artist"]?.jsonObject ?: return@firstOrNull false
+                artist["name"]?.jsonPrimitive?.content
+                    .equals(artistName, ignoreCase = true)
+            }?.jsonObject?.get("artist")?.jsonObject ?: continue
+            val id = match["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() } ?: continue
+            Log.d(TAG, "'$artistName' identified via recording '$trackName' -> $id")
+            return id
+        }
+        return null
     }
 
     private suspend fun cache(key: String, mbid: String, genres: List<String>) {
@@ -171,20 +222,37 @@ class MusicBrainzGenreResolver @Inject constructor(
     private suspend fun findMbid(artistName: String): String? {
         // Quoting the name makes this a phrase match; without it Lucene splits
         // on whitespace and "Pale Saints" matches any artist called "Saints".
+        //
+        // Several candidates are requested rather than one, because MusicBrainz
+        // scores a NEAR name above an EXACT one often enough to matter: searching
+        // "Labelle" returns "LaBelle" (the American soul group) at 100 and the
+        // exact "Labelle" at 86. Taking the top hit picked the namesake, and no
+        // score threshold could have caught it - only one result cleared the bar,
+        // and it was the wrong one.
         val url = "$BASE/artist".toHttpUrlOrNull()?.newBuilder()
             ?.addQueryParameter("query", "artist:\"$artistName\"")
             ?.addQueryParameter("fmt", "json")
-            ?.addQueryParameter("limit", "1")
+            ?.addQueryParameter("limit", SEARCH_CANDIDATES.toString())
             ?.build() ?: return null
         val body = request(url.toString()) ?: return null
-        val artist = json.parseToJsonElement(body).jsonObject["artists"]
-            ?.jsonArray?.firstOrNull()?.jsonObject ?: return null
-        val score = artist["score"]?.jsonPrimitive?.intOrNull ?: 0
-        if (score < MIN_MATCH_SCORE) {
-            Log.d(TAG, "'$artistName': best match scored $score, rejected")
-            return null
+        val artists = json.parseToJsonElement(body).jsonObject["artists"]?.jsonArray.orEmpty()
+        if (artists.isEmpty()) return null
+
+        val scored = artists.mapNotNull { element ->
+            val obj = element.jsonObject
+            val id = obj["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }
+                ?: return@mapNotNull null
+            MbArtistCandidate(
+                id = id,
+                name = obj["name"]?.jsonPrimitive?.content.orEmpty(),
+                score = obj["score"]?.jsonPrimitive?.intOrNull ?: 0
+            )
         }
-        return artist["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }
+        return pickArtistCandidate(scored, artistName, EXACT_NAME_MIN_SCORE, MIN_MATCH_SCORE)
+            ?: run {
+                Log.d(TAG, "'$artistName': no usable match in ${scored.size} candidates")
+                null
+            }
     }
 
     private suspend fun fetchGenres(mbid: String): List<String> {
@@ -261,7 +329,48 @@ class MusicBrainzGenreResolver @Inject constructor(
         // Search scores are 0..100 and an exact name match scores 100. Anything
         // materially below that is a different artist.
         const val MIN_MATCH_SCORE = 90
+
+        /**
+         * Candidates pulled from a name search. One was not enough to notice a
+         * namesake outscoring the exact match.
+         */
+        const val SEARCH_CANDIDATES = 5
+
+        /**
+         * Bar for accepting an exact-case name match. Lower than [MIN_MATCH_SCORE]
+         * on purpose: the name already agreed character for character, so the
+         * fuzzy score is corroboration rather than the deciding evidence.
+         */
+        const val EXACT_NAME_MIN_SCORE = 80
         const val HTTP_SERVICE_UNAVAILABLE = 503
         const val RATE_LIMIT_RETRIES = 1
     }
+}
+
+/** One result of a MusicBrainz artist search. */
+internal data class MbArtistCandidate(val id: String, val name: String, val score: Int)
+
+/**
+ * Which search result is actually the artist we asked for.
+ *
+ * MusicBrainz scores a NEAR name above an EXACT one often enough to matter, and no
+ * score threshold can fix that because the wrong hit is the one clearing the bar.
+ * Measured on the real service: searching "Labelle" returns the American soul group
+ * "LaBelle" at 100 and the exact "Labelle" (a Reunion Island electronic producer, the
+ * one actually being played) at 86. Taking the top hit gave a whole Smart Mix the
+ * genres disco/funk/soul and filled it with French chanson.
+ *
+ * So an exact-case name match wins outright, and the fuzzy score decides only when
+ * nothing matches exactly.
+ */
+internal fun pickArtistCandidate(
+    candidates: List<MbArtistCandidate>,
+    artistName: String,
+    exactNameMinScore: Int = 80,
+    minMatchScore: Int = 90
+): String? {
+    candidates.firstOrNull { it.name == artistName && it.score >= exactNameMinScore }
+        ?.let { return it.id }
+    val best = candidates.maxByOrNull { it.score } ?: return null
+    return if (best.score >= minMatchScore) best.id else null
 }

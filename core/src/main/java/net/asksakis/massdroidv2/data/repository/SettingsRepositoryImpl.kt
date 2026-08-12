@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
@@ -40,6 +41,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
         private val KEY_BLOCKED_ALIAS_PROVIDERS = stringPreferencesKey("blocked_artist_alias_providers")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
+        private val KEY_MB_IDENTITY_REVISION = intPreferencesKey("mb_identity_revision")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
         private val KEY_SMART_MIX_LENGTH = floatPreferencesKey("smart_mix_length")
@@ -157,6 +159,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setBlockedArtistAliasProviders(fingerprint: String) {
         context.dataStore.edit { it[KEY_BLOCKED_ALIAS_PROVIDERS] = fingerprint }
+    }
+
+    override val musicBrainzIdentityRevision: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_MB_IDENTITY_REVISION] ?: 0
+    }
+
+    override suspend fun setMusicBrainzIdentityRevision(revision: Int) {
+        context.dataStore.edit { it[KEY_MB_IDENTITY_REVISION] = revision }
     }
 
     override val smartMixVariety: Flow<Float> = safeData.map { prefs ->

@@ -125,10 +125,10 @@ class AlbumDetailViewModel @Inject constructor(
 
     private suspend fun enrichGenres(artistName: String) {
         try {
-            val lastFmGenres = musicBrainzGenreResolver.resolve(artistName, null)
-            if (lastFmGenres.isNotEmpty()) {
+            val musicBrainzGenres = musicBrainzGenreResolver.resolve(artistName, null)
+            if (musicBrainzGenres.isNotEmpty()) {
                 _album.update { current ->
-                    val merged = (current?.genres.orEmpty() + lastFmGenres).distinctBy { it.lowercase() }
+                    val merged = (current?.genres.orEmpty() + musicBrainzGenres).distinctBy { it.lowercase() }
                     current?.copy(genres = merged)
                 }
             }

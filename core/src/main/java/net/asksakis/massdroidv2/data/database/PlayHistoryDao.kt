@@ -89,15 +89,59 @@ interface PlayHistoryDao {
      * that name's uris has one. This is what the genre enricher works through:
      * MusicBrainz allows one request per second, so walking every artist would
      * take hours, while walking only the gaps takes minutes.
+     *
+     * [ArtistNeedingGenres.sampleTrack] is one of their recordings we actually
+     * hold, and it is what lets MusicBrainz tell namesakes apart: a bare name is
+     * not an identity, but two artists sharing a name do not share a recording.
      */
     @Query("""
-        SELECT a.name AS name, MIN(a.uri) AS uri, MAX(a.mbid) AS mbid
+        SELECT a.name AS name, MIN(a.uri) AS uri, MAX(a.mbid) AS mbid,
+               (SELECT t.name FROM tracks t
+                JOIN track_artists ta ON ta.track_uri = t.uri
+                JOIN artists a2 ON a2.uri = ta.artist_uri
+                WHERE a2.name = a.name AND t.name != ''
+                LIMIT 1) AS sampleTrack
         FROM artists a
         LEFT JOIN artist_genres g ON g.artist_uri = a.uri
         WHERE a.name != '' AND g.artist_uri IS NULL
         GROUP BY a.name
     """)
     suspend fun getArtistsWithoutGenres(): List<ArtistNeedingGenres>
+
+    /**
+     * Discovery artists nothing can describe: names Music Assistant returned as
+     * similar artists without genres, that carry no genres under any uri either.
+     *
+     * These never reach [getArtistsWithoutGenres] because most of them are not in
+     * `artists` at all - they are candidates the user has never played, so only
+     * the similar-artist cache knows them. That is exactly why the Smart Mix
+     * genre gate cannot judge them: measured on a real library, two thirds of the
+     * candidates that passed the gate passed it unjudged, and off-genre tracks
+     * rode in on that.
+     *
+     * The name is matched against every uri, not just the one the similar-artist
+     * row carries, because one artist legitimately has several (`library://` and
+     * `deezer://`) and only one of them may hold the genres.
+     */
+    @Query("""
+        SELECT s.similar_name AS name, MIN(s.similar_uri) AS uri,
+               MAX((SELECT a.mbid FROM artists a
+                    WHERE a.name = s.similar_name AND a.mbid IS NOT NULL LIMIT 1)) AS mbid,
+               (SELECT t.name FROM tracks t
+                JOIN track_artists ta ON ta.track_uri = t.uri
+                JOIN artists a2 ON a2.uri = ta.artist_uri
+                WHERE a2.name = s.similar_name AND t.name != ''
+                LIMIT 1) AS sampleTrack
+        FROM ma_similar_artists s
+        WHERE s.similar_name != ''
+          AND s.similar_genres = ''
+          AND s.similar_name NOT IN (
+              SELECT a2.name FROM artists a2
+              JOIN artist_genres g2 ON g2.artist_uri = a2.uri
+          )
+        GROUP BY s.similar_name
+    """)
+    suspend fun getDiscoveryArtistsWithoutGenres(): List<ArtistNeedingGenres>
 
     @Query("SELECT DISTINCT name FROM artists WHERE name != ''")
     suspend fun getAllArtistNames(): List<String>
@@ -313,6 +357,45 @@ interface PlayHistoryDao {
     @Query("DELETE FROM smart_feedback WHERE track_uri = :trackUri AND action = :action AND created_at = :createdAt")
     suspend fun deleteSmartFeedback(trackUri: String, action: String, createdAt: Long)
 
+    /**
+     * Artists whose MusicBrainz identity was decided by NAME ALONE, and for whom we
+     * now hold a recording that can decide it properly.
+     *
+     * A cache row keyed by a name (rather than an MBID) is by definition one we
+     * resolved with a bare name search - and a name is not an identity. Measured:
+     * "Labelle" resolved to the American soul group LaBelle, so a Reunion Island
+     * electronic producer was described as disco/funk/soul and mis-genred an entire
+     * mix. These rows are re-asked once, this time disambiguated by the recording.
+     *
+     * The MBID pattern is 8-4-4-4-12 hex; anything else is a name key.
+     */
+    @Query("""
+        SELECT m.artist_name FROM musicbrainz_artist_tags m
+        WHERE m.artist_name NOT LIKE '________-____-____-____-____________'
+          AND EXISTS (
+              SELECT 1 FROM artists a
+              JOIN track_artists ta ON ta.artist_uri = a.uri
+              JOIN tracks t ON t.uri = ta.track_uri
+              WHERE lower(a.name) = m.artist_name AND t.name != ''
+          )
+    """)
+    suspend fun getNameResolvedArtistsWithRecording(): List<String>
+
+    @Query("DELETE FROM musicbrainz_artist_tags WHERE artist_name IN (:keys)")
+    suspend fun deleteMusicBrainzTags(keys: List<String>)
+
+    /**
+     * Drops the genres of every uri sharing this (lowercased) name, so a re-resolve
+     * REPLACES them. Without this the insert-ignore write would merge the old wrong
+     * tags with the new right ones and leave the artist described as both.
+     */
+    @Query("""
+        DELETE FROM artist_genres WHERE artist_uri IN (
+            SELECT a.uri FROM artists a WHERE lower(a.name) IN (:lowercaseNames)
+        )
+    """)
+    suspend fun deleteArtistGenresByNames(lowercaseNames: List<String>)
+
     @Query("SELECT uri FROM tracks WHERE score < :threshold")
     suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
 
@@ -507,9 +590,17 @@ interface PlayHistoryDao {
     )
     suspend fun getSeedTracks(since: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrackRow>
 
-    // Recency-ordered seed pool (no score floor): the Smart Mix Strictness knob
-    // re-ranks this toward score in code, so low Strictness keeps genuinely
-    // recent tracks instead of always the top-scored ones.
+    // Recency-ordered seed pool. Strictness re-ranks this toward score in code, so
+    // low Strictness still favours genuinely recent tracks over top-scored ones.
+    //
+    // [minScore] exists because re-ranking is not filtering, and this slice was
+    // 70% of the pool with no floor at all. A track played once and never again
+    // scores 0.28 (2695 of them on a real library), so the engine's OWN output
+    // came back as its input: the abstract-hip-hop artist Guts, eight tracks each
+    // played exactly once, became a primary seed and gave a listener who has no
+    // hip hop in their profile a 33-track hip hop mix. The floor sits just above
+    // that 0.28 so a single passive play cannot seed, while anything replayed,
+    // liked, or listened through still can.
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
@@ -523,12 +614,18 @@ interface PlayHistoryDao {
         JOIN track_artists ta ON ta.track_uri = t.uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
+          AND t.score >= :minScore
         GROUP BY t.uri
         ORDER BY lastPlayedAt DESC
         LIMIT :limit
         """
     )
-    suspend fun getRecentSeedTracks(since: Long, minListenedMs: Long, limit: Int): List<SeedTrackRow>
+    suspend fun getRecentSeedTracks(
+        since: Long,
+        minListenedMs: Long,
+        minScore: Double,
+        limit: Int
+    ): List<SeedTrackRow>
 
     // Confirmed-taste seed pool: same shape as getRecentSeedTracks, but ordered by
     // how often the track was REPLAYED (all time, not just inside the window) and
@@ -922,7 +1019,13 @@ data class ArtistIdentityRow(
 data class ArtistNeedingGenres(
     val name: String,
     val uri: String,
-    val mbid: String?
+    val mbid: String?,
+    /**
+     * One recording we hold for this artist, used to disambiguate them from a
+     * namesake. Null for discovery candidates, which have never been played and
+     * so have no track of theirs in the database.
+     */
+    val sampleTrack: String? = null
 )
 
 data class ArtistGenreRow(

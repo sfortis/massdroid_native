@@ -27,6 +27,14 @@ interface SettingsRepository {
      */
     val blockedArtistAliasProviders: Flow<String>
     suspend fun setBlockedArtistAliasProviders(fingerprint: String)
+
+    /**
+     * Version of the MusicBrainz identity re-check that has already run. Bumped in
+     * code when a new identification method makes previously cached answers worth
+     * re-asking; 0 means none has run.
+     */
+    val musicBrainzIdentityRevision: Flow<Int>
+    suspend fun setMusicBrainzIdentityRevision(revision: Int)
     /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
     val smartMixVariety: Flow<Float>
     /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */
