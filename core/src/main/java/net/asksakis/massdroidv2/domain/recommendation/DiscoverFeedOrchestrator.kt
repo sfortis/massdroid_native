@@ -21,7 +21,7 @@ private const val SUPPRESSED_ARTIST_LOOKBACK_DAYS = 120
 
 /**
  * Builds the full Discover feed (the same engine-driven sections the phone shows):
- * library load -> Last.fm/BLL discovery (artists + albums) -> genre + recommendation
+ * library load -> BLL discovery (artists + albums) -> genre + recommendation
  * sections. Lifted out of DiscoverViewModel so the headless AAOS car renders the
  * identical feed. @Singleton + stateless per call (the caller supplies the scope);
  * the phone VM keeps the caching / WS-event incremental refresh / disk cache around it.

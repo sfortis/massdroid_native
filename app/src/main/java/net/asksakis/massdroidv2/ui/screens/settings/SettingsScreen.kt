@@ -107,6 +107,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
@@ -993,14 +994,22 @@ private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
             Text("Smart Mix tuning", style = MaterialTheme.typography.titleMedium)
             LabeledSlider(
                 title = "Variety",
-                description = "How much repeated mixes rotate tracks from the same artists.",
+                // Describes what the knob actually drives: which seed the mix is
+                // built around, and how likely it is to leave the kind of music
+                // the recent mixes were. It used to promise rotation of "tracks
+                // from the same artists", which is a different thing and is not
+                // what any of it does.
+                description = "How likely each new mix is to move to a different kind of music than the last ones.",
                 value = variety,
                 onValueChangeFinished = viewModel::setSmartMixVariety,
                 valueLabel = { v ->
                     when {
-                        v < 0.33f -> "Low: the same strong picks each time"
+                        v < 0.33f -> "Low: stays close to your recent mixes"
                         v < 0.66f -> "Medium: balanced"
-                        else -> "High: different tracks every run"
+                        // Not "a different sound each run": this is the chance of
+                        // ASKING for a move, and the request is dropped when it
+                        // would leave too few seeds to choose from.
+                        else -> "High: usually a different sound"
                     }
                 }
             )
@@ -1051,7 +1060,9 @@ private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
 
 // Mirrors the DiscoverViewModel length mapping so the label matches the actual
 // target (20..60 tracks, 40 at the neutral default).
-private fun smartMixTrackTarget(length: Float): Int = (20 + length.coerceIn(0f, 1f) * 40).toInt()
+// Delegates to the engine so the "~N tracks" label cannot drift from what a
+// build actually targets.
+private fun smartMixTrackTarget(length: Float): Int = smartMixTrackTargetFor(length.toDouble())
 
 @Composable
 private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {

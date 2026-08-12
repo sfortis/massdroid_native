@@ -2,14 +2,11 @@ package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import androidx.annotation.VisibleForTesting
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
@@ -31,6 +28,22 @@ private const val LIBRARY_URI_PREFIX = "library://"
 private const val SEED_COUNT = 8
 private const val SEED_ANCHOR_MAX = 3
 private const val SEED_LOOKBACK_DAYS = 30
+/**
+ * Score a track must reach before it may SEED a mix.
+ *
+ * A track played once and never returned to settles at 0.28 (2695 of them on a
+ * real library, 74% of everything played in a month), so with no floor the
+ * engine's own output became its input: eight Guts tracks, each played exactly
+ * once because a previous mix served them, made him a primary seed and produced
+ * a 33-track hip hop mix for a listener whose history is 6125 electronic plays
+ * and 8 abstract-hip-hop ones.
+ *
+ * Set just above that 0.28 so a single passive play cannot seed, while a replay,
+ * a like, or a full listen still can. Measured effect on the pool: 2192 eligible
+ * artists -> 688, which is still ~86x the eight seeds a mix needs.
+ */
+private const val SEED_MIN_SCORE = 0.30
+
 private const val SEED_MIN_LISTENED_MS = 30_000L
 // Recency-ordered candidate pool that Strictness re-ranks toward score. Larger
 // than the old top-by-score limit so low Strictness has genuinely-recent (not
@@ -94,10 +107,6 @@ private const val MA_TOP_TRACKS_PER_ARTIST = 5
 private const val MA_TRACKS_PER_ARTIST = 2
 private const val MA_POOL_FACTOR = 1.6
 private const val MA_RANK_DECAY = 0.001
-// How much a candidate is worth when nothing could describe its genre. They are
-// kept (dropping the unknown is what makes whole scenes invisible) but ranked
-// below artists we verified, so a mix does not OPEN on an unverified one.
-private const val MA_UNVERIFIED_SCALE = 0.5
 // Discovery's reach. Depth: how far down each seed's similar list we fetch
 // (1x the base at Discovery 0, 3x at 1). Window: how much wider than the
 // artists we need the draw pool is, so high Discovery can surface the tail
@@ -108,10 +117,23 @@ private const val DISCOVERY_WINDOW_SPAN = 2.0
 // return nothing playable.
 private const val MA_ARTIST_FETCH_SLACK = 8
 private const val MA_TRACK_FETCH_CONCURRENCY = 6
-// Artists per mix the background MusicBrainz warm will look up. At 1 req/s
-// this is ~20s of background work; the rest are picked up by later mixes,
-// which see the same candidates because similar-artist lists are cached.
-private const val MB_WARM_LIMIT = 20
+
+/**
+ * Wall-clock budget for a whole Smart Mix build, measured from the moment it
+ * starts. Builds ran 3s to 28s on a real library and the tail is spent waiting for
+ * the slowest provider to answer top_tracks; past this point the mix is assembled
+ * from whatever arrived. Chosen over "wait for everything" because a mix that is a
+ * few candidates lighter is indistinguishable to the listener, while half a minute
+ * of spinner is not.
+ */
+private const val BUILD_BUDGET_MS = 15_000L
+
+/**
+ * Floor for the fetch stage, in case seed selection alone ate the budget. Without
+ * it a slow start would leave zero time for track fetching and yield an empty mix
+ * rather than a short one.
+ */
+private const val MIN_FETCH_BUDGET_MS = 2_000L
 // `similar_tracks` route (provider seeds). Capped per mix because a provider
 // that does not implement it costs a round-trip per seed to find that out.
 private const val SIMILAR_TRACK_SEED_LIMIT = 6
@@ -432,8 +454,8 @@ internal fun genresOverlapLoose(candidateGenres: Iterable<String>, envelopeToken
  * [dominantFamily]) must belong to the cluster envelope. The loose token
  * overlap only covers candidates whose tags are all unmapped.
  *
- * [candidateGenres] must be weight-ordered (Last.fm `artist.getTopTags` order),
- * which is what the genre resolvers return. The previous
+ * [candidateGenres] must be weight-ordered, which is what the genre resolvers
+ * return (MusicBrainz reports genres by count and the resolver preserves it). The previous
  * any-family rule admitted an artist on their weakest tag, and on real mixes
  * that was the dominant source of bleed: `trance, electronic, ambient` passed
  * a lounge envelope, `darkwave, electronic, synthpop` passed a jazz/pop one.
@@ -532,9 +554,6 @@ class SeedTrackMixGenerator @Inject constructor(
     private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
     private val mixEngine: MixEngine
 ) {
-    private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    @Volatile private var warmJob: Job? = null
-
     /**
      * Tuning knobs (0..1) from settings; Length is folded into [target].
      * Strictness gates which tracks may seed a mix: 0 = anything recently
@@ -588,7 +607,8 @@ class SeedTrackMixGenerator @Inject constructor(
         Log.d(TAG, "${seeds.size} seeds -> ${seeds.joinToString { "${it.artistName} - ${it.trackName}" }}")
         val tracks = assembleSeedTrackMix(
             seeds, tuning, target, mixSeed, recency,
-            selection.coherentGenres, selection.coreFamilies
+            selection.coherentGenres, selection.coreFamilies,
+            deadlineAt = mixSeed + BUILD_BUDGET_MS
         )
         return SeedMixResult(tracks, selection.coherentGenres, selection.clusterLabel)
     }
@@ -611,7 +631,8 @@ class SeedTrackMixGenerator @Inject constructor(
         // and gate candidates on that genre's own family.
         val genreSet = setOf(normalizeGenre(genre))
         return assembleSeedTrackMix(
-            seeds, tuning, target, mixSeed, recency, genreSet, genreFamilies(genreSet)
+            seeds, tuning, target, mixSeed, recency, genreSet, genreFamilies(genreSet),
+            deadlineAt = mixSeed + BUILD_BUDGET_MS
         )
     }
 
@@ -639,7 +660,8 @@ class SeedTrackMixGenerator @Inject constructor(
         mixSeed: Long,
         recency: Recency,
         coherentGenres: Set<String>,
-        coreFamilies: Set<String>
+        coreFamilies: Set<String>,
+        deadlineAt: Long
     ): List<Track> {
         // Blocked artists are excluded everywhere: as seeds, as similar
         // candidates, and from loved injection. Matched by normalized name.
@@ -650,7 +672,8 @@ class SeedTrackMixGenerator @Inject constructor(
         val activeSeeds = seeds.filterNot { normalizeArtistKey(it.artistName) in blockedKeys }
         if (activeSeeds.isEmpty()) return emptyList()
 
-        val candidates = gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed)
+        val candidates =
+            gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed, deadlineAt)
         if (candidates.isEmpty()) {
             Log.d(TAG, "MA returned no candidates for this cluster")
             return emptyList()
@@ -681,7 +704,11 @@ class SeedTrackMixGenerator @Inject constructor(
                 val artistKey = c.track.artistNames.split(",").firstOrNull()?.trim()?.lowercase().orEmpty()
                 val artistPenalty = (recency.recentArtistCounts[artistKey] ?: 0) * SEED_RECENT_ARTIST_PENALTY
                 val trackPenalty = if (c.track.uri in recency.recentMixTrackUris) SEED_RECENT_TRACK_PENALTY else 0.0
-                CandidateTrack(track = c.track, score = c.score - artistPenalty - trackPenalty)
+                CandidateTrack(
+                    track = c.track,
+                    score = c.score - artistPenalty - trackPenalty,
+                    verified = c.verified
+                )
             }
         if (candidates.isEmpty()) return emptyList()
 
@@ -732,7 +759,8 @@ class SeedTrackMixGenerator @Inject constructor(
         coreFamilies: Set<String>,
         target: Int,
         discovery: Double,
-        mixSeed: Long
+        mixSeed: Long,
+        deadlineAt: Long
     ): List<CandidateTrack> {
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
@@ -822,23 +850,49 @@ class SeedTrackMixGenerator @Inject constructor(
         )
         val genresByArtist = HashMap<String, List<String>>(pool.size)
         for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres)
+        // An artist we cannot describe does not enter the mix.
+        //
+        // This gate used to KEEP the undescribable, on the reasoning that dropping
+        // them makes whole scenes invisible. That reasoning held when the gate
+        // could judge 43% of candidates; it now judges 64%, and the unknowns
+        // proved to be a bad bet: of 2742 unjudged similars the listener had ever
+        // played 592 (22%), against 3952 of 6287 judged ones (63%), at the same
+        // average similarity rank. Keeping them put an avant-jazz artist with no
+        // genres anywhere into a house mix at position two.
+        //
+        // The cost is a shorter mix in scenes MusicBrainz covers badly, never an
+        // empty one: the thinnest recent cluster still had 9 describable artists,
+        // which is 18 tracks against a floor of 8.
         val gated = pool.values.filter { art ->
             if (coreFamilies.isEmpty()) return@filter true
             val family = dominantFamily(genresByArtist[art.uri].orEmpty())
-            family == null || family in coreFamilies
+            family != null && family in coreFamilies
         }
         val unjudged = pool.values.filter { dominantFamily(genresByArtist[it.uri].orEmpty()) == null }
+        // Describable candidates FIRST; the rest are a reserve, not equals.
+        //
+        // The gate keeps artists it cannot describe because dropping them once
+        // made whole scenes invisible - but that was written when the gate could
+        // judge only 43% of candidates. It now judges 64%, and the unknowns turn
+        // out to be a poor bet: of 2742 unjudged similars the listener had ever
+        // played 592 (22%), against 3952 of 6287 judged ones (63%), at the SAME
+        // average similarity rank (25.1 vs 26.7). "MusicBrainz has never heard of
+        // them" predicts "you will not want them" threefold, and 93% of them are
+        // settled - already asked, no genres exist. So they are used only to fill
+        // a shortfall: measured over 12 builds, 10 had enough judged candidates
+        // on their own and needed none.
         Log.d(
             TAG,
             "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate " +
-                "(${unjudged.size} had no usable genre and were kept unjudged)"
+                "(${unjudged.size} dropped as undescribable)"
         )
-        // Whatever we still cannot describe is queued for MusicBrainz, so the
-        // next mix over these artists (the similar-artist lists are cached for
-        // two weeks, so they recur) gates them properly instead of guessing.
-        // Candidates are provider items and carry no id, so these fall back to
-        // a name search with the ambiguity that implies.
-        scheduleMusicBrainzWarm(unjudged.map { MusicBrainzGenreResolver.ArtistRef(it.name) }, "candidates")
+        // Whatever we still cannot describe is left to LibraryGenreEnricher's
+        // discovery phase, which walks the same similar-artist cache outside any
+        // build. Warming it from here was worse than useless: it was capped at
+        // twenty per run, it shared the one-per-second MusicBrainz budget with
+        // the enricher, and the seed half of it resolved 0 of 20 on thirteen
+        // consecutive builds because nothing filtered out the artists already
+        // answered "nothing" for.
 
         // Fetch in parallel: this used to be a sequential loop over every gated
         // artist, which made the MA route SLOWER than the Last.fm one it replaces
@@ -864,11 +918,22 @@ class SeedTrackMixGenerator @Inject constructor(
         } else {
             byCloseness.take(window).shuffled(kotlin.random.Random(mixSeed)).take(needArtists)
         }
-        val trackLists = coroutineScope {
-            chosen.map { art ->
-                async {
-                    gate.withPermit {
-                    val ref = parseArtistRef(art.uri) ?: return@async art to emptyList()
+        // Bounded by wall clock, not by completeness. Measured on a real library a
+        // build ran 3s to 28s, almost all of it here: dozens of top_tracks calls,
+        // any one of which can stall on a slow provider. Waiting for the last
+        // straggler made the user stare at a spinner for half a minute.
+        //
+        // Results are collected AS THEY LAND rather than with awaitAll, so when the
+        // budget runs out we keep every artist that answered and drop only the ones
+        // still in flight. A slightly smaller pool is a mix; a 28-second wait is not.
+        val collected = java.util.concurrent.ConcurrentLinkedQueue<Pair<CachedSimilarArtist, List<Track>>>()
+        val remaining = (deadlineAt - System.currentTimeMillis()).coerceAtLeast(MIN_FETCH_BUDGET_MS)
+        val finishedInTime = withTimeoutOrNull(remaining) {
+            coroutineScope {
+                chosen.forEach { art ->
+                    launch {
+                        gate.withPermit {
+                    val ref = parseArtistRef(art.uri) ?: return@launch
                     // top_tracks ONLY. The unbounded artist_tracks listing was
                     // tried as a fallback and cost ~1.5s per artist (27+ tracks
                     // over the wire each), which alone made a build take 70s.
@@ -881,10 +946,19 @@ class SeedTrackMixGenerator @Inject constructor(
                     } catch (_: Exception) {
                         emptyList()
                     }
-                    art to tracks
+                    collected += art to tracks
+                    }
                     }
                 }
-            }.awaitAll()
+            }
+        } != null
+        // Back into closeness order. `collected` is in ORDER OF ARRIVAL, and the
+        // loop below stops at `wanted`, so leaving it as-is would let whichever
+        // provider answered fastest decide which candidates make the cut instead
+        // of how similar the server said they were.
+        val trackLists = collected.sortedBy { (art, _) -> rankByArtist[art.uri] ?: Int.MAX_VALUE }
+        if (!finishedInTime) {
+            Log.d(TAG, "top_tracks budget spent: kept ${trackLists.size}/${chosen.size} artists")
         }
 
         val out = mutableListOf<CandidateTrack>()
@@ -898,8 +972,10 @@ class SeedTrackMixGenerator @Inject constructor(
             // which is what put an off-genre track at the top of the mix.
             val rank = rankByArtist[art.uri] ?: MA_SIMILAR_MAX_PER_SEED
             val closeness = 1.0 - (rank.toDouble() / MA_SIMILAR_MAX_PER_SEED).coerceIn(0.0, 1.0)
+            // Always true now: the gate above admits only artists whose genres
+            // resolve to a family, so nothing undescribable reaches this point.
             val verified = dominantFamily(genresByArtist[art.uri].orEmpty()) != null
-            val artistScore = closeness * (if (verified) 1.0 else MA_UNVERIFIED_SCALE)
+            val artistScore = closeness
             var taken = 0
             for (t in tracks) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
@@ -907,11 +983,20 @@ class SeedTrackMixGenerator @Inject constructor(
                 val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
                 if (t.uri.isBlank() || !seenTitles.add(titleKey)) continue
                 // Second track of an artist ranks just below the first.
-                out += CandidateTrack(track = t, score = artistScore - taken * MA_RANK_DECAY)
+                out += CandidateTrack(
+                    track = t,
+                    score = artistScore - taken * MA_RANK_DECAY,
+                    verified = verified
+                )
                 taken++
             }
         }
-        Log.d(TAG, "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists (0 searches, 0 Last.fm)")
+        val judgedOut = out.count { it.verified }
+        Log.d(
+            TAG,
+            "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists " +
+                "(route=similar_artists, judged=$judgedOut, unjudged=${out.size - judgedOut})"
+        )
         // Top up from the provider seeds the artist route cannot use, but only
         // when the mix would otherwise come up short: the artist route is the
         // better-structured evidence, so it is not diluted for its own sake.
@@ -976,7 +1061,11 @@ class SeedTrackMixGenerator @Inject constructor(
                 if (!seen.add(track.uri)) return@forEachIndexed
                 val genres = trackCandidateGenres(track, dbGenres)
                 val family = dominantFamily(genres)
-                if (coreFamilies.isNotEmpty() && family != null && family !in coreFamilies) {
+                // Same rule as the artist route. This one needs it more, not less:
+                // track-similarity follows one song's neighbours rather than an
+                // artist's identity, so it drifts further, and it is the route
+                // that put a Malian world-music project into an indie-rock mix.
+                if (coreFamilies.isNotEmpty() && (family == null || family !in coreFamilies)) {
                     dropped++
                     return@forEachIndexed
                 }
@@ -984,18 +1073,26 @@ class SeedTrackMixGenerator @Inject constructor(
                 val verified = family != null
                 kept += CandidateTrack(
                     track = track,
-                    score = closeness * SIMILAR_TRACK_SCALE * (if (verified) 1.0 else MA_UNVERIFIED_SCALE)
+                    score = closeness * SIMILAR_TRACK_SCALE,
+                    verified = verified
                 )
             }
         }
-        if (kept.isNotEmpty() || dropped > 0) {
+        // Same confidence tiering as the artist route: describable first, the rest
+        // as fill. This route needs it at least as much - track-similarity follows
+        // one song's neighbours rather than an artist's identity, so it drifts
+        // further, and it is the route that put a Malian world-music project into
+        // an indie-rock mix (Lamomali, which MusicBrainz has no genres for at all).
+        val ordered = kept
+        if (ordered.isNotEmpty() || dropped > 0) {
+            val judged = ordered.count { it.verified }
             Log.d(
                 TAG,
-                "similar_tracks: ${kept.size} candidates from ${refs.size} provider seeds " +
-                    "($dropped dropped by the family gate)"
+                "similar_tracks: ${ordered.size} candidates from ${refs.size} provider seeds " +
+                    "($dropped dropped by the gate, judged=$judged, unjudged=${ordered.size - judged})"
             )
         }
-        return kept
+        return ordered
     }
 
     /**
@@ -1027,8 +1124,8 @@ class SeedTrackMixGenerator @Inject constructor(
      *
      * MusicBrainz is read from cache ONLY. Its 1 req/s ceiling makes it
      * unusable inline (a cold pool of 60 unknowns would add a minute to the
-     * mix), so misses are warmed in the background by [scheduleMusicBrainzWarm]
-     * and pay off from the next mix onward.
+     * mix), so misses are filled by LibraryGenreEnricher's discovery phase,
+     * outside any build, and pay off from the next mix onward.
      *
      * The DB set is a union with no weight order, so it is reordered by family
      * frequency before dominantFamily reads "the first tag"; MA and MusicBrainz
@@ -1044,40 +1141,6 @@ class SeedTrackMixGenerator @Inject constructor(
             musicBrainzGenreResolver.cachedGenres(art.name).orEmpty()
         } catch (_: Exception) {
             emptyList()
-        }
-    }
-
-    /**
-     * Single-flight background warm of the MusicBrainz genre cache for the
-     * candidates the gate could not judge.
-     *
-     * Bounded per run: at 1 req/s a full pool would run for a minute, and the
-     * same artists come back on the next mix anyway (similar-artist lists are
-     * cached for two weeks), so the cache fills across runs instead of in one
-     * long burst.
-     */
-    private fun scheduleMusicBrainzWarm(artists: List<MusicBrainzGenreResolver.ArtistRef>, what: String) {
-        if (warmJob?.isActive == true) return
-        val targets = artists.filter { it.name.isNotBlank() }.distinctBy { it.mbid ?: it.name }
-            .take(MB_WARM_LIMIT)
-        if (targets.isEmpty()) return
-        warmJob = warmScope.launch {
-            var resolved = 0
-            var byId = 0
-            for (ref in targets) {
-                try {
-                    if (musicBrainzGenreResolver.resolve(ref.name, ref.mbid).isNotEmpty()) {
-                        resolved++
-                        if (ref.mbid != null) byId++
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "MusicBrainz warm failed for '${ref.name}': ${e.message}")
-                }
-            }
-            Log.d(
-                TAG,
-                "MusicBrainz warm ($what): $resolved/${targets.size} artists now have genres ($byId by id)"
-            )
         }
     }
 
@@ -1124,7 +1187,7 @@ class SeedTrackMixGenerator @Inject constructor(
                 normalizeArtistKey(it.artistName) !in blockedKeys
         }
         // Same gate as the discovery candidates, on the same data: the artist's
-        // weight-ordered Last.fm tags. Judging on the DB's track genres let an
+        // weight-ordered artist tags. Judging on the DB's track genres let an
         // indie-rock favourite into an electronic mix on a stray "dance" track
         // tag. Dedupe first (the gate is per artist, so it is decided once) and
         // stop as soon as the quota is filled instead of scanning the whole pool.
@@ -1230,11 +1293,13 @@ class SeedTrackMixGenerator @Inject constructor(
      * Cluster coherence genres per seed: MusicBrainz first, then the DB's artist
      * genres, then the track's own tags.
      *
-     * MusicBrainz leads because `artist_genres` is 92% Last.fm tags written by
-     * the library enricher, and those are written by NAME across every uri an
-     * artist has, so two different artists sharing a name merge: the rock Jack
+     * MusicBrainz leads because `artist_genres` is written by NAME across every
+     * uri an artist has, so two artists sharing a name MERGE there: the rock Jack
      * White carries techno, the pop Annie carries black metal, and a seed picked
-     * on that lands in the wrong cluster. MusicBrainz is per-entity and precise.
+     * on that lands in the wrong cluster. MusicBrainz is keyed per entity, so it
+     * keeps them apart - provided the entity was identified correctly in the
+     * first place, which is why the resolver disambiguates by recording rather
+     * than by name alone.
      *
      * `artist_genres` is a UNION of everything MA ever reported for the artist,
      * unordered, so it is reordered by family frequency before anything reads
@@ -1250,14 +1315,6 @@ class SeedTrackMixGenerator @Inject constructor(
             map[seed.trackUri] = mb[normalizeArtistKey(seed.artistName)]
                 ?: orderByFamilyFrequency(seed.artistGenres.ifEmpty { seed.genres }.map { normalizeGenre(it) })
         }
-        // Seeds are warmed BEFORE candidates (this runs first, and the warm is
-        // single-flight) because a seed decides the whole cluster: one merged
-        // artist here sends every candidate to the wrong genre world.
-        scheduleMusicBrainzWarm(
-            pool.filter { normalizeArtistKey(it.artistName) !in mb }
-                .map { MusicBrainzGenreResolver.ArtistRef(it.artistName, it.artistMbid) },
-            "seeds"
-        )
         return map
     }
 
@@ -1287,7 +1344,18 @@ class SeedTrackMixGenerator @Inject constructor(
         recency: Recency
     ): SeedSelection {
         val since = System.currentTimeMillis() - SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
-        val pool = strictnessRankedPool(querySeedPool(since, tuning.strictness), tuning.strictness)
+        val ranked = strictnessRankedPool(querySeedPool(since, tuning.strictness), tuning.strictness)
+        // Blocked artists are dropped HERE, before a primary is chosen, not later
+        // when the seed list is assembled. Filtering afterwards removed the blocked
+        // artist but kept the cluster built around them: their genres still became
+        // the envelope the whole mix was gated on, so blocking an artist did not
+        // stop mixes that sound like them.
+        val blocked = recency.blockedArtistNames
+            .map { normalizeArtistKey(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val pool = if (blocked.isEmpty()) ranked
+        else ranked.filterNot { normalizeArtistKey(it.artistName) in blocked }
         val byArtist = dedupeByArtist(pool)
         if (byArtist.size <= SEED_COUNT) return SeedSelection(byArtist, emptySet())
 
@@ -1417,7 +1485,9 @@ class SeedTrackMixGenerator @Inject constructor(
 
     private suspend fun queryRecentSeedTracks(sinceMs: Long, limit: Int): List<SeedTrack> =
         if (limit <= 0) emptyList() else try {
-            playHistoryRepository.getRecentSeedTracks(sinceMs, SEED_MIN_LISTENED_MS, limit)
+            playHistoryRepository.getRecentSeedTracks(
+                sinceMs, SEED_MIN_LISTENED_MS, SEED_MIN_SCORE, limit
+            )
         } catch (e: Exception) {
             Log.w(TAG, "getRecentSeedTracks failed: ${e.message}")
             emptyList()

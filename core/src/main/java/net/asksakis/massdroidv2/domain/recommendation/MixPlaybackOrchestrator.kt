@@ -54,6 +54,25 @@ private const val SMART_MIX_DAYPART_LOOKBACK_DAYS = 180
 private const val SMART_MIX_RECENT_LOOKBACK_DAYS = 14
 private const val SMART_MIX_TARGET_MIN = 20
 private const val SMART_MIX_TARGET_SPAN = 40
+
+/**
+ * Track target for a Length slider value, the ONE definition of it.
+ *
+ * The settings screen shows the listener "~N tracks" as they drag, so it has to
+ * compute exactly what the build will aim for. It used to carry its own copy of
+ * `20 + length * 40`, which is a promise the UI cannot keep once these constants
+ * move: nothing would fail, the label would simply start lying.
+ *
+ * NaN is checked before clamping because `coerceIn` does NOT sanitize it: both
+ * of its comparisons are false for NaN, so it passes straight through and
+ * `NaN.toInt()` is 0 - a corrupt stored value would silently ask for a zero-track
+ * mix, which the builder answers with nothing at all. Same guard, same reason as
+ * `confirmedPoolBudget`.
+ */
+fun smartMixTrackTargetFor(length: Double): Int {
+    val safe = if (length.isNaN()) 0.0 else length.coerceIn(0.0, 1.0)
+    return (SMART_MIX_TARGET_MIN + safe * SMART_MIX_TARGET_SPAN).toInt()
+}
 private const val DISCOVERY_ADJACENT_THRESHOLD = 0.34
 private const val FALLBACK_GENRE_BREADTH = 6
 private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
@@ -550,8 +569,7 @@ class MixPlaybackOrchestrator @Inject constructor(
     // Smart Mix build
     // ---------------------------------------------------------------------------
 
-    private fun smartMixTrackTarget(): Int =
-        (SMART_MIX_TARGET_MIN + smartMixLength * SMART_MIX_TARGET_SPAN).toInt()
+    private fun smartMixTrackTarget(): Int = smartMixTrackTargetFor(smartMixLength)
 
     private suspend fun buildSeedTrackMix(): SmartMixResult {
         hydrateClusterRotation()
@@ -1007,7 +1025,7 @@ class MixPlaybackOrchestrator @Inject constructor(
     }
 
     // ---------------------------------------------------------------------------
-    // Last.fm expansion
+    // Similar-artist expansion
     // ---------------------------------------------------------------------------
 
     @Suppress("TooGenericExceptionCaught", "LongMethod", "CyclomaticComplexMethod")
@@ -1025,9 +1043,9 @@ class MixPlaybackOrchestrator @Inject constructor(
      * provider seed reliably answers nothing (verified live).
      */
     /**
-     * Genres for an artist, without asking Last.fm: what the DB already holds
-     * (written from Music Assistant during playback), then MusicBrainz from
-     * cache.
+     * Genres for an artist without going to the network: what the DB already
+     * holds (written from Music Assistant during playback), then MusicBrainz
+     * from cache.
      *
      * MusicBrainz is read from cache only - its 1 req/s ceiling makes it
      * unusable inline - and misses are queued for the background warm the mix
