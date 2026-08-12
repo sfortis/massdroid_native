@@ -51,10 +51,12 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Podcasts: browse your podcasts, play episodes, mark them played or unplayed, add favorites, and pick up right where you left off.
-- Cover art: self-hosted sources like Subsonic now show their artwork on Music Assistant 2.9 and later.
-- Queue: opens straight to the track that is playing, even in long queues, and shows the full track count.
-- Audio focus: smoother, deeper volume ducking when another app briefly needs the sound, like navigation prompts.
+- Library: sort your albums by year.
+- Car audio: volume stays pinned reliably when you connect and while notifications play, with smoother ducking.
+- Follow Me: bug fixes, including a rare crash on launch.
+- Battery: much less drain when the server is unreachable or the app is idle, it reconnects on its own when the server is back, and the repeating battery-optimization prompt is now an optional setting instead of a prompt on every launch.
+- Smart Mix: better-matched picks that stay closer to your taste.
+- Artist images: fewer unnecessary reloads.
 
 ## Screenshots
 
