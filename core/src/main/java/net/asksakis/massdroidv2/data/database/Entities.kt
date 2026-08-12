@@ -231,6 +231,28 @@ data class MusicBrainzArtistTagsEntity(
     @ColumnInfo(name = "bio_fetched_at") val bioFetchedAt: Long? = null
 )
 
+/**
+ * MA `similar_tracks` results, cached so a mix build does not re-ask the server for
+ * every seed every time.
+ *
+ * The track route asks once per seed on every build, and measured on a real device
+ * that cost 8 to 14 seconds of a 15-second budget while the artist route beside it
+ * answered from Room. Shaped like [ArtistTrackCacheEntity] rather than
+ * [MaSimilarArtistEntity] because the server returns whole playable tracks here, so
+ * there is nothing to normalise into columns and the ordering (which carries the
+ * similarity ranking) survives the round-trip as-is.
+ *
+ * Keyed by the SEED's uri. Standalone, like `artist_track_cache`: the tracks it
+ * holds may never be played.
+ */
+@Entity(tableName = "ma_similar_track_cache")
+data class MaSimilarTrackCacheEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "seed_uri") val seedUri: String,
+    @ColumnInfo(name = "tracks_json") val tracksJson: String,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)
+
 @Entity(tableName = "ma_similar_artists", primaryKeys = ["source_uri", "similar_uri"])
 data class MaSimilarArtistEntity(
     @ColumnInfo(name = "source_uri") val sourceUri: String,

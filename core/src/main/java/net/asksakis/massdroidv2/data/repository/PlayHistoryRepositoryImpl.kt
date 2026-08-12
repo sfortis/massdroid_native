@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
 import net.asksakis.massdroidv2.data.database.MaSimilarArtistEntity
+import net.asksakis.massdroidv2.data.database.MaSimilarTrackCacheEntity
 import net.asksakis.massdroidv2.data.database.SeedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
@@ -48,6 +49,12 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     companion object {
         private const val TAG = "PlayHistoryRepo"
         private const val MILLIS_PER_DAY = 86_400_000L
+
+        /**
+         * How long a seed's cached `similar_tracks` is kept before the sweep on write
+         * removes it. Matches the generator's own TTL for the same rows.
+         */
+        private const val SIMILAR_TRACK_CACHE_DAYS = 14L
         private const val MILLIS_PER_HOUR = 3_600_000.0
         private const val BLL_DECAY = -1.5
         private const val BLL_MIN_HOURS = 0.5
@@ -383,6 +390,36 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                 )
             }
         )
+    }
+
+    override suspend fun getCachedSimilarTracks(seedUri: String, maxAgeMs: Long): List<Track>? {
+        val cache = dao.getMaSimilarTrackCache(seedUri) ?: return null
+        if (System.currentTimeMillis() - cache.fetchedAt > maxAgeMs) return null
+        return try {
+            json.decodeFromString(ListSerializer(Track.serializer()), cache.tracksJson)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode similar-track cache for $seedUri: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun cacheSimilarTracks(seedUri: String, tracks: List<Track>) {
+        if (seedUri.isBlank() || tracks.isEmpty()) return
+        val now = System.currentTimeMillis()
+        try {
+            dao.upsertMaSimilarTrackCache(
+                MaSimilarTrackCacheEntity(
+                    seedUri = seedUri,
+                    tracksJson = json.encodeToString(ListSerializer(Track.serializer()), tracks),
+                    fetchedAt = now
+                )
+            )
+            // Swept on write, like the artist-track cache. Seeds rotate, so without
+            // this the table would keep a row for every track that ever seeded a mix.
+            dao.deleteExpiredMaSimilarTrackCache(now - (SIMILAR_TRACK_CACHE_DAYS * MILLIS_PER_DAY))
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to cache similar tracks for $seedUri: ${e.message}")
+        }
     }
 
     override suspend fun getRecentSeedTracks(

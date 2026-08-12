@@ -222,6 +222,17 @@ interface PlayHistoryDao {
     @Query("DELETE FROM artist_track_cache WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTrackCache(olderThan: Long)
 
+    // ---- MA similar-tracks cache ----
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMaSimilarTrackCache(cache: MaSimilarTrackCacheEntity)
+
+    @Query("SELECT * FROM ma_similar_track_cache WHERE seed_uri = :seedUri LIMIT 1")
+    suspend fun getMaSimilarTrackCache(seedUri: String): MaSimilarTrackCacheEntity?
+
+    @Query("DELETE FROM ma_similar_track_cache WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredMaSimilarTrackCache(olderThan: Long)
+
     // ---- Seed-track generator caches ----
 
     // COLLATE NOCASE because the same artist reaches us with different casing

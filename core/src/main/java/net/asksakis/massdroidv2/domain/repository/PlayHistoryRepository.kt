@@ -104,6 +104,15 @@ interface PlayHistoryRepository {
     /** Cached MA similar artists for [artistUri] (uri, name, genres), null when absent/stale. */
     suspend fun getCachedMaSimilarArtists(artistUri: String, maxAgeMs: Long): List<CachedSimilarArtist>?
     suspend fun cacheMaSimilarArtists(artistUri: String, similar: List<CachedSimilarArtist>)
+
+    /**
+     * MA `similar_tracks` for one seed track. The mix engine's track route asks once
+     * per seed on every build, which cost 8 to 14 seconds of a 15-second budget
+     * before this existed; the ordering carries the similarity ranking and is
+     * preserved.
+     */
+    suspend fun getCachedSimilarTracks(seedUri: String, maxAgeMs: Long): List<Track>?
+    suspend fun cacheSimilarTracks(seedUri: String, tracks: List<Track>)
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
     /** Cached provider URI for an artist name resolved by the genre engine (null if absent or stale). */

@@ -308,6 +308,28 @@ object AppModule {
      * exists so a tester already on 15 is not thrown at the destructive
      * fallback, which would cost them their listening history.
      */
+    /**
+     * Adds the `similar_tracks` cache. Applies to everyone, including upgrades from
+     * a release, which reach it as a second hop after [MIGRATION_10_17].
+     *
+     * Nothing is dropped and nothing is rewritten: an empty cache simply means the
+     * next mix build asks the server as it did before and fills it.
+     */
+    private val MIGRATION_17_18 = object : Migration(17, 18) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `ma_similar_track_cache` (
+                    `seed_uri` TEXT NOT NULL,
+                    `tracks_json` TEXT NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`seed_uri`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     /** Adds the bio cache for a device already on 16. Unreleased path, same reason. */
     private val MIGRATION_16_17 = object : Migration(16, 17) {
         override fun migrate(db: SupportSQLiteDatabase) {
@@ -389,7 +411,8 @@ object AppModule {
             DATABASE_NAME
         ).addMigrations(
             MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_15_16, MIGRATION_16_17
+            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_15_16,
+            MIGRATION_16_17, MIGRATION_17_18
         )
             // Kept so a missing migration cannot brick the app, but no longer
             // silent: see DatabaseResetReporter.

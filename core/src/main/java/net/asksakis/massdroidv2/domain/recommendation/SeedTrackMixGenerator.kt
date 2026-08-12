@@ -164,6 +164,17 @@ private const val OFF_FAMILY_SCALE = 0.35
 private const val MA_SIMILAR_TTL_MS = 14L * 24 * 60 * 60 * 1000
 private const val MA_TOP_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
 
+/**
+ * Lifetime of a seed's cached `similar_tracks`. Same 14 days as the artist route's
+ * caches, for the same reason: a track's neighbourhood barely moves, while asking
+ * for it fresh on every build cost 8 to 14 seconds of a 15-second budget.
+ *
+ * Shorter than the others would defeat the purpose, since the seeds themselves
+ * rotate: a seed asked today is unlikely to be asked again tomorrow, so the cache
+ * pays off across weeks rather than within a session.
+ */
+private const val MA_SIMILAR_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
+
 // Recent-mix cool-down penalties (subtracted from a candidate's score when the
 // track / its artist appeared in recent mixes). Raised from 0.2/0.5 after
 // offline tuning on the real library: with weighted-sampling selection the
@@ -771,13 +782,26 @@ class SeedTrackMixGenerator @Inject constructor(
         //
         // It is also the door to Music Assistant's `sonic_similarity` plugin, which
         // serves CLAP audio-embedding similarity through this very feature.
+        // ONE server gate shared by both routes. Music Assistant aggregates every
+        // provider in a single asyncio loop, so what matters is the total number of
+        // requests in flight, not how many each route makes. Running the routes in
+        // parallel with a gate each starved the cheaper one outright: the artist
+        // route's 34 top_tracks calls held the server for 14.7s and all 8
+        // similar_tracks calls timed out together, leaving a 28-track mix. With a
+        // shared gate the two routes queue fairly and neither can crowd the other
+        // out.
+        val serverGate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
         val candidates = coroutineScope {
             val artistRoute = async {
-                gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed, deadlineAt)
+                gatherFromMa(
+                    activeSeeds, blockedKeys, coreFamilies, target,
+                    tuning.discovery, mixSeed, deadlineAt, serverGate
+                )
             }
             val trackRoute = async {
                 gatherSimilarTracks(
-                    activeSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED, deadlineAt
+                    activeSeeds, blockedKeys, coreFamilies,
+                    SIMILAR_TRACKS_PER_SEED, deadlineAt, serverGate
                 )
             }
             mergeRoutes(artistRoute.await(), trackRoute.await())
@@ -859,7 +883,8 @@ class SeedTrackMixGenerator @Inject constructor(
         target: Int,
         discovery: Double,
         mixSeed: Long,
-        deadlineAt: Long
+        deadlineAt: Long,
+        serverGate: Semaphore
     ): List<CandidateTrack> {
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
@@ -985,10 +1010,12 @@ class SeedTrackMixGenerator @Inject constructor(
         // needs, since two tracks each is the cap anyway.
         val wanted = (target * MA_POOL_FACTOR).roundToInt().coerceAtLeast(target)
         val needArtists = (wanted / MA_TRACKS_PER_ARTIST) + MA_ARTIST_FETCH_SLACK
-        // Throttled: MA aggregates providers in one asyncio.gather, so a burst
-        // starves the server. 34 unbounded calls took 70s; the same work at
-        // concurrency 6 is what the Last.fm path already used and why it kept up.
-        val gate = Semaphore(MA_TRACK_FETCH_CONCURRENCY)
+        // Throttled through the SHARED gate: MA aggregates providers in one
+        // asyncio.gather, so a burst starves the server. 34 unbounded calls took
+        // 70s; the same work at concurrency 6 is what the Last.fm path already used
+        // and why it kept up. The gate is shared with the track route because the
+        // server counts total requests, not requests per route.
+        val gate = serverGate
         // Closest first, then a Discovery-sized window to draw from. Shuffling
         // the whole gated pool (what this used to do) made the mix open on a
         // random artist; taking a flat top-N instead would pin every mix to the
@@ -1122,7 +1149,8 @@ class SeedTrackMixGenerator @Inject constructor(
         blockedKeys: Set<String>,
         coreFamilies: Set<String>,
         perSeed: Int,
-        deadlineAt: Long
+        deadlineAt: Long,
+        serverGate: Semaphore
     ): List<CandidateTrack> {
         val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
             .mapNotNull { seed -> parseArtistRef(seed.trackUri)?.let { seed to it } }
@@ -1138,13 +1166,28 @@ class SeedTrackMixGenerator @Inject constructor(
             coroutineScope {
                 refs.forEachIndexed { index, (seed, ref) ->
                     launch {
-                        val tracks = try {
-                            musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
-                            emptyList()
+                        // Cached as-is even when this build would have asked for more:
+                        // the same reasoning as the similar-artist cache, since depth
+                        // is not part of the key and re-asking costs seconds. Read
+                        // BEFORE taking a permit, so a cache hit never queues behind
+                        // the artist route's calls.
+                        val cached = playHistoryRepository
+                            .getCachedSimilarTracks(seed.trackUri, MA_SIMILAR_TRACKS_TTL_MS)
+                        if (cached != null) {
+                            if (cached.isNotEmpty()) landed += index to cached
+                            return@launch
                         }
-                        if (tracks.isNotEmpty()) landed += index to tracks
+                        val tracks = serverGate.withPermit {
+                            try {
+                                musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
+                                emptyList()
+                            }
+                        }
+                        if (tracks.isEmpty()) return@launch
+                        playHistoryRepository.cacheSimilarTracks(seed.trackUri, tracks)
+                        landed += index to tracks
                     }
                 }
             }
