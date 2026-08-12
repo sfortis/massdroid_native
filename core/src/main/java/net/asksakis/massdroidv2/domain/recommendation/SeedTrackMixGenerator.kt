@@ -134,14 +134,30 @@ private const val BUILD_BUDGET_MS = 15_000L
  * rather than a short one.
  */
 private const val MIN_FETCH_BUDGET_MS = 2_000L
-// `similar_tracks` route (provider seeds). Capped per mix because a provider
-// that does not implement it costs a round-trip per seed to find that out.
-private const val SIMILAR_TRACK_SEED_LIMIT = 6
+// `similar_tracks` route. Every seed is asked, because this is the route most
+// setups actually have: a provider that does not implement it costs one
+// round-trip per seed to find that out, and one that does answers for library and
+// provider items alike (measured: 8 of 8 seeds answered 25 tracks each).
+private const val SIMILAR_TRACK_SEED_LIMIT = SEED_COUNT
 private const val SIMILAR_TRACKS_PER_SEED = 20
 // Track-level similarity is good evidence but less structured than "this artist
 // is similar, here are their top tracks", so it ranks just under the artist
 // route rather than competing with its best.
 private const val SIMILAR_TRACK_SCALE = 0.8
+
+/**
+ * What a candidate keeps when we know its family and it is NOT one the mix is
+ * anchored on (`FamilyMatch.OFF`).
+ *
+ * Low enough that an off-family candidate never outranks an on-family one worth
+ * having: at this scale the closest possible off-family candidate scores below an
+ * on-family candidate sitting halfway down its seed's similar list. So they fill
+ * the tail of a mix that would otherwise be short, and nothing more. That is the
+ * point, because the pool starving is exactly how unrelated tracks got in: when
+ * the family gate dropped every describable disagreement, a cluster left with 8
+ * usable candidates for 33 slots filled the rest from other seeds' neighbourhoods.
+ */
+private const val OFF_FAMILY_SCALE = 0.35
 // Cache lifetimes. Similar-artist and top-track listings barely move, and without
 // caching the MA route made ~42 live calls per mix (18s) against the Last.fm
 // route's 6.6s, which is answered from Room.
@@ -364,6 +380,68 @@ internal fun confirmedPoolBudget(strictness: Double): Int {
 @VisibleForTesting
 internal fun varietyWindow(variety: Double, n: Int): Int =
     (1.0 + variety.coerceIn(0.0, 1.0) * (n - 1)).roundToInt().coerceIn(1, n)
+
+/**
+ * The two discovery routes into one pool, keeping the better score when both found
+ * the same track.
+ *
+ * Same-track overlap is real but small (10 of 190 on a measured build), so this is
+ * about not letting the weaker evidence overwrite the stronger one rather than
+ * about volume. The artist route's entries come first because [MixEngine] re-sorts
+ * by score anyway and that route is the better-structured of the two.
+ */
+@VisibleForTesting
+internal fun mergeRoutes(
+    fromArtists: List<CandidateTrack>,
+    fromTracks: List<CandidateTrack>
+): List<CandidateTrack> {
+    if (fromTracks.isEmpty()) return fromArtists
+    if (fromArtists.isEmpty()) return fromTracks
+    val byUri = LinkedHashMap<String, CandidateTrack>(fromArtists.size + fromTracks.size)
+    for (c in fromArtists + fromTracks) {
+        val existing = byUri[c.track.uri]
+        if (existing == null || c.score > existing.score) byUri[c.track.uri] = c
+    }
+    return byUri.values.toList()
+}
+
+/**
+ * Comparable genre keys. Lowercased and de-hyphenated, because the two spellings
+ * genuinely both occur: this library holds 65 artists tagged `post rock` and 33
+ * tagged `post-rock`, and comparing them raw would treat the same scene as two.
+ * [dominantFamily] already de-hyphenates for its own lookup; exact-genre
+ * comparison needs the same treatment.
+ */
+private fun genreKeys(genres: Iterable<String>): Set<String> =
+    genres.mapTo(mutableSetOf()) { normalizeGenre(it).replace('-', ' ') }
+
+/**
+ * Splits the cluster into the seeds that share an exact genre with the primary and
+ * the rest, which only share its family.
+ *
+ * A family is far too coarse to build a mix on. `rock` alone spans 33 genres, from
+ * classic rock and rockabilly to shoegaze and post rock, so cluster membership by
+ * family means a post-rock anchor and seven indie seeds form one "cluster" and the
+ * indie similars then outnumber everything. Measured on a real build anchored on
+ * God Is an Astronaut: 7 of 8 seeds were indie and only 2 of the resulting 33
+ * tracks were post-rock.
+ *
+ * Family stays the OUTER boundary (that is what [seedJoinsCluster] decides) and
+ * this only reorders inside it, so a scene with too few seeds of its own still
+ * fills a mix from the wider family rather than failing. Stable on both sides:
+ * the score-weighted and productive-first ordering the caller applies is preserved
+ * within each group.
+ */
+@VisibleForTesting
+internal fun partitionByExactGenre(
+    seeds: List<SeedTrack>,
+    primaryGenres: List<String>,
+    genresOf: (SeedTrack) -> List<String>
+): Pair<List<SeedTrack>, List<SeedTrack>> {
+    val primaryKeys = genreKeys(primaryGenres)
+    if (primaryKeys.isEmpty()) return emptyList<SeedTrack>() to seeds
+    return seeds.partition { seed -> genreKeys(genresOf(seed)).any { it in primaryKeys } }
+}
 
 /**
  * Cluster membership. ONE rule: a seed belongs to the mix when it IS the same
@@ -672,8 +750,38 @@ class SeedTrackMixGenerator @Inject constructor(
         val activeSeeds = seeds.filterNot { normalizeArtistKey(it.artistName) in blockedKeys }
         if (activeSeeds.isEmpty()) return emptyList()
 
-        val candidates =
-            gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed, deadlineAt)
+        // Two independent routes, run together rather than one as the other's
+        // fallback.
+        //
+        // The artist route (`similar_artists` + `top_tracks`) is better structured
+        // but needs `ProviderFeature.SIMILAR_ARTISTS`, which only a handful of
+        // providers declare - Deezer does not, and on a typical setup it is served
+        // by the OPTIONAL lastfm_recommendations metadata provider. A user without
+        // it had no route at all here.
+        //
+        // The track route (`similar_tracks`) is the common denominator: Deezer,
+        // Jellyfin, Plex, Emby, OpenSubsonic and Apple Music all declare it, it
+        // answers for library AND provider items alike, and it returns playable
+        // tracks directly, with no top_tracks fan-out behind it. Measured on a real
+        // build, the eight seeds each answered 25 tracks: 190 distinct tracks by 147
+        // distinct artists, half of them artists the listener had never played. On
+        // the cluster where the artist route admitted NOTHING (an `industrial` seed
+        // whose 70 similars shared no family), the track route returned the right
+        // neighbourhood outright: Second Still, Drab Majesty, Ash Code, Selofan.
+        //
+        // It is also the door to Music Assistant's `sonic_similarity` plugin, which
+        // serves CLAP audio-embedding similarity through this very feature.
+        val candidates = coroutineScope {
+            val artistRoute = async {
+                gatherFromMa(activeSeeds, blockedKeys, coreFamilies, target, tuning.discovery, mixSeed, deadlineAt)
+            }
+            val trackRoute = async {
+                gatherSimilarTracks(
+                    activeSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED, deadlineAt
+                )
+            }
+            mergeRoutes(artistRoute.await(), trackRoute.await())
+        }
         if (candidates.isEmpty()) {
             Log.d(TAG, "MA returned no candidates for this cluster")
             return emptyList()
@@ -733,24 +841,15 @@ class SeedTrackMixGenerator @Inject constructor(
     }
 
     /**
-     * Candidate pool straight from Music Assistant.
+     * The ARTIST route: `music/artists/similar_artists` + `music/artists/top_tracks`.
      *
-     * `music/artists/similar_artists` + `music/artists/top_tracks` return fully
-     * formed, PLAYABLE items, so this path has no name-resolution stage at all.
-     *
-     * Two routes, because Music Assistant answers different questions for
-     * different items:
-     * - `library://` seeds -> `similar_artists` + `top_tracks`. The provider
-     *   path needs `ProviderFeature.SIMILAR_ARTISTS`, which Deezer does not
-     *   declare, so a provider seed reliably answers zero here (verified:
-     *   Tosca 0, Anderholm 0, The Raveonettes 24, Juno Francis 25).
-     * - provider seeds -> `similar_tracks`, which Deezer DOES declare and which
-     *   returns playable tracks (Joy Division's "Transmission" -> The Cure).
-     *
-     * The second route matters more than it looks: only 26% of the artists
-     * eligible to seed a mix here are library ones, and a user who has added
-     * nothing to their Music Assistant library would otherwise never get a
-     * seed-track mix at all.
+     * Both return fully formed, PLAYABLE items, so this path has no
+     * name-resolution stage at all. It only works from `library://` seeds,
+     * because it needs `ProviderFeature.SIMILAR_ARTISTS` and a provider seed
+     * reliably answers zero (verified: Tosca 0, Anderholm 0, The Raveonettes 24,
+     * Juno Francis 25). Only 26% of the artists eligible to seed a mix here are
+     * library ones, so this route alone leaves most of a mix unbuilt; the track
+     * route in [gatherSimilarTracks] runs alongside it and carries the rest.
      */
     @Suppress("LongParameterList")
     private suspend fun gatherFromMa(
@@ -765,11 +864,9 @@ class SeedTrackMixGenerator @Inject constructor(
         val seedRefs = activeSeeds
             .filter { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
             .mapNotNull { seed -> parseArtistRef(seed.artistUri)?.let { seed to it } }
-        val trackSeeds = activeSeeds.filterNot { it.artistUri.startsWith(LIBRARY_URI_PREFIX) }
-        if (seedRefs.isEmpty() && trackSeeds.isEmpty()) return emptyList()
         if (seedRefs.isEmpty()) {
-            Log.d(TAG, "no library seed in this cluster, expanding from provider tracks only")
-            return gatherSimilarTracks(trackSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED)
+            Log.d(TAG, "no library seed in this cluster, the track route carries it alone")
+            return emptyList()
         }
         // Ask each productive seed deeper when there are few of them, so a
         // cluster carried by one or two library artists still fills a mix.
@@ -843,48 +940,36 @@ class SeedTrackMixGenerator @Inject constructor(
         }
         if (pool.isEmpty()) return emptyList()
 
-        // Gate on the cluster's families. An artist we cannot judge is KEPT:
-        // dropping the unknown is what makes whole scenes invisible.
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             pool.values.filter { it.genres.isEmpty() }.map { it.uri }
         )
         val genresByArtist = HashMap<String, List<String>>(pool.size)
         for (art in pool.values) genresByArtist[art.uri] = genresFor(art, dbGenres)
-        // An artist we cannot describe does not enter the mix.
+        // Family is a RANKING signal, not a veto - except for the undescribable,
+        // which stay out. See [FamilyMatch] for the evidence behind each case.
         //
-        // This gate used to KEEP the undescribable, on the reasoning that dropping
-        // them makes whole scenes invisible. That reasoning held when the gate
-        // could judge 43% of candidates; it now judges 64%, and the unknowns
-        // proved to be a bad bet: of 2742 unjudged similars the listener had ever
-        // played 592 (22%), against 3952 of 6287 judged ones (63%), at the same
-        // average similarity rank. Keeping them put an avant-jazz artist with no
-        // genres anywhere into a house mix at position two.
+        // This used to drop every candidate whose family disagreed, and that is
+        // what let unrelated tracks in rather than keeping them out. Measured over
+        // 16 clusters, half had fewer than 10 same-family candidates for 33 slots
+        // and one had none at all, because the label disagrees with the server's
+        // own neighbourhood: a `jazz` seed's 99 similars resolved 45 to chill and
+        // 8 to jazz. A starved cluster then filled from the other seeds'
+        // neighbourhoods, which share nothing but the coarse label.
         //
-        // The cost is a shorter mix in scenes MusicBrainz covers badly, never an
-        // empty one: the thinnest recent cluster still had 9 describable artists,
-        // which is 18 tracks against a floor of 8.
-        val gated = pool.values.filter { art ->
-            if (coreFamilies.isEmpty()) return@filter true
-            val family = dominantFamily(genresByArtist[art.uri].orEmpty())
-            family != null && family in coreFamilies
+        // Keeping the disagreements at OFF_FAMILY_SCALE puts them behind every
+        // on-family candidate, so a healthy cluster is unaffected and a starved
+        // one draws on its own neighbourhood instead of a stranger's.
+        val familyMatch = HashMap<String, FamilyMatch>(pool.size)
+        for (art in pool.values) {
+            familyMatch[art.uri] = classifyFamily(genresByArtist[art.uri].orEmpty(), coreFamilies)
         }
-        val unjudged = pool.values.filter { dominantFamily(genresByArtist[it.uri].orEmpty()) == null }
-        // Describable candidates FIRST; the rest are a reserve, not equals.
-        //
-        // The gate keeps artists it cannot describe because dropping them once
-        // made whole scenes invisible - but that was written when the gate could
-        // judge only 43% of candidates. It now judges 64%, and the unknowns turn
-        // out to be a poor bet: of 2742 unjudged similars the listener had ever
-        // played 592 (22%), against 3952 of 6287 judged ones (63%), at the SAME
-        // average similarity rank (25.1 vs 26.7). "MusicBrainz has never heard of
-        // them" predicts "you will not want them" threefold, and 93% of them are
-        // settled - already asked, no genres exist. So they are used only to fill
-        // a shortfall: measured over 12 builds, 10 had enough judged candidates
-        // on their own and needed none.
+        val gated = pool.values.filter { familyMatch[it.uri] != FamilyMatch.UNKNOWN }
+        val offFamily = gated.count { familyMatch[it.uri] == FamilyMatch.OFF }
         Log.d(
             TAG,
-            "MA pool: ${pool.size} similar artists, ${gated.size} passed the family gate " +
-                "(${unjudged.size} dropped as undescribable)"
+            "MA pool: ${pool.size} similar artists, ${gated.size} usable " +
+                "($offFamily off-family, kept at $OFF_FAMILY_SCALE; " +
+                "${pool.size - gated.size} dropped as undescribable)"
         )
         // Whatever we still cannot describe is left to LibraryGenreEnricher's
         // discovery phase, which walks the same similar-artist cache outside any
@@ -911,7 +996,18 @@ class SeedTrackMixGenerator @Inject constructor(
         // So: order by the server's similarity, widen the window with Discovery,
         // and sample within it. The candidate SCORE stays the similarity rank,
         // so whoever is drawn, the closest of them still opens the mix.
-        val byCloseness = gated.sortedBy { rankByArtist[it.uri] ?: Int.MAX_VALUE }
+        //
+        // On-family artists are ordered ahead of off-family ones regardless of
+        // closeness, because this order decides who we spend a top_tracks call on.
+        // Sorting on closeness alone would let a very close disagreement take the
+        // budget from an on-family artist further down the list, which is the
+        // opposite of what OFF_FAMILY_SCALE means downstream.
+        val byCloseness = gated.sortedWith(
+            compareBy(
+                { familyMatch[it.uri] != FamilyMatch.ON },
+                { rankByArtist[it.uri] ?: Int.MAX_VALUE }
+            )
+        )
         val window = (needArtists * (1.0 + discovery * DISCOVERY_WINDOW_SPAN)).roundToInt()
         val chosen = if (byCloseness.size <= needArtists) {
             byCloseness
@@ -952,11 +1048,16 @@ class SeedTrackMixGenerator @Inject constructor(
                 }
             }
         } != null
-        // Back into closeness order. `collected` is in ORDER OF ARRIVAL, and the
-        // loop below stops at `wanted`, so leaving it as-is would let whichever
-        // provider answered fastest decide which candidates make the cut instead
-        // of how similar the server said they were.
-        val trackLists = collected.sortedBy { (art, _) -> rankByArtist[art.uri] ?: Int.MAX_VALUE }
+        // Back into on-family-then-closeness order, the same order the fetch used.
+        // `collected` is in ORDER OF ARRIVAL, and the loop below stops at `wanted`,
+        // so leaving it as-is would let whichever provider answered fastest decide
+        // which candidates make the cut instead of how well they fit.
+        val trackLists = collected.sortedWith(
+            compareBy(
+                { (art, _) -> familyMatch[art.uri] != FamilyMatch.ON },
+                { (art, _) -> rankByArtist[art.uri] ?: Int.MAX_VALUE }
+            )
+        )
         if (!finishedInTime) {
             Log.d(TAG, "top_tracks budget spent: kept ${trackLists.size}/${chosen.size} artists")
         }
@@ -965,17 +1066,17 @@ class SeedTrackMixGenerator @Inject constructor(
         val seenTitles = mutableSetOf<String>()
         for ((art, tracks) in trackLists) {
             if (out.size >= wanted) break
-            // What a candidate is worth: how similar the server said the artist
-            // is to a seed, halved when we could not verify the genre at all.
-            // Unverified artists still take part (dropping them makes whole
-            // scenes invisible) but they no longer outrank artists we KNOW fit,
-            // which is what put an off-genre track at the top of the mix.
+            // What a candidate is worth: how similar the server said the artist is
+            // to a seed, scaled down when we know their family and it is not one
+            // the mix is anchored on.
             val rank = rankByArtist[art.uri] ?: MA_SIMILAR_MAX_PER_SEED
             val closeness = 1.0 - (rank.toDouble() / MA_SIMILAR_MAX_PER_SEED).coerceIn(0.0, 1.0)
-            // Always true now: the gate above admits only artists whose genres
-            // resolve to a family, so nothing undescribable reaches this point.
-            val verified = dominantFamily(genresByArtist[art.uri].orEmpty()) != null
-            val artistScore = closeness
+            val onFamily = familyMatch[art.uri] == FamilyMatch.ON
+            // `verified` gates who may OPEN a mix, so it means "fits this mix",
+            // not merely "we can describe them". An off-family candidate is worth
+            // keeping in the tail but must never be the first thing the user hears.
+            val verified = onFamily
+            val artistScore = if (onFamily) closeness else closeness * OFF_FAMILY_SCALE
             var taken = 0
             for (t in tracks) {
                 if (taken >= MA_TRACKS_PER_ARTIST) break
@@ -991,65 +1092,85 @@ class SeedTrackMixGenerator @Inject constructor(
                 taken++
             }
         }
-        val judgedOut = out.count { it.verified }
+        val onFamilyOut = out.count { it.verified }
         Log.d(
             TAG,
-            "MA candidates: ${out.size} playable tracks from ${trackLists.size} artists " +
-                "(route=similar_artists, judged=$judgedOut, unjudged=${out.size - judgedOut})"
+            "artist route: ${out.size} playable tracks from ${trackLists.size} artists " +
+                "(on-family=$onFamilyOut, off-family=${out.size - onFamilyOut})"
         )
-        // Top up from the provider seeds the artist route cannot use, but only
-        // when the mix would otherwise come up short: the artist route is the
-        // better-structured evidence, so it is not diluted for its own sake.
-        if (out.size >= wanted) return out
-        val fromTracks = gatherSimilarTracks(trackSeeds, blockedKeys, coreFamilies, SIMILAR_TRACKS_PER_SEED)
-        if (fromTracks.isEmpty()) return out
-        val known = out.mapTo(mutableSetOf()) { it.track.uri }
-        return out + fromTracks.filter { it.track.uri !in known }
+        return out
     }
 
     /**
-     * Candidates from `similar_tracks` on the seeds' own provider items, for the
-     * listening that never entered the user's library.
+     * The TRACK route: `similar_tracks` on every seed, library and provider alike.
      *
-     * Scored below the artist route's best but overlapping it: a track the
-     * provider calls similar to something you played is strong evidence, just
-     * less structured than "this artist is similar and here are their top
-     * tracks". Returns nothing for providers that do not implement it, which
-     * costs one round-trip per seed and is why the seeds are capped.
+     * This is the route most Music Assistant setups actually have. Deezer,
+     * Jellyfin, Plex, Emby, OpenSubsonic and Apple Music all declare
+     * `ProviderFeature.SIMILAR_TRACKS`, against the handful that declare
+     * SIMILAR_ARTISTS, and it is also how the `sonic_similarity` plugin exposes
+     * CLAP audio-embedding similarity.
+     *
+     * Scored below the artist route's best but overlapping it: a track the provider
+     * calls similar to something you played is strong evidence, just less
+     * structured than "this artist is similar and here are their top tracks".
+     * Returns nothing for providers that do not implement it, which costs one
+     * round-trip per seed to discover.
      */
     @Suppress("LongParameterList")
     private suspend fun gatherSimilarTracks(
         seeds: List<SeedTrack>,
         blockedKeys: Set<String>,
         coreFamilies: Set<String>,
-        perSeed: Int
+        perSeed: Int,
+        deadlineAt: Long
     ): List<CandidateTrack> {
         val refs = seeds.take(SIMILAR_TRACK_SEED_LIMIT)
             .mapNotNull { seed -> parseArtistRef(seed.trackUri)?.let { seed to it } }
         if (refs.isEmpty()) return emptyList()
         val seedTrackUris = seeds.mapTo(mutableSetOf()) { it.trackUri }
-        val lists = coroutineScope {
-            refs.map { (seed, ref) ->
-                async {
-                    try {
-                        musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
-                        emptyList()
+        // Bounded by the same build budget as the artist route, and collected AS
+        // RESULTS LAND rather than with awaitAll. This route runs on every build
+        // now instead of only as a fallback, so one provider that never answers
+        // would otherwise hold the whole mix open with no timeout to free it.
+        val landed = java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, List<Track>>>()
+        val remaining = (deadlineAt - System.currentTimeMillis()).coerceAtLeast(MIN_FETCH_BUDGET_MS)
+        val finishedInTime = withTimeoutOrNull(remaining) {
+            coroutineScope {
+                refs.forEachIndexed { index, (seed, ref) ->
+                    launch {
+                        val tracks = try {
+                            musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
+                            emptyList()
+                        }
+                        if (tracks.isNotEmpty()) landed += index to tracks
                     }
                 }
-            }.awaitAll()
+            }
+        } != null
+        // Back into seed order: `landed` is in order of arrival, and a candidate's
+        // score comes from its RANK within its seed's list, so the ordering below
+        // must not depend on which provider answered first.
+        val lists = landed.sortedBy { (index, _) -> index }.map { (_, tracks) -> tracks }
+        if (!finishedInTime) {
+            Log.d(TAG, "track route budget spent: kept ${lists.size}/${refs.size} seeds")
         }
         val kept = mutableListOf<CandidateTrack>()
         val seen = mutableSetOf<String>()
         var dropped = 0
-        // The same family gate the artist route uses. It was missing here, and
-        // that alone spoiled a mix: a folk cluster with Bob Dylan among the
-        // seeds pulled Grateful Dead, CCR, the Allman Brothers and Little Feat
-        // through this route, which supplied 95 of the mix's 114 candidates.
-        // Provider track-similarity is looser than artist-similarity precisely
-        // because it follows one song's neighbours rather than an artist's
-        // identity, so it needs the gate MORE, not less.
+        var offFamily = 0
+        // The same three-way family judgement the artist route uses, and this route
+        // needs it at least as much: track-similarity follows one song's neighbours
+        // rather than an artist's identity, so it drifts further. It is the route
+        // that pulled Grateful Dead, CCR and the Allman Brothers into a folk mix
+        // through a Bob Dylan seed, and a Malian world-music project into an
+        // indie-rock one.
+        //
+        // What changed is that a describable disagreement is now demoted instead of
+        // dropped. Dropping it was throwing away the good part of a coarse label:
+        // 44% of what this route returns has no resolvable family at all, and those
+        // still stay out.
         val dbGenres = playHistoryRepository.getArtistGenreMap(
             lists.flatten().mapNotNull { it.artistUri }.distinct()
         )
@@ -1060,39 +1181,32 @@ class SeedTrackMixGenerator @Inject constructor(
                 if (normalizeArtistKey(track.artistNames) in blockedKeys) return@forEachIndexed
                 if (!seen.add(track.uri)) return@forEachIndexed
                 val genres = trackCandidateGenres(track, dbGenres)
-                val family = dominantFamily(genres)
-                // Same rule as the artist route. This one needs it more, not less:
-                // track-similarity follows one song's neighbours rather than an
-                // artist's identity, so it drifts further, and it is the route
-                // that put a Malian world-music project into an indie-rock mix.
-                if (coreFamilies.isNotEmpty() && (family == null || family !in coreFamilies)) {
+                val match = classifyFamily(genres, coreFamilies)
+                if (match == FamilyMatch.UNKNOWN) {
                     dropped++
                     return@forEachIndexed
                 }
+                if (match == FamilyMatch.OFF) offFamily++
                 val closeness = 1.0 - (rank.toDouble() / perSeed).coerceIn(0.0, 1.0)
-                val verified = family != null
+                val onFamily = match == FamilyMatch.ON
+                val familyScale = if (onFamily) 1.0 else OFF_FAMILY_SCALE
                 kept += CandidateTrack(
                     track = track,
-                    score = closeness * SIMILAR_TRACK_SCALE,
-                    verified = verified
+                    score = closeness * SIMILAR_TRACK_SCALE * familyScale,
+                    // Only an on-family candidate may open a mix; see the artist route.
+                    verified = onFamily
                 )
             }
         }
-        // Same confidence tiering as the artist route: describable first, the rest
-        // as fill. This route needs it at least as much - track-similarity follows
-        // one song's neighbours rather than an artist's identity, so it drifts
-        // further, and it is the route that put a Malian world-music project into
-        // an indie-rock mix (Lamomali, which MusicBrainz has no genres for at all).
-        val ordered = kept
-        if (ordered.isNotEmpty() || dropped > 0) {
-            val judged = ordered.count { it.verified }
+        if (kept.isNotEmpty() || dropped > 0) {
             Log.d(
                 TAG,
-                "similar_tracks: ${ordered.size} candidates from ${refs.size} provider seeds " +
-                    "($dropped dropped by the gate, judged=$judged, unjudged=${ordered.size - judged})"
+                "track route: ${kept.size} candidates from ${refs.size} seeds " +
+                    "(on-family=${kept.size - offFamily}, off-family=$offFamily, " +
+                    "$dropped dropped as undescribable)"
             )
         }
-        return ordered
+        return kept
     }
 
     /**
@@ -1429,20 +1543,28 @@ class SeedTrackMixGenerator @Inject constructor(
         // at all, so they are drawn score-weighted instead of plain-shuffled,
         // then ordered so the ones that can actually produce candidates come
         // first (see productiveFirst).
-        val ordered = listOf(primary) +
-            productiveFirst(
-                strictnessWeightedOrder(
-                    cluster.filter { it.trackUri != primary.trackUri },
-                    tuning.strictness,
-                    random
-                )
-            )
+        //
+        // Seeds sharing the primary's exact GENRE are seated before the ones that
+        // only share its family, because only eight seeds survive `take` and the
+        // family is far too broad to spend them on: an anchor on post rock filled
+        // seven of its eight seats with indie and produced a mix with two
+        // post-rock tracks in it. Both groups keep the score-weighted,
+        // productive-first ordering, so this changes WHICH seeds are seated, not
+        // how each group is ranked.
+        val others = cluster.filter { it.trackUri != primary.trackUri }
+        val (sameGenre, widerFamily) = partitionByExactGenre(others, primaryGenres) {
+            genresBySeed[it.trackUri].orEmpty()
+        }
+        fun seated(list: List<SeedTrack>) =
+            productiveFirst(strictnessWeightedOrder(list, tuning.strictness, random))
+        val ordered = listOf(primary) + seated(sameGenre) + seated(widerFamily)
         val result = ordered.take(SEED_COUNT)
         Log.d(
             TAG,
             "cluster around '${primary.artistName}' (${primaryGenres.joinToString("/")}" +
                 "${primaryFamily?.let { " -> $it" }.orEmpty()}): ${result.size} seeds " +
-                "(hop=$hop preferred=${preferred.size} exactFresh=${exactFresh.size} " +
+                "(${sameGenre.size} share its genre, ${widerFamily.size} only its family; " +
+                "hop=$hop preferred=${preferred.size} exactFresh=${exactFresh.size} " +
                 "pool=${primaryPool.size} -> picked from ${freshPool.size})"
         )
         // Both the loved injection and the candidate gate answer to the primary:

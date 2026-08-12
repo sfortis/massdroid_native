@@ -179,6 +179,39 @@ internal fun dominantFamily(genres: Iterable<String>): String? =
     genres.firstNotNullOfOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) }
 
 /**
+ * How a candidate stands against the families a mix is anchored on.
+ *
+ * The three cases are different kinds of evidence and a mix treats them
+ * differently, which is why this is not a boolean.
+ *
+ * [OFF] means we know what the candidate plays and it is something else. That is
+ * a demotion, not a rejection, because a family is a coarse label (17 of them
+ * over ~160 genres) and it disagrees with the server's own notion of a
+ * neighbourhood often enough to empty a pool. Measured on a real library: an
+ * `industrial` seed had 70 similar artists and NOT ONE shared its family, and a
+ * `jazz` seed had 99 similars of which 45 resolved to chill and 25 to
+ * electronic against 8 to jazz. Those neighbours are right and the label is
+ * what disagrees, so dropping them left the mix to fill from other seeds'
+ * unrelated neighbourhoods instead.
+ *
+ * [UNKNOWN] is a worse bet and stays excluded: of 2742 similars whose genres
+ * resolve to nothing the listener had ever played 592 (22%), against 3952 of
+ * 6287 describable ones (63%) at the same average similarity rank.
+ */
+internal enum class FamilyMatch { ON, OFF, UNKNOWN }
+
+/**
+ * Where [genres] sits relative to [coreFamilies]. Everything is [FamilyMatch.ON]
+ * when the mix is not anchored on any family, since there is nothing to disagree
+ * with.
+ */
+internal fun classifyFamily(genres: Iterable<String>, coreFamilies: Set<String>): FamilyMatch {
+    if (coreFamilies.isEmpty()) return FamilyMatch.ON
+    val family = dominantFamily(genres) ?: return FamilyMatch.UNKNOWN
+    return if (family in coreFamilies) FamilyMatch.ON else FamilyMatch.OFF
+}
+
+/**
  * The first genre that [dominantFamily] would resolve on, i.e. what the artist
  * mostly IS, kept as the genre itself rather than its family. Used to name a mix
  * for the user ("Post punk mix ready"), where "rock" would be uselessly broad.

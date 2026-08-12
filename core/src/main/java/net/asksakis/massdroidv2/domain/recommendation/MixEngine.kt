@@ -77,10 +77,11 @@ data class CandidateTrack(
     val track: Track,
     val score: Double,
     /**
-     * Whether we actually know what this artist plays, i.e. their genres resolved
-     * to a family. Candidates we cannot describe are deliberately KEPT (dropping
-     * the unknown makes whole scenes invisible), but they must not open a mix -
-     * see [MixEngine.buildFromCandidates].
+     * Whether this candidate is a confirmed fit for the mix, i.e. its genres
+     * resolve to one of the families the mix is anchored on. Candidates whose
+     * family disagrees are kept as tail material but must not OPEN a mix, since
+     * the first track is what the listener judges the whole mix by - see
+     * [MixEngine.buildFromCandidates].
      */
     val verified: Boolean = true
 )
