@@ -46,11 +46,11 @@ class MassDroidApp : Application(), ImageLoaderFactory {
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
-     * Deferred Last.fm library sync. Held so we can cancel a previously
+     * Deferred library genre enrichment. Held so we can cancel a previously
      * scheduled sync if the connection drops/reconnects before the delay
      * elapses, instead of stacking parallel launches across flaps.
      */
-    private var lastFmSyncJob: Job? = null
+    private var genreEnrichmentJob: Job? = null
 
     /**
      * How long we wait after WS Connected before paginating the entire
@@ -59,7 +59,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
      * blocked-queue cleanup) without making the user wait noticeably
      * longer for genre data in Discover / Library.
      */
-    private val lastFmSyncStartupDelayMs = 5_000L
+    private val genreEnrichmentStartupDelayMs = 5_000L
 
     override fun onCreate() {
         super.onCreate()
@@ -159,9 +159,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                         // sweep on top of the server while it is still answering the
                         // critical-path queries. Cancel any previously scheduled sync
                         // so flap reconnects don't stack parallel launches.
-                        lastFmSyncJob?.cancel()
-                        lastFmSyncJob = appScope.launch {
-                            delay(lastFmSyncStartupDelayMs)
+                        genreEnrichmentJob?.cancel()
+                        genreEnrichmentJob = appScope.launch {
+                            delay(genreEnrichmentStartupDelayMs)
                             libraryGenreEnricher.enrichAllUnenriched()
                         }
                     }
@@ -171,12 +171,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                             settingsRepository.setAuthToken("")
                             Log.d("MassDroidApp", "Invalid token cleared from DataStore")
                         }
-                        lastFmSyncJob?.cancel()
-                        lastFmSyncJob = null
+                        genreEnrichmentJob?.cancel()
+                        genreEnrichmentJob = null
                     }
                     is ConnectionState.Disconnected -> {
-                        lastFmSyncJob?.cancel()
-                        lastFmSyncJob = null
+                        genreEnrichmentJob?.cancel()
+                        genreEnrichmentJob = null
                     }
                     else -> {}
                 }
@@ -202,7 +202,14 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
-            .okHttpClient { wsClient.getHttpClient() }
+            // The IMAGE client (connect 10s / read 15s), never the WebSocket one.
+            // Both share the mTLS config and connection pool, but the WS client sets
+            // readTimeout(0) - correct for a socket meant to stay open for hours,
+            // fatal for a one-shot image fetch: a half-open socket after a WiFi to
+            // mobile handover blocks the caller forever with no timeout to free it.
+            // On AAOS that caller is a binder thread, and 16 of them frozen means
+            // MediaSession stops answering play/pause/skip entirely (issue #37).
+            .okHttpClient { wsClient.getImageClient() }
             .components { add(coil.decode.SvgDecoder.Factory()) }
             // Debug (dev) builds only: log the exact image URL and its load outcome so a user who
             // hits "missing images" can share logs (from About) that actually pin the failing URL +
