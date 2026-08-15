@@ -63,12 +63,20 @@ internal fun QualityActionRow(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
+        // The two side groups take EQUAL weight so the badge lands on the screen's
+        // real centre. `Arrangement.SpaceBetween` centred it in the space left over
+        // instead, which is not the same thing once the sides differ in width: with
+        // two icons on the left and three on the right, the badge sat about half a
+        // button (~22dp) left of centre.
         Row(
             modifier = Modifier.fillMaxWidth(if (compact) 0.88f else 0.92f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Start
+            ) {
                 MdIconButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -132,7 +140,11 @@ internal fun QualityActionRow(
                 compact = compact,
                 onClick = if (isSendspinPlayer) onShowSendspinStatus else null,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End
+            ) {
                 @Suppress("DEPRECATION")
                 MdIconButton(
                     onClick = {
