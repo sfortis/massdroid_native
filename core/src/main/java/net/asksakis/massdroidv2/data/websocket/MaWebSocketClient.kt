@@ -236,7 +236,14 @@ class MaWebSocketClient(
     }
 
     fun connect(url: String, token: String) {
-        val hasOngoingReconnect = reconnectJob?.isActive == true
+        // A pending retry suppresses this call, EXCEPT an idle-phase sleep: that one
+        // is up to IDLE_RETRY_MS away, and a caller asking to connect now (the user
+        // opening the app, an auto-connect site seeing a dead client) must not be
+        // told to wait it out. Measured in the field: after the retry budget was
+        // spent, opening the app logged "connect() ignored: connection already
+        // active/connecting" and every command then failed on the auth timeout,
+        // leaving force-stop as the only way back.
+        val hasOngoingReconnect = reconnectJob?.isActive == true && !isIdleRetrySleeping()
         val sameEndpoint = serverUrl == url && authToken == token
         val isActiveOrConnecting = webSocket != null ||
                 _connectionState.value is ConnectionState.Connecting ||
@@ -260,7 +267,8 @@ class MaWebSocketClient(
         password: String,
         onToken: (String) -> Unit
     ) {
-        val hasOngoingReconnect = reconnectJob?.isActive == true
+        // Same idle-sleep exception as [connect].
+        val hasOngoingReconnect = reconnectJob?.isActive == true && !isIdleRetrySleeping()
         val sameEndpoint = serverUrl == url && pendingLogin == (username to password)
         val isActiveOrConnecting = webSocket != null ||
                 _connectionState.value is ConnectionState.Connecting ||
@@ -485,7 +493,7 @@ class MaWebSocketClient(
             lastNetworkReviveMs = now
             // An idle-phase sleep can be IDLE_RETRY_MS long: fresh connectivity must
             // preempt it rather than wait out the window. Read before the reset clears it.
-            val wasIdleRetry = reconnectAttempts > MAX_RETRY_COUNT
+            val wasIdleRetry = isIdleRetrySleeping()
             resetReconnectBackoff()
             if (reconnectJob?.isActive == true && !wasIdleRetry) {
                 Log.d(TAG, "Network $reason: backoff reset, retry already in flight")
@@ -519,11 +527,22 @@ class MaWebSocketClient(
             val delayMs = (retryDelayBaseMs(attempt) * jitterFactor).toLong()
             val phase = if (attempt > MAX_RETRY_COUNT) "idle" else "$attempt/$MAX_RETRY_COUNT"
             Log.d(TAG, "Reconnecting in ${delayMs}ms (attempt=$phase)")
+            // Pinned BEFORE the sleep, not after.
+            //
+            // This is what tells everyone else which phase we are in, and an idle
+            // sleep is up to IDLE_RETRY_MS long, so the counter has to be right
+            // WHILE we sleep rather than once we wake. Updating it afterwards left
+            // `reconnectAttempts` at MAX_RETRY_COUNT during the idle sleep, so
+            // `isIdleRetrySleeping` read false and returning connectivity was
+            // dismissed as "retry already in flight": measured in the field, the
+            // network came back 88 seconds into a 992-second sleep and the app sat
+            // there for the remaining 15 minutes.
+            //
+            // Coerced to the sentinel so the counter cannot run away over a long
+            // outage.
+            reconnectAttempts = pinnedAttemptCounter(attempt)
             delay(delayMs)
             if (userDisconnected) return@launch
-            // Pin at the idle sentinel so the counter can't run away over a long outage
-            // and so onNetworkAvailable can recognise an idle sleep it should preempt.
-            reconnectAttempts = attempt.coerceAtMost(MAX_RETRY_COUNT + 1)
             doConnect(url)
         }
     }
@@ -557,6 +576,35 @@ class MaWebSocketClient(
     private fun resetReconnectBackoff() {
         reconnectAttempts = 0
     }
+
+    /**
+     * Whether a reconnect job is currently sleeping out an IDLE-phase delay, i.e. a
+     * wait of up to [IDLE_RETRY_MS] rather than the seconds an aggressive or patient
+     * retry takes.
+     *
+     * The distinction decides whether a fresh reason to connect (returning
+     * connectivity, or the user opening the app) should preempt the pending retry.
+     * Interrupting a 1-second aggressive retry buys nothing and reopens the
+     * reconnect-storm risk the retry budget exists to prevent; leaving a 15-minute
+     * idle sleep in place means the app looks broken for a quarter of an hour after
+     * the network is already back.
+     */
+    private fun isIdleRetrySleeping(): Boolean =
+        reconnectJob?.isActive == true && isIdleRetryPhase(reconnectAttempts)
+
+    /**
+     * Whether [attempts] is past the retry budget, i.e. the next wait is an
+     * [IDLE_RETRY_MS] one. Separate from [isIdleRetrySleeping] so the threshold can
+     * be pinned by a test without a live reconnect job: the field failure was
+     * exactly an off-by-one here, with the counter still reading [MAX_RETRY_COUNT]
+     * during the first idle sleep instead of the sentinel above it.
+     */
+    @VisibleForTesting
+    internal fun isIdleRetryPhase(attempts: Int): Boolean = attempts > MAX_RETRY_COUNT
+
+    /** The value [scheduleReconnect] pins the counter to for a given attempt. */
+    @VisibleForTesting
+    internal fun pinnedAttemptCounter(attempt: Int): Int = attempt.coerceAtMost(MAX_RETRY_COUNT + 1)
 
     private fun handleMessage(text: String) {
         try {
