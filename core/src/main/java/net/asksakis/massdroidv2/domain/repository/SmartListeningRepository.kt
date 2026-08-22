@@ -49,6 +49,16 @@ interface SmartListeningRepository {
     suspend fun backfillBlockedArtistAliases(providersFingerprint: String): Boolean
     suspend fun getBlockedArtistUris(): Set<String>
     suspend fun getBlockedArtists(): List<BlockedArtistInfo>
+
+    /**
+     * Forgets every blocked artist.
+     *
+     * Its own action rather than part of the recommendation reset: a block is an
+     * instruction the listener typed in, not something the engine inferred, and it
+     * is honoured even when Smart Listening is off. Wiping it as a side effect of
+     * clearing the learned stats destroyed the only hand-curated list in the app.
+     */
+    suspend fun clearBlockedArtists()
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>
     suspend fun getSuppressedArtistUris(days: Int = 120): Set<String>
     suspend fun getSuppressedTrackUris(): Set<String>

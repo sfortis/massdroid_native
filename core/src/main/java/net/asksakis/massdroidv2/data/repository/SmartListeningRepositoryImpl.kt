@@ -247,6 +247,11 @@ class SmartListeningRepositoryImpl @Inject constructor(
 
     override suspend fun getBlockedArtistUris(): Set<String> = dao.getBlockedArtistUris().toSet()
 
+    override suspend fun clearBlockedArtists() {
+        dao.clearBlockedArtists()
+        Log.w(TAG, "Blocked artists cleared by user action")
+    }
+
     override suspend fun getBlockedArtists(): List<BlockedArtistInfo> =
         (dao.getBlockedArtistsForDisplay() + dao.getUnnamedBlockedArtists())
             .sortedByDescending { it.blockedAt }

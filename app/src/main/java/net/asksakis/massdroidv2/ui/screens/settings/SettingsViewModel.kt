@@ -526,6 +526,28 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Clears the blocked-artist list only, leaving the learned history and scores in
+     * place. Separate from [resetRecommendationDatabase] because the two are
+     * different kinds of data: one the listener stated, the other the engine guessed.
+     */
+    fun resetBlockedArtists() {
+        if (_recommendationBusy.value) return
+        viewModelScope.launch {
+            _recommendationBusy.value = true
+            try {
+                smartListeningRepository.clearBlockedArtists()
+                loadRecommendationData()
+                _recommendationMessage.value = "Blocked artists cleared"
+            } catch (e: Exception) {
+                Log.e(TAG, "resetBlockedArtists failed: ${e.message}")
+                _recommendationMessage.value = "Failed to clear blocked artists"
+            } finally {
+                _recommendationBusy.value = false
+            }
+        }
+    }
+
     fun unblockArtist(artistUri: String, artistName: String?) {
         if (_recommendationBusy.value) return
         viewModelScope.launch {

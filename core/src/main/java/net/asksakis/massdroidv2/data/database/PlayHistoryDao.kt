@@ -917,10 +917,25 @@ interface PlayHistoryDao {
     @Query("DELETE FROM artist_genres")
     suspend fun clearArtistGenres()
 
+    /**
+     * Wipes what the engine LEARNED: history, scores and the derived metadata around
+     * them.
+     *
+     * Deliberately leaves `blocked_artists` alone. A block is an explicit instruction
+     * from the listener, not something inferred from listening, and the rest of the
+     * code already treats it that way (it is honoured even when Smart Listening is
+     * switched off). Clearing it out as a side effect of "reset the stats" threw away
+     * the one list the user had curated by hand, so it now has its own action in
+     * [clearBlockedArtists].
+     *
+     * The external caches (`musicbrainz_artist_tags`, `ma_similar_artists`,
+     * `artist_track_cache`, `ma_similar_track_cache`) are also untouched: they hold
+     * no preference of any kind, only answers from servers that would otherwise have
+     * to be fetched again over days.
+     */
     @Transaction
     suspend fun clearRecommendationData() {
         clearSmartFeedback()
-        clearBlockedArtists()
         clearPlayHistory()
         clearArtistGenres()
         clearTrackGenres()

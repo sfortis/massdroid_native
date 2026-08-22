@@ -63,6 +63,7 @@ fun RecommendationInsightsScreen(
     val blockedArtists by viewModel.blockedArtists.collectAsStateWithLifecycle()
 
     var showResetConfirm by remember { mutableStateOf(false) }
+    var showBlockedResetConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshRecommendationData()
@@ -274,6 +275,16 @@ fun RecommendationInsightsScreen(
                                 }
                             }
                         }
+                        // Clearing the whole list is its own action, kept here next to
+                        // the list rather than with the database actions above: a block
+                        // is something the listener stated, not something the engine
+                        // learned, so it does not belong to "reset the stats".
+                        MdOutlinedButton(
+                            onClick = { showBlockedResetConfirm = true },
+                            enabled = smartListeningEnabled && !recommendationBusy
+                        ) {
+                            Text("Clear All Blocked")
+                        }
                     }
                 }
             }
@@ -325,8 +336,9 @@ fun RecommendationInsightsScreen(
             title = { Text("Reset Recommendation DB?") },
             text = {
                 Text(
-                    "This will delete local recommendation data (play history cache, smart feedback, blocked artists). " +
-                        "This action cannot be undone."
+                    "This will delete the learned recommendation data: play history, track scores and " +
+                        "smart feedback. Blocked artists are kept - clear those separately from the " +
+                        "Blocked Artists section. This action cannot be undone."
                 )
             },
             confirmButton = {
@@ -344,6 +356,37 @@ fun RecommendationInsightsScreen(
             },
             dismissButton = {
                 MdOutlinedButton(onClick = { showResetConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showBlockedResetConfirm && smartListeningEnabled) {
+        AlertDialog(
+            onDismissRequest = { showBlockedResetConfirm = false },
+            title = { Text("Clear all blocked artists?") },
+            text = {
+                Text(
+                    "Every artist you have blocked becomes eligible for recommendations again. " +
+                        "Your play history and scores are not touched. This action cannot be undone."
+                )
+            },
+            confirmButton = {
+                MdButton(
+                    onClick = {
+                        showBlockedResetConfirm = false
+                        viewModel.resetBlockedArtists()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Yes, Clear")
+                }
+            },
+            dismissButton = {
+                MdOutlinedButton(onClick = { showBlockedResetConfirm = false }) {
                     Text("Cancel")
                 }
             }
