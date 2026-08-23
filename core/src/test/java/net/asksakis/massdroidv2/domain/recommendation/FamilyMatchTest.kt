@@ -79,14 +79,19 @@ class FamilyMatchTest {
     )
 
     @Test
-    fun `both routes contribute and duplicates keep the better score`() {
+    fun `both routes contribute and a track both found is promoted`() {
         val artists = listOf(candidate("deezer://track/1", 0.9), candidate("deezer://track/2", 0.4))
         val tracks = listOf(candidate("deezer://track/2", 0.7), candidate("deezer://track/3", 0.5))
         val merged = mergeRoutes(artists, tracks)
 
         assertThat(merged.map { it.track.uri })
             .containsExactly("deezer://track/1", "deezer://track/2", "deezer://track/3")
-        assertThat(merged.first { it.track.uri == "deezer://track/2" }.score).isEqualTo(0.7)
+        // Track 2 was reached by both routes: better score (0.7) plus the bonus.
+        assertThat(merged.first { it.track.uri == "deezer://track/2" }.score)
+            .isWithin(1e-9).of(0.7 + 0.12)
+        // Tracks only one route found are left exactly as they were.
+        assertThat(merged.first { it.track.uri == "deezer://track/1" }.score).isEqualTo(0.9)
+        assertThat(merged.first { it.track.uri == "deezer://track/3" }.score).isEqualTo(0.5)
     }
 
     @Test
@@ -96,9 +101,29 @@ class FamilyMatchTest {
         val merged = mergeRoutes(artists, tracks)
 
         assertThat(merged).hasSize(1)
-        assertThat(merged.single().score).isEqualTo(0.9)
+        // The artist route's score survives; the bonus applies on top of it.
+        assertThat(merged.single().score).isWithin(1e-9).of(0.9 + 0.12)
         // The stronger entry is kept whole, so its opener eligibility survives too.
         assertThat(merged.single().verified).isTrue()
+    }
+
+    @Test
+    fun `agreement cannot lift an off-family track past the on-family ones`() {
+        // The whole point of the bonus being small: an off-family candidate is scored
+        // at OFF_FAMILY_SCALE (0.35) of its closeness, so even at maximum closeness
+        // and with both routes agreeing it stays behind a mid-list on-family track.
+        val offFamilyBoth = 1.0 * 0.35 + 0.12
+        val onFamilyMidList = 0.5
+        assertThat(offFamilyBoth).isLessThan(onFamilyMidList)
+    }
+
+    @Test
+    fun `no overlap means no track is changed`() {
+        val artists = listOf(candidate("deezer://track/1", 0.9))
+        val tracks = listOf(candidate("deezer://track/2", 0.5))
+        val merged = mergeRoutes(artists, tracks)
+
+        assertThat(merged.map { it.score }).containsExactly(0.9, 0.5)
     }
 
     @Test

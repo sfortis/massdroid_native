@@ -110,8 +110,25 @@ interface PlayHistoryRepository {
      * per seed on every build, which cost 8 to 14 seconds of a 15-second budget
      * before this existed; the ordering carries the similarity ranking and is
      * preserved.
+     *
+     * [emptyMaxAgeMs] governs a cached EMPTY answer, which means "this provider
+     * returned nothing for this seed" rather than "we never asked". It is kept for
+     * less time than a real answer: a provider that does not implement
+     * `similar_tracks` will keep not implementing it, but a provider that simply had
+     * nothing for one track may later.
      */
-    suspend fun getCachedSimilarTracks(seedUri: String, maxAgeMs: Long): List<Track>?
+    suspend fun getCachedSimilarTracks(
+        seedUri: String,
+        maxAgeMs: Long,
+        emptyMaxAgeMs: Long
+    ): List<Track>?
+
+    /**
+     * Stores what `similar_tracks` answered, INCLUDING an empty answer. Not caching
+     * the empty case meant a provider that does not support the feature was probed
+     * once per seed on every single build, which is eight wasted round-trips per mix
+     * for that user.
+     */
     suspend fun cacheSimilarTracks(seedUri: String, tracks: List<Track>)
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)

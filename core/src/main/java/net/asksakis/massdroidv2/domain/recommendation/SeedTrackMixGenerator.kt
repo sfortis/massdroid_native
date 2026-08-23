@@ -175,6 +175,33 @@ private const val MA_TOP_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
  */
 private const val MA_SIMILAR_TRACKS_TTL_MS = 14L * 24 * 60 * 60 * 1000
 
+/**
+ * Lifetime of a cached EMPTY `similar_tracks` answer, i.e. "this provider returned
+ * nothing for this seed".
+ *
+ * Shorter than a real answer because the two mean different things. A provider that
+ * does not implement the feature will still not implement it in two days, and this
+ * is what stops it being probed once per seed on every build; but a provider that
+ * simply had nothing for one particular track may well have something later, and a
+ * fortnight of silence for that track would be too long.
+ */
+private const val MA_SIMILAR_TRACKS_EMPTY_TTL_MS = 2L * 24 * 60 * 60 * 1000
+
+/**
+ * Added to a candidate's score when BOTH routes returned it independently.
+ *
+ * Two routes agreeing is the strongest evidence this engine produces, and it used to
+ * be thrown away: the merge kept the higher score and forgot that the artist route
+ * and the track route had arrived at the same track by different paths. Measured on
+ * a real build, only 10 of 190 candidates were found twice, so this promotes a small
+ * and genuinely well-supported set rather than reshuffling the pool.
+ *
+ * Deliberately smaller than the on-family/off-family gap (OFF_FAMILY_SCALE), so
+ * agreement can lift a candidate within its tier but cannot push an off-family track
+ * past the on-family ones.
+ */
+private const val ROUTE_AGREEMENT_BONUS = 0.12
+
 // Recent-mix cool-down penalties (subtracted from a candidate's score when the
 // track / its artist appeared in recent mixes). Raised from 0.2/0.5 after
 // offline tuning on the real library: with weighted-sampling selection the
@@ -394,12 +421,18 @@ internal fun varietyWindow(variety: Double, n: Int): Int =
 
 /**
  * The two discovery routes into one pool, keeping the better score when both found
- * the same track.
+ * the same track and PROMOTING the ones both of them found.
  *
- * Same-track overlap is real but small (10 of 190 on a measured build), so this is
- * about not letting the weaker evidence overwrite the stronger one rather than
- * about volume. The artist route's entries come first because [MixEngine] re-sorts
- * by score anyway and that route is the better-structured of the two.
+ * Agreement between two independently derived routes is the strongest evidence this
+ * engine has, and the merge used to discard it: it kept the higher score and forgot
+ * that the artist route and the track route had reached the same track by different
+ * paths. Such a candidate now carries [ROUTE_AGREEMENT_BONUS] on top of its better
+ * score.
+ *
+ * Overlap is small (10 of 190 on a measured build), so this promotes a narrow,
+ * well-supported set rather than reordering the pool. The artist route's entries
+ * come first because [MixEngine] re-sorts by score anyway and that route is the
+ * better-structured of the two.
  */
 @VisibleForTesting
 internal fun mergeRoutes(
@@ -408,12 +441,26 @@ internal fun mergeRoutes(
 ): List<CandidateTrack> {
     if (fromTracks.isEmpty()) return fromArtists
     if (fromArtists.isEmpty()) return fromTracks
-    val byUri = LinkedHashMap<String, CandidateTrack>(fromArtists.size + fromTracks.size)
+    val best = LinkedHashMap<String, CandidateTrack>(fromArtists.size + fromTracks.size)
+    val seenInArtists = fromArtists.mapTo(mutableSetOf()) { it.track.uri }
+    val agreed = mutableSetOf<String>()
     for (c in fromArtists + fromTracks) {
-        val existing = byUri[c.track.uri]
-        if (existing == null || c.score > existing.score) byUri[c.track.uri] = c
+        val uri = c.track.uri
+        val existing = best[uri]
+        if (existing == null) {
+            best[uri] = c
+        } else {
+            // Reached from both directions. `existing` can only come from the artist
+            // route here, since each route is deduplicated on its own.
+            if (uri in seenInArtists) agreed += uri
+            if (c.score > existing.score) best[uri] = c
+        }
     }
-    return byUri.values.toList()
+    if (agreed.isEmpty()) return best.values.toList()
+    Log.d(TAG, "routes agreed on ${agreed.size} of ${best.size} candidates")
+    return best.values.map { c ->
+        if (c.track.uri in agreed) c.copy(score = c.score + ROUTE_AGREEMENT_BONUS) else c
+    }
 }
 
 /**
@@ -1171,8 +1218,11 @@ class SeedTrackMixGenerator @Inject constructor(
                         // is not part of the key and re-asking costs seconds. Read
                         // BEFORE taking a permit, so a cache hit never queues behind
                         // the artist route's calls.
-                        val cached = playHistoryRepository
-                            .getCachedSimilarTracks(seed.trackUri, MA_SIMILAR_TRACKS_TTL_MS)
+                        val cached = playHistoryRepository.getCachedSimilarTracks(
+                            seed.trackUri,
+                            MA_SIMILAR_TRACKS_TTL_MS,
+                            MA_SIMILAR_TRACKS_EMPTY_TTL_MS
+                        )
                         if (cached != null) {
                             if (cached.isNotEmpty()) landed += index to cached
                             return@launch
@@ -1185,9 +1235,11 @@ class SeedTrackMixGenerator @Inject constructor(
                                 emptyList()
                             }
                         }
-                        if (tracks.isEmpty()) return@launch
+                        // Stored even when empty: that IS the answer, and caching it is
+                        // what stops a provider without `similar_tracks` being asked
+                        // again on every build.
                         playHistoryRepository.cacheSimilarTracks(seed.trackUri, tracks)
-                        landed += index to tracks
+                        if (tracks.isNotEmpty()) landed += index to tracks
                     }
                 }
             }

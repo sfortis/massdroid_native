@@ -392,19 +392,28 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun getCachedSimilarTracks(seedUri: String, maxAgeMs: Long): List<Track>? {
+    override suspend fun getCachedSimilarTracks(
+        seedUri: String,
+        maxAgeMs: Long,
+        emptyMaxAgeMs: Long
+    ): List<Track>? {
         val cache = dao.getMaSimilarTrackCache(seedUri) ?: return null
-        if (System.currentTimeMillis() - cache.fetchedAt > maxAgeMs) return null
-        return try {
+        val tracks = try {
             json.decodeFromString(ListSerializer(Track.serializer()), cache.tracksJson)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to decode similar-track cache for $seedUri: ${e.message}")
-            null
+            return null
         }
+        // An empty answer expires sooner than a real one. Both are answers though:
+        // returning the empty list rather than null is what stops the caller asking
+        // the server again.
+        val ttl = if (tracks.isEmpty()) emptyMaxAgeMs else maxAgeMs
+        if (System.currentTimeMillis() - cache.fetchedAt > ttl) return null
+        return tracks
     }
 
     override suspend fun cacheSimilarTracks(seedUri: String, tracks: List<Track>) {
-        if (seedUri.isBlank() || tracks.isEmpty()) return
+        if (seedUri.isBlank()) return
         val now = System.currentTimeMillis()
         try {
             dao.upsertMaSimilarTrackCache(
