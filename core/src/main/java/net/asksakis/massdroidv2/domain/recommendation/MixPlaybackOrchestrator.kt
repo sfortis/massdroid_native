@@ -124,7 +124,63 @@ private const val GENRE_RADIO_METADATA_ERROR_CODE = 999
 // Mix immediately followed by a Genre Radio does not re-run the full library load.
 private const val CONTEXT_SELF_LOAD_TTL_MS = 30_000L
 
-private data class SmartMixResult(val tracks: List<Track>, val genre: String?)
+private data class SmartMixResult(
+    val tracks: List<Track>,
+    val genre: String?,
+    /**
+     * Genres of the seed cluster this mix anchored on, carried out of the build so
+     * the rotation slot is consumed only once Music Assistant has accepted the
+     * queue. Empty for the genre engine, which rotates on [genre] instead.
+     */
+    val clusterGenres: Set<String> = emptySet()
+)
+
+/**
+ * What Music Assistant actually took. `playMedia` fails as a whole request, so a
+ * mix is not necessarily the mix that got queued: one unloadable track rejects
+ * every track travelling with it, and the server has a live bug where a zero year
+ * on any item fails the call outright (21 occurrences in 24 hours on a real
+ * server). Everything downstream of delivery, cooldowns included, must answer to
+ * this rather than to what was built.
+ */
+/** The cooldown a delivered mix consumes: exactly what the server accepted. */
+internal data class MixCooldown(
+    val trackUris: Set<String>,
+    val artistKeys: Set<String>
+)
+
+/**
+ * Which of [tracks] a mix consumes, given what the queue accepted.
+ *
+ * Pure and separate from the commit itself so the rule can be pinned by a test:
+ * the bug this replaces was ordering (cooldowns written before delivery), and the
+ * rule that has to hold afterwards is that a rejected track costs nothing. An
+ * artist survives in the cooldown only if at least one of THEIR tracks was
+ * accepted, which is why the keys are derived from the accepted tracks rather than
+ * from the whole mix.
+ */
+internal fun cooldownFor(tracks: List<Track>, result: QueueLoadResultView): MixCooldown {
+    val accepted = result.acceptedUris.toSet()
+    if (accepted.isEmpty()) return MixCooldown(emptySet(), emptySet())
+    val acceptedTracks = tracks.filter { it.uri in accepted }
+    val artistKeys = acceptedTracks.mapNotNullTo(mutableSetOf()) { track ->
+        MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri)
+            ?: track.artistNames.split(",").firstOrNull()?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    }
+    return MixCooldown(acceptedTracks.mapTo(mutableSetOf()) { it.uri }, artistKeys)
+}
+
+/** The part of a delivery result [cooldownFor] needs, so tests need no queue. */
+internal interface QueueLoadResultView {
+    val acceptedUris: List<String>
+    val rejectedUris: List<String>
+}
+
+private data class QueueLoadResult(
+    override val acceptedUris: List<String>,
+    override val rejectedUris: List<String>,
+    val replacedQueue: Boolean
+) : QueueLoadResultView
 
 /**
  * Headless Smart Mix + Genre Radio build+play orchestration, shared by the phone
@@ -281,7 +337,9 @@ class MixPlaybackOrchestrator @Inject constructor(
             ensureArtistDecadesLoaded()
             val mixResult = buildSmartMixTracks()
             if (mixResult.tracks.size < SMART_MIX_MIN_TRACKS) return MixResult.NotEnoughData
-            playGeneratedMix(queueId, mixResult.tracks, mixResult.genre, "smartMix")
+            playGeneratedMix(
+                queueId, mixResult.tracks, mixResult.genre, "smartMix", mixResult.clusterGenres
+            )
             return MixResult.Played(mixResult.tracks.size, mixResult.genre)
         } catch (e: CancellationException) {
             throw e
@@ -483,24 +541,24 @@ class MixPlaybackOrchestrator @Inject constructor(
      * atomic (upstream PR #3753). If a future failure mode ever reported
      * otherwise, this would need to verify the queue rather than assume it.
      */
-    private suspend fun playMediaSalvagingBadItems(queueId: String, uris: List<String>) {
-        if (uris.isEmpty()) return
+    private suspend fun playMediaSalvagingBadItems(queueId: String, uris: List<String>): QueueLoadResult {
+        if (uris.isEmpty()) return QueueLoadResult(emptyList(), emptyList(), replacedQueue = false)
         try {
             musicRepository.playMedia(queueId, uris, option = "replace", awaitResponse = true)
-            return
+            return QueueLoadResult(uris, emptyList(), replacedQueue = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "play_media rejected ${uris.size} tracks (${e.message}), retrying in chunks")
         }
 
-        var queued = 0
-        var dropped = 0
+        val accepted = mutableListOf<String>()
+        val rejected = mutableListOf<String>()
         var first = true
         for (chunk in uris.chunked(PLAY_MEDIA_SALVAGE_CHUNK)) {
             // The first chunk that lands owns the queue; the rest append to it.
             if (sendChunk(queueId, chunk, first)) {
-                queued += chunk.size
+                accepted += chunk
                 first = false
                 continue
             }
@@ -509,15 +567,16 @@ class MixPlaybackOrchestrator @Inject constructor(
             // otherwise a single bad item silently costs up to four good ones.
             for (uri in chunk) {
                 if (sendChunk(queueId, listOf(uri), first)) {
-                    queued++
+                    accepted += uri
                     first = false
                 } else {
-                    dropped++
+                    rejected += uri
                 }
             }
         }
-        Log.d(TAG, "play_media salvage: queued $queued, dropped $dropped")
-        if (queued == 0) error("Music Assistant rejected every track in this mix")
+        Log.d(TAG, "play_media salvage: queued ${accepted.size}, dropped ${rejected.size}")
+        if (accepted.isEmpty()) error("Music Assistant rejected every track in this mix")
+        return QueueLoadResult(accepted, rejected, replacedQueue = true)
     }
 
     /** One salvage attempt. False means the server would not take these tracks. */
@@ -537,32 +596,74 @@ class MixPlaybackOrchestrator @Inject constructor(
             false
         }
 
+    /**
+     * Delivers the mix and only then records what it consumed.
+     *
+     * Order matters. These cooldowns used to be written during the build, before
+     * anyone knew what Music Assistant would take, so a delivery that failed still
+     * suppressed all 33 tracks and their artists from future mixes. That is not a
+     * rare edge: the server fails the whole `play_media` call when any item carries
+     * a zero year, measured 21 times in 24 hours. A build that is cancelled or
+     * rejected must cost nothing.
+     */
     private suspend fun playGeneratedMix(
         queueId: String,
         tracks: List<Track>,
         pickedGenre: String?,
-        logSource: String
+        logSource: String,
+        clusterGenres: Set<String> = emptySet()
     ) {
         playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.SMART_GENERATED)
-        val freshUris = tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }.toSet()
-        if (freshUris.isNotEmpty()) {
-            recentSmartMixHistory.addLast(freshUris)
-            while (recentSmartMixHistory.size > SMART_MIX_HISTORY_DEPTH) recentSmartMixHistory.removeFirst()
+        val result = playMediaSalvagingBadItems(
+            queueId,
+            tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }
+        )
+        commitMixCooldowns(tracks, result, pickedGenre, clusterGenres)
+        logQueueContents(queueId, logSource, awaitQueueItems = true)
+    }
+
+    /**
+     * Cooldown bookkeeping for a mix the server accepted, keyed strictly on
+     * [QueueLoadResult.acceptedUris]. A partially accepted mix consumes only its
+     * accepted half, so the tracks the listener never got a chance to hear stay
+     * eligible next time.
+     */
+    private suspend fun commitMixCooldowns(
+        tracks: List<Track>,
+        result: QueueLoadResult,
+        pickedGenre: String?,
+        clusterGenres: Set<String>
+    ) {
+        val consumed = cooldownFor(tracks, result)
+        if (consumed.trackUris.isEmpty()) return
+        if (result.rejectedUris.isNotEmpty()) {
+            Log.d(
+                TAG,
+                "cooldown: committing ${consumed.trackUris.size} accepted, " +
+                    "skipping ${result.rejectedUris.size} the server refused"
+            )
         }
-        val freshArtistKeys = tracks.mapNotNull { track ->
-            MediaIdentity.canonicalArtistKey(track.artistItemId, track.artistUri)
-                ?: track.artistNames.split(",").firstOrNull()?.trim()?.lowercase()
-        }.toSet()
-        if (freshArtistKeys.isNotEmpty()) {
-            recentSmartMixArtists.addLast(freshArtistKeys)
+        recentSmartMixHistory.addLast(consumed.trackUris)
+        while (recentSmartMixHistory.size > SMART_MIX_HISTORY_DEPTH) recentSmartMixHistory.removeFirst()
+
+        val acceptedArtistKeys = consumed.artistKeys
+        if (acceptedArtistKeys.isNotEmpty()) {
+            recentSmartMixArtists.addLast(acceptedArtistKeys)
             while (recentSmartMixArtists.size > RECENT_ARTIST_HISTORY_DEPTH) recentSmartMixArtists.removeFirst()
         }
         pickedGenre?.let { picked ->
             recentSmartMixGenres.addLast(normalizeGenre(picked))
             while (recentSmartMixGenres.size > RECENT_GENRE_EXCLUSION_DEPTH) recentSmartMixGenres.removeFirst()
         }
-        playMediaSalvagingBadItems(queueId, tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) })
-        logQueueContents(queueId, logSource, awaitQueueItems = true)
+        // The seed cluster's rotation slot is spent here too, for the same reason:
+        // a cluster whose mix never reached the queue should still be reachable.
+        if (clusterGenres.isNotEmpty()) {
+            recentSeedClusterGenres.addLast(clusterGenres)
+            while (recentSeedClusterGenres.size > SEED_CLUSTER_ROTATION_DEPTH) {
+                recentSeedClusterGenres.removeFirst()
+            }
+            persistClusterRotation()
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -575,19 +676,19 @@ class MixPlaybackOrchestrator @Inject constructor(
         hydrateClusterRotation()
         val target = smartMixTrackTarget()
         val result = seedTrackMixGenerator.buildSmartMix(seedTuning(), target, currentRecency())
-        // Record the cluster's genres only for a mix that will actually be used,
-        // so a failed/short attempt does not burn a rotation slot.
-        if (result.tracks.size >= seedMixMinTracks(target) && result.clusterGenres.isNotEmpty()) {
-            recentSeedClusterGenres.addLast(result.clusterGenres)
-            while (recentSeedClusterGenres.size > SEED_CLUSTER_ROTATION_DEPTH) {
-                recentSeedClusterGenres.removeFirst()
-            }
-            persistClusterRotation()
+        // The cluster's rotation slot is NOT consumed here. It used to be, guarded
+        // only by "the mix is long enough", which still burned a slot for a mix the
+        // server then refused. It is carried out to [commitMixCooldowns] and spent
+        // once the queue has accepted something.
+        val clusterGenres = if (result.tracks.size >= seedMixMinTracks(target)) {
+            result.clusterGenres
+        } else {
+            emptySet()
         }
         // Name the mix after the cluster it anchored on. This used to be null, so
         // the phone fell back to the generic "Smart mix ready" on every seed-track
         // run and only ever named a genre on the rarer genre-engine fallback.
-        return SmartMixResult(result.tracks, result.clusterLabel)
+        return SmartMixResult(result.tracks, result.clusterLabel, clusterGenres)
     }
 
     /**
