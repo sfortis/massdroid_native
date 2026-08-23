@@ -275,6 +275,16 @@ class MixPlaybackOrchestrator @Inject constructor(
     // use rather than in init{}, so a FAB tap cannot race the load and read empty.
     private var clusterRotationHydrated = false
 
+    /**
+     * The track/artist/genre cool-down windows are persisted for the same reason the
+     * cluster rotation is. They used to live only in memory, so a process death
+     * (routine on Android for a backgrounded app) reset almost all of the cross-mix
+     * repetition protection and the next mix could rebuild what the last one served.
+     * Hydrated lazily on first use, never in init{}, so a FAB tap cannot race the
+     * load and read empty.
+     */
+    private var cooldownHydrated = false
+
     // ---- Tuning knobs (read fresh from settings per build) ----
     private var smartMixVariety = 0.5
     private var smartMixDiscovery = 0.5
@@ -318,6 +328,10 @@ class MixPlaybackOrchestrator @Inject constructor(
         // window is meaningless; drop it and re-hydrate on the next build.
         clusterRotationHydrated = false
         persistClusterRotation()
+        // Same reasoning for the cool-down windows: another account is another
+        // library, so its recent tracks and artists say nothing here.
+        cooldownHydrated = false
+        persistCooldowns()
     }
 
     // ---------------------------------------------------------------------------
@@ -331,6 +345,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         activeBuildJob = currentCoroutineContext()[Job]
         try {
             refreshTuning()
+            hydrateCooldowns()
             refreshSmartFiltersForMix()
             ensureContext(context)
             ensureBllArtistScoresLoaded()
@@ -359,6 +374,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         activeBuildJob = currentCoroutineContext()[Job]
         try {
             refreshTuning()
+            hydrateCooldowns()
             refreshSmartFiltersForMix()
             ensureContext(context)
             ensureBllArtistScoresLoaded()
@@ -664,6 +680,9 @@ class MixPlaybackOrchestrator @Inject constructor(
             }
             persistClusterRotation()
         }
+        // Written once per accepted delivery, after the windows have been trimmed,
+        // so what lands on disk is exactly what this process now holds.
+        persistCooldowns()
     }
 
     // ---------------------------------------------------------------------------
@@ -695,6 +714,53 @@ class MixPlaybackOrchestrator @Inject constructor(
      * Load the persisted cluster rotation window once per process. A failure here
      * only costs variety, never the mix, so it degrades to the in-memory window.
      */
+    /**
+     * Loads the persisted recent-mix windows once per process.
+     *
+     * Only fills what this process has not already recorded itself, so a mix built
+     * before the hydration cannot be overwritten by an older stored window. A
+     * failure here costs variety, never the mix.
+     */
+    private suspend fun hydrateCooldowns() {
+        if (cooldownHydrated) return
+        cooldownHydrated = true
+        try {
+            if (recentSmartMixHistory.isEmpty()) {
+                settingsRepository.recentMixTrackUris.first()
+                    .takeLast(SMART_MIX_HISTORY_DEPTH)
+                    .forEach { recentSmartMixHistory.addLast(it) }
+            }
+            if (recentSmartMixArtists.isEmpty()) {
+                settingsRepository.recentMixArtistKeys.first()
+                    .takeLast(RECENT_ARTIST_HISTORY_DEPTH)
+                    .forEach { recentSmartMixArtists.addLast(it) }
+            }
+            if (recentSmartMixGenres.isEmpty()) {
+                settingsRepository.recentMixGenres.first()
+                    .takeLast(RECENT_GENRE_EXCLUSION_DEPTH)
+                    .forEach { recentSmartMixGenres.addLast(it) }
+            }
+            Log.d(
+                TAG,
+                "cooldown: hydrated ${recentSmartMixHistory.size} track windows, " +
+                    "${recentSmartMixArtists.size} artist windows, " +
+                    "${recentSmartMixGenres.size} genres"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "cooldown hydrate failed: ${e.message}")
+        }
+    }
+
+    private suspend fun persistCooldowns() {
+        try {
+            settingsRepository.setRecentMixTrackUris(recentSmartMixHistory.toList())
+            settingsRepository.setRecentMixArtistKeys(recentSmartMixArtists.toList())
+            settingsRepository.setRecentMixGenres(recentSmartMixGenres.toList())
+        } catch (e: Exception) {
+            Log.w(TAG, "cooldown persist failed: ${e.message}")
+        }
+    }
+
     private suspend fun hydrateClusterRotation() {
         if (clusterRotationHydrated) return
         clusterRotationHydrated = true

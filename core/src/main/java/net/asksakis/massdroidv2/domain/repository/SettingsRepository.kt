@@ -104,6 +104,23 @@ interface SettingsRepository {
      * empty on every process death. Verified on device: the first mix of each new
      * PID filtered 183 of 183 candidate seeds, i.e. it had no history to avoid.
      */
+    /**
+     * Recent-mix cool-down windows, persisted for the same reason the cluster
+     * rotation is: Android kills a backgrounded app routinely, and these live in
+     * memory, so a process death used to reset almost all of the cross-mix
+     * repetition protection. Newest window last.
+     *
+     * Stored with the same line/comma encoding as [recentSeedClusterGenres] rather
+     * than as JSON, since the shape is identical and it keeps one format in this
+     * file.
+     */
+    val recentMixTrackUris: Flow<List<Set<String>>>
+    suspend fun setRecentMixTrackUris(windows: List<Set<String>>)
+    val recentMixArtistKeys: Flow<List<Set<String>>>
+    suspend fun setRecentMixArtistKeys(windows: List<Set<String>>)
+    val recentMixGenres: Flow<List<String>>
+    suspend fun setRecentMixGenres(genres: List<String>)
+
     val recentSeedClusterGenres: Flow<List<Set<String>>>
     suspend fun setRecentSeedClusterGenres(clusters: List<Set<String>>)
     /**

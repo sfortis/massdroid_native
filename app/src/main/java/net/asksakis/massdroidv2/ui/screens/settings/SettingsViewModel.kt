@@ -515,6 +515,14 @@ class SettingsViewModel @Inject constructor(
             _recommendationBusy.value = true
             try {
                 playHistoryRepository.clearRecommendationData()
+                // The cool-down windows live in DataStore, not in the database, so
+                // clearing the history alone left them behind: tracks would stay
+                // suppressed from mixes although the plays that suppressed them were
+                // gone. Same for the cluster rotation.
+                settingsRepository.setRecentMixTrackUris(emptyList())
+                settingsRepository.setRecentMixArtistKeys(emptyList())
+                settingsRepository.setRecentMixGenres(emptyList())
+                settingsRepository.setRecentSeedClusterGenres(emptyList())
                 loadRecommendationData()
                 _recommendationMessage.value = "Recommendation DB reset completed"
             } catch (e: Exception) {

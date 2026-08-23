@@ -72,6 +72,9 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
         private val KEY_RECENT_SEED_CLUSTERS = stringPreferencesKey("recent_seed_cluster_genres")
+        private val KEY_RECENT_MIX_TRACKS = stringPreferencesKey("recent_mix_track_uris")
+        private val KEY_RECENT_MIX_ARTISTS = stringPreferencesKey("recent_mix_artist_keys")
+        private val KEY_RECENT_MIX_GENRES = stringPreferencesKey("recent_mix_genres")
 
         // One cluster per line, its genres comma-separated. Genres never contain
         // either character (Last.fm tags are words: "drum and bass", "hip hop")
@@ -366,6 +369,64 @@ class SettingsRepositoryImpl @Inject constructor(
                 }
             if (serialized.isEmpty()) prefs.remove(KEY_RECENT_SEED_CLUSTERS)
             else prefs[KEY_RECENT_SEED_CLUSTERS] = serialized
+        }
+    }
+
+    override val recentMixTrackUris: Flow<List<Set<String>>> = safeData.map { prefs ->
+        decodeWindows(prefs[KEY_RECENT_MIX_TRACKS])
+    }
+
+    override suspend fun setRecentMixTrackUris(windows: List<Set<String>>) =
+        writeWindows(KEY_RECENT_MIX_TRACKS, windows)
+
+    override val recentMixArtistKeys: Flow<List<Set<String>>> = safeData.map { prefs ->
+        decodeWindows(prefs[KEY_RECENT_MIX_ARTISTS])
+    }
+
+    override suspend fun setRecentMixArtistKeys(windows: List<Set<String>>) =
+        writeWindows(KEY_RECENT_MIX_ARTISTS, windows)
+
+    override val recentMixGenres: Flow<List<String>> = safeData.map { prefs ->
+        prefs[KEY_RECENT_MIX_GENRES]
+            ?.split(CLUSTER_SEPARATOR)
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?: emptyList()
+    }
+
+    override suspend fun setRecentMixGenres(genres: List<String>) {
+        context.dataStore.edit { prefs ->
+            val serialized = genres.filter { it.isNotBlank() }.joinToString(CLUSTER_SEPARATOR)
+            if (serialized.isEmpty()) prefs.remove(KEY_RECENT_MIX_GENRES)
+            else prefs[KEY_RECENT_MIX_GENRES] = serialized
+        }
+    }
+
+    /**
+     * One window per line, members comma separated. Malformed or empty windows are
+     * dropped rather than failing the read: a corrupt preference must cost variety
+     * at worst, never the mix.
+     */
+    private fun decodeWindows(raw: String?): List<Set<String>> =
+        raw?.split(CLUSTER_SEPARATOR)
+            ?.mapNotNull { line ->
+                line.split(GENRE_SEPARATOR)
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .toSet()
+                    .takeIf { it.isNotEmpty() }
+            }
+            ?: emptyList()
+
+    private suspend fun writeWindows(
+        key: Preferences.Key<String>,
+        windows: List<Set<String>>
+    ) {
+        context.dataStore.edit { prefs ->
+            val serialized = windows
+                .filter { it.isNotEmpty() }
+                .joinToString(CLUSTER_SEPARATOR) { it.joinToString(GENRE_SEPARATOR) }
+            if (serialized.isEmpty()) prefs.remove(key) else prefs[key] = serialized
         }
     }
 
