@@ -641,18 +641,9 @@ class MixEngine @Inject constructor() {
 
     @VisibleForTesting
     internal fun trackDedupeKey(track: Track): String {
-        val artist = normalizeTrackText(track.artistNames.substringBefore(","))
-        val name = normalizeTrackText(track.name)
-        if (artist.isNotBlank() && name.isNotBlank()) return "$artist|$name"
-        return track.uri.ifBlank { "$artist|$name" }
+        val key = trackIdentityKey(track.artistNames.substringBefore(","), track.name)
+        return key.ifBlank { track.uri }
     }
-
-    private fun normalizeTrackText(value: String): String =
-        value
-            .lowercase()
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
 
     // --- Constants ---
 
@@ -698,7 +689,7 @@ class MixEngine @Inject constructor() {
 
     /** Normalized first-artist name, the cross-provider artist bucket key. */
     private fun artistNameKey(track: Track): String =
-        normalizeTrackText(track.artistNames.substringBefore(","))
+        flattenTrackText(track.artistNames.substringBefore(","))
 
     companion object {
         private const val SM_FAV_ARTIST_BONUS = 0.8

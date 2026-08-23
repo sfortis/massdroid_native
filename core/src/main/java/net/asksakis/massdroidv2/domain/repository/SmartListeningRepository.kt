@@ -62,6 +62,13 @@ interface SmartListeningRepository {
     suspend fun getArtistMetrics(days: Int = 120): Map<String, ArtistLearningMetrics>
     suspend fun getSuppressedArtistUris(days: Int = 120): Set<String>
     suspend fun getSuppressedTrackUris(): Set<String>
+
+    /**
+     * Identity keys ([trackIdentityKey]) of suppressed tracks, so a rejection follows
+     * the RECORDING rather than one uri for it. Measured on a real library: 5 of 22
+     * disliked tracks also existed under a second uri and came back through it.
+     */
+    suspend fun getSuppressedTrackKeys(): Set<String>
 }
 
 /**

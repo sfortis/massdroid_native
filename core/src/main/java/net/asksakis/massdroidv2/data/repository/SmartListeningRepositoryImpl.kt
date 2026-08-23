@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
+import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistLearningMetrics
@@ -21,6 +22,7 @@ import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -280,6 +282,11 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override suspend fun getSuppressedTrackUris(): Set<String> =
         dao.getSuppressedTrackUris().toSet()
 
+    override suspend fun getSuppressedTrackKeys(): Set<String> =
+        dao.getSuppressedTrackIdentities().mapNotNullTo(mutableSetOf()) { row ->
+            trackIdentityKey(row.artistName, row.trackName).takeIf { it.isNotBlank() }
+        }
+
     @VisibleForTesting
     internal fun scaleSkipSignal(listenedMs: Long?, durationSec: Double?): Double {
         if (listenedMs == null || durationSec == null || durationSec <= 0.0) return SKIP_ARTIST_SIGNAL
@@ -362,6 +369,13 @@ class SmartListeningRepositoryImpl @Inject constructor(
             )
             normalized.forEach { (artistUri, artistName) ->
                 dao.insertArtist(ArtistEntity(uri = artistUri, name = artistName.ifBlank { "Artist" }))
+                // Link the two as well, not just store them side by side. Without
+                // this a track first seen through feedback had a row in `tracks` and
+                // a row in `artists` but nothing joining them, so nothing could name
+                // its artist afterwards: measured on a real library, 15 of 22
+                // disliked tracks had no artist link, which is exactly the set a
+                // recording-level rejection cannot recognise elsewhere.
+                dao.insertTrackArtist(TrackArtistEntity(trackUri = trackKey, artistUri = artistUri))
             }
             dao.insertSmartFeedback(feedback)
             // A zero delta is not a score change. The dislike path passes one

@@ -410,6 +410,26 @@ interface PlayHistoryDao {
     @Query("SELECT uri FROM tracks WHERE score < :threshold")
     suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
 
+    /**
+     * Suppressed tracks with enough to identify the RECORDING, not just the row.
+     *
+     * A uri identifies one copy; the same song routinely exists under several. Of 22
+     * tracks a real listener had explicitly disliked, 5 were also stored under a
+     * second uri, so a uri-only rejection let the other copy back into mixes. Music
+     * Assistant may also resolve a requested track to a different version by itself.
+     *
+     * Returns the lead artist only, which is what [trackIdentityKey] uses.
+     */
+    @Query("""
+        SELECT t.uri AS uri, t.name AS trackName, MIN(a.name) AS artistName
+        FROM tracks t
+        LEFT JOIN track_artists ta ON ta.track_uri = t.uri
+        LEFT JOIN artists a ON a.uri = ta.artist_uri
+        WHERE t.score < :threshold AND t.name != ''
+        GROUP BY t.uri
+    """)
+    suspend fun getSuppressedTrackIdentities(threshold: Double = -0.15): List<SuppressedTrackRow>
+
     @Query(
         """
         SELECT
@@ -961,6 +981,13 @@ interface PlayHistoryDao {
 }
 
 // Projection data classes
+
+/** A suppressed track, with what is needed to recognise the same recording elsewhere. */
+data class SuppressedTrackRow(
+    val uri: String,
+    val trackName: String,
+    val artistName: String?
+)
 
 data class GenrePlayCount(
     val genre: String,

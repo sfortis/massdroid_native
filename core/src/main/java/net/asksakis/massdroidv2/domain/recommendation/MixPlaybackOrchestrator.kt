@@ -260,6 +260,14 @@ class MixPlaybackOrchestrator @Inject constructor(
     private var smartArtistScoreMap = emptyMap<String, Double>()
     private var excludedArtistUris = emptySet<String>()
     private var excludedTrackUris = emptySet<String>()
+
+    /**
+     * Identity keys of the same suppressed tracks. A uri names one copy of a
+     * recording and the catalogue routinely holds several, so a uri-only rejection
+     * let the other copy back in: of 22 explicitly disliked tracks on a real
+     * library, 5 also existed under a second uri.
+     */
+    private var excludedTrackKeys = emptySet<String>()
     private var blockedArtistNames = emptySet<String>()
 
     // ---- Recent-mix cool-down history (shared across taps for variety) ----
@@ -319,6 +327,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         smartArtistScoreMap = emptyMap()
         excludedArtistUris = emptySet()
         excludedTrackUris = emptySet()
+        excludedTrackKeys = emptySet()
         blockedArtistNames = emptySet()
         recentSmartMixHistory.clear()
         recentSmartMixArtists.clear()
@@ -499,10 +508,12 @@ class MixPlaybackOrchestrator @Inject constructor(
             val metrics = smartListeningRepository.getArtistMetrics(days = 120)
             excludedArtistUris = blocked + suppressed
             excludedTrackUris = smartListeningRepository.getSuppressedTrackUris()
+            excludedTrackKeys = smartListeningRepository.getSuppressedTrackKeys()
             smartArtistScoreMap = metrics.mapValues { it.value.score }
         } else {
             excludedArtistUris = blocked
             excludedTrackUris = emptySet()
+            excludedTrackKeys = emptySet()
             smartArtistScoreMap = emptyMap()
         }
     }
@@ -794,6 +805,7 @@ class MixPlaybackOrchestrator @Inject constructor(
 
     private fun currentRecency() = SeedTrackMixGenerator.Recency(
         excludedTrackUris = excludedTrackUris,
+        excludedTrackKeys = excludedTrackKeys,
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
         blockedArtistNames = blockedArtistNames,

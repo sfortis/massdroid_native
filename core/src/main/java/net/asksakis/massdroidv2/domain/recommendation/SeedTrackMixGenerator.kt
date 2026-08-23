@@ -700,6 +700,12 @@ class SeedTrackMixGenerator @Inject constructor(
     /** Cool-down + exclusion context owned by the caller so back-to-back mixes diverge. */
     data class Recency(
         val excludedTrackUris: Set<String>,
+        /**
+         * Identity keys ([trackIdentityKey]) of the same suppressed tracks, so a
+         * rejection follows the recording and not just the uri it was rejected
+         * under. The catalogue holds the same song several times.
+         */
+        val excludedTrackKeys: Set<String> = emptySet(),
         val recentArtistCounts: Map<String, Int>,
         val recentMixTrackUris: Set<String>,
         /** Raw names of blocked artists; the generator normalizes and excludes them from seeds, candidates and injection. */
@@ -879,6 +885,12 @@ class SeedTrackMixGenerator @Inject constructor(
     ): List<Track> {
         val candidates = resolved
             .filterNot { it.track.uri in recency.excludedTrackUris }
+            // Same rejection, matched on the recording rather than on one uri for it.
+            .filterNot { c ->
+                recency.excludedTrackKeys.isNotEmpty() &&
+                    trackIdentityKey(c.track.artistNames.substringBefore(","), c.track.name)
+                        .takeIf { it.isNotBlank() } in recency.excludedTrackKeys
+            }
             .map { c ->
                 val artistKey = c.track.artistNames.split(",").firstOrNull()?.trim()?.lowercase().orEmpty()
                 val artistPenalty = (recency.recentArtistCounts[artistKey] ?: 0) * SEED_RECENT_ARTIST_PENALTY

@@ -18,6 +18,38 @@ fun List<GenreScore>.toScoreMap(): Map<String, Double> = associate { normalizeGe
 
 /** Single canonical form for genre names across the app. */
 fun normalizeGenre(genre: String): String = genre.trim().lowercase()
+/**
+ * Identity of a recording by what it IS rather than by which uri serves it:
+ * lead artist and title, lowercased with punctuation and spacing flattened.
+ *
+ * Needed because the same recording legitimately exists under several uris. On a
+ * real library, 5 of the 22 tracks the listener had explicitly disliked were also
+ * stored under a second uri (once as `deezer://`, once as `library://`, or as two
+ * releases of the same song), so a uri-keyed rejection let the other copy straight
+ * back in. Music Assistant also resolves a requested track to a different version
+ * of its own accord.
+ *
+ * Blank when neither part is usable, which callers must treat as "no identity" and
+ * fall back to the uri rather than matching everything.
+ */
+fun trackIdentityKey(artist: String?, title: String?): String {
+    val a = flattenTrackText(artist.orEmpty())
+    val t = flattenTrackText(title.orEmpty())
+    return if (a.isNotBlank() && t.isNotBlank()) "$a|$t" else ""
+}
+
+/**
+ * Lowercases and flattens punctuation and spacing, so "Sigur Rós" and "sigur ros"
+ * or "Hoppipolla (Remastered)" and "hoppipolla remastered" compare equal. The
+ * shared primitive behind [trackIdentityKey] and the artist bucket key.
+ */
+fun flattenTrackText(value: String): String =
+    value
+        .lowercase()
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
 
 /**
  * Affinity of a set of genres against a (possibly log-domain) genre score map.
