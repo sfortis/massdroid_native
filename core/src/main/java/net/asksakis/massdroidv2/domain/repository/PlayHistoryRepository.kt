@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.domain.repository
 
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.domain.model.Track
 
 data class RecentAlbum(
@@ -81,11 +82,18 @@ data class PlayHistoryEntry(
 )
 
 interface PlayHistoryRepository {
+    /**
+     * [origin] records WHY this play happened, which is the difference between real
+     * taste and the engine hearing its own output back. It defaults to
+     * [PlayOrigin.UNKNOWN] so a caller that genuinely cannot tell says so, rather
+     * than claiming the play was organic.
+     */
     suspend fun recordPlay(
         track: Track,
         queueId: String,
         listenedMs: Long? = null,
-        artists: List<Pair<String, String>> = emptyList()
+        artists: List<Pair<String, String>> = emptyList(),
+        origin: PlayOrigin = PlayOrigin.UNKNOWN
     ): Long
     suspend fun getRecentAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getTopGenres(days: Int = 30, limit: Int = 10): List<GenreScore>

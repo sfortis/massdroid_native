@@ -10,6 +10,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.MaSimilarArtistEntity
 import net.asksakis.massdroidv2.data.database.MaSimilarTrackCacheEntity
 import net.asksakis.massdroidv2.data.database.SeedTrackRow
@@ -75,7 +76,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         track: Track,
         queueId: String,
         listenedMs: Long?,
-        artists: List<Pair<String, String>>
+        artists: List<Pair<String, String>>,
+        origin: PlayOrigin
     ): Long {
         val trackKey = MediaIdentity.canonicalTrackKey(track.itemId, track.uri) ?: return -1L
         val albumKey = MediaIdentity.canonicalAlbumKey(track.albumItemId, track.albumUri)
@@ -150,13 +152,14 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                     trackUri = trackKey,
                     queueId = queueId,
                     playedAt = System.currentTimeMillis(),
-                    listenedMs = listenedMs
+                    listenedMs = listenedMs,
+                    origin = origin.stored
                 )
             )
         }
         adjacencyCache = null
         val listenSec = listenedMs?.let { "${it / 1000}s" } ?: "?"
-        Log.d(TAG, "Recorded play: ${track.name} ($listenSec, ${artists.size} artists, ${track.genres.size} genres)")
+        Log.d(TAG, "Recorded play: ${track.name} ($listenSec, ${origin.stored}, ${artists.size} artists, ${track.genres.size} genres)")
         return id
     }
 

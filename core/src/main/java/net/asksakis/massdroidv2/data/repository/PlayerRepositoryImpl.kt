@@ -7,6 +7,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 import net.asksakis.massdroidv2.data.websocket.*
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
@@ -642,7 +643,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     try {
                         val enrichedTrack = enrichTrackGenresForHistory(prev.track, prev.artists)
                         playHistoryRepository.recordPlay(
-                            enrichedTrack, queueId, listenedMs, prev.artists
+                            enrichedTrack, queueId, listenedMs, prev.artists,
+                            origin = playOriginForQueue(queueId)
                         )
                         smartListeningRepository.recordListen(
                             track = enrichedTrack,
@@ -1409,6 +1411,26 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.d(TAG, "Selection lock cleared (${previous.reason})")
         }
     }
+
+    /**
+     * Why a play from [queueId] happened, derived from the queue's own filter mode.
+     *
+     * No new bookkeeping is needed for this: a generated queue already marks itself
+     * as such so that blocked/suppressed filtering applies to it, and every manual
+     * play path (library, artist, album, search, Android Auto) sets the mode back to
+     * NORMAL. So the mode is exactly the question "did the engine put this here?".
+     *
+     * A mode we have never seen for this queue reads as UNKNOWN rather than ORGANIC:
+     * claiming an unproven play as real taste is the mistake this column exists to
+     * stop.
+     */
+    private fun playOriginForQueue(queueId: String): PlayOrigin =
+        when (queueFilterModeByQueue[queueId]) {
+            PlayerRepository.QueueFilterMode.NORMAL -> PlayOrigin.ORGANIC
+            PlayerRepository.QueueFilterMode.SMART_GENERATED -> PlayOrigin.SMART_MIX
+            PlayerRepository.QueueFilterMode.RADIO_SMART -> PlayOrigin.GENRE_RADIO
+            null -> PlayOrigin.UNKNOWN
+        }
 
     override fun setQueueFilterMode(playerId: String, mode: PlayerRepository.QueueFilterMode) {
         // Key the filter mode by the player's ACTIVE queue id, the same id the

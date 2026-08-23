@@ -627,6 +627,19 @@ interface PlayHistoryDao {
         WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
           AND t.score >= :minScore
         GROUP BY t.uri
+        -- A track heard ONCE and only because a mix served it proves nothing about
+        -- taste, and letting those seed the next mix is how the engine came to feed
+        -- on its own output: eight Guts tracks, each played once from a previous
+        -- mix, made him a primary seed for a listener with thousands of electronic
+        -- plays. Such a track earns a seat only by being returned to.
+        --
+        -- Deliberately keyed on plays we KNOW were generated. Rows written before
+        -- the origin column exists are 'unknown' and stay eligible: on a real
+        -- library 12314 of 15062 played tracks have a single play, so treating
+        -- unknown as generated would empty the seed pool on upgrade. The filter
+        -- therefore tightens gradually as new plays are recorded.
+        HAVING COUNT(*) > 1
+            OR SUM(CASE WHEN ph.origin IN ('smart_mix', 'genre_radio') THEN 0 ELSE 1 END) > 0
         ORDER BY lastPlayedAt DESC
         LIMIT :limit
         """

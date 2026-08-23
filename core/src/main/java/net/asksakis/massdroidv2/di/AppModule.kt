@@ -309,6 +309,23 @@ object AppModule {
      * fallback, which would cost them their listening history.
      */
     /**
+     * Adds `play_history.origin`, so the engine can tell a track the listener chose
+     * from one a generated mix served.
+     *
+     * Existing rows keep the literal `unknown`, which is honest: their provenance was
+     * never recorded and must NOT be assumed organic. The default is declared on the
+     * column itself so it matches the entity's `defaultValue` exactly, which is what
+     * Room's schema validation compares.
+     */
+    private val MIGRATION_18_19 = object : Migration(18, 19) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE `play_history` ADD COLUMN `origin` TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        }
+    }
+
+    /**
      * Adds the `similar_tracks` cache. Applies to everyone, including upgrades from
      * a release, which reach it as a second hop after [MIGRATION_10_17].
      *
@@ -412,7 +429,7 @@ object AppModule {
         ).addMigrations(
             MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
             MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18
+            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
         )
             // Kept so a missing migration cannot brick the app, but no longer
             // silent: see DatabaseResetReporter.

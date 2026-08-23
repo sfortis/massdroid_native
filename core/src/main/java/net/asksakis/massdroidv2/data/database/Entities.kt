@@ -114,8 +114,43 @@ data class PlayHistoryEntity(
     @ColumnInfo(name = "track_uri") val trackUri: String,
     @ColumnInfo(name = "queue_id") val queueId: String,
     @ColumnInfo(name = "played_at") val playedAt: Long,
-    @ColumnInfo(name = "listened_ms") val listenedMs: Long? = null
+    @ColumnInfo(name = "listened_ms") val listenedMs: Long? = null,
+    /**
+     * Why this play happened: the listener chose it, or a generated mix served it.
+     * See [PlayOrigin].
+     *
+     * Without this the engine could not tell its own output from real taste, and it
+     * fed on itself. Measured on a real library, 12314 of 15062 played tracks have
+     * exactly ONE play, so the "recently played" seed pool is largely made of mix
+     * results; eight Guts tracks, each played once because a previous mix served
+     * them, once made him a primary seed and produced a 33-track hip hop mix for a
+     * listener whose history is over six thousand electronic plays.
+     *
+     * Rows written before this column existed read as [PlayOrigin.UNKNOWN], which
+     * callers must treat as "not proven organic" rather than as organic.
+     */
+    @ColumnInfo(name = "origin", defaultValue = "unknown") val origin: String = PlayOrigin.UNKNOWN.stored
 )
+
+/**
+ * Where a play came from. Stored as a string so an unrecognised future value read
+ * by an older build degrades to [UNKNOWN] instead of failing to parse.
+ */
+enum class PlayOrigin(val stored: String) {
+    /** The listener picked this: library, search, an album, a playlist. */
+    ORGANIC("organic"),
+    /** Served by Smart Mix. */
+    SMART_MIX("smart_mix"),
+    /** Served by Genre Radio. */
+    GENRE_RADIO("genre_radio"),
+    /** Predates the column, or the queue's provenance was not known at the time. */
+    UNKNOWN("unknown");
+
+    companion object {
+        fun from(stored: String?): PlayOrigin =
+            entries.firstOrNull { it.stored == stored } ?: UNKNOWN
+    }
+}
 
 @Entity(
     tableName = "smart_feedback",
