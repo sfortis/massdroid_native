@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.repository
 
 import kotlinx.coroutines.flow.Flow
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.domain.model.Track
 
 data class ArtistLearningMetrics(
@@ -19,7 +20,12 @@ interface SmartListeningRepository {
     val blockedArtistUris: Flow<Set<String>>
 
     suspend fun recordSkip(track: Track, artists: List<Pair<String, String>>, listenedMs: Long? = null)
-    suspend fun recordListen(track: Track, artists: List<Pair<String, String>>, listenedMs: Long? = null)
+    suspend fun recordListen(
+        track: Track,
+        artists: List<Pair<String, String>>,
+        listenedMs: Long? = null,
+        origin: PlayOrigin = PlayOrigin.UNKNOWN
+    )
     suspend fun recordLike(track: Track, artists: List<Pair<String, String>>)
     suspend fun recordUnlike(track: Track, artists: List<Pair<String, String>>)
 

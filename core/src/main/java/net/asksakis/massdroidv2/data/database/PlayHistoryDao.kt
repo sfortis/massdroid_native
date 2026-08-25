@@ -407,6 +407,30 @@ interface PlayHistoryDao {
     """)
     suspend fun deleteArtistGenresByNames(lowercaseNames: List<String>)
 
+    /**
+     * Per (track, genre) play counts inside a window, for the anchor-family floor.
+     * The family judgement (majority vote per track) happens in Kotlin because the
+     * genre-to-family map lives there; SQL only supplies the raw material.
+     */
+    @Query("""
+        SELECT p.track_uri AS trackUri, g.genre_name AS genre, COUNT(*) AS plays
+        FROM play_history p
+        JOIN track_genres g ON g.track_uri = p.track_uri
+        WHERE p.played_at > :since
+        GROUP BY p.track_uri, g.genre_name
+    """)
+    suspend fun getGenrePlayRows(since: Long): List<TrackGenrePlayRow>
+
+    /** Same rows, but only for plays the listener demonstrably chose. */
+    @Query("""
+        SELECT p.track_uri AS trackUri, g.genre_name AS genre, COUNT(*) AS plays
+        FROM play_history p
+        JOIN track_genres g ON g.track_uri = p.track_uri
+        WHERE p.played_at > :since AND p.origin = 'organic'
+        GROUP BY p.track_uri, g.genre_name
+    """)
+    suspend fun getOrganicGenrePlayRows(since: Long): List<TrackGenrePlayRow>
+
     @Query("SELECT uri FROM tracks WHERE score < :threshold")
     suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
 
@@ -987,6 +1011,12 @@ data class SuppressedTrackRow(
     val uri: String,
     val trackName: String,
     val artistName: String?
+)
+
+data class TrackGenrePlayRow(
+    val trackUri: String,
+    val genre: String,
+    val plays: Int
 )
 
 data class GenrePlayCount(

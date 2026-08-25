@@ -25,6 +25,7 @@ import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
 import net.asksakis.massdroidv2.domain.repository.DecadeScore
+import net.asksakis.massdroidv2.domain.repository.GenrePlayRow
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.RecentAlbum
@@ -343,6 +344,12 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
         return dao.getPlaysForTimeAnalysis(since).map { it.playedAt }
     }
+
+    override suspend fun getGenrePlayRows(sinceMs: Long): List<GenrePlayRow> =
+        dao.getGenrePlayRows(sinceMs).map { GenrePlayRow(it.trackUri, it.genre, it.plays) }
+
+    override suspend fun getOrganicGenrePlayRows(sinceMs: Long): List<GenrePlayRow> =
+        dao.getOrganicGenrePlayRows(sinceMs).map { GenrePlayRow(it.trackUri, it.genre, it.plays) }
 
     override suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>? {
         val cache = dao.getArtistTrackCache(artistUri) ?: return null

@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
+import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.domain.model.Track
@@ -58,6 +59,11 @@ class SmartListeningRepositoryImpl @Inject constructor(
          */
         private const val DISLIKE_TRACK_SCORE = -2.0
 
+        /** The top tier of [scaleListenSignal]: a listen past ~75% of the track. */
+        private const val FULL_LISTEN_SIGNAL = 0.28
+        private const val GENERATED_FULL_LISTEN_SCALE = 0.5
+        private const val GENERATED_PARTIAL_LISTEN_SCALE = 0.15
+
         private const val SUPPRESS_SCORE_THRESHOLD = -1.5
         private const val SUPPRESS_NEGATIVE_MIN = 3
     }
@@ -79,9 +85,15 @@ class SmartListeningRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun recordListen(track: Track, artists: List<Pair<String, String>>, listenedMs: Long?) {
+    override suspend fun recordListen(
+        track: Track,
+        artists: List<Pair<String, String>>,
+        listenedMs: Long?,
+        origin: PlayOrigin
+    ) {
         if (!settingsRepository.smartListeningEnabled.first()) return
-        val signal = scaleListenSignal(listenedMs, track.duration)
+        val base = scaleListenSignal(listenedMs, track.duration)
+        val signal = base * generatedListenScale(origin, base)
         insertArtistSignals(
             track = track,
             artists = artists,
@@ -89,6 +101,33 @@ class SmartListeningRepositoryImpl @Inject constructor(
             signalPerArtist = signal,
             listenedMs = listenedMs
         )
+    }
+
+    /**
+     * How much a listen from [origin] is worth, relative to an organic one.
+     *
+     * A mix serving a track and the listener not skipping it is EXPOSURE, not
+     * choice, and treating it as full preference is how the engine came to feed on
+     * itself: Metaform reached a track score of +1.2 without the listener ever
+     * choosing him, purely from passive full listens of mix-served tracks, and then
+     * anchored a hip hop mix for someone who never plays hip hop.
+     *
+     * The rules follow the improvement plan's source-aware policy:
+     * - a NEGATIVE signal (early bail) keeps full strength regardless of origin,
+     *   because rejecting what the mix chose is real information about the mix;
+     * - a positive signal from a generated queue is scaled down: a full listen to
+     *   [GENERATED_FULL_LISTEN_SCALE] (moderate evidence: they let it play out),
+     *   a partial one to [GENERATED_PARTIAL_LISTEN_SCALE] (barely evidence);
+     * - organic and unknown keep full strength. Unknown is deliberately NOT
+     *   discounted: most of it is the listener's own queue resumed after a process
+     *   restart, and discounting it would neuter the signal that drives everything.
+     */
+    @VisibleForTesting
+    internal fun generatedListenScale(origin: PlayOrigin, signal: Double): Double = when {
+        signal <= 0.0 -> 1.0
+        origin != PlayOrigin.SMART_MIX && origin != PlayOrigin.GENRE_RADIO -> 1.0
+        signal >= FULL_LISTEN_SIGNAL -> GENERATED_FULL_LISTEN_SCALE
+        else -> GENERATED_PARTIAL_LISTEN_SCALE
     }
 
     override suspend fun recordLike(track: Track, artists: List<Pair<String, String>>) {

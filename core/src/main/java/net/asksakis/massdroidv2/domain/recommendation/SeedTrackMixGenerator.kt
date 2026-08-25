@@ -716,7 +716,12 @@ class SeedTrackMixGenerator @Inject constructor(
          * mixes rotate across everything the user listens to instead of
          * re-anchoring on the dominant genre every time.
          */
-        val recentClusterGenres: Set<String> = emptySet()
+        val recentClusterGenres: Set<String> = emptySet(),
+        /**
+         * Families allowed to anchor a mix (see [anchorFamilies]). Empty means the
+         * history was too thin to judge and no restriction applies.
+         */
+        val anchorFamilies: Set<String> = emptySet()
     )
 
     /**
@@ -1596,8 +1601,29 @@ class SeedTrackMixGenerator @Inject constructor(
         // unmapped) would leave the gate with nothing to filter by and produce
         // the one genuinely ungated mix. 99.5% of tagged artists qualify; if a
         // library has none at all we keep the old behaviour rather than refuse.
-        val anchorable = tagged.filter { dominantFamily(genresBySeed[it.trackUri].orEmpty()) != null }
+        val describable = tagged.filter { dominantFamily(genresBySeed[it.trackUri].orEmpty()) != null }
             .ifEmpty { tagged }
+        // The anchor floor. A family may carry a whole mix only when it holds a
+        // real share of the listening (or has organic plays vouching for it);
+        // fringe families exist in this pool largely as residue of earlier mixes,
+        // and the Variety rotation actively steers INTO them because the family
+        // least played recently is by definition the "freshest". That is how a
+        // listener with 0.5% hip hop got a full hip hop mix anchored on Guts.
+        // The floor never empties the pool: if nothing qualifies, it steps aside.
+        val anchorable = if (recency.anchorFamilies.isEmpty()) {
+            describable
+        } else {
+            describable.filter { seed ->
+                dominantFamily(genresBySeed[seed.trackUri].orEmpty()) in recency.anchorFamilies
+            }.ifEmpty {
+                Log.d(TAG, "anchor floor left no seeds, falling back to the whole pool")
+                describable
+            }.also {
+                if (it.size != describable.size) {
+                    Log.d(TAG, "anchor floor: ${it.size}/${describable.size} seeds may anchor")
+                }
+            }
+        }
         // Variety biases WHICH primary we anchor on: low variety restricts it to
         // the top-ranked seeds (steadier), high variety draws from the whole
         // tagged pool. varietyWindow spans the full 0..1 range (no plateau).

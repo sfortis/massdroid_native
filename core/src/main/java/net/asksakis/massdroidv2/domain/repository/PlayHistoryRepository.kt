@@ -81,6 +81,13 @@ data class PlayHistoryEntry(
     val playedAt: Long
 )
 
+/** One (track, genre) pair with how many times the track played in the window. */
+data class GenrePlayRow(
+    val trackUri: String,
+    val genre: String,
+    val plays: Int
+)
+
 interface PlayHistoryRepository {
     /**
      * [origin] records WHY this play happened, which is the difference between real
@@ -105,6 +112,13 @@ interface PlayHistoryRepository {
     suspend fun getArtistDaypartAffinity(targetHour: Int, days: Int = 180): Map<String, Double>
     suspend fun getArtistDominantDecades(days: Int = 365): Map<String, Int>
     suspend fun getTopDecadesForGenre(genre: String, days: Int = 365, limit: Int = 3): List<DecadeScore>
+    /**
+     * Raw material for the anchor-family floor: per-track genre rows with play
+     * counts since [sinceMs], and the same restricted to organic plays. See
+     * `anchorFamilies` in the recommendation package for how they are judged.
+     */
+    suspend fun getGenrePlayRows(sinceMs: Long): List<GenrePlayRow>
+    suspend fun getOrganicGenrePlayRows(sinceMs: Long): List<GenrePlayRow>
     suspend fun getGenreAdjacencyMap(): Map<String, Set<String>>
     suspend fun getGenreArtistMap(): Map<String, List<String>>
     suspend fun getRediscoverAlbums(limit: Int = 10): List<RecentAlbum>

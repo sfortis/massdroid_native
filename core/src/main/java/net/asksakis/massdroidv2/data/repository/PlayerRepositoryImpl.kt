@@ -649,7 +649,8 @@ class PlayerRepositoryImpl @Inject constructor(
                         smartListeningRepository.recordListen(
                             track = enrichedTrack,
                             artists = prev.artists,
-                            listenedMs = listenedMs
+                            listenedMs = listenedMs,
+                            origin = playOriginForQueue(queueId)
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "Play history failed: ${e.message}")

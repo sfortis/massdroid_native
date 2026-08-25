@@ -79,6 +79,18 @@ private const val DISCOVERY_EXPANSION_THRESHOLD = 0.66
 private const val MIX_MAX_TRACKS_PER_ARTIST = 2
 private const val DAYPART_GENRE_BOOST_WEIGHT = 2.0
 private const val SMART_MIX_MIN_TRACKS = 8
+
+// Anchor-family floor (see anchorFamilies). The window is long and the share is
+// counted on raw plays because recency weighting was measured to invert the
+// answer: the most recent plays are what the last mixes served, so BLL put the
+// contaminated families ON TOP of the genuine small ones. The organic door uses a
+// short window so a new, actively chosen taste can anchor within days.
+private const val ANCHOR_SHARE_WINDOW_DAYS = 365L
+private const val ANCHOR_MIN_SHARE = 0.01
+private const val ANCHOR_ORGANIC_WINDOW_DAYS = 90L
+private const val ANCHOR_ORGANIC_DOOR_PLAYS = 5
+// Recomputed at most this often: the shares move by days, not by builds.
+private const val ANCHOR_FAMILIES_TTL_MS = 6 * 60 * 60 * 1000L
 // Chunk size for the retry after the server rejects a whole mix. Small enough
 // that one unplayable item costs only a few tracks, large enough that the retry
 // is a handful of calls rather than one per track.
@@ -268,6 +280,8 @@ class MixPlaybackOrchestrator @Inject constructor(
      * library, 5 also existed under a second uri.
      */
     private var excludedTrackKeys = emptySet<String>()
+    private var anchorFamiliesCache = emptySet<String>()
+    private var anchorFamiliesAtMs = 0L
     private var blockedArtistNames = emptySet<String>()
 
     // ---- Recent-mix cool-down history (shared across taps for variety) ----
@@ -341,6 +355,8 @@ class MixPlaybackOrchestrator @Inject constructor(
         // library, so its recent tracks and artists say nothing here.
         cooldownHydrated = false
         persistCooldowns()
+        anchorFamiliesCache = emptySet()
+        anchorFamiliesAtMs = 0L
     }
 
     // ---------------------------------------------------------------------------
@@ -515,6 +531,35 @@ class MixPlaybackOrchestrator @Inject constructor(
             excludedTrackUris = emptySet()
             excludedTrackKeys = emptySet()
             smartArtistScoreMap = emptyMap()
+        }
+        refreshAnchorFamilies()
+    }
+
+    /**
+     * Which families may anchor a mix, cached because the underlying shares move by
+     * days. Independent of the Smart Listening toggle: it reads plain play history,
+     * not the preference-learning tables. A failure costs the floor, never the mix.
+     */
+    private suspend fun refreshAnchorFamilies() {
+        val now = System.currentTimeMillis()
+        if (now - anchorFamiliesAtMs < ANCHOR_FAMILIES_TTL_MS) return
+        anchorFamiliesAtMs = now
+        anchorFamiliesCache = try {
+            val families = anchorFamilies(
+                rows = playHistoryRepository.getGenrePlayRows(
+                    now - ANCHOR_SHARE_WINDOW_DAYS * 86_400_000L
+                ),
+                organicRows = playHistoryRepository.getOrganicGenrePlayRows(
+                    now - ANCHOR_ORGANIC_WINDOW_DAYS * 86_400_000L
+                ),
+                minShare = ANCHOR_MIN_SHARE,
+                organicDoorPlays = ANCHOR_ORGANIC_DOOR_PLAYS
+            )
+            Log.d(TAG, "anchor families: ${families.sorted()}")
+            families
+        } catch (e: Exception) {
+            Log.w(TAG, "anchor families failed: ${e.message}")
+            emptySet()
         }
     }
 
@@ -806,6 +851,7 @@ class MixPlaybackOrchestrator @Inject constructor(
     private fun currentRecency() = SeedTrackMixGenerator.Recency(
         excludedTrackUris = excludedTrackUris,
         excludedTrackKeys = excludedTrackKeys,
+        anchorFamilies = anchorFamiliesCache,
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
         blockedArtistNames = blockedArtistNames,
