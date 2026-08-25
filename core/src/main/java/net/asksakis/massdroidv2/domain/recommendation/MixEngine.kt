@@ -58,6 +58,17 @@ private const val DISCOVERY_EXPLORE_SPAN = 24
 // lower-match "tail" gets a real chance to be picked. Tuned offline against the
 // real library: at discovery 1.0 this roughly halves cross-mix repetition and
 // lifts the reachable track universe instead of recycling the same top matches.
+/**
+ * Largest share of a mix that may come from candidates whose genre family is NOT
+ * one the mix is anchored on.
+ *
+ * A ceiling rather than a score penalty: a penalty only orders candidates against
+ * each other, so when on-family material runs short the off-family tail fills
+ * whatever is left. Measured on a real build, that meant 9 on-family candidates
+ * against 67 off-family for a 33-track mix.
+ */
+private const val OFF_FAMILY_MAX_SHARE = 0.2
+
 private const val DISCOVERY_SAMPLE_TEMP_BASE = 0.08
 private const val DISCOVERY_SAMPLE_TEMP_SPAN = 0.6
 
@@ -303,7 +314,32 @@ class MixEngine @Inject constructor() {
             .distinctBy { trackDedupeKey(it.track) }
             .distinctBy { it.track.uri }
         if (deduped.isEmpty()) return emptyList()
-        val scored = discoveryWeightedOrder(deduped, discovery, random)
+        // HARD ceiling on off-family material, before any sampling.
+        //
+        // Scaling an off-family candidate's score (the previous approach) is not
+        // enough, because the comparison it wins is against on-family candidates
+        // FURTHER DOWN their seed's similar list. That is fine while on-family
+        // material is plentiful and disastrous when it is scarce: a real build
+        // anchored on Sinkane (experimental/funk/jazz) had 9 on-family candidates
+        // against 67 off-family ones, so roughly three quarters of a 33-track mix
+        // was material the cluster never asked for. The listener's verdict was
+        // "unacceptably bad mixes", and they were right.
+        //
+        // So off-family is now a garnish with a fixed maximum share, not a
+        // competitor. A cluster with little on-family material yields a SHORTER
+        // mix, which the caller's min-tracks floor may then reject outright, and a
+        // short honest mix is the better failure.
+        val offFamilyCap = ceil(target * OFF_FAMILY_MAX_SHARE).toInt()
+        val onFamily = deduped.filter { it.verified }
+        val offFamily = deduped.filterNot { it.verified }
+        val pool = if (offFamily.size <= offFamilyCap) {
+            deduped
+        } else {
+            // `deduped` is score-ordered, so this keeps the best off-family ones.
+            Log.d(TAG, "off-family capped: ${offFamily.size} -> $offFamilyCap (on-family ${onFamily.size})")
+            onFamily + offFamily.take(offFamilyCap)
+        }
+        val scored = discoveryWeightedOrder(pool, discovery, random)
 
         val usableArtists = scored.map { it.artistKey }.distinct().size
         val maxPerArtist = dynamicMaxPerArtist(target, usableArtists)
