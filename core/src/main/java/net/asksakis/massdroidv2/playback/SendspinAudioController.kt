@@ -1380,9 +1380,17 @@ class SendspinAudioController(
                 val client = wsClient.getImageClient()
                 val request = okhttp3.Request.Builder().url(url).build()
                 val response = client.newCall(request).execute()
+                // Report a refusal instead of decoding it. Music Assistant answers an
+                // unresolvable image with 404 (verified, and with an empty body), which
+                // decodes to null and left a missing cover with no explanation at all.
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Album art rejected by server: HTTP ${response.code} for $url")
+                    response.close()
+                    return@withContext null
+                }
                 response.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to load album art: ${e.message}")
+                Log.w(TAG, "Failed to load album art (${e.javaClass.simpleName}: ${e.message}): $url")
                 null
             }
         }

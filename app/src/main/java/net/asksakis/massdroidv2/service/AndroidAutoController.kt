@@ -654,7 +654,22 @@ class AndroidAutoController(
                 timeout().timeout(ARTWORK_FETCH_TIMEOUT_S, TimeUnit.SECONDS)
             }
             val rawBytes = call.execute().use { response ->
-                response.body?.bytes()
+                if (response.isSuccessful) {
+                    response.body?.bytes()
+                } else {
+                    // A refusal is an answer about the image, not a transport failure, and
+                    // the two are diagnosed differently: an imageproxy 404 means the
+                    // provider art could not be resolved, where an exception means the host
+                    // was not reached. Music Assistant answers 404 with an empty body
+                    // (verified), which the isEmpty() check below discarded without a word,
+                    // so a server-side refusal produced no log line at all.
+                    //
+                    // The body also stops here rather than reaching resizeArtwork, which
+                    // returns undecodable bytes unchanged: a reverse proxy that answers with
+                    // an HTML error page would otherwise become the car's artwork.
+                    Log.w(TAG, "Artwork rejected by server: HTTP ${response.code} for $url")
+                    null
+                }
             }
             if (url != cachedArtworkUrl || rawBytes == null || rawBytes.isEmpty()) return
             val resized = resizeArtwork(rawBytes)
@@ -666,7 +681,11 @@ class AndroidAutoController(
             // (only the artwork differs) and calls updatePlayback once.
             artworkData.value = resized
         } catch (e: Exception) {
-            Log.e(TAG, "Artwork download failed: $url", e)
+            // Name the exception in the message, not only in the stack trace. Shared
+            // logs are routinely trimmed to the single matching line, and without the
+            // type an unreachable host, a TLS rejection and a timeout all read the
+            // same, which is what made the first report of this unactionable.
+            Log.e(TAG, "Artwork download failed (${e.javaClass.simpleName}: ${e.message}): $url", e)
         }
     }
 
