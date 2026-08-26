@@ -35,6 +35,10 @@ interface SettingsRepository {
      */
     val musicBrainzIdentityRevision: Flow<Int>
     suspend fun setMusicBrainzIdentityRevision(revision: Int)
+    /** Search results layout: true = grid (the default), false = list. Persisted. */
+    val searchGridMode: Flow<Boolean>
+    suspend fun setSearchGridMode(grid: Boolean)
+
     /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
     val smartMixVariety: Flow<Float>
     /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */

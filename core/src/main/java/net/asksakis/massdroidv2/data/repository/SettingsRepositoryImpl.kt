@@ -41,6 +41,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
         private val KEY_BLOCKED_ALIAS_PROVIDERS = stringPreferencesKey("blocked_artist_alias_providers")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
+        private val KEY_SEARCH_GRID_MODE = booleanPreferencesKey("search_grid_mode")
         private val KEY_MB_IDENTITY_REVISION = intPreferencesKey("mb_identity_revision")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
@@ -154,6 +155,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSmartListeningEnabled(enabled: Boolean) {
         context.dataStore.edit { it[KEY_SMART_LISTENING_ENABLED] = enabled }
+    }
+
+    override val searchGridMode: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_SEARCH_GRID_MODE] ?: true
+    }
+
+    override suspend fun setSearchGridMode(grid: Boolean) {
+        context.dataStore.edit { it[KEY_SEARCH_GRID_MODE] = grid }
     }
 
     override val blockedArtistAliasProviders: Flow<String> = safeData.map { prefs ->

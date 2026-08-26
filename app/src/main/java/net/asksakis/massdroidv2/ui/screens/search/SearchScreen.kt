@@ -109,6 +109,17 @@ fun SearchScreen(
 
     val filtered = if (selectedProviders.isEmpty()) results else filterByProviders(results, selectedProviders)
 
+    // Type filter (issue #65): one tap shows just the albums (or tracks, ...)
+    // instead of scrolling past every other section. Modeled as chips like the
+    // Music Assistant web UI, and stacked ON TOP of the provider filter so the
+    // counts always describe what is actually visible.
+    var selectedType by remember { mutableStateOf<SearchTypeFilter?>(null) }
+    LaunchedEffect(filtered) {
+        val st = selectedType
+        if (st != null && st.count(filtered) == 0) selectedType = null
+    }
+    val typed = selectedType?.slice(filtered) ?: filtered
+
     // Sorted provider list for chips
     val sortedProviders = remember(providerCounts) {
         providerCounts.entries.sortedBy { it.key }.map { it.key to it.value }
@@ -204,14 +215,32 @@ fun SearchScreen(
                     }
                 }
             }
+            if (hasResults && !isSearching) {
+                TypeFilterChips(
+                    result = filtered,
+                    selected = selectedType,
+                    onSelect = {
+                        selectedType = it
+                        it?.let { t -> viewModel.deepenSearch(t.mediaType) }
+                    }
+                )
+            }
         } else {
-            // Portrait: search bar on top, chips below
+            // Portrait: search bar with the layout toggle at its right, chips in
+            // two clean rows below (providers, then types). The toggle used to sit
+            // at the end of the provider-chip row, which squeezed the chips and
+            // hid it whenever there were no results to toggle.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             TextField(
                 value = query,
                 onValueChange = { viewModel.updateQuery(it) },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .weight(1f)
                     .focusRequester(focusRequester),
                 placeholder = { Text("Global search...") },
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
@@ -240,6 +269,15 @@ fun SearchScreen(
                     unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
                 )
             )
+            Spacer(Modifier.width(4.dp))
+            MdIconButton(onClick = { viewModel.toggleGridMode() }) {
+                @Suppress("DEPRECATION")
+                Icon(
+                    if (gridMode) Icons.Default.ViewList else Icons.Default.GridView,
+                    contentDescription = "Toggle view"
+                )
+            }
+            }
 
             if (hasResults && !isSearching) {
                 Row(
@@ -303,14 +341,16 @@ fun SearchScreen(
                     )
                 }
             }
-            MdIconButton(onClick = { viewModel.toggleGridMode() }) {
-                @Suppress("DEPRECATION")
-                Icon(
-                    if (gridMode) Icons.Default.ViewList else Icons.Default.GridView,
-                    contentDescription = "Toggle view"
-                )
             }
-            }
+            TypeFilterChips(
+                result = filtered,
+                selected = selectedType,
+                onSelect = {
+                    selectedType = it
+                    // Narrowing to one category is the moment to fetch more of it.
+                    it?.let { t -> viewModel.deepenSearch(t.mediaType) }
+                }
+            )
             }
         }
 
@@ -322,13 +362,13 @@ fun SearchScreen(
                 }
             } else if (gridMode) {
                 SearchResultsGrid(
-                    filtered, providerCache, onArtistClick, onAlbumClick,
+                    typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onLongPress = { actionSheetItem = it }
                 )
             } else {
                 SearchResultsList(
-                    filtered, providerCache, onArtistClick, onAlbumClick,
+                    typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onLongPress = { actionSheetItem = it }
                 )
@@ -408,7 +448,7 @@ private fun SearchResultsList(
             items(filtered.albums, key = { it.uri }) { album ->
                 MediaItemRow(
                     title = album.name,
-                    subtitle = formatAlbumTypeYear(album.albumType, album.year).ifBlank { album.artistNames },
+                    subtitle = albumSearchSubtitle(album),
                     imageUrl = album.imageUrl, onClick = { onAlbumClick(album) },
                     onLongClick = { onLongPress(album.toActionSheetItem()) },
                     inLibrary = album.uri.startsWith("library://"),
@@ -491,7 +531,7 @@ private fun SearchResultsGrid(
             items(filtered.albums, key = { it.uri }) { album ->
                 MediaItemGrid(
                     title = album.name,
-                    subtitle = formatAlbumTypeYear(album.albumType, album.year).ifBlank { album.artistNames },
+                    subtitle = albumSearchSubtitle(album),
                     imageUrl = album.imageUrl, onClick = { onAlbumClick(album) },
                     onLongClick = { onLongPress(album.toActionSheetItem()) },
                     providerDomains = album.providerDomains, providerCache = providerCache,
@@ -533,6 +573,97 @@ private fun SearchResultsGrid(
                     fallbackIcon = Icons.Default.Radio
                 )
             }
+        }
+    }
+}
+
+/**
+ * WHOSE album. The subtitle used to show type/year INSTEAD of the artist whenever
+ * type/year existed, so a search for a common album title gave a wall of covers
+ * reading "Album • 2016" with no way to tell them apart. The listener's ask was
+ * explicit: the artist name, exactly as track results do, with the type/year kept
+ * only as the fallback when the artist is unknown.
+ */
+private fun albumSearchSubtitle(album: Album): String =
+    album.artistNames.ifBlank { formatAlbumTypeYear(album.albumType, album.year) }
+
+/**
+ * The five result sections, as a one-tap filter (issue #65). Each knows how to
+ * count itself in and cut a [SearchResult] down to itself, so the chip row and
+ * the renderers cannot disagree about what a selection means.
+ */
+private enum class SearchTypeFilter(val label: String, val mediaType: MediaType) {
+    ARTISTS("Artists", MediaType.ARTIST) {
+        override fun count(r: SearchResult) = r.artists.size
+        override fun slice(r: SearchResult) = SearchResult(artists = r.artists)
+    },
+    ALBUMS("Albums", MediaType.ALBUM) {
+        override fun count(r: SearchResult) = r.albums.size
+        override fun slice(r: SearchResult) = SearchResult(albums = r.albums)
+    },
+    TRACKS("Tracks", MediaType.TRACK) {
+        override fun count(r: SearchResult) = r.tracks.size
+        override fun slice(r: SearchResult) = SearchResult(tracks = r.tracks)
+    },
+    PLAYLISTS("Playlists", MediaType.PLAYLIST) {
+        override fun count(r: SearchResult) = r.playlists.size
+        override fun slice(r: SearchResult) = SearchResult(playlists = r.playlists)
+    },
+    RADIOS("Radios", MediaType.RADIO) {
+        override fun count(r: SearchResult) = r.radios.size
+        override fun slice(r: SearchResult) = SearchResult(radios = r.radios)
+    };
+
+    abstract fun count(r: SearchResult): Int
+    abstract fun slice(r: SearchResult): SearchResult
+}
+
+/**
+ * One chip per non-empty section, plus All. Single-select on purpose: the ask
+ * behind it is "jump me to the albums", not set arithmetic, and tapping the
+ * active chip (or All) returns to everything.
+ */
+@Composable
+private fun TypeFilterChips(
+    result: SearchResult,
+    selected: SearchTypeFilter?,
+    onSelect: (SearchTypeFilter?) -> Unit
+) {
+    val present = SearchTypeFilter.entries.filter { it.count(result) > 0 }
+    // With one section there is nothing to filter; the row would be noise.
+    if (present.size < 2) return
+    LazyRow(
+        modifier = Modifier.padding(start = 16.dp, end = 8.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        item {
+            FilterChip(
+                selected = selected == null,
+                onClick = { onSelect(null) },
+                label = { Text("All") },
+                colors = if (selected == null) FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) else FilterChipDefaults.filterChipColors()
+            )
+        }
+        items(present) { type ->
+            val isSelected = selected == type
+            FilterChip(
+                selected = isSelected,
+                onClick = { onSelect(if (isSelected) null else type) },
+                label = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(type.label)
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "${type.count(result)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            )
         }
     }
 }
