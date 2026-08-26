@@ -22,6 +22,12 @@ jobs:
       - name: Run Detekt
         run: ./gradlew detekt --stacktrace
 
+      # Same gate build.yml applies to every push on dev. It is repeated here so a
+      # tag on a commit that never went through dev, such as a hotfix branched
+      # straight off main, cannot be published without the tests having run.
+      - name: Run unit tests
+        run: ./gradlew :core:testDebugUnitTest -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+
       - name: Decode keystore
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > ${{ github.workspace }}/release.jks
