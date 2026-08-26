@@ -292,23 +292,6 @@ object AppModule {
     }
 
     /**
-     * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
-     *
-     * v11..v14 never shipped: they were all added in the same unreleased run, so
-     * no installation is ever on them and stepping through each would only make
-     * an upgrade do pointless work (one of them emptied a table the previous one
-     * had just created). v10 is what `main` ships, so v10 -> v15 is the only
-     * path a real user takes.
-     */
-    /**
-     * The same drop, for a device that already ran a v15 build.
-     *
-     * Only reachable from an unreleased version, so it never runs for anyone
-     * upgrading from a release - they take [MIGRATION_10_17] in one step. It
-     * exists so a tester already on 15 is not thrown at the destructive
-     * fallback, which would cost them their listening history.
-     */
-    /**
      * Adds `play_history.origin`, so the engine can tell a track the listener chose
      * from one a generated mix served.
      *
@@ -355,6 +338,14 @@ object AppModule {
         }
     }
 
+    /**
+     * Drops the two Last.fm caches for a device that already ran a v15 build.
+     *
+     * Only reachable from an unreleased version, so it never runs for anyone
+     * upgrading from a release - they take [MIGRATION_10_17] in one step. It exists
+     * so a tester already on 15 is not thrown at the destructive fallback, which
+     * would cost them their listening history.
+     */
     private val MIGRATION_15_16 = object : Migration(15, 16) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("DROP TABLE IF EXISTS lastfm_artist_tags")
@@ -362,6 +353,15 @@ object AppModule {
         }
     }
 
+    /**
+     * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
+     *
+     * v11..v14 never shipped: they were all added in the same unreleased run, so no
+     * installation is ever on them, and stepping through each would only make an
+     * upgrade do pointless work (one of them emptied a table the previous one had
+     * just created). v10 is what `main` ships, so v10 -> v17 is the path every real
+     * user takes, followed by [MIGRATION_17_18] and [MIGRATION_18_19].
+     */
     private val MIGRATION_10_17 = object : Migration(10, 17) {
         override fun migrate(database: SupportSQLiteDatabase) {
             // MA similar-artists cache. Uri-keyed on both sides so results can be

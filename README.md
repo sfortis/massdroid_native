@@ -25,7 +25,7 @@ _This app is an unofficial third-party client and is not affiliated with the Mus
 
 ---
 
-MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from Last.fm, and helping you discover similar artists across all your music providers. Small footprint, with no ads, no trackers, and no cloud dependencies.
+MassDroid is a full-featured Music Assistant companion app built around music exploration and discovery. It gives you complete remote control over all your MA players while also learning from your listening habits to surface personalized recommendations, generating Smart Mix playlists and genre radio stations entirely on-device, enriching your library with metadata from MusicBrainz, and helping you discover similar artists across all your music providers. Small footprint, with no ads, no trackers, and no cloud dependencies.
 
 ## Contents
 
@@ -51,12 +51,21 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Library: sort your albums by year.
+- No API key to set up: genres and artist biographies now come from Music Assistant and MusicBrainz, so the Last.fm key is gone and everything works out of the box.
+- Smart Mix: much closer to your actual taste. A mix now anchors only on music you really listen to, keeps to its genre instead of drifting, comes out short rather than wrong when a genre is thin, is named after what it was built on, and no longer feeds on its own past picks.
+- New dislike button: bury a track you do not want to hear again without penalizing the artist.
+- Search: filter results by type, see the artist on album results, and switch between grid and list with your choice remembered. Narrowing to one category loads more results automatically.
+- Blocked artists: blocking works across every version of an artist your server knows, and they can be cleared from their own button instead of as a side effect of resetting your stats.
+- Volume keys: smoother and more predictable, with no lag or overshoot when you hold them down.
 - Car audio: volume stays pinned reliably when you connect and while notifications play, with smoother ducking.
+- Android Automotive: fixed a freeze that could leave the car unable to control playback.
+- Discover: more suggestions per row, and it no longer suggests the artists a row was built from.
+- Reconnects on its own when the network or the VPN comes back.
+- Battery: much less drain when the server is unreachable or the app is idle, and the repeating battery-optimization prompt is now an optional setting.
+- Library: sort your albums by year.
+- Artist images: fewer unnecessary reloads, and a provider's missing artwork no longer shows as a broken picture.
 - Follow Me: bug fixes, including a rare crash on launch.
-- Battery: much less drain when the server is unreachable or the app is idle, it reconnects on its own when the server is back, and the repeating battery-optimization prompt is now an optional setting instead of a prompt on every launch.
-- Smart Mix: better-matched picks that stay closer to your taste.
-- Artist images: fewer unnecessary reloads.
+- Now playing: the quality badge sits centered again.
 
 ## Screenshots
 
@@ -92,7 +101,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## Core Features
 
 - **Discover Home** : Dynamic recommendation sections with recently played, top picks, genre radio, and Smart Mix
-- **Library Browsing** : Artists, Albums, Tracks, Playlists, Radio, Audiobooks, and Browse with search, sort, grid/list views, and provider filtering. Genre-based search finds artists, albums, and tracks by genre when your library has been enriched with Last.fm tags.
+- **Library Browsing** : Artists, Albums, Tracks, Playlists, Radio, Audiobooks, and Browse with search, sort, grid/list views, and provider filtering. Genre-based search finds artists, albums, and tracks by genre once your library has been enriched.
 - **Artist & Album Detail** : Rich detail views with descriptions, genres, similar artists, and now-playing indicators
 - **Player Controls** : Play, pause, skip, seek, volume, shuffle, repeat across all MA players
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, synced/plain lyrics, tap-to-seek on synced lyric lines, timing adjustment, and artist blocking
@@ -111,7 +120,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## Exploration & Discovery
 
-MassDroid can enrich your library with Last.fm metadata, surface similar artists, build Smart Mix queues, and generate genre radio stations from local listening history.
+MassDroid enriches your library with metadata from MusicBrainz, surfaces similar artists, builds Smart Mix queues, and generates genre radio stations from your local listening history.
 
 See [Recommendation Engine](docs/recommendations.md) for details.
 
@@ -165,7 +174,7 @@ The most recent debug build is always available at the [dev-latest release](http
 
 ## Configuration
 
-See [Configuration](docs/configuration.md) for server connection setup, mTLS notes, and Last.fm API key setup.
+See [Configuration](docs/configuration.md) for server connection setup, mTLS notes, and how metadata enrichment works.
 
 ## Permissions
 

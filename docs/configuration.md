@@ -9,14 +9,8 @@
 
 For remote access with mTLS, install a client certificate on your device and select it in Settings. The app will use it for both WebSocket and image connections.
 
-## Last.fm API Key
+## Metadata Enrichment
 
-Most discovery and enrichment features rely on the [Last.fm](https://www.last.fm/api) API: similar artists, artist bios, album descriptions, genre tags, and release years.
+Genres, artist biographies, album descriptions, and release years come from your Music Assistant providers first, and from [MusicBrainz](https://musicbrainz.org/) when a provider has nothing to offer. There is no API key to obtain and nothing to configure: enrichment runs in the background on its own and caches its results on the device.
 
-Data is fetched only when your music provider lacks the information, and results are cached locally.
-
-1. Create a free [Last.fm API account](https://www.last.fm/api/account/create) and get your API key.
-2. Go to **Settings** in MassDroid.
-3. Enter the key in the **Last.fm API Key** field.
-
-Without it, core player and library features still work, but similar artists, bios, and genre enrichment for Smart Mix and Genre Radio are limited.
+Progress is shown in **Settings** for as long as there is work outstanding.
