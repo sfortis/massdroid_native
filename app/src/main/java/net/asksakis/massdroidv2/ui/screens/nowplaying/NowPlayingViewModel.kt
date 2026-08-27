@@ -1190,6 +1190,22 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Autoplay settings of one queue, loaded on demand when the settings dialog opens.
+     *
+     * Null covers both "this server predates MA 2.10" and "this account may not read
+     * queue config", and the dialog leaves the section out in either case.
+     */
+    suspend fun getAutoplayConfig(queueId: String): net.asksakis.massdroidv2.domain.model.AutoplayConfig? =
+        musicRepository.getAutoplayConfig(queueId)
+
+    /**
+     * Save a new Autoplay strategy and report whether the server took it, so the dialog
+     * can put the selector back if a non-admin account was refused.
+     */
+    suspend fun setAutoplayConfig(queueId: String, mode: String, playlistUri: String?): Boolean =
+        musicRepository.setAutoplayConfig(queueId, mode, playlistUri)
+
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
             try {

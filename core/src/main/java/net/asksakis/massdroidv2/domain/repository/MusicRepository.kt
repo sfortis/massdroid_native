@@ -91,6 +91,23 @@ interface MusicRepository {
     suspend fun removeFromLibrary(mediaType: MediaType, uri: String, itemId: String)
     suspend fun addToLibrary(uri: String)
     suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean)
+
+    /**
+     * Autoplay settings of one queue, or null on a server that does not expose them
+     * (they arrived with MA 2.10) or when the account may not read queue config.
+     */
+    suspend fun getAutoplayConfig(queueId: String): AutoplayConfig?
+
+    /**
+     * Change how Autoplay refills [queueId]. [playlistUri] is only sent when the chosen
+     * mode is the one the server said it depends on.
+     *
+     * Returns false when the server refused the change, which for a non-admin account is
+     * the expected outcome: reading queue config needs `CONFIG_PLAYERS_READ` but writing
+     * it needs `CONFIG_PLAYERS_WRITE`, and only an admin holds that.
+     */
+    suspend fun setAutoplayConfig(queueId: String, mode: String, playlistUri: String? = null): Boolean
+
     suspend fun browse(path: String? = null): List<BrowseItem>
 }
 

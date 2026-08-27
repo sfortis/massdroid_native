@@ -70,6 +70,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.domain.model.AutoplayConfig
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
@@ -87,6 +88,16 @@ fun PlayerSettingsDialog(
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDstmChanged: ((enabled: Boolean) -> Unit)?,
+    /**
+     * Autoplay settings of this player's queue, or null to leave the section out (a
+     * server before MA 2.10, or an account that may not read queue config).
+     */
+    onLoadAutoplay: (suspend (queueId: String) -> AutoplayConfig?)? = null,
+    /**
+     * Apply a new Autoplay strategy. Returns false when the server refused it, which is
+     * what a non-admin account gets, and the selector then goes back to what it was.
+     */
+    onAutoplayChanged: (suspend (mode: String, playlistUri: String?) -> Boolean)? = null,
     onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
     onSyncDelayChanged: ((Int) -> Unit)? = null,
     isBtRoute: Boolean = false,
@@ -145,6 +156,14 @@ fun PlayerSettingsDialog(
     var syncDelayKey by remember(player.playerId) { mutableStateOf<String?>(null) }
     var syncDelayDefault by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
+    var autoplay by remember(player.playerId) { mutableStateOf<AutoplayConfig?>(null) }
+
+    // Loaded separately from the player config: Autoplay is queue configuration, and a
+    // server that does not have it (or an account that may not read it) simply leaves
+    // this null while the rest of the dialog still works.
+    LaunchedEffect(player.playerId, onLoadAutoplay) {
+        autoplay = onLoadAutoplay?.invoke(player.playerId)
+    }
 
     LaunchedEffect(player.playerId) {
         val loaded = onLoadConfig(player.playerId)
@@ -319,16 +338,43 @@ fun PlayerSettingsDialog(
                     }
 
                     if (initialDstmEnabled != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Don't stop the music", modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = dontStopTheMusic,
-                                onCheckedChange = { dontStopTheMusic = it }
-                            )
+                        // Switch and its source panel kept as one group with tighter
+                        // spacing than the dialog's, so the panel reads as belonging to
+                        // the switch rather than as another player setting.
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Don't stop the music", modifier = Modifier.weight(1f))
+                                Switch(
+                                    checked = dontStopTheMusic,
+                                    onCheckedChange = { dontStopTheMusic = it }
+                                )
+                            }
+
+                            // How the server refills the queue, offered only while the
+                            // switch is on, because that is the only time it applies.
+                            val autoplayConfig = autoplay
+                            if (dontStopTheMusic && autoplayConfig != null && onAutoplayChanged != null) {
+                                AutoplaySourceSection(
+                                    config = autoplayConfig,
+                                    onChanged = { mode, playlistUri ->
+                                        // Show the choice immediately, then keep it only
+                                        // if the server accepted it. Writing queue config
+                                        // needs an admin account, so a refusal is a normal
+                                        // outcome and must not leave the UI claiming a
+                                        // change that did not happen.
+                                        val previous = autoplayConfig
+                                        autoplay = autoplayConfig.copy(
+                                            mode = mode,
+                                            playlistUri = playlistUri
+                                        )
+                                        if (!onAutoplayChanged(mode, playlistUri)) autoplay = previous
+                                    }
+                                )
+                            }
                         }
                     }
 

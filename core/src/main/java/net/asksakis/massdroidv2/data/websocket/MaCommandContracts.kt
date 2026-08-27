@@ -114,6 +114,25 @@ object MaCommands {
         const val GET = "config/players/get"
         const val SAVE = "config/players/save"
     }
+
+    /**
+     * Queue configuration (MA 2.10+). Autoplay's strategy lives here rather than on the
+     * `player_queues/autoplay` command, which still only carries the on/off boolean.
+     *
+     * A queue id is a player id, the same value the queue commands take.
+     */
+    object ConfigPlayerQueues {
+        const val GET = "config/player_queues/get"
+        const val SAVE = "config/player_queues/save"
+    }
+
+    /** Server-wide core settings, which is where a per-queue "global" choice points. */
+    object ConfigCore {
+        const val GET_VALUE = "config/core/get_value"
+
+        /** Domain holding the server-wide queue defaults. */
+        const val DOMAIN_PLAYER_QUEUES = "player_queues"
+    }
 }
 
 interface MaCommandArgs {
@@ -451,6 +470,38 @@ data class ConfigPlayerSaveArgs(
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("player_id", playerId)
+        put("values", values)
+    }
+}
+
+data class ConfigQueueGetArgs(
+    val queueId: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("queue_id", queueId)
+    }
+}
+
+data class ConfigCoreValueArgs(
+    val domain: String,
+    val key: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("domain", domain)
+        put("key", key)
+    }
+}
+
+/**
+ * Partial save of a queue's configuration: the server merges [values] into the existing
+ * config, so only the keys being changed are sent.
+ */
+data class ConfigQueueSaveArgs(
+    val queueId: String,
+    val values: JsonObject
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("queue_id", queueId)
         put("values", values)
     }
 }

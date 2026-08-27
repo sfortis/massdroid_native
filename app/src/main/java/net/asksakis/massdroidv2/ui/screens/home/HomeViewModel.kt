@@ -244,6 +244,17 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Autoplay settings of one queue. Null on a server without them (MA 2.10 added them)
+     * or for an account that may not read queue config.
+     */
+    suspend fun getAutoplayConfig(queueId: String): net.asksakis.massdroidv2.domain.model.AutoplayConfig? =
+        musicRepository.getAutoplayConfig(queueId)
+
+    /** Change how Autoplay refills the queue, reporting whether the server accepted it. */
+    suspend fun setAutoplayConfig(queueId: String, mode: String, playlistUri: String?): Boolean =
+        musicRepository.setAutoplayConfig(queueId, mode, playlistUri)
+
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
             try {

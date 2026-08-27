@@ -510,6 +510,10 @@ fun NowPlayingScreen(
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                 onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
+                onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
+                onAutoplayChanged = { mode, playlistUri ->
+                    viewModel.setAutoplayConfig(currentPlayer.playerId, mode, playlistUri)
+                },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                 onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
                 isBtRoute = isBt,

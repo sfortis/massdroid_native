@@ -322,6 +322,10 @@ fun PlayersScreen(
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                             onDstmChanged = { viewModel.setDontStopTheMusic(player.playerId, it) },
+                            onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
+                            onAutoplayChanged = { mode, playlistUri ->
+                                viewModel.setAutoplayConfig(player.playerId, mode, playlistUri)
+                            },
                             onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                             onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
                             isBtRoute = isBt,
