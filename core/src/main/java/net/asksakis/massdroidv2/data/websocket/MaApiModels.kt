@@ -84,7 +84,14 @@ data class ServerQueue(
     // Total number of items in the queue (server-side count of the whole queue,
     // not just the page we have fetched). Used for the "N tracks" header.
     @SerialName("items") val items: Int = 0,
-    @SerialName("dont_stop_the_music_enabled") val dontStopTheMusicEnabled: Boolean = false
+    /**
+     * Whether Autoplay is on for this queue.
+     *
+     * Read from the pre-2.10 key, which MA 2.10 still mirrors onto every serialized queue
+     * next to its own `autoplay_enabled`. Reading the old key therefore works on every
+     * server version; reading the new one would work only from 2.10.
+     */
+    @SerialName("dont_stop_the_music_enabled") val autoplayEnabled: Boolean = false
 )
 
 @Serializable

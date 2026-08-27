@@ -498,18 +498,18 @@ fun NowPlayingScreen(
             val micPathUs by viewModel.acoustic.acousticMicPathUs.collectAsStateWithLifecycle(initialValue = 0L)
             val btRouteKey = viewModel.acoustic.getBtRouteKey()
             val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
-            val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
+            val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
 
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
-                initialDstmEnabled = dstmStates[currentPlayer.playerId] ?: false,
+                initialAutoplayEnabled = autoplayStates[currentPlayer.playerId] ?: false,
                 isSendspinPlayer = currentPlayer.provider == "sendspin",
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
                 initialSyncDelayMs = syncDelayMs,
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
-                onDstmChanged = { viewModel.setDontStopTheMusic(currentPlayer.playerId, it) },
+                onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(currentPlayer.playerId, it) },
                 onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
                 onAutoplayChanged = { mode, playlistUri ->
                     viewModel.setAutoplayConfig(currentPlayer.playerId, mode, playlistUri)

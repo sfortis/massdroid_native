@@ -466,10 +466,10 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
+    override suspend fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
         wsClient.sendCommand(
-            MaCommands.PlayerQueues.DONT_STOP_THE_MUSIC,
-            DontStopTheMusicArgs(queueId = queueId, enabled = enabled)
+            MaCommands.PlayerQueues.SET_AUTOPLAY_ENABLED,
+            SetAutoplayEnabledArgs(queueId = queueId, enabled = enabled)
         )
     }
 

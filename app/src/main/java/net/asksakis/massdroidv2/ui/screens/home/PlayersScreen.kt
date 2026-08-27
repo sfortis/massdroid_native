@@ -74,7 +74,7 @@ fun PlayersScreen(
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle()
     val isAaProjecting by viewModel.isAaProjecting.collectAsStateWithLifecycle()
     val sleepTimerTargetPlayerId by viewModel.sleepTimerTargetPlayerId.collectAsStateWithLifecycle()
-    val dstmStates by viewModel.queueDstmStates.collectAsStateWithLifecycle()
+    val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
@@ -314,14 +314,14 @@ fun PlayersScreen(
                         if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
-                            initialDstmEnabled = dstmStates[player.playerId] ?: false,
+                            initialAutoplayEnabled = autoplayStates[player.playerId] ?: false,
                             isSendspinPlayer = player.provider == "sendspin",
                             isLocalPlayer = isLocal,
                             initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),
                             initialSyncDelayMs = syncDelayMs,
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
-                            onDstmChanged = { viewModel.setDontStopTheMusic(player.playerId, it) },
+                            onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(player.playerId, it) },
                             onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
                             onAutoplayChanged = { mode, playlistUri ->
                                 viewModel.setAutoplayConfig(player.playerId, mode, playlistUri)

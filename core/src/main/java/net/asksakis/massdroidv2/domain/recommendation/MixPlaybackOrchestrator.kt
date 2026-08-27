@@ -588,7 +588,7 @@ class MixPlaybackOrchestrator @Inject constructor(
 
     // Shared play path for a generated finite mix (Smart Mix + seed-track Genre
     // Radio): mark the queue smart-generated, record recent history/artists/genre
-    // for the next round's cool-down, then replace the queue. DSTM is left
+    // for the next round's cool-down, then replace the queue. Autoplay is left
     // untouched (MA 2.9.1 atomic replace keeps the curated list clean).
     /**
      * Queue the mix, and if the server chokes on one item, queue the rest anyway.

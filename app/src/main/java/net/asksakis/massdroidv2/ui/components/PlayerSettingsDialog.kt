@@ -80,14 +80,14 @@ import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 @Composable
 fun PlayerSettingsDialog(
     player: Player,
-    initialDstmEnabled: Boolean?,
+    initialAutoplayEnabled: Boolean?,
     isSendspinPlayer: Boolean = false,
     isLocalPlayer: Boolean = false,
     initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.SMART,
     initialSyncDelayMs: Int = 0,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
-    onDstmChanged: ((enabled: Boolean) -> Unit)?,
+    onAutoplayEnabledChanged: ((enabled: Boolean) -> Unit)?,
     /**
      * Autoplay settings of this player's queue, or null to leave the section out (a
      * server before MA 2.10, or an account that may not read queue config).
@@ -120,8 +120,8 @@ fun PlayerSettingsDialog(
     var name by remember(player.playerId) { mutableStateOf(player.displayName) }
     var crossfadeMode by remember(player.playerId) { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember(player.playerId) { mutableStateOf(false) }
-    var dontStopTheMusic by remember(player.playerId, initialDstmEnabled) {
-        mutableStateOf(initialDstmEnabled ?: false)
+    var autoplayOn by remember(player.playerId, initialAutoplayEnabled) {
+        mutableStateOf(initialAutoplayEnabled ?: false)
     }
     var selectedFormatValue by remember(player.playerId) { mutableStateOf<String?>(null) }
     var formatOptions by remember(player.playerId) {
@@ -337,7 +337,7 @@ fun PlayerSettingsDialog(
                         )
                     }
 
-                    if (initialDstmEnabled != null) {
+                    if (initialAutoplayEnabled != null) {
                         // Switch and its source panel kept as one group with tighter
                         // spacing than the dialog's, so the panel reads as belonging to
                         // the switch rather than as another player setting.
@@ -347,17 +347,17 @@ fun PlayerSettingsDialog(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Don't stop the music", modifier = Modifier.weight(1f))
+                                Text("Autoplay", modifier = Modifier.weight(1f))
                                 Switch(
-                                    checked = dontStopTheMusic,
-                                    onCheckedChange = { dontStopTheMusic = it }
+                                    checked = autoplayOn,
+                                    onCheckedChange = { autoplayOn = it }
                                 )
                             }
 
                             // How the server refills the queue, offered only while the
                             // switch is on, because that is the only time it applies.
                             val autoplayConfig = autoplay
-                            if (dontStopTheMusic && autoplayConfig != null && onAutoplayChanged != null) {
+                            if (autoplayOn && autoplayConfig != null && onAutoplayChanged != null) {
                                 AutoplaySourceSection(
                                     config = autoplayConfig,
                                     onChanged = { mode, playlistUri ->
@@ -708,8 +708,8 @@ fun PlayerSettingsDialog(
                                 outputCodec?.let { values["output_codec"] = it }
                             }
                             onSave(player.playerId, values)
-                            if (initialDstmEnabled != null && dontStopTheMusic != initialDstmEnabled) {
-                                onDstmChanged?.invoke(dontStopTheMusic)
+                            if (initialAutoplayEnabled != null && autoplayOn != initialAutoplayEnabled) {
+                                onAutoplayEnabledChanged?.invoke(autoplayOn)
                             }
                             onDismiss()
                         },

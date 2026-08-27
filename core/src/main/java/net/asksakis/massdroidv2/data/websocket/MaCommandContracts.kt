@@ -80,7 +80,16 @@ object MaCommands {
         const val MOVE_ITEM = "player_queues/move_item"
         const val PLAY_INDEX = "player_queues/play_index"
         const val GET_ACTIVE_QUEUE = "player_queues/get_active_queue"
-        const val DONT_STOP_THE_MUSIC = "player_queues/dont_stop_the_music"
+        /**
+         * Turn Autoplay on or off.
+         *
+         * The command name stays `dont_stop_the_music`, which is what this feature was
+         * called before MA 2.10 renamed it. Do NOT change it to `player_queues/autoplay`:
+         * that command only exists from 2.10, while the old name is kept there as an
+         * explicit backwards-compatible alias, so this one spelling works on every server
+         * version a user might be running.
+         */
+        const val SET_AUTOPLAY_ENABLED = "player_queues/dont_stop_the_music"
         const val SAVE_AS_PLAYLIST = "player_queues/save_as_playlist"
     }
 
@@ -324,7 +333,11 @@ data class PlayIndexArgs(
     }
 }
 
-data class DontStopTheMusicArgs(
+/**
+ * Argument for [MaCommands.PlayerQueues.SET_AUTOPLAY_ENABLED]. The JSON key keeps the
+ * pre-2.10 name for the same reason the command does.
+ */
+data class SetAutoplayEnabledArgs(
     val queueId: String,
     val enabled: Boolean
 ) : MaCommandArgs {

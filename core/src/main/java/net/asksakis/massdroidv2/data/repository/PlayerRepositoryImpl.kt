@@ -2127,7 +2127,7 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     elapsedTime = elapsedTime,
     currentIndex = currentIndex,
     totalItems = items,
-    dontStopTheMusicEnabled = dontStopTheMusicEnabled,
+    autoplayEnabled = autoplayEnabled,
     currentItem = currentItem?.let { item ->
         QueueItem(
             queueItemId = item.queueItemId,

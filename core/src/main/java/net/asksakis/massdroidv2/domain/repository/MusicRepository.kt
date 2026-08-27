@@ -90,7 +90,7 @@ interface MusicRepository {
     suspend fun setFavorite(uri: String, mediaType: MediaType, itemId: String, favorite: Boolean)
     suspend fun removeFromLibrary(mediaType: MediaType, uri: String, itemId: String)
     suspend fun addToLibrary(uri: String)
-    suspend fun setDontStopTheMusic(queueId: String, enabled: Boolean)
+    suspend fun setAutoplayEnabled(queueId: String, enabled: Boolean)
 
     /**
      * Autoplay settings of one queue, or null on a server that does not expose them

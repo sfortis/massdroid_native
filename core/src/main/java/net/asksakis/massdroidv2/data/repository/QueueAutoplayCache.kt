@@ -20,12 +20,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Tracks the DSTM (Don't Stop The Music) flag per queue across all players, not just the
+ * Tracks the Autoplay flag per queue across all players, not just the
  * currently selected one. PlayerRepository only owns the selected player's full QueueState,
  * so settings dialogs for other players would read a stale flag without this cache.
  */
 @Singleton
-class QueueDstmCache @Inject constructor(
+class QueueAutoplayCache @Inject constructor(
     wsClient: MaWebSocketClient,
     private val json: Json
 ) {
@@ -41,7 +41,7 @@ class QueueDstmCache @Inject constructor(
                 val queue = event.data?.let {
                     runCatching { json.decodeFromJsonElement<ServerQueue>(it) }.getOrNull()
                 } ?: return@collect
-                _states.update { it + (queue.queueId to queue.dontStopTheMusicEnabled) }
+                _states.update { it + (queue.queueId to queue.autoplayEnabled) }
             }
         }
         scope.launch {
@@ -68,14 +68,14 @@ class QueueDstmCache @Inject constructor(
             val queues = runCatching {
                 json.decodeFromJsonElement<List<ServerQueue>>(result)
             }.getOrNull() ?: return
-            _states.value = queues.associate { it.queueId to it.dontStopTheMusicEnabled }
-            Log.d(TAG, "Seeded DSTM cache with ${queues.size} queues")
+            _states.value = queues.associate { it.queueId to it.autoplayEnabled }
+            Log.d(TAG, "Seeded autoplay cache with ${queues.size} queues")
         } catch (e: Exception) {
             Log.w(TAG, "refreshAll failed: ${e.message}")
         }
     }
 
     companion object {
-        private const val TAG = "QueueDstmCache"
+        private const val TAG = "QueueAutoplayCache"
     }
 }

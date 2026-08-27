@@ -58,7 +58,7 @@ fun AutoplaySourceSection(
 
     Column(modifier = modifier.fillMaxWidth()) {
         Text(
-            "Autoplay source",
+            "Source",
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(bottom = 2.dp)
         )

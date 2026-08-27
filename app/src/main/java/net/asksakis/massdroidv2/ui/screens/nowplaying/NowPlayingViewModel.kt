@@ -133,13 +133,13 @@ class NowPlayingViewModel @Inject constructor(
     private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     val acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator,
     val sleepTimerBridge: SleepTimerBridge,
-    private val queueDstmCache: net.asksakis.massdroidv2.data.repository.QueueDstmCache
+    private val queueAutoplayCache: net.asksakis.massdroidv2.data.repository.QueueAutoplayCache
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
     val allPlayers: StateFlow<List<net.asksakis.massdroidv2.domain.model.Player>> = playerRepository.players
     val queueState = playerRepository.queueState
-    val queueDstmStates: StateFlow<Map<String, Boolean>> = queueDstmCache.states
+    val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueAutoplayCache.states
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
@@ -1173,13 +1173,13 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
-    fun setDontStopTheMusic(queueId: String, enabled: Boolean) {
-        queueDstmCache.setOptimistic(queueId, enabled)
+    fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
+        queueAutoplayCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
-                musicRepository.setDontStopTheMusic(queueId, enabled)
+                musicRepository.setAutoplayEnabled(queueId, enabled)
             } catch (e: Exception) {
-                Log.w(TAG, "setDontStopTheMusic failed: ${e.message}")
+                Log.w(TAG, "setAutoplayEnabled failed: ${e.message}")
             }
         }
     }
