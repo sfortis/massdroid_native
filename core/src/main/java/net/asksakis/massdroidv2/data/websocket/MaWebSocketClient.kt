@@ -828,7 +828,7 @@ class MaWebSocketClient(
                     attempt++
                     continue
                 }
-                throw MaApiException("Request timed out", -1)
+                throw MaApiException("Request timed out", MaApiException.TIMEOUT_CODE)
             } finally {
                 // Ensure no stale pending/partial state remains if request times out or caller is canceled.
                 pendingRequests.remove(messageId)
@@ -867,9 +867,7 @@ class MaWebSocketClient(
         return command == "auth" || command == "auth/login"
     }
 
-    private fun shouldRetryCommand(command: String): Boolean {
-        return !isAuthCommand(command)
-    }
+    private fun shouldRetryCommand(command: String): Boolean = isRetryableCommand(command)
 
     private fun failAllPending(reason: String) {
         pendingRequests.keys.toList().forEach { id ->
@@ -937,4 +935,19 @@ class MaWebSocketClient(
     }
 }
 
-class MaApiException(message: String, val code: Int) : Exception(message)
+class MaApiException(message: String, val code: Int) : Exception(message) {
+    /**
+     * True when no answer arrived before the deadline.
+     *
+     * Worth separating from a refusal: a refusal is the server's answer and says the
+     * command did not take effect, while a timeout says nothing at all. The command may
+     * have run and simply been answered late, so a caller must not assume it can be
+     * repeated or worked around item by item.
+     */
+    val isTimeout: Boolean get() = code == TIMEOUT_CODE
+
+    companion object {
+        /** Marks "no response", as opposed to any error code the server itself returns. */
+        const val TIMEOUT_CODE = -2
+    }
+}

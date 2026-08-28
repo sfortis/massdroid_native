@@ -620,6 +620,15 @@ class MixPlaybackOrchestrator @Inject constructor(
             return QueueLoadResult(uris, emptyList(), replacedQueue = true)
         } catch (e: CancellationException) {
             throw e
+        } catch (e: MaApiException) {
+            // Splitting is for a REFUSAL, where the server answered and named the
+            // problem, so the bad item can be isolated. A timeout is not an answer: the
+            // request may have landed and simply been slow, and splitting it then both
+            // risks queueing the same tracks twice and multiplies the wait by the number
+            // of chunks. Measured on a briefly slow server, that turned one mix into
+            // more than five minutes of apparently frozen UI.
+            if (e.isTimeout) throw e
+            Log.w(TAG, "play_media refused ${uris.size} tracks (${e.message}), retrying in chunks")
         } catch (e: Exception) {
             Log.w(TAG, "play_media rejected ${uris.size} tracks (${e.message}), retrying in chunks")
         }
