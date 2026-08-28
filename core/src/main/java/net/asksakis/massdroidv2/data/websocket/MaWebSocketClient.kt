@@ -783,7 +783,12 @@ class MaWebSocketClient(
     ): JsonElement? {
         waitUntilReadyForCommand(command = command, awaitResponse = awaitResponse, timeoutMs = timeoutMs)
         if (_connectionState.value !is ConnectionState.Connected && !isAuthCommand(command)) return null
-        val maxAttempts = if (shouldRetryCommand(command)) 2 else 1
+        // Two distinct retries live below, and they are safe in different cases.
+        // A failed SEND never reached the server, so repeating it is safe for every
+        // command, transport included. A TIMEOUT did reach it and may already have
+        // taken effect, so only commands that can be repeated harmlessly get that one.
+        val maxAttempts = if (isAuthCommand(command)) 1 else 2
+        val mayRetryAfterTimeout = shouldRetryCommand(command)
         var attempt = 1
         while (attempt <= maxAttempts) {
             val messageId = UUID.randomUUID().toString().replace("-", "").take(12)
@@ -821,7 +826,7 @@ class MaWebSocketClient(
             try {
                 return withTimeout(timeoutMs) { deferred!!.await() }
             } catch (_: TimeoutCancellationException) {
-                if (attempt < maxAttempts) {
+                if (attempt < maxAttempts && mayRetryAfterTimeout) {
                     Log.w(TAG, "sendCommand('$command') timed out on attempt $attempt, retrying")
                     delay(COMMAND_RETRY_DELAY_MS)
                     waitUntilReadyForCommand(command = command, awaitResponse = awaitResponse, timeoutMs = timeoutMs)

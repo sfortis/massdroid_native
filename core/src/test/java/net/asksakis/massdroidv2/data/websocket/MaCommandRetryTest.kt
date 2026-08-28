@@ -13,6 +13,12 @@ import org.junit.Test
  * Measured on 2026-08-28: a Smart Mix sent the same 27-track `play_media` twice, 140 ms
  * apart, and every failed attempt cost 60 seconds instead of 30 because the retry
  * doubled the wait. The build took over five minutes and looked frozen.
+ *
+ * This governs the TIMEOUT retry only. A failed send is retried for every command,
+ * transport included, because a message that never left cannot have taken effect: the
+ * transport commands the car and TV send are fire-and-forget and only ever reach that
+ * path. Returning false here therefore does not stop `next` from being re-sent when the
+ * socket drops, which is what makes the distinction worth keeping.
  */
 class MaCommandRetryTest {
 
