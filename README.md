@@ -51,21 +51,18 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- No API key to set up: genres and artist biographies now come from Music Assistant and MusicBrainz, so the Last.fm key is gone and everything works out of the box.
-- Smart Mix: much closer to your actual taste. A mix now anchors only on music you really listen to, keeps to its genre instead of drifting, comes out short rather than wrong when a genre is thin, is named after what it was built on, and no longer feeds on its own past picks.
-- New dislike button: bury a track you do not want to hear again without penalizing the artist.
-- Search: filter results by type, see the artist on album results, and switch between grid and list with your choice remembered. Narrowing to one category loads more results automatically.
-- Blocked artists: blocking works across every version of an artist your server knows, and they can be cleared from their own button instead of as a side effect of resetting your stats.
-- Volume keys: smoother and more predictable, with no lag or overshoot when you hold them down.
-- Car audio: volume stays pinned reliably when you connect and while notifications play, with smoother ducking.
+- Smart Mix: better genre matching, faster builds, and it no longer repeats its own past picks. New dislike button to bury a track without penalizing the artist.
+- No API key to set up: genres and artist info now come from Music Assistant and MusicBrainz.
+- Autoplay, previously "don't stop the music": choose what plays when your queue runs out, similar tracks, your library, or a playlist.
+- Search: filter results by type, artist name on album results, and your grid or list choice is remembered.
+- Battery drain, reconnecting after a network drop, car volume and volume keys all improved.
 - Android Automotive: fixed a freeze that could leave the car unable to control playback.
+- Blocked artists: blocking now covers every version of an artist, and there is a separate button to clear them.
+- Follow Me: fixed a crash on launch, and the room now clears when you leave instead of staying pinned.
 - Discover: more suggestions per row, and it no longer suggests the artists a row was built from.
-- Reconnects on its own when the network or the VPN comes back.
-- Battery: much less drain when the server is unreachable or the app is idle, and the repeating battery-optimization prompt is now an optional setting.
 - Library: sort your albums by year.
-- Artist images: fewer unnecessary reloads, and a provider's missing artwork no longer shows as a broken picture.
-- Follow Me: bug fixes, including a rare crash on launch.
-- Now playing: the quality badge sits centered again.
+- Artist images: fewer unnecessary reloads, and missing artwork no longer shows as a broken picture.
+- Various bug fixes.
 
 ## Screenshots
 
