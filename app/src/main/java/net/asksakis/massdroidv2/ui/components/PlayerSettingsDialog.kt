@@ -37,6 +37,15 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Tune
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -345,449 +354,401 @@ fun PlayerSettingsDialog(
                     // button. Without the split the dialog silently mixed the two and
                     // Cancel appeared to undo changes that had already been written.
                     val queue = queueSettings
+                    val queueCrossfade = queue?.crossfadeMode
                     val hasQueueSection = initialAutoplayEnabled != null ||
-                        queue?.crossfadeMode != null ||
+                        queueCrossfade != null ||
                         queue?.volumeNormalization != null ||
                         queue?.smartShuffle != null
+
                     if (hasQueueSection) {
-                        SettingsSectionHeader("Queue", "Changes apply immediately")
-                    }
+                        SettingsGroupCard("Queue", caption = "Changes apply immediately") {
+                            // Dividers belong between items, and which items exist depends
+                            // on what this server offers, so they are counted as they go.
+                            var shown = 0
 
-                    // Crossfade, volume normalization and smart shuffle moved from the
-                    // player to the queue in MA 2.10. Which set of controls is shown
-                    // follows what the server actually sent rather than a version number:
-                    // a queue that reports these settings gets them here, anything older
-                    // keeps the player-config pair further down.
-                    val queueCrossfade = queue?.crossfadeMode
-                    if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Crossfade", modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = crossfadeOn,
-                                onCheckedChange = {
-                                    crossfadeOn = it
-                                    onCrossfadeEnabledChanged(it)
-                                }
-                            )
-                        }
-                        // The type only matters while crossfade is on, which is also why
-                        // the server no longer offers "off" as one of its values.
-                        if (crossfadeOn) {
-                            QueueChoiceRow(
-                                label = "Type",
-                                choice = queueCrossfade,
-                                onSelect = { value -> applyQueueChoice(queueCrossfade, value) },
-                                labelStyle = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(start = 12.dp)
-                            )
-                        }
-                    }
-
-                    queue?.volumeNormalization?.let { normalization ->
-                        QueueChoiceRow(
-                            label = "Volume normalization",
-                            choice = normalization,
-                            onSelect = { value -> applyQueueChoice(normalization, value) }
-                        )
-                    }
-
-                    // No older counterpart: smart shuffle arrived with the queue config,
-                    // so it is shown only where the server offers it.
-                    queue?.smartShuffle?.let { smartShuffle ->
-                        QueueChoiceRow(
-                            label = "Smart shuffle",
-                            choice = smartShuffle,
-                            onSelect = { value -> applyQueueChoice(smartShuffle, value) }
-                        )
-                    }
-
-                    if (initialAutoplayEnabled != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Autoplay", modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = autoplayOn,
-                                onCheckedChange = {
-                                    autoplayOn = it
-                                    // Sent now rather than on Save, so the whole queue
-                                    // group behaves the one way its heading promises.
-                                    onAutoplayEnabledChanged?.invoke(it)
-                                }
-                            )
-                        }
-
-                        // How the server refills the queue, offered only while the switch
-                        // is on, because that is the only time it applies.
-                        val autoplayConfig = queue?.autoplay
-                        if (autoplayOn && autoplayConfig != null && onAutoplayChanged != null) {
-                            ExpandableSettingRow(
-                                label = "Source",
-                                value = autoplayConfig.summary(),
-                                labelStyle = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(start = 12.dp)
-                            ) {
-                                AutoplaySourceSection(
-                                    config = autoplayConfig,
-                                    onChanged = { mode, playlistUri ->
-                                        // Show the choice immediately, then keep it only
-                                        // if the server accepted it. Writing queue config
-                                        // needs an admin account, so a refusal is a normal
-                                        // outcome and must not leave the UI claiming a
-                                        // change that did not happen.
-                                        val previous = queueSettings
-                                        queueSettings = previous?.copy(
-                                            autoplay = autoplayConfig.copy(
-                                                mode = mode,
-                                                playlistUri = playlistUri
-                                            )
+                            // Crossfade, volume normalization and smart shuffle moved from
+                            // the player to the queue in MA 2.10. Which set of controls is
+                            // shown follows what the server actually sent rather than a
+                            // version number: a queue that reports these settings gets them
+                            // here, anything older keeps the player-config pair below.
+                            if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
+                                if (shown++ > 0) HorizontalDivider()
+                                QueueChoiceItem(
+                                    label = "Crossfade",
+                                    icon = Icons.Default.GraphicEq,
+                                    // The type only matters while crossfade is on, which is
+                                    // also why the server no longer offers "off" as a type.
+                                    choice = queueCrossfade.takeIf { crossfadeOn },
+                                    onSelect = { value -> applyQueueChoice(queueCrossfade, value) },
+                                    trailing = {
+                                        Switch(
+                                            checked = crossfadeOn,
+                                            onCheckedChange = {
+                                                crossfadeOn = it
+                                                onCrossfadeEnabledChanged(it)
+                                            }
                                         )
-                                        if (!onAutoplayChanged(mode, playlistUri)) queueSettings = previous
                                     }
                                 )
                             }
-                        }
-                    }
 
-                    SettingsSectionHeader("Player")
-
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Player name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Where this server still keeps them: before MA 2.10 both are player
-                    // config, saved with the button below rather than on selection, so
-                    // they belong in this group and not the one above.
-                    if (queueCrossfade == null) {
-                        Text("Crossfade", style = MaterialTheme.typography.labelMedium)
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            CrossfadeMode.entries.forEachIndexed { index, mode ->
-                                SegmentedButton(
-                                    selected = crossfadeMode == mode,
-                                    onClick = { crossfadeMode = mode },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = CrossfadeMode.entries.size
-                                    ),
-                                    label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
+                            queue?.volumeNormalization?.let { normalization ->
+                                if (shown++ > 0) HorizontalDivider()
+                                QueueChoiceItem(
+                                    label = "Volume normalization",
+                                    icon = Icons.AutoMirrored.Filled.VolumeUp,
+                                    choice = normalization,
+                                    onSelect = { value -> applyQueueChoice(normalization, value) }
                                 )
+                            }
+
+                            // No older counterpart: smart shuffle arrived with the queue
+                            // config, so it shows only where the server offers it.
+                            queue?.smartShuffle?.let { smartShuffle ->
+                                if (shown++ > 0) HorizontalDivider()
+                                QueueChoiceItem(
+                                    label = "Smart shuffle",
+                                    icon = Icons.Default.Shuffle,
+                                    choice = smartShuffle,
+                                    onSelect = { value -> applyQueueChoice(smartShuffle, value) }
+                                )
+                            }
+
+                            if (initialAutoplayEnabled != null) {
+                                if (shown++ > 0) HorizontalDivider()
+                                val autoplaySwitch: @Composable () -> Unit = {
+                                    Switch(
+                                        checked = autoplayOn,
+                                        onCheckedChange = {
+                                            autoplayOn = it
+                                            // Sent now rather than on Save, so the whole
+                                            // group behaves the one way its heading promises.
+                                            onAutoplayEnabledChanged?.invoke(it)
+                                        }
+                                    )
+                                }
+                                // The sources are whole phrases from the server ("Automatic,
+                                // similar tracks falling back to your library"), too long for
+                                // chips, so they stay a list that opens under the row.
+                                val autoplayConfig = queue?.autoplay
+                                    ?.takeIf { autoplayOn && onAutoplayChanged != null }
+                                if (autoplayConfig == null) {
+                                    SettingsSwitchItem(
+                                        label = "Autoplay",
+                                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                        checked = autoplayOn,
+                                        onCheckedChange = {
+                                            autoplayOn = it
+                                            onAutoplayEnabledChanged?.invoke(it)
+                                        }
+                                    )
+                                } else {
+                                    ExpandableSettingItem(
+                                        label = "Autoplay",
+                                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                        value = autoplayConfig.summary(),
+                                        trailing = autoplaySwitch
+                                    ) {
+                                        AutoplaySourceSection(
+                                            config = autoplayConfig,
+                                            onChanged = { mode, playlistUri ->
+                                                // Show the choice immediately, then keep it
+                                                // only if the server accepted it. Writing
+                                                // queue config needs an admin account, so a
+                                                // refusal is a normal outcome and must not
+                                                // leave the UI claiming a change that did
+                                                // not happen.
+                                                val previous = queueSettings
+                                                queueSettings = previous?.copy(
+                                                    autoplay = autoplayConfig.copy(
+                                                        mode = mode,
+                                                        playlistUri = playlistUri
+                                                    )
+                                                )
+                                                if (onAutoplayChanged?.invoke(mode, playlistUri) != true) {
+                                                    queueSettings = previous
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (queue?.volumeNormalization == null) {
+                    SettingsGroupCard("Player") {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Volume normalization")
-                            Switch(
+                            Icon(Icons.Default.Edit, contentDescription = null)
+                            OutlinedTextField(
+                                value = name,
+                                onValueChange = { name = it },
+                                label = { Text("Player name") },
+                                singleLine = true,
+                                modifier = Modifier.padding(start = 16.dp).fillMaxWidth()
+                            )
+                        }
+
+                        // Where this server still keeps them: before MA 2.10 both are player
+                        // config, saved with the button below rather than on selection, so
+                        // they belong in this group and not the one above.
+                        if (queueCrossfade == null) {
+                            HorizontalDivider()
+                            ChoiceChipsItem(
+                                label = "Crossfade",
+                                icon = Icons.Default.GraphicEq,
+                                options = CrossfadeMode.entries.map {
+                                    QueueConfigOption(value = it.apiValue, title = it.label)
+                                },
+                                selected = crossfadeMode.apiValue,
+                                onSelect = { value -> crossfadeMode = CrossfadeMode.fromApi(value) }
+                            )
+                        }
+
+                        if (queue?.volumeNormalization == null) {
+                            HorizontalDivider()
+                            SettingsSwitchItem(
+                                label = "Volume normalization",
+                                icon = Icons.AutoMirrored.Filled.VolumeUp,
                                 checked = volumeNormalization,
                                 onCheckedChange = { volumeNormalization = it }
                             )
                         }
-                    }
 
-                    if (isSendspinPlayer && formatOptions.isNotEmpty()) {
-                        val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
-                            title = "Smart", value = "smart"
-                        )
-                        val allOptions = if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
-                        val currentValue = selectedFormatValue ?: "automatic"
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Text("Audio format", style = MaterialTheme.typography.labelMedium)
-                            var expanded by remember { mutableStateOf(false) }
-                            val selectedTitle = allOptions.find { it.value == currentValue }?.title
-                                ?: allOptions.firstOrNull()?.title ?: ""
-                            Box {
-                                OutlinedCard(
-                                    modifier = Modifier.fillMaxWidth().clickable { expanded = true }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column {
-                                            Text(selectedTitle, style = MaterialTheme.typography.bodyMedium)
-                                            if (currentValue == "smart") {
-                                                Text(
-                                                    "Auto-switches codec based on network",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
+                        if (isSendspinPlayer && formatOptions.isNotEmpty()) {
+                            val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
+                                title = "Smart", value = "smart"
+                            )
+                            val allOptions =
+                                if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
+                            val currentValue = selectedFormatValue ?: "automatic"
+                            HorizontalDivider()
+                            ChoiceChipsItem(
+                                label = "Audio format",
+                                icon = Icons.Default.HighQuality,
+                                options = allOptions.map {
+                                    QueueConfigOption(value = it.value, title = it.title)
+                                },
+                                selected = currentValue,
+                                onSelect = { selectedFormatValue = it },
+                                note = "FLAC on WiFi, Opus on mobile".takeIf { currentValue == "smart" }
+                            )
+                        }
+
+                        // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav).
+                        // Shown for any non-Sendspin player whose MA config exposes it.
+                        if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
+                            HorizontalDivider()
+                            ChoiceChipsItem(
+                                label = "Output codec",
+                                icon = Icons.Default.AudioFile,
+                                options = outputCodecOptions.map {
+                                    QueueConfigOption(value = it.value, title = it.title)
+                                },
+                                selected = outputCodec ?: outputCodecOptions.firstOrNull()?.value,
+                                onSelect = { outputCodec = it }
+                            )
+                        }
+
+                        // Delays and acoustic calibration are for the rare occasion when a
+                        // room is out of step, so they stay folded away rather than filling
+                        // the dialog every time someone opens it to rename a player.
+                        if (isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay) {
+                            HorizontalDivider()
+                            ExpandableSettingItem(
+                                label = "Advanced timing",
+                                icon = Icons.Default.Tune,
+                                value = "Sync delays and calibration"
+                            ) {
+                        if (isLocalPlayer) {
+                            // Sendspin sync delay (LOCAL client-side UX nudge,
+                            // DataStore-backed). Range -1000..+1000 ms, negative plays
+                            // sooner / positive later. Applied locally in
+                            // SendspinSyncEngine; not sent to the server.
+                            SyncDelayCard(
+                                label = "Sendspin sync delay",
+                                valueMs = syncDelayMs,
+                                defaultMs = 0,
+                                // Debounced via the LaunchedEffect below (the slider
+                                // fires rapidly and onSyncDelayChanged persists to
+                                // DataStore + reanchors the engine).
+                                onValueChange = { syncDelayMs = it.coerceIn(-1000, 1000) }
+                            )
+                        }
+
+                        if (hasServerStaticDelay) {
+                            // Static playback delay (SERVER-side spec field
+                            // sendspin_static_delay, available only on MA servers
+                            // with PR #3689 deployed). Range 0..5000 ms, positive
+                            // compensates for external delay beyond the audio
+                            // port (spec sign). Saved via player config; affects
+                            // ALL clients of this player.
+                            DelayStepperCard(
+                                label = "Static playback delay",
+                                helperText = "Server-side spec compensation for external device delay. Affects all clients of this player.",
+                                valueMs = staticDelayMs,
+                                minValue = 0,
+                                maxValue = 5000,
+                                onDecrement = {
+                                    staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
+                                },
+                                onIncrement = {
+                                    staticDelayMs = (staticDelayMs + 2).coerceAtMost(5000)
+                                },
+                                onReset = {
+                                    if (staticDelayMs != 0) {
+                                        staticDelayMs = 0
+                                    }
+                                }
+                            )
+                        }
+
+                        if (hasServerSyncDelay) {
+                            // Per-player Sendspin sync delay (server-side
+                            // sendspin_sync_delay, -1000..1000 ms; negative = earlier,
+                            // positive = later, matching the MA web UI). Slider for a
+                            // quick sweep, 1 ms steppers for fine acoustic alignment;
+                            // Reset returns to the server default. MA applies it live.
+                            SyncDelayCard(
+                                valueMs = syncDelayServerMs,
+                                defaultMs = syncDelayDefault,
+                                onValueChange = { syncDelayServerMs = it.coerceIn(-1000, 1000) }
+                            )
+                        }
+
+                        // Acoustic calibration for the active Bluetooth output route.
+                        // No phone-speaker row: phone, wired and USB paths sync at
+                        // the audio port via the AudioTrack pipeline measurement
+                        // (per the Sendspin spec), so an acoustic chirp would
+                        // double-count the listener air path. The BT row stays
+                        // visible on local-player settings regardless of the
+                        // current route, but the Calibrate button is enabled only
+                        // while a BT route is connected (so users can review or
+                        // reset a saved value even when BT is currently off).
+                        //
+                        // A second row reports the cached "mic path" reference
+                        // (the phone-side mic chain latency measured once on the
+                        // built-in speaker). It is reused across all BT speakers
+                        // by the two-pass algorithm. A Reset button forces a
+                        // re-measurement on the next BT calibration.
+                        if (isLocalPlayer && acoustic != null) {
+                            var showBtCalibrationDialog by remember { mutableStateOf(false) }
+                            val btDeviceName = btRouteName.ifBlank { "Bluetooth speaker" }
+
+                            // Built-in speaker self-calibration. Measures the true
+                            // acoustic output delay to correct HALs that under-report
+                            // getOutputLatency (e.g. Xiaomi). Auto-runs on group join
+                            // when missing; also tunable here.
+                            val speakerCalibrations by acoustic.acousticRouteCalibrations
+                                .collectAsStateWithLifecycle(initialValue = emptyMap())
+                            val speakerCal = speakerCalibrations[
+                                net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY
+                            ]
+                            val speakerCorrectionMs = ((speakerCal?.correctionUs ?: 0L) / 1000L).toInt()
+                            var showSpeakerCalibrationDialog by remember { mutableStateOf(false) }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Speaker calibration", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (speakerCal != null) "This phone: ${speakerCorrectionMs}ms (${speakerCal.quality.lowercase()})"
+                                        else "Not calibrated (runs automatically on group join)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (speakerCal != null) {
+                                        MdTextButton(onClick = { acoustic.resetSpeakerCalibration() }) {
+                                            Text("Reset")
                                         }
                                     }
-                                }
-                                DropdownMenu(
-                                    expanded = expanded,
-                                    onDismissRequest = { expanded = false }
-                                ) {
-                                    allOptions.forEach { opt ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Column {
-                                                    Text(opt.title, style = MaterialTheme.typography.bodyMedium)
-                                                    if (opt.value == "smart") {
-                                                        Text(
-                                                            "FLAC on WiFi, Opus on mobile",
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            onClick = {
-                                                selectedFormatValue = opt.value
-                                                expanded = false
-                                            },
-                                            trailingIcon = if (currentValue == opt.value) {{
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                            }} else null
-                                        )
+                                    MdTextButton(onClick = { showSpeakerCalibrationDialog = true }) {
+                                        Text(if (speakerCal != null) "Recalibrate" else "Calibrate")
                                     }
                                 }
                             }
-                        }
-                    }
+                            if (showSpeakerCalibrationDialog) {
+                                SpeakerCalibrationDialog(
+                                    coordinator = acoustic,
+                                    onDismiss = { showSpeakerCalibrationDialog = false }
+                                )
+                            }
 
-                    // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav). Shown for
-                    // any non-Sendspin player whose MA config exposes an `output_codec` entry.
-                    if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
-                        val currentCodec = outputCodec ?: outputCodecOptions.firstOrNull()?.value
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Text("Output codec", style = MaterialTheme.typography.labelMedium)
-                            var codecExpanded by remember { mutableStateOf(false) }
-                            val codecTitle = outputCodecOptions.find { it.value == currentCodec }?.title
-                                ?: outputCodecOptions.firstOrNull()?.title ?: ""
-                            Box {
-                                OutlinedCard(
-                                    modifier = Modifier.fillMaxWidth().clickable { codecExpanded = true }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Bluetooth calibration", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        when {
+                                            !isBtRoute -> "Connect a Bluetooth device to calibrate"
+                                            acousticCorrectionMs > 0 -> "$btDeviceName: ${acousticCorrectionMs}ms"
+                                            else -> "$btDeviceName not calibrated"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isBtRoute && acousticCorrectionMs > 0) {
+                                        MdTextButton(onClick = { onResetBtCalibration?.invoke() }) {
+                                            Text("Reset")
+                                        }
+                                    }
+                                    MdTextButton(
+                                        enabled = isBtRoute,
+                                        onClick = { showBtCalibrationDialog = true }
                                     ) {
-                                        Text(codecTitle, style = MaterialTheme.typography.bodyMedium)
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                }
-                                DropdownMenu(
-                                    expanded = codecExpanded,
-                                    onDismissRequest = { codecExpanded = false }
-                                ) {
-                                    outputCodecOptions.forEach { opt ->
-                                        DropdownMenuItem(
-                                            text = { Text(opt.title, style = MaterialTheme.typography.bodyMedium) },
-                                            onClick = {
-                                                outputCodec = opt.value
-                                                codecExpanded = false
-                                            },
-                                            trailingIcon = if (currentCodec == opt.value) {{
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                            }} else null
-                                        )
+                                        Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    if (isLocalPlayer) {
-                        // Sendspin sync delay (LOCAL client-side UX nudge,
-                        // DataStore-backed). Range -1000..+1000 ms, negative plays
-                        // sooner / positive later. Applied locally in
-                        // SendspinSyncEngine; not sent to the server.
-                        SyncDelayCard(
-                            label = "Sendspin sync delay",
-                            valueMs = syncDelayMs,
-                            defaultMs = 0,
-                            // Debounced via the LaunchedEffect below (the slider
-                            // fires rapidly and onSyncDelayChanged persists to
-                            // DataStore + reanchors the engine).
-                            onValueChange = { syncDelayMs = it.coerceIn(-1000, 1000) }
-                        )
-                    }
-
-                    if (hasServerStaticDelay) {
-                        // Static playback delay (SERVER-side spec field
-                        // sendspin_static_delay, available only on MA servers
-                        // with PR #3689 deployed). Range 0..5000 ms, positive
-                        // compensates for external delay beyond the audio
-                        // port (spec sign). Saved via player config; affects
-                        // ALL clients of this player.
-                        DelayStepperCard(
-                            label = "Static playback delay",
-                            helperText = "Server-side spec compensation for external device delay. Affects all clients of this player.",
-                            valueMs = staticDelayMs,
-                            minValue = 0,
-                            maxValue = 5000,
-                            onDecrement = {
-                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
-                            },
-                            onIncrement = {
-                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(5000)
-                            },
-                            onReset = {
-                                if (staticDelayMs != 0) {
-                                    staticDelayMs = 0
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Mic path reference", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (micPathCalibratedMs > 0L) {
+                                            "Calibrated: ${micPathCalibratedMs}ms (shared across BT routes)"
+                                        } else {
+                                            "Will be measured on the next BT calibration"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
-                            }
-                        )
-                    }
-
-                    if (hasServerSyncDelay) {
-                        // Per-player Sendspin sync delay (server-side
-                        // sendspin_sync_delay, -1000..1000 ms; negative = earlier,
-                        // positive = later, matching the MA web UI). Slider for a
-                        // quick sweep, 1 ms steppers for fine acoustic alignment;
-                        // Reset returns to the server default. MA applies it live.
-                        SyncDelayCard(
-                            valueMs = syncDelayServerMs,
-                            defaultMs = syncDelayDefault,
-                            onValueChange = { syncDelayServerMs = it.coerceIn(-1000, 1000) }
-                        )
-                    }
-
-                    // Acoustic calibration for the active Bluetooth output route.
-                    // No phone-speaker row: phone, wired and USB paths sync at
-                    // the audio port via the AudioTrack pipeline measurement
-                    // (per the Sendspin spec), so an acoustic chirp would
-                    // double-count the listener air path. The BT row stays
-                    // visible on local-player settings regardless of the
-                    // current route, but the Calibrate button is enabled only
-                    // while a BT route is connected (so users can review or
-                    // reset a saved value even when BT is currently off).
-                    //
-                    // A second row reports the cached "mic path" reference
-                    // (the phone-side mic chain latency measured once on the
-                    // built-in speaker). It is reused across all BT speakers
-                    // by the two-pass algorithm. A Reset button forces a
-                    // re-measurement on the next BT calibration.
-                    if (isLocalPlayer && acoustic != null) {
-                        var showBtCalibrationDialog by remember { mutableStateOf(false) }
-                        val btDeviceName = btRouteName.ifBlank { "Bluetooth speaker" }
-
-                        // Built-in speaker self-calibration. Measures the true
-                        // acoustic output delay to correct HALs that under-report
-                        // getOutputLatency (e.g. Xiaomi). Auto-runs on group join
-                        // when missing; also tunable here.
-                        val speakerCalibrations by acoustic.acousticRouteCalibrations
-                            .collectAsStateWithLifecycle(initialValue = emptyMap())
-                        val speakerCal = speakerCalibrations[
-                            net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY
-                        ]
-                        val speakerCorrectionMs = ((speakerCal?.correctionUs ?: 0L) / 1000L).toInt()
-                        var showSpeakerCalibrationDialog by remember { mutableStateOf(false) }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Speaker calibration", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    if (speakerCal != null) "This phone: ${speakerCorrectionMs}ms (${speakerCal.quality.lowercase()})"
-                                    else "Not calibrated (runs automatically on group join)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (speakerCal != null) {
-                                    MdTextButton(onClick = { acoustic.resetSpeakerCalibration() }) {
+                                if (micPathCalibratedMs > 0L) {
+                                    MdTextButton(onClick = { onResetMicPath?.invoke() }) {
                                         Text("Reset")
                                     }
                                 }
-                                MdTextButton(onClick = { showSpeakerCalibrationDialog = true }) {
-                                    Text(if (speakerCal != null) "Recalibrate" else "Calibrate")
-                                }
                             }
-                        }
-                        if (showSpeakerCalibrationDialog) {
-                            SpeakerCalibrationDialog(
-                                coordinator = acoustic,
-                                onDismiss = { showSpeakerCalibrationDialog = false }
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Bluetooth calibration", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    when {
-                                        !isBtRoute -> "Connect a Bluetooth device to calibrate"
-                                        acousticCorrectionMs > 0 -> "$btDeviceName: ${acousticCorrectionMs}ms"
-                                        else -> "$btDeviceName not calibrated"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            if (showBtCalibrationDialog) {
+                                AcousticCalibrationDialog(
+                                    routeName = btDeviceName,
+                                    isPlaybackActive = isPlaybackActive,
+                                    coordinator = acoustic,
+                                    onPausePlayback = { onPausePlayback?.invoke() },
+                                    onResumePlayback = { onResumePlayback?.invoke() },
+                                    onDismiss = { showBtCalibrationDialog = false }
                                 )
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isBtRoute && acousticCorrectionMs > 0) {
-                                    MdTextButton(onClick = { onResetBtCalibration?.invoke() }) {
-                                        Text("Reset")
-                                    }
-                                }
-                                MdTextButton(
-                                    enabled = isBtRoute,
-                                    onClick = { showBtCalibrationDialog = true }
-                                ) {
-                                    Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
-                                }
-                            }
                         }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Mic path reference", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    if (micPathCalibratedMs > 0L) {
-                                        "Calibrated: ${micPathCalibratedMs}ms (shared across BT routes)"
-                                    } else {
-                                        "Will be measured on the next BT calibration"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                             }
-                            if (micPathCalibratedMs > 0L) {
-                                MdTextButton(onClick = { onResetMicPath?.invoke() }) {
-                                    Text("Reset")
-                                }
-                            }
-                        }
-                        if (showBtCalibrationDialog) {
-                            AcousticCalibrationDialog(
-                                routeName = btDeviceName,
-                                isPlaybackActive = isPlaybackActive,
-                                coordinator = acoustic,
-                                onPausePlayback = { onPausePlayback?.invoke() },
-                                onResumePlayback = { onResumePlayback?.invoke() },
-                                onDismiss = { showBtCalibrationDialog = false }
-                            )
                         }
                     }
                     }
