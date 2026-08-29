@@ -9,7 +9,9 @@ data class QueueState(
     val currentIndex: Int = 0,
     /** Total item count of the whole queue (server-side), not just the fetched page. */
     val totalItems: Int = 0,
-    val autoplayEnabled: Boolean = false
+    val autoplayEnabled: Boolean = false,
+    /** Whether crossfade is on. A queue property from MA 2.10; before that, player config. */
+    val crossfadeEnabled: Boolean = false
 )
 
 data class QueueItem(

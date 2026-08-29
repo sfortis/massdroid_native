@@ -20,19 +20,30 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Tracks the Autoplay flag per queue across all players, not just the
- * currently selected one. PlayerRepository only owns the selected player's full QueueState,
- * so settings dialogs for other players would read a stale flag without this cache.
+ * Tracks the on/off toggles of every queue, not just the currently selected player's.
+ * PlayerRepository only owns the selected player's full QueueState, so settings dialogs
+ * for other players would read a stale flag without this cache.
+ *
+ * Autoplay and crossfade are both queue properties rather than configuration, both arrive
+ * on the same QUEUE_UPDATED event, and both are seeded from the same `player_queues/all`,
+ * so one cache serves them instead of two doing the same work.
  */
 @Singleton
-class QueueAutoplayCache @Inject constructor(
+class QueueTogglesCache @Inject constructor(
     wsClient: MaWebSocketClient,
     private val json: Json
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _states = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-    val states: StateFlow<Map<String, Boolean>> = _states.asStateFlow()
+    private val _autoplay = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val autoplayStates: StateFlow<Map<String, Boolean>> = _autoplay.asStateFlow()
+
+    /**
+     * Whether crossfade is on, per queue. Empty on a server before MA 2.10, which does not
+     * send the field, and the caller then shows its older player-config control instead.
+     */
+    private val _crossfade = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val crossfadeStates: StateFlow<Map<String, Boolean>> = _crossfade.asStateFlow()
 
     init {
         scope.launch {
@@ -41,25 +52,34 @@ class QueueAutoplayCache @Inject constructor(
                 val queue = event.data?.let {
                     runCatching { json.decodeFromJsonElement<ServerQueue>(it) }.getOrNull()
                 } ?: return@collect
-                _states.update { it + (queue.queueId to queue.autoplayEnabled) }
+                _autoplay.update { it + (queue.queueId to queue.autoplayEnabled) }
+                _crossfade.update { it + (queue.queueId to queue.crossfadeEnabled) }
             }
         }
         scope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
                     is ConnectionState.Connected -> refreshAll(wsClient)
-                    is ConnectionState.Disconnected -> _states.value = emptyMap()
+                    is ConnectionState.Disconnected -> {
+                        _autoplay.value = emptyMap()
+                        _crossfade.value = emptyMap()
+                    }
                     else -> {}
                 }
             }
         }
     }
 
-    fun dstmFor(queueId: String): Boolean = _states.value[queueId] ?: false
+    fun dstmFor(queueId: String): Boolean = _autoplay.value[queueId] ?: false
 
     /** Optimistic update so the UI reflects a toggle immediately, before the server echo. */
     fun setOptimistic(queueId: String, enabled: Boolean) {
-        _states.update { it + (queueId to enabled) }
+        _autoplay.update { it + (queueId to enabled) }
+    }
+
+    /** Optimistic update of the crossfade toggle, for the same reason. */
+    fun setCrossfadeOptimistic(queueId: String, enabled: Boolean) {
+        _crossfade.update { it + (queueId to enabled) }
     }
 
     private suspend fun refreshAll(wsClient: MaWebSocketClient) {
@@ -68,14 +88,15 @@ class QueueAutoplayCache @Inject constructor(
             val queues = runCatching {
                 json.decodeFromJsonElement<List<ServerQueue>>(result)
             }.getOrNull() ?: return
-            _states.value = queues.associate { it.queueId to it.autoplayEnabled }
-            Log.d(TAG, "Seeded autoplay cache with ${queues.size} queues")
+            _autoplay.value = queues.associate { it.queueId to it.autoplayEnabled }
+            _crossfade.value = queues.associate { it.queueId to it.crossfadeEnabled }
+            Log.d(TAG, "Seeded queue toggles from ${queues.size} queues")
         } catch (e: Exception) {
             Log.w(TAG, "refreshAll failed: ${e.message}")
         }
     }
 
     companion object {
-        private const val TAG = "QueueAutoplayCache"
+        private const val TAG = "QueueTogglesCache"
     }
 }

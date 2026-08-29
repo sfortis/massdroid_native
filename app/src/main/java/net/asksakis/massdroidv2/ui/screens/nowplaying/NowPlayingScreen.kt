@@ -499,6 +499,7 @@ fun NowPlayingScreen(
             val btRouteKey = viewModel.acoustic.getBtRouteKey()
             val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
             val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
+            val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
 
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
@@ -510,9 +511,16 @@ fun NowPlayingScreen(
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                 onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(currentPlayer.playerId, it) },
-                onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
+                onLoadQueueSettings = { queueId -> viewModel.getQueueSettings(queueId) },
                 onAutoplayChanged = { mode, playlistUri ->
                     viewModel.setAutoplayConfig(currentPlayer.playerId, mode, playlistUri)
+                },
+                initialCrossfadeEnabled = crossfadeStates[currentPlayer.playerId],
+                onCrossfadeEnabledChanged = {
+                    viewModel.setCrossfadeEnabled(currentPlayer.playerId, it)
+                },
+                onQueueConfigChanged = { key, value ->
+                    viewModel.setQueueConfigValue(currentPlayer.playerId, key, value)
                 },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                 onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },

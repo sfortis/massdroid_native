@@ -473,7 +473,7 @@ class MusicRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun getAutoplayConfig(queueId: String): AutoplayConfig? {
+    override suspend fun getQueueSettings(queueId: String): QueueSettings? {
         val values = try {
             wsClient.sendCommand(
                 MaCommands.ConfigPlayerQueues.GET,
@@ -482,60 +482,95 @@ class MusicRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             // Absent before MA 2.10, and refused for an account without
             // CONFIG_PLAYERS_READ. Neither is worth an error to the user: the caller
-            // shows nothing instead of an Autoplay section.
+            // shows nothing instead of the settings that come from here.
             Log.d(TAG, "queue config unavailable for $queueId: ${e.message}")
             return null
         }
-        val config = AutoplayConfigParser.parse(values) ?: return null
-        // Only worth asking when this queue actually follows the server-wide default;
-        // otherwise the answer would not be shown.
-        if (config.mode != AutoplayConfig.MODE_GLOBAL) return config
-        return config.copy(globalMode = getGlobalAutoplayMode())
+        val settings = QueueConfigParser.parse(values)
+        return withGlobalValues(settings)
     }
 
     /**
-     * The server-wide Autoplay source, which a queue set to "global" follows.
+     * Fill in what each setting left on "global" currently resolves to.
      *
-     * Reading it needs only CONFIG_CORE_READ, which every account role holds, but a
-     * failure is still tolerated: without it the "Global" option simply does not say
-     * what it resolves to.
+     * Read in one `config/core/get` rather than a call per key: a queue that has never
+     * been configured follows the global value for all four, and four round trips would
+     * be four times the wait for one dialog. Needs only CONFIG_CORE_READ, which every
+     * account role holds, and a failure is tolerated: without it the "Global" options
+     * simply do not say what they resolve to.
      */
-    private suspend fun getGlobalAutoplayMode(): String? = try {
-        wsClient.sendCommand(
-            MaCommands.ConfigCore.GET_VALUE,
-            ConfigCoreValueArgs(
-                domain = MaCommands.ConfigCore.DOMAIN_PLAYER_QUEUES,
-                key = AutoplayConfig.KEY_MODE
-            )
-        )?.jsonPrimitive?.contentOrNull
-    } catch (e: Exception) {
-        Log.d(TAG, "global autoplay mode unavailable: ${e.message}")
-        null
+    private suspend fun withGlobalValues(settings: QueueSettings): QueueSettings {
+        val needsGlobal = settings.autoplay?.mode == AutoplayConfig.MODE_GLOBAL ||
+            listOf(settings.crossfadeMode, settings.volumeNormalization, settings.smartShuffle)
+                .any { it?.followsGlobal == true }
+        if (!needsGlobal) return settings
+        val core = try {
+            wsClient.sendCommand(
+                MaCommands.ConfigCore.GET,
+                ConfigCoreGetArgs(domain = MaCommands.ConfigCore.DOMAIN_PLAYER_QUEUES)
+            )?.jsonObject?.get("values")?.jsonObject
+        } catch (e: Exception) {
+            Log.d(TAG, "server-wide queue defaults unavailable: ${e.message}")
+            return settings
+        }
+        return settings.copy(
+            autoplay = settings.autoplay?.copy(
+                globalMode = QueueConfigParser.coreValue(core, AutoplayConfig.KEY_MODE)
+            ),
+            crossfadeMode = settings.crossfadeMode?.withGlobal(core),
+            volumeNormalization = settings.volumeNormalization?.withGlobal(core),
+            smartShuffle = settings.smartShuffle?.withGlobal(core)
+        )
     }
+
+    private fun QueueChoice.withGlobal(core: JsonObject?): QueueChoice =
+        copy(globalValue = QueueConfigParser.coreValue(core, key))
 
     override suspend fun setAutoplayConfig(
         queueId: String,
         mode: String,
         playlistUri: String?
-    ): Boolean {
-        val values = buildJsonObject {
-            put(AutoplayConfig.KEY_MODE, mode)
-            // Only sent alongside the mode it belongs to. Writing it under another mode
-            // would store a playlist the server will not use and cannot show.
-            if (playlistUri != null) put(AutoplayConfig.KEY_PLAYLIST, playlistUri)
-        }
-        return try {
-            wsClient.sendCommand(
-                MaCommands.ConfigPlayerQueues.SAVE,
-                ConfigQueueSaveArgs(queueId = queueId, values = values)
-            ) != null
-        } catch (e: Exception) {
-            // Writing queue config needs CONFIG_PLAYERS_WRITE, which only an admin
-            // holds, so a refusal here is expected rather than exceptional. The
-            // WebSocket client already raises the account notice for it.
-            Log.w(TAG, "autoplay save refused for $queueId: ${e.message}")
-            false
-        }
+    ): Boolean = saveQueueConfig(queueId, "autoplay") {
+        put(AutoplayConfig.KEY_MODE, mode)
+        // Only sent alongside the mode it belongs to. Writing it under another mode
+        // would store a playlist the server will not use and cannot show.
+        if (playlistUri != null) put(AutoplayConfig.KEY_PLAYLIST, playlistUri)
+    }
+
+    override suspend fun setQueueConfigValue(
+        queueId: String,
+        key: String,
+        value: String
+    ): Boolean = saveQueueConfig(queueId, key) { put(key, value) }
+
+    /**
+     * Partial save of a queue's configuration. The server merges what is sent, so each
+     * caller sends only the keys it changed.
+     *
+     * Returns false rather than throwing when the server refuses: writing queue config
+     * needs CONFIG_PLAYERS_WRITE, which only an admin holds, so a refusal is an expected
+     * outcome for an ordinary account. The WebSocket client already raises the account
+     * notice for it, and the caller reverts what it optimistically showed.
+     */
+    private suspend fun saveQueueConfig(
+        queueId: String,
+        what: String,
+        values: JsonObjectBuilder.() -> Unit
+    ): Boolean = try {
+        wsClient.sendCommand(
+            MaCommands.ConfigPlayerQueues.SAVE,
+            ConfigQueueSaveArgs(queueId = queueId, values = buildJsonObject(values))
+        ) != null
+    } catch (e: Exception) {
+        Log.w(TAG, "$what save refused for $queueId: ${e.message}")
+        false
+    }
+
+    override suspend fun setCrossfadeEnabled(queueId: String, enabled: Boolean) {
+        wsClient.sendCommand(
+            MaCommands.PlayerQueues.SET_CROSSFADE_ENABLED,
+            SetCrossfadeEnabledArgs(queueId = queueId, enabled = enabled)
+        )
     }
 
     override suspend fun browse(path: String?): List<BrowseItem> {

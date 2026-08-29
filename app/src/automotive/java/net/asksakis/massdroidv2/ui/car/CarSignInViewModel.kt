@@ -17,11 +17,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
+import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
+import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
@@ -40,6 +44,8 @@ class CarSignInViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val authRepository: MaAuthRepository,
     private val playerRepository: PlayerRepository,
+    private val musicRepository: MusicRepository,
+    private val queueToggles: QueueTogglesCache,
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
@@ -66,9 +72,19 @@ class CarSignInViewModel @Inject constructor(
     val dither: StateFlow<Boolean> = settingsRepository.sendspinDither
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    /** Crossfade mode for the car's Sendspin player; null until the player config loads. */
+    /** Crossfade mode for the car's own player; null until the config loads. */
     private val _crossfade = MutableStateFlow<CrossfadeMode?>(null)
     val crossfade: StateFlow<CrossfadeMode?> = _crossfade.asStateFlow()
+
+    /**
+     * Whether this server keeps crossfade on the queue, which MA 2.10 and later do.
+     *
+     * The car screen shows the same three buttons either way. What differs is where the
+     * choice goes: on a queue server the off is the queue's own crossfade toggle and the
+     * other two are its crossfade mode, while an older server holds all three in one
+     * player config value.
+     */
+    private var crossfadeOnQueue = false
 
     init {
         // Load the per-player crossfade ONCE the WS is connected (the Sendspin player
@@ -104,19 +120,69 @@ class CarSignInViewModel @Inject constructor(
                 _crossfade.value = previous
                 return@launch
             }
-            runCatching {
-                playerRepository.savePlayerConfig(id, mapOf("smart_fades_mode" to mode.apiValue))
-            }.onFailure {
+            val saved = runCatching {
+                if (crossfadeOnQueue) saveQueueCrossfade(id, mode) else savePlayerCrossfade(id, mode)
+            }.getOrElse {
                 Log.w(TAG, "crossfade save failed: ${it.message}")
-                _crossfade.value = previous // roll back so the UI does not lie
+                false
             }
+            if (!saved) _crossfade.value = previous // roll back so the UI does not lie
         }
+    }
+
+    /**
+     * MA 2.10 and later. Turning it off is a queue command every account may send;
+     * choosing the type is queue config and needs an admin, so a refusal there rolls the
+     * whole choice back rather than leaving the screen showing a type that was not saved.
+     */
+    private suspend fun saveQueueCrossfade(queueId: String, mode: CrossfadeMode): Boolean {
+        if (mode == CrossfadeMode.DISABLED) {
+            musicRepository.setCrossfadeEnabled(queueId, false)
+            return true
+        }
+        val value = if (mode == CrossfadeMode.SMART) SMART_CROSSFADE else STANDARD_CROSSFADE
+        if (!musicRepository.setQueueConfigValue(queueId, QueueChoice.KEY_CROSSFADE_MODE, value)) {
+            return false
+        }
+        musicRepository.setCrossfadeEnabled(queueId, true)
+        return true
+    }
+
+    /** Before MA 2.10, where one player config value carried the off as well as the type. */
+    private suspend fun savePlayerCrossfade(playerId: String, mode: CrossfadeMode): Boolean {
+        playerRepository.savePlayerConfig(playerId, mapOf("smart_fades_mode" to mode.apiValue))
+        return true
     }
 
     private suspend fun loadCrossfade() {
         val id = settingsRepository.sendspinClientId.first() ?: return
+        val queue = runCatching { musicRepository.getQueueSettings(id) }.getOrNull()
+        val queueMode = queue?.crossfadeMode
+        if (queueMode != null) {
+            crossfadeOnQueue = true
+            _crossfade.value = resolveQueueCrossfade(id, queueMode)
+            return
+        }
         val config = runCatching { playerRepository.getPlayerConfig(id) }.getOrNull() ?: return
         _crossfade.value = config.crossfadeMode
+    }
+
+    /**
+     * Fold the queue's two values into the one the car screen shows. Off wins over the
+     * type, because that is what the listener hears; a type set to follow the server-wide
+     * default resolves through it, and anything unrecognised reads as standard, which is
+     * what the server itself falls back to.
+     */
+    private suspend fun resolveQueueCrossfade(queueId: String, mode: QueueChoice): CrossfadeMode {
+        // The toggle cache seeds on the same connect that brought us here, so it may not
+        // hold this queue yet. Wait briefly for it rather than reading "off" from an
+        // empty map and showing the driver a crossfade that is really on.
+        val enabled = withTimeoutOrNull(QUEUE_SEED_WAIT_MS) {
+            queueToggles.crossfadeStates.first { it.containsKey(queueId) }[queueId]
+        } ?: false
+        if (!enabled) return CrossfadeMode.DISABLED
+        val effective = if (mode.followsGlobal) mode.globalValue else mode.value
+        return if (effective == SMART_CROSSFADE) CrossfadeMode.SMART else CrossfadeMode.STANDARD
     }
 
     /** Currently selected mTLS client-certificate alias, or null. */
@@ -211,6 +277,10 @@ class CarSignInViewModel @Inject constructor(
     }
 
     companion object {
+        /** How long to wait for the queue toggles to seed after a connect. */
+        private const val QUEUE_SEED_WAIT_MS = 3_000L
+        private const val STANDARD_CROSSFADE = "standard_crossfade"
+        private const val SMART_CROSSFADE = "smart_crossfade"
         private const val TAG = "CarSignIn"
     }
 }

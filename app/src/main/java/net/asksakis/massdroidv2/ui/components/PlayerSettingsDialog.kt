@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,9 +70,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
-import net.asksakis.massdroidv2.domain.model.AutoplayConfig
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
+import net.asksakis.massdroidv2.domain.model.QueueChoice
+import net.asksakis.massdroidv2.domain.model.QueueSettings
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -89,10 +92,22 @@ fun PlayerSettingsDialog(
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onAutoplayEnabledChanged: ((enabled: Boolean) -> Unit)?,
     /**
-     * Autoplay settings of this player's queue, or null to leave the section out (a
-     * server before MA 2.10, or an account that may not read queue config).
+     * Whether crossfade is on for this player's queue, or null on a server that keeps
+     * crossfade in the player config (before MA 2.10), where the mode carries the off.
      */
-    onLoadAutoplay: (suspend (queueId: String) -> AutoplayConfig?)? = null,
+    initialCrossfadeEnabled: Boolean? = null,
+    /** Turn crossfade on or off. Needs no admin rights: it is queue state, not config. */
+    onCrossfadeEnabledChanged: ((enabled: Boolean) -> Unit)? = null,
+    /**
+     * Configuration of this player's queue, or null to leave those settings out (a server
+     * before MA 2.10, or an account that may not read queue config).
+     */
+    onLoadQueueSettings: (suspend (queueId: String) -> QueueSettings?)? = null,
+    /**
+     * Apply one queue config value. Returns false when the server refused it, which is
+     * what a non-admin account gets, and the control then goes back to what it was.
+     */
+    onQueueConfigChanged: (suspend (key: String, value: String) -> Boolean)? = null,
     /**
      * Apply a new Autoplay strategy. Returns false when the server refused it, which is
      * what a non-admin account gets, and the selector then goes back to what it was.
@@ -120,6 +135,9 @@ fun PlayerSettingsDialog(
     var name by remember(player.playerId) { mutableStateOf(player.displayName) }
     var crossfadeMode by remember(player.playerId) { mutableStateOf(CrossfadeMode.DISABLED) }
     var volumeNormalization by remember(player.playerId) { mutableStateOf(false) }
+    var crossfadeOn by remember(player.playerId, initialCrossfadeEnabled) {
+        mutableStateOf(initialCrossfadeEnabled ?: false)
+    }
     var autoplayOn by remember(player.playerId, initialAutoplayEnabled) {
         mutableStateOf(initialAutoplayEnabled ?: false)
     }
@@ -156,13 +174,32 @@ fun PlayerSettingsDialog(
     var syncDelayKey by remember(player.playerId) { mutableStateOf<String?>(null) }
     var syncDelayDefault by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
-    var autoplay by remember(player.playerId) { mutableStateOf<AutoplayConfig?>(null) }
+    var queueSettings by remember(player.playerId) { mutableStateOf<QueueSettings?>(null) }
+    val scope = rememberCoroutineScope()
 
-    // Loaded separately from the player config: Autoplay is queue configuration, and a
-    // server that does not have it (or an account that may not read it) simply leaves
-    // this null while the rest of the dialog still works.
-    LaunchedEffect(player.playerId, onLoadAutoplay) {
-        autoplay = onLoadAutoplay?.invoke(player.playerId)
+    // Loaded separately from the player config: from MA 2.10 these are queue
+    // configuration, and a server that does not have them (or an account that may not
+    // read them) simply leaves this null while the rest of the dialog still works.
+    LaunchedEffect(player.playerId, onLoadQueueSettings) {
+        queueSettings = onLoadQueueSettings?.invoke(player.playerId)
+    }
+
+    /**
+     * Show a new queue setting at once, then keep it only if the server accepted it.
+     * Writing queue config needs an admin account, so a refusal is a normal outcome and
+     * must not leave the dialog claiming a change that did not happen.
+     *
+     * These apply immediately rather than on Save, like the Autoplay source does and
+     * unlike the player config below, because they are not part of the batch the Save
+     * button sends.
+     */
+    fun applyQueueChoice(choice: QueueChoice, value: String) {
+        if (value == choice.value) return
+        val before = queueSettings
+        queueSettings = before?.with(choice.copy(value = value))
+        scope.launch {
+            if (onQueueConfigChanged?.invoke(choice.key, value) != true) queueSettings = before
+        }
     }
 
     LaunchedEffect(player.playerId) {
@@ -310,30 +347,83 @@ fun PlayerSettingsDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Text("Crossfade", style = MaterialTheme.typography.labelMedium)
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        CrossfadeMode.entries.forEachIndexed { index, mode ->
-                            SegmentedButton(
-                                selected = crossfadeMode == mode,
-                                onClick = { crossfadeMode = mode },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = CrossfadeMode.entries.size
-                                ),
-                                label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
+                    // Crossfade, volume normalization and smart shuffle moved from the
+                    // player to the queue in MA 2.10. Which set of controls is shown
+                    // follows what the server actually sent rather than a version number:
+                    // a queue that reports these settings gets them, anything older keeps
+                    // the player-config pair below.
+                    val queueCrossfade = queueSettings?.crossfadeMode
+                    if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Crossfade", modifier = Modifier.weight(1f))
+                                Switch(
+                                    checked = crossfadeOn,
+                                    onCheckedChange = {
+                                        crossfadeOn = it
+                                        onCrossfadeEnabledChanged(it)
+                                    }
+                                )
+                            }
+                            // The type only matters while crossfade is on, which is also
+                            // why the server no longer offers "off" as one of its values.
+                            if (crossfadeOn) {
+                                QueueChoiceSection(
+                                    label = "Type",
+                                    choice = queueCrossfade,
+                                    onSelect = { value -> applyQueueChoice(queueCrossfade, value) }
+                                )
+                            }
+                        }
+                    } else {
+                        Text("Crossfade", style = MaterialTheme.typography.labelMedium)
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            CrossfadeMode.entries.forEachIndexed { index, mode ->
+                                SegmentedButton(
+                                    selected = crossfadeMode == mode,
+                                    onClick = { crossfadeMode = mode },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = index,
+                                        count = CrossfadeMode.entries.size
+                                    ),
+                                    label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    val queueNormalization = queueSettings?.volumeNormalization
+                    if (queueNormalization != null) {
+                        QueueChoiceSection(
+                            label = "Volume normalization",
+                            choice = queueNormalization,
+                            onSelect = { value -> applyQueueChoice(queueNormalization, value) }
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Volume normalization")
+                            Switch(
+                                checked = volumeNormalization,
+                                onCheckedChange = { volumeNormalization = it }
                             )
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Volume normalization")
-                        Switch(
-                            checked = volumeNormalization,
-                            onCheckedChange = { volumeNormalization = it }
+                    // No older counterpart: smart shuffle arrived with the queue config,
+                    // so it is shown only where the server offers it.
+                    queueSettings?.smartShuffle?.let { smartShuffle ->
+                        QueueChoiceSection(
+                            label = "Smart shuffle",
+                            choice = smartShuffle,
+                            onSelect = { value -> applyQueueChoice(smartShuffle, value) }
                         )
                     }
 
@@ -356,7 +446,7 @@ fun PlayerSettingsDialog(
 
                             // How the server refills the queue, offered only while the
                             // switch is on, because that is the only time it applies.
-                            val autoplayConfig = autoplay
+                            val autoplayConfig = queueSettings?.autoplay
                             if (autoplayOn && autoplayConfig != null && onAutoplayChanged != null) {
                                 AutoplaySourceSection(
                                     config = autoplayConfig,
@@ -366,12 +456,14 @@ fun PlayerSettingsDialog(
                                         // needs an admin account, so a refusal is a normal
                                         // outcome and must not leave the UI claiming a
                                         // change that did not happen.
-                                        val previous = autoplayConfig
-                                        autoplay = autoplayConfig.copy(
-                                            mode = mode,
-                                            playlistUri = playlistUri
+                                        val previous = queueSettings
+                                        queueSettings = previous?.copy(
+                                            autoplay = autoplayConfig.copy(
+                                                mode = mode,
+                                                playlistUri = playlistUri
+                                            )
                                         )
-                                        if (!onAutoplayChanged(mode, playlistUri)) autoplay = previous
+                                        if (!onAutoplayChanged(mode, playlistUri)) queueSettings = previous
                                     }
                                 )
                             }
@@ -682,10 +774,16 @@ fun PlayerSettingsDialog(
                     MdTextButton(onClick = onDismiss) { Text("Cancel") }
                     MdTextButton(
                         onClick = {
-                            val values = mutableMapOf<String, Any>(
-                                "smart_fades_mode" to crossfadeMode.apiValue,
-                                "volume_normalization" to volumeNormalization
-                            )
+                            val values = mutableMapOf<String, Any>()
+                            // Only where they still live on the player. From MA 2.10 both
+                            // are queue config, already applied on selection, and sending
+                            // them here would write keys the server no longer knows.
+                            if (queueSettings?.crossfadeMode == null) {
+                                values["smart_fades_mode"] = crossfadeMode.apiValue
+                            }
+                            if (queueSettings?.volumeNormalization == null) {
+                                values["volume_normalization"] = volumeNormalization
+                            }
                             if (name.isNotBlank() && name.trim() != player.displayName) {
                                 values["name"] = name.trim()
                             }

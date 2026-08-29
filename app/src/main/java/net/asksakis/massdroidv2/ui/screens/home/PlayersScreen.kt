@@ -75,6 +75,7 @@ fun PlayersScreen(
     val isAaProjecting by viewModel.isAaProjecting.collectAsStateWithLifecycle()
     val sleepTimerTargetPlayerId by viewModel.sleepTimerTargetPlayerId.collectAsStateWithLifecycle()
     val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
+    val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
     )
@@ -322,9 +323,16 @@ fun PlayersScreen(
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                             onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(player.playerId, it) },
-                            onLoadAutoplay = { queueId -> viewModel.getAutoplayConfig(queueId) },
+                            onLoadQueueSettings = { queueId -> viewModel.getQueueSettings(queueId) },
                             onAutoplayChanged = { mode, playlistUri ->
                                 viewModel.setAutoplayConfig(player.playerId, mode, playlistUri)
+                            },
+                            initialCrossfadeEnabled = crossfadeStates[player.playerId],
+                            onCrossfadeEnabledChanged = {
+                                viewModel.setCrossfadeEnabled(player.playerId, it)
+                            },
+                            onQueueConfigChanged = { key, value ->
+                                viewModel.setQueueConfigValue(player.playerId, key, value)
                             },
                             onAudioFormatChanged = { viewModel.setAudioFormat(it) },
                             onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },

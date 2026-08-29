@@ -91,7 +91,15 @@ data class ServerQueue(
      * next to its own `autoplay_enabled`. Reading the old key therefore works on every
      * server version; reading the new one would work only from 2.10.
      */
-    @SerialName("dont_stop_the_music_enabled") val autoplayEnabled: Boolean = false
+    @SerialName("dont_stop_the_music_enabled") val autoplayEnabled: Boolean = false,
+    /**
+     * Whether crossfade is on for this queue.
+     *
+     * New in MA 2.10, which turned crossfade on and off into a queue property alongside
+     * shuffle and repeat. An older server does not send it and the default below then
+     * simply means the app shows no queue-level crossfade control.
+     */
+    @SerialName("crossfade_enabled") val crossfadeEnabled: Boolean = false
 )
 
 @Serializable

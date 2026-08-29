@@ -133,13 +133,16 @@ class NowPlayingViewModel @Inject constructor(
     private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     val acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator,
     val sleepTimerBridge: SleepTimerBridge,
-    private val queueAutoplayCache: net.asksakis.massdroidv2.data.repository.QueueAutoplayCache
+    private val queueTogglesCache: net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
     val allPlayers: StateFlow<List<net.asksakis.massdroidv2.domain.model.Player>> = playerRepository.players
     val queueState = playerRepository.queueState
-    val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueAutoplayCache.states
+    val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.autoplayStates
+
+    /** Whether crossfade is on, per queue. Empty on a server before MA 2.10. */
+    val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
@@ -1174,7 +1177,7 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
-        queueAutoplayCache.setOptimistic(queueId, enabled)
+        queueTogglesCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
                 musicRepository.setAutoplayEnabled(queueId, enabled)
@@ -1191,13 +1194,24 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     /**
-     * Autoplay settings of one queue, loaded on demand when the settings dialog opens.
+     * Configuration of one queue, loaded on demand when the settings dialog opens:
+     * Autoplay, crossfade type, volume normalization, smart shuffle.
      *
      * Null covers both "this server predates MA 2.10" and "this account may not read
-     * queue config", and the dialog leaves the section out in either case.
+     * queue config", and the dialog leaves those settings out in either case.
      */
-    suspend fun getAutoplayConfig(queueId: String): net.asksakis.massdroidv2.domain.model.AutoplayConfig? =
-        musicRepository.getAutoplayConfig(queueId)
+    suspend fun getQueueSettings(queueId: String): net.asksakis.massdroidv2.domain.model.QueueSettings? =
+        musicRepository.getQueueSettings(queueId)
+
+    /** Change one queue config value, reporting whether the server accepted it. */
+    suspend fun setQueueConfigValue(queueId: String, key: String, value: String): Boolean =
+        musicRepository.setQueueConfigValue(queueId, key, value)
+
+    /** Turn crossfade on or off for the queue, showing the change before the server echo. */
+    fun setCrossfadeEnabled(queueId: String, enabled: Boolean) {
+        queueTogglesCache.setCrossfadeOptimistic(queueId, enabled)
+        viewModelScope.launch { musicRepository.setCrossfadeEnabled(queueId, enabled) }
+    }
 
     /**
      * Save a new Autoplay strategy and report whether the server took it, so the dialog

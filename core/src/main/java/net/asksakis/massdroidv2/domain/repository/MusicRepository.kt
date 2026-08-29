@@ -93,10 +93,13 @@ interface MusicRepository {
     suspend fun setAutoplayEnabled(queueId: String, enabled: Boolean)
 
     /**
-     * Autoplay settings of one queue, or null on a server that does not expose them
-     * (they arrived with MA 2.10) or when the account may not read queue config.
+     * Configuration of one queue, or null on a server that does not expose it (queue
+     * config arrived with MA 2.10) or when the account may not read it.
+     *
+     * Individual settings inside are also nullable: a server may have Autoplay but not
+     * smart shuffle, and the caller shows only what it was actually given.
      */
-    suspend fun getAutoplayConfig(queueId: String): AutoplayConfig?
+    suspend fun getQueueSettings(queueId: String): QueueSettings?
 
     /**
      * Change how Autoplay refills [queueId]. [playlistUri] is only sent when the chosen
@@ -107,6 +110,23 @@ interface MusicRepository {
      * it needs `CONFIG_PLAYERS_WRITE`, and only an admin holds that.
      */
     suspend fun setAutoplayConfig(queueId: String, mode: String, playlistUri: String? = null): Boolean
+
+    /**
+     * Change one queue config value, such as [QueueChoice.KEY_CROSSFADE_MODE].
+     *
+     * Returns false when the server refused, which for a non-admin account is the
+     * expected outcome, as with [setAutoplayConfig].
+     */
+    suspend fun setQueueConfigValue(queueId: String, key: String, value: String): Boolean
+
+    /**
+     * Turn crossfade on or off for [queueId].
+     *
+     * This is a queue property rather than configuration, so unlike the mode it needs no
+     * admin rights. It only exists from MA 2.10; before that, crossfade was turned off by
+     * setting the player's crossfade mode to disabled.
+     */
+    suspend fun setCrossfadeEnabled(queueId: String, enabled: Boolean)
 
     suspend fun browse(path: String? = null): List<BrowseItem>
 }

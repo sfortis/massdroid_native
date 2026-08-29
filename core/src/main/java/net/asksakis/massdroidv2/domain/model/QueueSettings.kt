@@ -79,6 +79,91 @@ data class AutoplayConfig(
         const val KEY_PLAYLIST = "autoplay_playlist"
 
         /** The per-queue value meaning "follow the server-wide default" rather than a source of its own. */
-        const val MODE_GLOBAL = "global"
+        const val MODE_GLOBAL = QueueChoice.VALUE_GLOBAL
+    }
+}
+
+/**
+ * One string-valued config entry of a queue: what is chosen now, and what may be chosen.
+ *
+ * Crossfade mode, volume normalization and smart shuffle all have this shape. Each is a
+ * select whose options the server describes, and each offers `global`, meaning the queue
+ * follows the server-wide default instead of holding a value of its own.
+ *
+ * The value stays a plain string for the same reason [AutoplayConfig.mode] does: the
+ * options arrive from the server with their titles, so a value Music Assistant adds
+ * later shows up without a code change.
+ */
+data class QueueChoice(
+    val key: String,
+    val value: String,
+    val options: List<QueueConfigOption> = emptyList(),
+    /**
+     * The server-wide value this queue follows while [value] is [VALUE_GLOBAL], read from
+     * the core `player_queues` settings, so the UI can say what "Global" resolves to.
+     */
+    val globalValue: String? = null
+) {
+    /** The option describing [value], when the server offered one. */
+    val selectedOption: QueueConfigOption?
+        get() = options.firstOrNull { it.value == value }
+
+    /** Whether this queue currently follows the server-wide default. */
+    val followsGlobal: Boolean
+        get() = value == VALUE_GLOBAL
+
+    /**
+     * Title of what [VALUE_GLOBAL] currently resolves to, for display next to that
+     * option. Null when the server-wide value is unknown or is not one of the options.
+     */
+    val globalTitle: String?
+        get() = globalValue
+            ?.takeIf { it != VALUE_GLOBAL }
+            ?.let { global -> options.firstOrNull { it.value == global }?.title }
+
+    companion object {
+        /** The per-queue value meaning "follow the server-wide default". */
+        const val VALUE_GLOBAL = "global"
+
+        /** Which kind of crossfade runs, while crossfade is on. */
+        const val KEY_CROSSFADE_MODE = "crossfade_mode"
+
+        /** Whether playback is levelled to a common loudness (EBU R128). */
+        const val KEY_VOLUME_NORMALIZATION = "volume_normalization"
+
+        /** Whether shuffle spreads artists and albums out instead of ordering at random. */
+        const val KEY_SMART_SHUFFLE = "smart_shuffle_enabled"
+    }
+}
+
+/**
+ * The configuration of one queue, as of MA 2.10.
+ *
+ * These settings used to live on the player. Music Assistant 2.10 moved them to the
+ * queue, so the app reads them from `config/player_queues/get` in one call and the
+ * player config no longer carries them at all.
+ *
+ * Every field is nullable because an older server, or an account that may not read queue
+ * config, simply does not supply them, and each control hides itself rather than showing
+ * a default that is not what the server would do.
+ *
+ * Crossfade on and off is deliberately absent: it is not configuration but a property of
+ * the queue itself, alongside shuffle and repeat, changed with `player_queues/crossfade`.
+ */
+data class QueueSettings(
+    val autoplay: AutoplayConfig? = null,
+    val crossfadeMode: QueueChoice? = null,
+    val volumeNormalization: QueueChoice? = null,
+    val smartShuffle: QueueChoice? = null
+) {
+    /**
+     * The same settings with [choice] in place of the entry it belongs to, so a caller
+     * showing a new selection does not have to know which field holds it.
+     */
+    fun with(choice: QueueChoice): QueueSettings = when (choice.key) {
+        QueueChoice.KEY_CROSSFADE_MODE -> copy(crossfadeMode = choice)
+        QueueChoice.KEY_VOLUME_NORMALIZATION -> copy(volumeNormalization = choice)
+        QueueChoice.KEY_SMART_SHUFFLE -> copy(smartShuffle = choice)
+        else -> this
     }
 }

@@ -8,10 +8,12 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.domain.model.AutoplayConfig
+import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.QueueConfigOption
+import net.asksakis.massdroidv2.domain.model.QueueSettings
 
 /**
- * Turns the `values` block of `config/player_queues/get` into an [AutoplayConfig].
+ * Turns the `values` block of `config/player_queues/get` into a [QueueSettings].
  *
  * Separate from the repository and free of any client so the parsing rules can be
  * tested against real server payloads. Three of them are easy to get wrong:
@@ -25,9 +27,27 @@ import net.asksakis.massdroidv2.domain.model.QueueConfigOption
  *
  * Options may be objects or bare strings, and an option can be disabled with a reason.
  */
-object AutoplayConfigParser {
+object QueueConfigParser {
 
-    fun parse(values: JsonObject?): AutoplayConfig? {
+    /**
+     * Read every queue setting the app knows about. Entries the server does not send are
+     * left null rather than defaulted, so a control can hide instead of claiming a value.
+     */
+    fun parse(values: JsonObject?): QueueSettings = QueueSettings(
+        autoplay = parseAutoplay(values),
+        crossfadeMode = parseChoice(values, QueueChoice.KEY_CROSSFADE_MODE),
+        volumeNormalization = parseChoice(values, QueueChoice.KEY_VOLUME_NORMALIZATION),
+        smartShuffle = parseChoice(values, QueueChoice.KEY_SMART_SHUFFLE)
+    )
+
+    /** One plain select entry, or null when the server did not send it. */
+    fun parseChoice(values: JsonObject?, key: String): QueueChoice? {
+        val entry = values?.get(key) as? JsonObject ?: return null
+        val value = entry.currentOrDefault() ?: return null
+        return QueueChoice(key = key, value = value, options = entry.options())
+    }
+
+    fun parseAutoplay(values: JsonObject?): AutoplayConfig? {
         val modeEntry = values?.get(AutoplayConfig.KEY_MODE)?.let {
             it as? JsonObject ?: return null
         } ?: return null
@@ -42,6 +62,14 @@ object AutoplayConfigParser {
             playlistDependsOnMode = playlistEntry?.dependsOnValueOf(AutoplayConfig.KEY_MODE)
         )
     }
+
+    /**
+     * The effective server-wide value of [key] in a `config/core/get` payload, which is
+     * what a queue set to `global` follows. Entries have the same shape as a queue's, so
+     * the same "set value, else default" rule applies.
+     */
+    fun coreValue(values: JsonObject?, key: String): String? =
+        (values?.get(key) as? JsonObject)?.currentOrDefault()
 
     /** What is set, falling back to what applies while nothing is set. */
     private fun JsonObject.currentOrDefault(): String? =

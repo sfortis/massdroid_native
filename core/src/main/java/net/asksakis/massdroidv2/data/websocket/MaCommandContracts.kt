@@ -90,6 +90,15 @@ object MaCommands {
          * version a user might be running.
          */
         const val SET_AUTOPLAY_ENABLED = "player_queues/dont_stop_the_music"
+
+        /**
+         * Turn crossfade on or off for a queue.
+         *
+         * New in MA 2.10, which moved the on and off out of the player config and made it
+         * a property of the queue, next to shuffle and repeat. On an older server this
+         * command does not exist and crossfade stays a player config value.
+         */
+        const val SET_CROSSFADE_ENABLED = "player_queues/crossfade"
         const val SAVE_AS_PLAYLIST = "player_queues/save_as_playlist"
     }
 
@@ -137,6 +146,7 @@ object MaCommands {
 
     /** Server-wide core settings, which is where a per-queue "global" choice points. */
     object ConfigCore {
+        const val GET = "config/core/get"
         const val GET_VALUE = "config/core/get_value"
 
         /** Domain holding the server-wide queue defaults. */
@@ -337,6 +347,16 @@ data class PlayIndexArgs(
  * Argument for [MaCommands.PlayerQueues.SET_AUTOPLAY_ENABLED]. The JSON key keeps the
  * pre-2.10 name for the same reason the command does.
  */
+data class SetCrossfadeEnabledArgs(
+    val queueId: String,
+    val enabled: Boolean
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("queue_id", queueId)
+        put("crossfade_enabled", enabled)
+    }
+}
+
 data class SetAutoplayEnabledArgs(
     val queueId: String,
     val enabled: Boolean
@@ -502,6 +522,19 @@ data class ConfigCoreValueArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("domain", domain)
         put("key", key)
+    }
+}
+
+/**
+ * The whole configuration of one core controller. Read instead of several
+ * [ConfigCoreValueArgs] calls when more than one server-wide default is needed at once,
+ * which is the case whenever a queue follows the global value for several settings.
+ */
+data class ConfigCoreGetArgs(
+    val domain: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("domain", domain)
     }
 }
 

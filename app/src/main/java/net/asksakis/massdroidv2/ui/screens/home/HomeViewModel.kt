@@ -12,7 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.asksakis.massdroidv2.data.repository.QueueAutoplayCache
+import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -39,7 +39,7 @@ class HomeViewModel @Inject constructor(
     private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore,
     private val roomDetector: RoomDetector,
     private val sendspinManager: net.asksakis.massdroidv2.data.sendspin.SendspinManager,
-    private val queueAutoplayCache: QueueAutoplayCache,
+    private val queueTogglesCache: QueueTogglesCache,
     private val sleepTimerBridge: SleepTimerBridge,
     val acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator,
 ) : ViewModel() {
@@ -63,7 +63,10 @@ class HomeViewModel @Inject constructor(
     val connectionState = wsClient.connectionState
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
-    val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueAutoplayCache.states
+    val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.autoplayStates
+
+    /** Whether crossfade is on, per queue. Empty on a server before MA 2.10. */
+    val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
     val sendspinClientId = settingsRepository.sendspinClientId
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
@@ -234,7 +237,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
-        queueAutoplayCache.setOptimistic(queueId, enabled)
+        queueTogglesCache.setOptimistic(queueId, enabled)
         viewModelScope.launch {
             try {
                 musicRepository.setAutoplayEnabled(queueId, enabled)
@@ -245,15 +248,26 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Autoplay settings of one queue. Null on a server without them (MA 2.10 added them)
-     * or for an account that may not read queue config.
+     * Configuration of one queue: Autoplay, crossfade type, volume normalization, smart
+     * shuffle. Null on a server without queue config (MA 2.10 added it) or for an account
+     * that may not read it.
      */
-    suspend fun getAutoplayConfig(queueId: String): net.asksakis.massdroidv2.domain.model.AutoplayConfig? =
-        musicRepository.getAutoplayConfig(queueId)
+    suspend fun getQueueSettings(queueId: String): net.asksakis.massdroidv2.domain.model.QueueSettings? =
+        musicRepository.getQueueSettings(queueId)
 
     /** Change how Autoplay refills the queue, reporting whether the server accepted it. */
     suspend fun setAutoplayConfig(queueId: String, mode: String, playlistUri: String?): Boolean =
         musicRepository.setAutoplayConfig(queueId, mode, playlistUri)
+
+    /** Change one queue config value, reporting whether the server accepted it. */
+    suspend fun setQueueConfigValue(queueId: String, key: String, value: String): Boolean =
+        musicRepository.setQueueConfigValue(queueId, key, value)
+
+    /** Turn crossfade on or off for the queue, showing the change before the server echo. */
+    fun setCrossfadeEnabled(queueId: String, enabled: Boolean) {
+        queueTogglesCache.setCrossfadeOptimistic(queueId, enabled)
+        viewModelScope.launch { musicRepository.setCrossfadeEnabled(queueId, enabled) }
+    }
 
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {
