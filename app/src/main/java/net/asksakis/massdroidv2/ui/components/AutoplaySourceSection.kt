@@ -35,6 +35,9 @@ import net.asksakis.massdroidv2.domain.model.QueueConfigOption
  * Autoplay's refill strategy for one queue: which source the server draws from once the
  * queue runs out, and the playlist to draw from when that is the chosen source.
  *
+ * Shown as the detail of the "Source" row, which already names it and carries the chosen
+ * source, so this starts straight at the list.
+ *
  * The sources are laid out as a list rather than behind a select, for two reasons. The
  * server's titles are whole phrases ("Automatic, similar tracks falling back to your
  * library") which do not fit a row of buttons, and a dropdown here opened over the
@@ -55,12 +58,6 @@ fun AutoplaySourceSection(
     val scope = rememberCoroutineScope()
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            "Source",
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(bottom = 2.dp)
-        )
-
         config.modeOptions.forEach { option ->
             QueueOptionRow(
                 option = option,

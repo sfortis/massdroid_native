@@ -339,88 +339,66 @@ fun PlayerSettingsDialog(
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
                     ) {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Player name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Two groups, because they are saved in two different ways. Queue
+                    // settings go to the server the moment they are chosen, like the
+                    // Autoplay source always has; player settings wait for the Save
+                    // button. Without the split the dialog silently mixed the two and
+                    // Cancel appeared to undo changes that had already been written.
+                    val queue = queueSettings
+                    val hasQueueSection = initialAutoplayEnabled != null ||
+                        queue?.crossfadeMode != null ||
+                        queue?.volumeNormalization != null ||
+                        queue?.smartShuffle != null
+                    if (hasQueueSection) {
+                        SettingsSectionHeader("Queue", "Changes apply immediately")
+                    }
 
                     // Crossfade, volume normalization and smart shuffle moved from the
                     // player to the queue in MA 2.10. Which set of controls is shown
                     // follows what the server actually sent rather than a version number:
-                    // a queue that reports these settings gets them, anything older keeps
-                    // the player-config pair below.
-                    val queueCrossfade = queueSettings?.crossfadeMode
+                    // a queue that reports these settings gets them here, anything older
+                    // keeps the player-config pair further down.
+                    val queueCrossfade = queue?.crossfadeMode
                     if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Crossfade", modifier = Modifier.weight(1f))
-                                Switch(
-                                    checked = crossfadeOn,
-                                    onCheckedChange = {
-                                        crossfadeOn = it
-                                        onCrossfadeEnabledChanged(it)
-                                    }
-                                )
-                            }
-                            // The type only matters while crossfade is on, which is also
-                            // why the server no longer offers "off" as one of its values.
-                            if (crossfadeOn) {
-                                QueueChoiceSection(
-                                    label = "Type",
-                                    choice = queueCrossfade,
-                                    onSelect = { value -> applyQueueChoice(queueCrossfade, value) }
-                                )
-                            }
-                        }
-                    } else {
-                        Text("Crossfade", style = MaterialTheme.typography.labelMedium)
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            CrossfadeMode.entries.forEachIndexed { index, mode ->
-                                SegmentedButton(
-                                    selected = crossfadeMode == mode,
-                                    onClick = { crossfadeMode = mode },
-                                    shape = SegmentedButtonDefaults.itemShape(
-                                        index = index,
-                                        count = CrossfadeMode.entries.size
-                                    ),
-                                    label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
-                                )
-                            }
-                        }
-                    }
-
-                    val queueNormalization = queueSettings?.volumeNormalization
-                    if (queueNormalization != null) {
-                        QueueChoiceSection(
-                            label = "Volume normalization",
-                            choice = queueNormalization,
-                            onSelect = { value -> applyQueueChoice(queueNormalization, value) }
-                        )
-                    } else {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Volume normalization")
+                            Text("Crossfade", modifier = Modifier.weight(1f))
                             Switch(
-                                checked = volumeNormalization,
-                                onCheckedChange = { volumeNormalization = it }
+                                checked = crossfadeOn,
+                                onCheckedChange = {
+                                    crossfadeOn = it
+                                    onCrossfadeEnabledChanged(it)
+                                }
+                            )
+                        }
+                        // The type only matters while crossfade is on, which is also why
+                        // the server no longer offers "off" as one of its values.
+                        if (crossfadeOn) {
+                            QueueChoiceRow(
+                                label = "Type",
+                                choice = queueCrossfade,
+                                onSelect = { value -> applyQueueChoice(queueCrossfade, value) },
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(start = 12.dp)
                             )
                         }
                     }
 
+                    queue?.volumeNormalization?.let { normalization ->
+                        QueueChoiceRow(
+                            label = "Volume normalization",
+                            choice = normalization,
+                            onSelect = { value -> applyQueueChoice(normalization, value) }
+                        )
+                    }
+
                     // No older counterpart: smart shuffle arrived with the queue config,
                     // so it is shown only where the server offers it.
-                    queueSettings?.smartShuffle?.let { smartShuffle ->
-                        QueueChoiceSection(
+                    queue?.smartShuffle?.let { smartShuffle ->
+                        QueueChoiceRow(
                             label = "Smart shuffle",
                             choice = smartShuffle,
                             onSelect = { value -> applyQueueChoice(smartShuffle, value) }
@@ -428,26 +406,33 @@ fun PlayerSettingsDialog(
                     }
 
                     if (initialAutoplayEnabled != null) {
-                        // Switch and its source panel kept as one group with tighter
-                        // spacing than the dialog's, so the panel reads as belonging to
-                        // the switch rather than as another player setting.
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Autoplay", modifier = Modifier.weight(1f))
-                                Switch(
-                                    checked = autoplayOn,
-                                    onCheckedChange = { autoplayOn = it }
-                                )
-                            }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Autoplay", modifier = Modifier.weight(1f))
+                            Switch(
+                                checked = autoplayOn,
+                                onCheckedChange = {
+                                    autoplayOn = it
+                                    // Sent now rather than on Save, so the whole queue
+                                    // group behaves the one way its heading promises.
+                                    onAutoplayEnabledChanged?.invoke(it)
+                                }
+                            )
+                        }
 
-                            // How the server refills the queue, offered only while the
-                            // switch is on, because that is the only time it applies.
-                            val autoplayConfig = queueSettings?.autoplay
-                            if (autoplayOn && autoplayConfig != null && onAutoplayChanged != null) {
+                        // How the server refills the queue, offered only while the switch
+                        // is on, because that is the only time it applies.
+                        val autoplayConfig = queue?.autoplay
+                        if (autoplayOn && autoplayConfig != null && onAutoplayChanged != null) {
+                            ExpandableSettingRow(
+                                label = "Source",
+                                value = autoplayConfig.summary(),
+                                labelStyle = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(start = 12.dp)
+                            ) {
                                 AutoplaySourceSection(
                                     config = autoplayConfig,
                                     onChanged = { mode, playlistUri ->
@@ -470,6 +455,49 @@ fun PlayerSettingsDialog(
                         }
                     }
 
+                    SettingsSectionHeader("Player")
+
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Player name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Where this server still keeps them: before MA 2.10 both are player
+                    // config, saved with the button below rather than on selection, so
+                    // they belong in this group and not the one above.
+                    if (queueCrossfade == null) {
+                        Text("Crossfade", style = MaterialTheme.typography.labelMedium)
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            CrossfadeMode.entries.forEachIndexed { index, mode ->
+                                SegmentedButton(
+                                    selected = crossfadeMode == mode,
+                                    onClick = { crossfadeMode = mode },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = index,
+                                        count = CrossfadeMode.entries.size
+                                    ),
+                                    label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    if (queue?.volumeNormalization == null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Volume normalization")
+                            Switch(
+                                checked = volumeNormalization,
+                                onCheckedChange = { volumeNormalization = it }
+                            )
+                        }
+                    }
 
                     if (isSendspinPlayer && formatOptions.isNotEmpty()) {
                         val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
@@ -806,9 +834,6 @@ fun PlayerSettingsDialog(
                                 outputCodec?.let { values["output_codec"] = it }
                             }
                             onSave(player.playerId, values)
-                            if (initialAutoplayEnabled != null && autoplayOn != initialAutoplayEnabled) {
-                                onAutoplayEnabledChanged?.invoke(autoplayOn)
-                            }
                             onDismiss()
                         },
                         enabled = !isLoading
@@ -1114,6 +1139,30 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                 color = labelColor,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+/**
+ * Names a group of settings and, where it matters, says when the group is written.
+ *
+ * The queue group goes to the server on selection and the player group waits for Save, a
+ * difference the dialog otherwise gave no way to see.
+ */
+@Composable
+private fun SettingsSectionHeader(title: String, caption: String? = null) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
+        caption?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
