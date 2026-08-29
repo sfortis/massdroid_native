@@ -552,8 +552,9 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // The native stream is reopened by handleDeviceChange() when the bound
         // device actually disappears; do not reopen here (avoids a second
         // glitch). This path resets the timeline state and relocks: mute, drop
-        // the buffer, and re-converge against the new route's latency.
-        flushQueuesAndDecoder()
+        // what carries the old route's latency, and re-converge against the new
+        // route's. How much has to go differs by role, hence the override.
+        flushForRouteChange()
         if (playbackStarted) {
             playbackStarted = false
             beginStartupMute()
@@ -1277,6 +1278,32 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         val sync = clockSynchronizer ?: return "clock=none"
         return "clockSamples=${sync.currentSampleCount()} clockErr=${sync.errorUs()}us " +
             "clockOffset=${sync.currentOffsetUs()}us synced=${sync.isSynced()}"
+    }
+
+    /**
+     * Discard the state an output-route change invalidated. The default drops the
+     * whole pipeline, which is what a grouped engine needs: the new route has a
+     * different latency, so everything has to be rebuilt and relocked against the
+     * group timeline. [SendspinDirectEngine] overrides this.
+     */
+    protected open fun flushForRouteChange() {
+        flushQueuesAndDecoder()
+    }
+
+    /**
+     * Drop only what the old route's latency was baked into: the decoded PCM in
+     * the native ring, and the timeline anchor that scheduled it. The encoded
+     * frame queue and the decoder keep their contents, so playback resumes from
+     * the same audio with no content hole.
+     *
+     * The freeze state is deliberately left alone here. Unlike a full flush,
+     * which makes a pending freeze moot, a route change can happen while the
+     * output is legitimately frozen (a call arriving as the car connects), and
+     * the controller still owns that freeze and will lift it on focus gain.
+     */
+    protected fun flushDecodedOutput() {
+        onFlush()
+        nativeOutput.flush()
     }
 
     private fun flushQueuesAndDecoder() {

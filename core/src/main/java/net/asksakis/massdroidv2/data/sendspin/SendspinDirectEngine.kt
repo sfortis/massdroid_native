@@ -43,4 +43,24 @@ class SendspinDirectEngine(context: Context) : SendspinPlaybackEngine(context) {
         anchorServerUs = 0L
         anchorLocalUs = 0L
     }
+
+    /**
+     * Keep the encoded audio across an output-route change and re-anchor to it.
+     *
+     * Only the decoded PCM is tied to the route, through the output latency it
+     * was scheduled against, so only that has to go. The encoded frames are the
+     * same audio on any route, and throwing them away costs the whole buffer for
+     * the rest of the stream: the MA server drains its own model of what we hold
+     * at exactly realtime and never learns that we discarded it, so it goes on
+     * feeding just-in-time instead of sending a fresh burst.
+     *
+     * Measured in the car on 2026-08-28. Two collapses in one drive, both at a
+     * route change during the Bluetooth connect: a full 26 s buffer discarded
+     * (once only 1.3 s after it arrived), then about 0.7 s of runway for the
+     * following seven minutes, with underruns where there had been none. A third
+     * of that drive played on a buffer too thin to absorb a cellular dip.
+     */
+    override fun flushForRouteChange() {
+        flushDecodedOutput()
+    }
 }
