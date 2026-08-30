@@ -40,7 +40,8 @@ object Routes {
     const val ARTIST_DETAIL = "artist/{itemId}/{provider}?name={name}"
     const val ALBUM_DETAIL = "album/{itemId}/{provider}?name={name}"
     const val PODCAST_DETAIL = "podcast/{itemId}/{provider}?name={name}"
-    const val PLAYLIST_DETAIL = "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}"
+    const val PLAYLIST_DETAIL =
+        "playlist/{itemId}/{provider}?name={name}&uri={uri}&favorite={favorite}&dynamic={dynamic}"
 
     fun artistDetail(itemId: String, provider: String, name: String = "") =
         "artist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
@@ -48,8 +49,19 @@ object Routes {
         "album/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
     fun podcastDetail(itemId: String, provider: String, name: String = "") =
         "podcast/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}"
-    fun playlistDetail(itemId: String, provider: String, name: String = "", uri: String = "", favorite: Boolean = false) =
-        "playlist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}?name=${android.net.Uri.encode(name)}&uri=${android.net.Uri.encode(uri)}&favorite=$favorite"
+    fun playlistDetail(
+        itemId: String,
+        provider: String,
+        name: String = "",
+        uri: String = "",
+        favorite: Boolean = false,
+        // Carried so the detail screen knows a playlist the server rebuilds on every
+        // play, which can only be played by its own URI. See Playlist.isDynamic.
+        dynamic: Boolean = false
+    ) =
+        "playlist/${android.net.Uri.encode(itemId)}/${android.net.Uri.encode(provider)}" +
+            "?name=${android.net.Uri.encode(name)}&uri=${android.net.Uri.encode(uri)}" +
+            "&favorite=$favorite&dynamic=$dynamic"
 }
 
 @Composable
@@ -72,7 +84,14 @@ fun MassDroidNavHost(
                 },
                 onPlaylistClick = { playlist ->
                     navController.navigate(
-                        Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite)
+                        Routes.playlistDetail(
+                            playlist.itemId,
+                            playlist.provider,
+                            playlist.name,
+                            playlist.uri,
+                            playlist.favorite,
+                            playlist.isDynamic
+                        )
                     )
                 },
                 onNavigateToSettings = { navController.navigate(Routes.settings()) },
@@ -97,7 +116,14 @@ fun MassDroidNavHost(
                     navController.navigate(Routes.albumDetail(album.itemId, album.provider, album.name))
                 },
                 onPlaylistClick = { playlist ->
-                    navController.navigate(Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite))
+                    navController.navigate(Routes.playlistDetail(
+                            playlist.itemId,
+                            playlist.provider,
+                            playlist.name,
+                            playlist.uri,
+                            playlist.favorite,
+                            playlist.isDynamic
+                        ))
                 },
                 onPodcastClick = { podcast ->
                     navController.navigate(Routes.podcastDetail(podcast.itemId, podcast.provider, podcast.name))
@@ -114,7 +140,14 @@ fun MassDroidNavHost(
                     navController.navigate(Routes.albumDetail(album.itemId, album.provider, album.name))
                 },
                 onPlaylistClick = { playlist ->
-                    navController.navigate(Routes.playlistDetail(playlist.itemId, playlist.provider, playlist.name, playlist.uri, playlist.favorite))
+                    navController.navigate(Routes.playlistDetail(
+                            playlist.itemId,
+                            playlist.provider,
+                            playlist.name,
+                            playlist.uri,
+                            playlist.favorite,
+                            playlist.isDynamic
+                        ))
                 }
             )
         }
@@ -219,7 +252,8 @@ fun MassDroidNavHost(
                 navArgument("provider") { type = NavType.StringType },
                 navArgument("name") { type = NavType.StringType; defaultValue = "" },
                 navArgument("uri") { type = NavType.StringType; defaultValue = "" },
-                navArgument("favorite") { type = NavType.BoolType; defaultValue = false }
+                navArgument("favorite") { type = NavType.BoolType; defaultValue = false },
+                navArgument("dynamic") { type = NavType.BoolType; defaultValue = false }
             )
         ) {
             PlaylistDetailScreen(onBack = { navController.popBackStack() })

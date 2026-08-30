@@ -789,7 +789,23 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun playPlaylist(playlist: Playlist) {
-        playUri(playlist.uri)
+        // A playlist the server rebuilds on every play has to reach it whole. The
+        // ordinary path expands a container into tracks when the listener has blocked
+        // artists, in order to filter them, and that leaves nothing to rebuild.
+        if (!playlist.isDynamic) {
+            playUri(playlist.uri)
+            return
+        }
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                musicRepository.playServerResolved(queueId, playlist.uri)
+            } catch (e: Exception) {
+                Log.w(TAG, "playPlaylist failed: ${e.message}")
+                _error.tryEmit("Not connected to server")
+            }
+        }
     }
 
     fun quickPlay(uri: String) {

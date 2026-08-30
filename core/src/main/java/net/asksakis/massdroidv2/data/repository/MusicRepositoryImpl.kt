@@ -325,6 +325,12 @@ class MusicRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun playServerResolved(queueId: String, uri: String, option: String?) {
+        // The list form is the one that sends what it is given, unexamined. A single URI
+        // in it reaches the server as the container itself.
+        playMedia(queueId, listOf(uri), option = option)
+    }
+
     /**
      * If the URI is a container (artist/album/playlist) and blocked artists exist,
      * fetch tracks, filter out blocked, return filtered URIs.
@@ -908,6 +914,7 @@ class MusicRepositoryImpl @Inject constructor(
             imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             isEditable = isEditable != false,
+            isDynamic = isDynamic == true,
             providerDomains = extractProviderDomains()
         )
     }

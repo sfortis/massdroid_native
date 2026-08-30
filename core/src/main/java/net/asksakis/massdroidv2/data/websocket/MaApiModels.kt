@@ -150,6 +150,11 @@ data class ServerMediaItem(
     val position: Int? = null,
     val year: Int? = null,
     @SerialName("is_editable") val isEditable: Boolean? = null,
+    /**
+     * Playlists only: whether the server re-evaluates the contents each time the
+     * playlist is played, as the Smart Playlist and Endless Mix providers do.
+     */
+    @SerialName("is_dynamic") val isDynamic: Boolean? = null,
     @SerialName("album_type") val albumType: String? = null,
     @SerialName("is_playable") val isPlayable: Boolean? = null,
     val path: String? = null,

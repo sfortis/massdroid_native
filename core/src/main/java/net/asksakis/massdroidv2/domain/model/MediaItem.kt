@@ -121,6 +121,15 @@ data class Playlist(
     val imageUrl: String? = null,
     val favorite: Boolean = false,
     val isEditable: Boolean = true,
+    /**
+     * Whether the server rebuilds this playlist every time it is played, which is
+     * what the Smart Playlist and Endless Mix providers do.
+     *
+     * It decides how the playlist may be played: handing the server a list of
+     * tracks is a snapshot and skips the rebuild, so a dynamic playlist has to be
+     * played by its own URI. See `PlaylistDetailViewModel.playAll`.
+     */
+    val isDynamic: Boolean = false,
     val providerDomains: List<String> = emptyList()
 )
 

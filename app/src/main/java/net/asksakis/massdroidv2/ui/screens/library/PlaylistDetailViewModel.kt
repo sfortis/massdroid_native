@@ -39,6 +39,18 @@ class PlaylistDetailViewModel @Inject constructor(
     val provider: String = savedStateHandle["provider"] ?: ""
     private val playlistUri: String = savedStateHandle["uri"] ?: ""
 
+    /**
+     * Whether the server rebuilds this playlist every time it is played, which the
+     * Smart Playlist and Endless Mix providers do.
+     *
+     * The rebuild happens when Music Assistant resolves a PLAYLIST into a queue
+     * (`media_resolver.get_playlist_tracks` sets `force_refresh = playlist.is_dynamic`).
+     * Handing it the track list instead, which is what the buttons below did, gives it
+     * nothing to rebuild and plays the snapshot that happened to be on screen. Reported
+     * as issue #67.
+     */
+    private val isDynamic: Boolean = savedStateHandle["dynamic"] ?: false
+
     private val _rawTracks = MutableStateFlow<List<Track>>(emptyList())
     // Sort is a single global preference (persisted), applied to every playlist and surviving
     // navigation/restart — not per-playlist. Backed by DataStore via [SettingsRepository].
@@ -192,54 +204,38 @@ class PlaylistDetailViewModel @Inject constructor(
 
     fun playTrack(track: Track) = playUri(track.uri)
 
-    fun playAll() {
-        val uris = tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                musicRepository.playMedia(queueId, uris, option = "replace")
-            } catch (e: Exception) {
-                Log.w(TAG, "playAll failed: ${e.message}")
-            }
-        }
-    }
+    fun playAll() = playWhole(option = "replace", what = "playAll")
 
-    fun addAllToQueue() {
-        val uris = tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                musicRepository.playMedia(queueId, uris, option = "add")
-            } catch (e: Exception) {
-                Log.w(TAG, "addAllToQueue failed: ${e.message}")
-            }
-        }
-    }
+    fun addAllToQueue() = playWhole(option = "add", what = "addAllToQueue")
 
-    fun playAllNext() {
-        val uris = tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                musicRepository.playMedia(queueId, uris, option = "next")
-            } catch (e: Exception) {
-                Log.w(TAG, "playAllNext failed: ${e.message}")
-            }
-        }
-    }
+    fun playAllNext() = playWhole(option = "next", what = "playAllNext")
 
-    fun replaceQueue() {
-        val uris = tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
+    fun replaceQueue() = playWhole(option = "replace", what = "replaceQueue")
+
+    /**
+     * Send the whole playlist to the queue.
+     *
+     * A dynamic playlist goes by its own URI so the server rebuilds it, which is the
+     * whole point of one and what playing it from the library list has always done.
+     * Everything else goes as the track list on screen, which is deliberate: this screen
+     * sorts and filters, and a static playlist should play in the order being looked at.
+     */
+    private fun playWhole(option: String, what: String) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        val uris = tracks.value.map { it.uri }
+        // The URI is a navigation argument and can be absent; without it there is no
+        // container to hand over and the track list is all there is, rebuild or not.
+        val rebuildOnServer = isDynamic && playlistUri.isNotBlank()
+        if (!rebuildOnServer && uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                musicRepository.playMedia(queueId, uris, option = "replace")
+                if (rebuildOnServer) {
+                    musicRepository.playServerResolved(queueId, playlistUri, option = option)
+                } else {
+                    musicRepository.playMedia(queueId, uris, option = option)
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "replaceQueue failed: ${e.message}")
+                Log.w(TAG, "$what failed: ${e.message}")
             }
         }
     }
