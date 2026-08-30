@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Tune
@@ -347,7 +346,20 @@ fun PlayerSettingsDialog(
                             // without engaging the scroll.
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
+                            // Applied INSIDE the scroll, so it is trailing space in the
+                            // content rather than a smaller viewport: without it the last
+                            // card ends flush against the clip and its bottom edge and
+                            // ripple are cut where the Save row begins.
+                            .padding(bottom = 6.dp)
                     ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Player name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     // Two groups, because they are saved in two different ways. Queue
                     // settings go to the server the moment they are chosen, like the
                     // Autoplay source always has; player settings wait for the Save
@@ -359,6 +371,13 @@ fun PlayerSettingsDialog(
                         queueCrossfade != null ||
                         queue?.volumeNormalization != null ||
                         queue?.smartShuffle != null
+                    // A remote player on MA 2.10 with nothing of its own to configure
+                    // would otherwise get a heading over an empty card.
+                    val hasPlayerSection = queueCrossfade == null ||
+                        queue?.volumeNormalization == null ||
+                        (isSendspinPlayer && formatOptions.isNotEmpty()) ||
+                        (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) ||
+                        isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay
 
                     if (hasQueueSection) {
                         SettingsGroupCard("Queue", caption = "Changes apply immediately") {
@@ -476,28 +495,19 @@ fun PlayerSettingsDialog(
                         }
                     }
 
+                    // The one field that names what is being edited, so it stays at the
+                    // top rather than inside a group. It is saved with the button below,
+                    // like everything in the Player group.
+                    if (hasPlayerSection) {
                     SettingsGroupCard("Player") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Edit, contentDescription = null)
-                            OutlinedTextField(
-                                value = name,
-                                onValueChange = { name = it },
-                                label = { Text("Player name") },
-                                singleLine = true,
-                                modifier = Modifier.padding(start = 16.dp).fillMaxWidth()
-                            )
-                        }
+                        // Dividers go between whatever this player actually offers.
+                        var shownPlayer = 0
 
                         // Where this server still keeps them: before MA 2.10 both are player
                         // config, saved with the button below rather than on selection, so
                         // they belong in this group and not the one above.
                         if (queueCrossfade == null) {
-                            HorizontalDivider()
+                            if (shownPlayer++ > 0) HorizontalDivider()
                             ChoiceChipsItem(
                                 label = "Crossfade",
                                 icon = Icons.Default.GraphicEq,
@@ -510,7 +520,7 @@ fun PlayerSettingsDialog(
                         }
 
                         if (queue?.volumeNormalization == null) {
-                            HorizontalDivider()
+                            if (shownPlayer++ > 0) HorizontalDivider()
                             SettingsSwitchItem(
                                 label = "Volume normalization",
                                 icon = Icons.AutoMirrored.Filled.VolumeUp,
@@ -526,7 +536,7 @@ fun PlayerSettingsDialog(
                             val allOptions =
                                 if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
                             val currentValue = selectedFormatValue ?: "automatic"
-                            HorizontalDivider()
+                            if (shownPlayer++ > 0) HorizontalDivider()
                             ChoiceChipsItem(
                                 label = "Audio format",
                                 icon = Icons.Default.HighQuality,
@@ -542,7 +552,7 @@ fun PlayerSettingsDialog(
                         // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav).
                         // Shown for any non-Sendspin player whose MA config exposes it.
                         if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
-                            HorizontalDivider()
+                            if (shownPlayer++ > 0) HorizontalDivider()
                             ChoiceChipsItem(
                                 label = "Output codec",
                                 icon = Icons.Default.AudioFile,
@@ -558,7 +568,7 @@ fun PlayerSettingsDialog(
                         // room is out of step, so they stay folded away rather than filling
                         // the dialog every time someone opens it to rename a player.
                         if (isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay) {
-                            HorizontalDivider()
+                            if (shownPlayer++ > 0) HorizontalDivider()
                             ExpandableSettingItem(
                                 label = "Advanced timing",
                                 icon = Icons.Default.Tune,
@@ -750,6 +760,7 @@ fun PlayerSettingsDialog(
                         }
                             }
                         }
+                    }
                     }
                     }
                 }
