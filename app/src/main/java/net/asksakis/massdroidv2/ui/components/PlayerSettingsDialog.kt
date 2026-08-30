@@ -73,7 +73,6 @@ import android.util.Log
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
@@ -314,8 +313,16 @@ fun PlayerSettingsDialog(
     ) {
         androidx.compose.material3.Surface(
             shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 6.dp
+            // The ground the setting cards sit on, so it has to stay below them. It used
+            // to be surfaceContainerHigh, the colour of the cards themselves, which left
+            // them nothing to stand out against. Measured on this device: the cards are
+            // 42,42,42, plain surface was 18,18,18 (Edit Room's ground, too dark for a
+            // dialog), and this token sits between the two.
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            // Tonal elevation would tint that ground back up and undo the separation; the
+            // dialog lifts off the dimmed screen with a shadow instead.
+            tonalElevation = 0.dp,
+            shadowElevation = 6.dp
         ) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
                 Text(
@@ -380,10 +387,7 @@ fun PlayerSettingsDialog(
                         isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay
 
                     if (hasQueueSection) {
-                        SettingsGroupCard("Queue", caption = "Changes apply immediately") {
-                            // Dividers belong between items, and which items exist depends
-                            // on what this server offers, so they are counted as they go.
-                            var shown = 0
+                        SettingsSectionLabel("Queue", caption = "Changes apply immediately")
 
                             // Crossfade, volume normalization and smart shuffle moved from
                             // the player to the queue in MA 2.10. Which set of controls is
@@ -391,13 +395,12 @@ fun PlayerSettingsDialog(
                             // version number: a queue that reports these settings gets them
                             // here, anything older keeps the player-config pair below.
                             if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
-                                if (shown++ > 0) HorizontalDivider()
-                                QueueChoiceItem(
-                                    label = "Crossfade",
+                                QueueChoiceCard(
+                                    title = "Crossfade",
                                     icon = Icons.Default.GraphicEq,
                                     // The type only matters while crossfade is on, which is
                                     // also why the server no longer offers "off" as a type.
-                                    choice = queueCrossfade.takeIf { crossfadeOn },
+                                    choice = queueCrossfade.takeIf { crossfadeOn }?.withShortTitles(),
                                     onSelect = { value -> applyQueueChoice(queueCrossfade, value) },
                                     trailing = {
                                         Switch(
@@ -412,9 +415,8 @@ fun PlayerSettingsDialog(
                             }
 
                             queue?.volumeNormalization?.let { normalization ->
-                                if (shown++ > 0) HorizontalDivider()
-                                QueueChoiceItem(
-                                    label = "Volume normalization",
+                                QueueChoiceCard(
+                                    title = "Volume normalization",
                                     icon = Icons.AutoMirrored.Filled.VolumeUp,
                                     choice = normalization,
                                     onSelect = { value -> applyQueueChoice(normalization, value) }
@@ -424,9 +426,8 @@ fun PlayerSettingsDialog(
                             // No older counterpart: smart shuffle arrived with the queue
                             // config, so it shows only where the server offers it.
                             queue?.smartShuffle?.let { smartShuffle ->
-                                if (shown++ > 0) HorizontalDivider()
-                                QueueChoiceItem(
-                                    label = "Smart shuffle",
+                                QueueChoiceCard(
+                                    title = "Smart shuffle",
                                     icon = Icons.Default.Shuffle,
                                     choice = smartShuffle,
                                     onSelect = { value -> applyQueueChoice(smartShuffle, value) }
@@ -434,7 +435,6 @@ fun PlayerSettingsDialog(
                             }
 
                             if (initialAutoplayEnabled != null) {
-                                if (shown++ > 0) HorizontalDivider()
                                 val autoplaySwitch: @Composable () -> Unit = {
                                     Switch(
                                         checked = autoplayOn,
@@ -452,8 +452,8 @@ fun PlayerSettingsDialog(
                                 val autoplayConfig = queue?.autoplay
                                     ?.takeIf { autoplayOn && onAutoplayChanged != null }
                                 if (autoplayConfig == null) {
-                                    SettingsSwitchItem(
-                                        label = "Autoplay",
+                                    SettingsSwitchCard(
+                                        title = "Autoplay",
                                         icon = Icons.AutoMirrored.Filled.PlaylistPlay,
                                         checked = autoplayOn,
                                         onCheckedChange = {
@@ -462,8 +462,8 @@ fun PlayerSettingsDialog(
                                         }
                                     )
                                 } else {
-                                    ExpandableSettingItem(
-                                        label = "Autoplay",
+                                    ExpandableSettingCard(
+                                        title = "Autoplay",
                                         icon = Icons.AutoMirrored.Filled.PlaylistPlay,
                                         value = autoplayConfig.summary(),
                                         trailing = autoplaySwitch
@@ -492,37 +492,35 @@ fun PlayerSettingsDialog(
                                     }
                                 }
                             }
-                        }
                     }
 
                     // The one field that names what is being edited, so it stays at the
                     // top rather than inside a group. It is saved with the button below,
                     // like everything in the Player group.
                     if (hasPlayerSection) {
-                    SettingsGroupCard("Player") {
-                        // Dividers go between whatever this player actually offers.
-                        var shownPlayer = 0
+                        SettingsSectionLabel("Player")
 
                         // Where this server still keeps them: before MA 2.10 both are player
                         // config, saved with the button below rather than on selection, so
                         // they belong in this group and not the one above.
                         if (queueCrossfade == null) {
-                            if (shownPlayer++ > 0) HorizontalDivider()
-                            ChoiceChipsItem(
-                                label = "Crossfade",
+                            QueueChoiceCard(
+                                title = "Crossfade",
                                 icon = Icons.Default.GraphicEq,
-                                options = CrossfadeMode.entries.map {
-                                    QueueConfigOption(value = it.apiValue, title = it.label)
-                                },
-                                selected = crossfadeMode.apiValue,
+                                choice = QueueChoice(
+                                    key = QueueChoice.KEY_CROSSFADE_MODE,
+                                    value = crossfadeMode.apiValue,
+                                    options = CrossfadeMode.entries.map {
+                                        QueueConfigOption(value = it.apiValue, title = it.label)
+                                    }
+                                ),
                                 onSelect = { value -> crossfadeMode = CrossfadeMode.fromApi(value) }
                             )
                         }
 
                         if (queue?.volumeNormalization == null) {
-                            if (shownPlayer++ > 0) HorizontalDivider()
-                            SettingsSwitchItem(
-                                label = "Volume normalization",
+                            SettingsSwitchCard(
+                                title = "Volume normalization",
                                 icon = Icons.AutoMirrored.Filled.VolumeUp,
                                 checked = volumeNormalization,
                                 onCheckedChange = { volumeNormalization = it }
@@ -536,30 +534,39 @@ fun PlayerSettingsDialog(
                             val allOptions =
                                 if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
                             val currentValue = selectedFormatValue ?: "automatic"
-                            if (shownPlayer++ > 0) HorizontalDivider()
-                            ChoiceChipsItem(
-                                label = "Audio format",
+                            QueueChoiceCard(
+                                title = "Audio format",
                                 icon = Icons.Default.HighQuality,
-                                options = allOptions.map {
-                                    QueueConfigOption(value = it.value, title = it.title)
-                                },
-                                selected = currentValue,
-                                onSelect = { selectedFormatValue = it },
-                                note = "FLAC on WiFi, Opus on mobile".takeIf { currentValue == "smart" }
+                                choice = QueueChoice(
+                                    key = "audio_format",
+                                    value = currentValue,
+                                    options = allOptions.map {
+                                        QueueConfigOption(
+                                            value = it.value,
+                                            title = it.title,
+                                            description = "FLAC on WiFi, Opus on mobile"
+                                                .takeIf { _ -> it.value == "smart" }
+                                        )
+                                    }
+                                ),
+                                onSelect = { selectedFormatValue = it }
                             )
                         }
 
                         // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav).
                         // Shown for any non-Sendspin player whose MA config exposes it.
                         if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
-                            if (shownPlayer++ > 0) HorizontalDivider()
-                            ChoiceChipsItem(
-                                label = "Output codec",
+                            QueueChoiceCard(
+                                title = "Output codec",
                                 icon = Icons.Default.AudioFile,
-                                options = outputCodecOptions.map {
-                                    QueueConfigOption(value = it.value, title = it.title)
-                                },
-                                selected = outputCodec ?: outputCodecOptions.firstOrNull()?.value,
+                                choice = QueueChoice(
+                                    key = "output_codec",
+                                    value = outputCodec
+                                        ?: outputCodecOptions.firstOrNull()?.value.orEmpty(),
+                                    options = outputCodecOptions.map {
+                                        QueueConfigOption(value = it.value, title = it.title)
+                                    }
+                                ),
                                 onSelect = { outputCodec = it }
                             )
                         }
@@ -568,9 +575,8 @@ fun PlayerSettingsDialog(
                         // room is out of step, so they stay folded away rather than filling
                         // the dialog every time someone opens it to rename a player.
                         if (isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay) {
-                            if (shownPlayer++ > 0) HorizontalDivider()
-                            ExpandableSettingItem(
-                                label = "Advanced timing",
+                            ExpandableSettingCard(
+                                title = "Advanced timing",
                                 icon = Icons.Default.Tune,
                                 value = "Sync delays and calibration"
                             ) {
@@ -760,7 +766,6 @@ fun PlayerSettingsDialog(
                         }
                             }
                         }
-                    }
                     }
                     }
                 }

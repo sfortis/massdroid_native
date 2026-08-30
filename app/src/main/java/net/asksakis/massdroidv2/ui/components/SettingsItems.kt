@@ -4,10 +4,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
@@ -18,8 +19,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
@@ -31,140 +30,150 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.AutoplayConfig
+import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 
 /**
- * Settings rows for the player dialog, in the same shape the Settings screen uses: a
- * titled card holding list items, an icon on each, and short choices offered as chips.
+ * Settings pieces for the player dialog, built to the pattern the Edit Room screen
+ * established and the rest of the app follows: a section label, then one card per setting,
+ * each card carrying its own bold title, its control, and a grey line explaining it.
  *
- * The dialog used to be a column of bare text and switches, which made it the one settings
- * surface in the app that looked like nothing else in it.
+ * One card per setting is the part that matters. A single card holding every setting with
+ * dividers between them, which this dialog had, gives one large grey block where the app
+ * everywhere else gives separate blocks that let the settings be told apart at a glance.
  */
 
-/**
- * A titled group of settings.
- *
- * [caption] is where a group says something true of all of it, such as that its settings
- * reach the server the moment they are chosen rather than when Save is pressed.
- */
+/** The heading over a group of setting cards, as Edit Room draws its section headers. */
 @Composable
-fun SettingsGroupCard(
+fun SettingsSectionLabel(
     title: String,
     modifier: Modifier = Modifier,
-    caption: String? = null,
-    content: @Composable ColumnScope.() -> Unit
+    caption: String? = null
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(modifier = modifier.fillMaxWidth().padding(top = 4.dp)) {
         Text(
             title,
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
         )
         caption?.let {
             Text(
                 it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.medium,
-            // One step away from the dialog's own surfaceContainerHigh, so the card reads
-            // as a group in both themes rather than melting into the background.
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
-            )
-        ) {
-            Column(content = content)
         }
     }
 }
 
 /**
- * One queue setting offered as chips: the crossfade type, volume normalization, smart
- * shuffle.
+ * One setting, in its own card.
  *
- * Pass a null [choice] to show the row without its options, which is what the crossfade
+ * [trailing] is where a switch goes, on the title row. [description] is the grey line
+ * underneath, which is where a setting says what it currently resolves to or why one of
+ * its values cannot be picked.
+ */
+@Composable
+fun SettingCard(
+    title: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    trailing: @Composable (() -> Unit)? = null,
+    description: String? = null,
+    content: @Composable (() -> Unit)? = null
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 8.dp).weight(1f)
+                )
+                trailing?.invoke()
+            }
+            content?.let {
+                Spacer(modifier = Modifier.height(10.dp))
+                it()
+            }
+            description?.let {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A queue setting whose values are offered as chips: the crossfade type, volume
+ * normalization, smart shuffle.
+ *
+ * Pass a null [choice] to show the card without its values, which is what the crossfade
  * type does while crossfade is switched off.
  */
 @Composable
-fun QueueChoiceItem(
-    label: String,
+fun QueueChoiceCard(
+    title: String,
     icon: ImageVector,
     choice: QueueChoice?,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null
 ) {
-    ChoiceChipsItem(
-        label = label,
+    val options = choice?.options.orEmpty()
+    SettingCard(
+        title = title,
         icon = icon,
-        options = choice?.options.orEmpty(),
-        selected = choice?.value,
-        onSelect = onSelect,
         modifier = modifier,
+        trailing = trailing,
         // "Global" only ever says "follow the default" without saying what the default is,
-        // which is the one thing worth knowing before choosing it.
-        note = choice?.globalTitle
-            ?.takeIf { choice.followsGlobal }
-            ?.let { "Follows the server: $it" },
-        trailing = trailing
-    )
-}
-
-/**
- * A setting whose values fit on chips.
- *
- * A disabled value stays visible and unselectable rather than being filtered away: the
- * server disables what cannot work in the current setup (smart crossfade needs an analysis
- * provider) and says why underneath, which explains more than an absent option.
- */
-@Composable
-fun ChoiceChipsItem(
-    label: String,
-    icon: ImageVector,
-    options: List<QueueConfigOption>,
-    selected: String?,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    note: String? = null,
-    trailing: @Composable (() -> Unit)? = null
-) {
-    ListItem(
-        modifier = modifier,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        headlineContent = { Text(label) },
-        leadingContent = { Icon(icon, contentDescription = null) },
-        trailingContent = trailing,
-        supportingContent = if (options.isEmpty() && note == null) {
+        // which is the one thing worth knowing before choosing it. An unavailable value
+        // explains itself here too.
+        description = listOfNotNull(
+            choice?.globalTitle
+                ?.takeIf { choice.followsGlobal }
+                ?.let { "Server default: $it" },
+            options.firstOrNull { it.disabled }
+                ?.let { option -> option.disabledReason?.let { "${option.title}: $it" } }
+        ).joinToString("\n").ifBlank { null },
+        content = if (options.isEmpty()) {
             null
         } else {
             {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    if (options.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            options.forEach { option ->
-                                FilterChip(
-                                    selected = option.value == selected,
-                                    enabled = !option.disabled,
-                                    onClick = { onSelect(option.value) },
-                                    label = { Text(option.title) }
-                                )
-                            }
-                        }
-                    }
-                    note?.let { SupportingNote(it) }
-                    options.filter { it.disabled }.forEach { option ->
-                        option.disabledReason?.let { SupportingNote("${option.title}: $it") }
+                // A disabled value stays visible and unselectable rather than being
+                // filtered away: the server disables what cannot work in the current setup
+                // and says why, which explains more than an absent option.
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    options.forEach { option ->
+                        FilterChip(
+                            selected = option.value == choice?.value,
+                            enabled = !option.disabled,
+                            onClick = { onSelect(option.value) },
+                            label = { Text(option.title) }
+                        )
                     }
                 }
             }
@@ -172,43 +181,16 @@ fun ChoiceChipsItem(
     )
 }
 
-@Composable
-private fun SupportingNote(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-}
-
-/** A setting that is simply on or off. */
-@Composable
-fun SettingsSwitchItem(
-    label: String,
-    icon: ImageVector,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    ListItem(
-        modifier = modifier,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        headlineContent = { Text(label) },
-        leadingContent = { Icon(icon, contentDescription = null) },
-        trailingContent = { Switch(checked = checked, onCheckedChange = onCheckedChange) }
-    )
-}
-
 /**
  * A setting whose detail is too long for chips, shown as its current value with the detail
- * opening underneath when the row is tapped.
+ * opening underneath when the card is tapped.
  *
  * Used where the server's own titles are whole phrases (the Autoplay source) and for the
  * timing controls, which are a panel rather than a choice.
  */
 @Composable
-fun ExpandableSettingItem(
-    label: String,
+fun ExpandableSettingCard(
+    title: String,
     icon: ImageVector,
     value: String?,
     modifier: Modifier = Modifier,
@@ -216,38 +198,81 @@ fun ExpandableSettingItem(
     content: @Composable () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Column(modifier = modifier.fillMaxWidth()) {
-        ListItem(
-            modifier = Modifier.clickable { expanded = !expanded },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text(label) },
-            leadingContent = { Icon(icon, contentDescription = null) },
-            trailingContent = trailing,
-            supportingContent = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        value.orEmpty(),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Icon(
-                        if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
-                        contentDescription = null
-                    )
-                }
+    SettingCard(
+        title = title,
+        icon = icon,
+        modifier = modifier.clickable { expanded = !expanded },
+        trailing = trailing
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    value.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Icon(
+                    if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-        )
-        AnimatedVisibility(visible = expanded) {
-            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
-                content()
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(top = 8.dp)) { content() }
             }
         }
     }
 }
 
+/** A setting that is simply on or off, with nothing to configure underneath. */
+@Composable
+fun SettingsSwitchCard(
+    title: String,
+    icon: ImageVector,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    description: String? = null
+) {
+    SettingCard(
+        title = title,
+        icon = icon,
+        modifier = modifier,
+        description = description,
+        trailing = { Switch(checked = checked, onCheckedChange = onCheckedChange) }
+    )
+}
+
 /**
- * The chosen Autoplay source, for its collapsed row. A queue following the server-wide
+ * The crossfade type with labels short enough to sit on one line.
+ *
+ * The server names the values "Standard crossfade" and "Smart crossfade (beat-matched)",
+ * which repeat the word already in the card's own title. The app has its own short names
+ * for the same values, so it uses those and leaves anything it does not recognise, such as
+ * "Global", as the server wrote it.
+ *
+ * The reason an unavailable type carries is dropped, since it runs to two lines of prose,
+ * but what "Global" resolves to is kept: a value that only says "follow the default" is
+ * useless without naming the default, and in a card of its own there is room to say it.
+ */
+internal fun QueueChoice.withShortTitles(): QueueChoice = copy(
+    options = options.map { option ->
+        option.copy(
+            title = CrossfadeMode.entries
+                .firstOrNull { it.apiValue == option.value }
+                ?.label
+                ?: option.title,
+            disabledReason = null,
+            description = null
+        )
+    }
+)
+
+/**
+ * The chosen Autoplay source, for its collapsed card. A queue following the server-wide
  * default names what that default currently is, rather than only that something else
  * decides it.
  */
