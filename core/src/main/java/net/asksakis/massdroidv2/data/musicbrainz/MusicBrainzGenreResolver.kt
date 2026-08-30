@@ -150,16 +150,38 @@ class MusicBrainzGenreResolver @Inject constructor(
             //    became a whole mix's envelope.
             // 3. Name alone, which is not an identity and is used only as a last
             //    resort.
-            val resolvedMbid = mbid?.takeIf { it.isNotBlank() }
-                ?: trackHint?.takeIf { it.isNotBlank() }?.let { findMbidByRecording(artistName, it) }
-                ?: findMbid(artistName)
-                ?: run {
-                    cache(key, mbid = "", genres = emptyList())
-                    return@withContext emptyList()
+            //
+            // Whether an empty answer is remembered depends on which kind of
+            // nothing it was. MusicBrainz answering "no such artist", or "this
+            // artist has no genres", is a fact worth caching for weeks. A request
+            // that never completed, because the rate limiter gave up after a 503
+            // or the network failed, is not a fact at all, and caching it as one
+            // used to hide the artist from every mix for the next fortnight. Two
+            // days of logs held 38 such give-ups.
+            val byRecording = trackHint?.takeIf { it.isNotBlank() }
+                ?.let { findMbidByRecording(artistName, it) }
+                ?: Lookup.Missing
+            val resolvedMbid = when (byRecording) {
+                is Lookup.Found -> byRecording.value
+                else -> when (val byName = findMbid(artistName)) {
+                    is Lookup.Found -> byName.value
+                    Lookup.Unavailable -> return@withContext emptyList()
+                    Lookup.Missing -> {
+                        // Only authoritative when every step actually answered.
+                        if (byRecording != Lookup.Unavailable) {
+                            cache(key, mbid = "", genres = emptyList())
+                        }
+                        return@withContext emptyList()
+                    }
                 }
-            val genres = fetchGenres(resolvedMbid)
-            cache(key, resolvedMbid, genres)
-            genres
+            }
+            when (val fetched = fetchGenres(resolvedMbid)) {
+                is Lookup.Found -> {
+                    cache(key, resolvedMbid, fetched.value)
+                    fetched.value
+                }
+                else -> emptyList()
+            }
         }
     }
 
@@ -170,13 +192,16 @@ class MusicBrainzGenreResolver @Inject constructor(
      * they do not share a recording. Returns null when the recording is unknown
      * or the credit is ambiguous, and the caller falls back to the name search.
      */
-    private suspend fun findMbidByRecording(artistName: String, trackName: String): String? {
+    private suspend fun findMbidByRecording(artistName: String, trackName: String): Lookup<String> {
         val url = "$BASE/recording".toHttpUrlOrNull()?.newBuilder()
             ?.addQueryParameter("query", "recording:\"$trackName\" AND artist:\"$artistName\"")
             ?.addQueryParameter("fmt", "json")
             ?.addQueryParameter("limit", "3")
-            ?.build() ?: return null
-        val body = request(url.toString()) ?: return null
+            ?.build() ?: return Lookup.Missing
+        val body = when (val answer = request(url.toString())) {
+            is Lookup.Found -> answer.value
+            else -> return Lookup.Unavailable
+        }
         val recordings = json.parseToJsonElement(body).jsonObject["recordings"]?.jsonArray.orEmpty()
         for (recording in recordings) {
             val obj = recording.jsonObject
@@ -192,9 +217,9 @@ class MusicBrainzGenreResolver @Inject constructor(
             }?.jsonObject?.get("artist")?.jsonObject ?: continue
             val id = match["id"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() } ?: continue
             Log.d(TAG, "'$artistName' identified via recording '$trackName' -> $id")
-            return id
+            return Lookup.Found(id)
         }
-        return null
+        return Lookup.Missing
     }
 
     private suspend fun cache(key: String, mbid: String, genres: List<String>) {
@@ -217,9 +242,10 @@ class MusicBrainzGenreResolver @Inject constructor(
      * Exposed so the bio resolver does not reimplement the search, the score bar
      * or the rate limiting.
      */
-    suspend fun findMbidForBio(artistName: String): String? = findMbid(artistName)
+    suspend fun findMbidForBio(artistName: String): String? =
+        (findMbid(artistName) as? Lookup.Found)?.value
 
-    private suspend fun findMbid(artistName: String): String? {
+    private suspend fun findMbid(artistName: String): Lookup<String> {
         // Quoting the name makes this a phrase match; without it Lucene splits
         // on whitespace and "Pale Saints" matches any artist called "Saints".
         //
@@ -233,10 +259,13 @@ class MusicBrainzGenreResolver @Inject constructor(
             ?.addQueryParameter("query", "artist:\"$artistName\"")
             ?.addQueryParameter("fmt", "json")
             ?.addQueryParameter("limit", SEARCH_CANDIDATES.toString())
-            ?.build() ?: return null
-        val body = request(url.toString()) ?: return null
+            ?.build() ?: return Lookup.Missing
+        val body = when (val answer = request(url.toString())) {
+            is Lookup.Found -> answer.value
+            else -> return Lookup.Unavailable
+        }
         val artists = json.parseToJsonElement(body).jsonObject["artists"]?.jsonArray.orEmpty()
-        if (artists.isEmpty()) return null
+        if (artists.isEmpty()) return Lookup.Missing
 
         val scored = artists.mapNotNull { element ->
             val obj = element.jsonObject
@@ -248,16 +277,24 @@ class MusicBrainzGenreResolver @Inject constructor(
                 score = obj["score"]?.jsonPrimitive?.intOrNull ?: 0
             )
         }
-        return pickArtistCandidate(scored, artistName, EXACT_NAME_MIN_SCORE, MIN_MATCH_SCORE)
+        val picked = pickArtistCandidate(scored, artistName, EXACT_NAME_MIN_SCORE, MIN_MATCH_SCORE)
             ?: run {
                 Log.d(TAG, "'$artistName': no usable match in ${scored.size} candidates")
-                null
+                return Lookup.Missing
             }
+        return Lookup.Found(picked)
     }
 
-    private suspend fun fetchGenres(mbid: String): List<String> {
-        val body = request("$BASE/artist/$mbid?inc=genres&fmt=json") ?: return emptyList()
-        return json.parseToJsonElement(body).jsonObject["genres"]?.let { readTags(it) }.orEmpty()
+    private suspend fun fetchGenres(mbid: String): Lookup<List<String>> {
+        val body = when (val answer = request("$BASE/artist/$mbid?inc=genres&fmt=json")) {
+            is Lookup.Found -> answer.value
+            else -> return Lookup.Unavailable
+        }
+        // An empty list here is an answer: this artist exists and carries no genre
+        // tags, which is the common case for obscure ones and worth remembering.
+        return Lookup.Found(
+            json.parseToJsonElement(body).jsonObject["genres"]?.let { readTags(it) }.orEmpty()
+        )
     }
 
     /** Weight-ordered names from a MusicBrainz `tags`/`genres` array. */
@@ -272,12 +309,13 @@ class MusicBrainzGenreResolver @Inject constructor(
             .take(MAX_TAGS)
             .map { it.first }
 
-    private suspend fun request(url: String): String? {
+    private suspend fun request(url: String): Lookup<String> {
         // MusicBrainz answers 503 when it considers the caller over the rate
         // limit, and it counts more strictly than one-per-second suggests: a
         // background enrichment run hit it repeatedly at a 1.1s interval. A 503
         // is a "come back later", not a failure, so it is retried once after a
-        // pause rather than being cached as "this artist has no genres".
+        // pause and then reported as [Lookup.Unavailable], which the caller must
+        // not record as "this artist has no genres".
         repeat(RATE_LIMIT_RETRIES + 1) { attempt ->
             rateLimiter.acquire()
             val result = try {
@@ -291,19 +329,21 @@ class MusicBrainzGenreResolver @Inject constructor(
                             null
                         }
                         else -> {
+                            // Not an answer about this artist either, so it is a
+                            // reason to ask again later, not to conclude anything.
                             Log.w(TAG, "HTTP ${response.code} for $url")
-                            return null
+                            return Lookup.Unavailable
                         }
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "request failed: ${e.message}")
-                return null
+                return Lookup.Unavailable
             }
-            if (result != null) return result
+            if (result != null) return Lookup.Found(result)
             if (attempt == RATE_LIMIT_RETRIES) Log.w(TAG, "rate-limited, giving up on $url")
         }
-        return null
+        return Lookup.Unavailable
     }
 
     /**
@@ -373,4 +413,22 @@ internal fun pickArtistCandidate(
         ?.let { return it.id }
     val best = candidates.maxByOrNull { it.score } ?: return null
     return if (best.score >= minMatchScore) best.id else null
+}
+
+/**
+ * What a MusicBrainz call produced.
+ *
+ * The distinction that matters is between the two ways of getting nothing.
+ * [Missing] is the server saying there is nothing, which is a fact and can be
+ * remembered. [Unavailable] is no answer at all, which is only a reason to ask
+ * again later.
+ */
+internal sealed interface Lookup<out T> {
+    data class Found<T>(val value: T) : Lookup<T>
+
+    /** The server answered, and there is nothing to find. */
+    data object Missing : Lookup<Nothing>
+
+    /** No answer: rate limited, an HTTP error, or the network failed. */
+    data object Unavailable : Lookup<Nothing>
 }
