@@ -873,6 +873,15 @@ class MixPlaybackOrchestrator @Inject constructor(
         // without an API key.
         val seedResult = try {
             buildSeedTrackMix()
+        } catch (e: CancellationException) {
+            // A cancelled build is not a failed one: the caller went away, usually
+            // because a second Smart Mix was asked for while this one was still
+            // fetching. Falling into the genre engine there does work nobody is
+            // waiting for and can leave the queue holding the mix that lost the
+            // race. Seen in the field on 2026-08-30, two taps twelve seconds
+            // apart: "similar_artists failed for 79: Job was cancelled" followed
+            // by the genre engine starting anyway.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Seed-track mix failed, falling back to genre engine: ${e.message}")
             SmartMixResult(emptyList(), null)
