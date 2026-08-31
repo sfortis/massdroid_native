@@ -51,6 +51,12 @@ class PlaylistDetailViewModel @Inject constructor(
      */
     private val isDynamic: Boolean = savedStateHandle["dynamic"] ?: false
 
+    /**
+     * Exposed so the screen can say that what it lists is a preview: the server draws a
+     * fresh set when the playlist is played, so the queue will not be these tracks.
+     */
+    val isDynamicPlaylist: Boolean get() = isDynamic
+
     private val _rawTracks = MutableStateFlow<List<Track>>(emptyList())
     // Sort is a single global preference (persisted), applied to every playlist and surviving
     // navigation/restart — not per-playlist. Backed by DataStore via [SettingsRepository].

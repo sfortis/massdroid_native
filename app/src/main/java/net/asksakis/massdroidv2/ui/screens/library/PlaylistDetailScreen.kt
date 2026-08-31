@@ -200,6 +200,19 @@ fun PlaylistDetailScreen(
                     }
                 }
             }
+            // A playlist the server rebuilds is listed as a preview and nothing more: the
+            // tracks below are a sample, and playing it draws a fresh set, so the queue
+            // will not be these. Said plainly here rather than left as a surprise.
+            if (viewModel.isDynamicPlaylist) {
+                item(key = "dynamic-note") {
+                    Text(
+                        "Preview only. This playlist is rebuilt each time you play it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
+            }
             items(items = tracks, key = { track -> "${track.uri}:${track.position ?: -1}" }) { track ->
                 val fallbackPosition = tracks.indexOf(track)
                 val isCurrent = currentTrackUri == track.uri
