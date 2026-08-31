@@ -100,7 +100,7 @@ class LibraryPager<T>(
 
     fun loadMore() {
         if (endReached || job?.isActive == true) return
-        job = scope.launch {
+        job = scope.launch(start = CoroutineStart.LAZY) {
             _loadingMore.value = true
             try {
                 val raw = fetch(pageSize, offset)
@@ -119,9 +119,12 @@ class LibraryPager<T>(
             } catch (e: Exception) {
                 Log.w(TAG, "loadMore failed: ${e.message}")
             } finally {
-                _loadingMore.value = false
+                // Same ownership rule as startReload: a cancelled load must not wipe the
+                // spinner of the load that replaced it.
+                if (job === coroutineContext[Job]) _loadingMore.value = false
             }
         }
+        job?.start()
     }
 
     /**
@@ -136,7 +139,10 @@ class LibraryPager<T>(
     fun loadAll(maxPages: Int = DEFAULT_MAX_PAGES) {
         if (endReached) return
         job?.cancel()
-        job = scope.launch {
+        job = scope.launch(start = CoroutineStart.LAZY) {
+            // Both flags: this may have just cancelled a reload, whose own finally will
+            // decline to clear _loading now that it no longer owns the slot.
+            _loading.value = false
             _loadingMore.value = true
             try {
                 var pages = 0
@@ -161,9 +167,10 @@ class LibraryPager<T>(
             } catch (e: Exception) {
                 Log.w(TAG, "loadAll failed: ${e.message}")
             } finally {
-                _loadingMore.value = false
+                if (job === coroutineContext[Job]) _loadingMore.value = false
             }
         }
+        job?.start()
     }
 
     /** Mutate the published items in place (optimistic favorite/remove updates). */

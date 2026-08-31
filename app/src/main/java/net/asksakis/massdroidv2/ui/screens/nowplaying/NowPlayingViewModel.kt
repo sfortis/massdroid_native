@@ -1210,7 +1210,17 @@ class NowPlayingViewModel @Inject constructor(
     /** Turn crossfade on or off for the queue, showing the change before the server echo. */
     fun setCrossfadeEnabled(queueId: String, enabled: Boolean) {
         queueTogglesCache.setCrossfadeOptimistic(queueId, enabled)
-        viewModelScope.launch { musicRepository.setCrossfadeEnabled(queueId, enabled) }
+        viewModelScope.launch {
+            try {
+                musicRepository.setCrossfadeEnabled(queueId, enabled)
+            } catch (e: Exception) {
+                // An RPC error here used to escape the scope and take the process with it,
+                // from a switch tap. The command can genuinely be refused (an older server
+                // does not have it at all), so put the switch back and say nothing louder.
+                Log.w(TAG, "crossfade toggle refused for $queueId: ${e.message}")
+                queueTogglesCache.setCrossfadeOptimistic(queueId, !enabled)
+            }
+        }
     }
 
     /**

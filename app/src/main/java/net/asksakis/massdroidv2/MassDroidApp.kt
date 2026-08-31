@@ -254,6 +254,7 @@ class MassDroidApp : Application(), ImageLoaderFactory {
  */
 private object ImageDebugEventListener : coil.EventListener {
     private const val TAG = "ImageDbg"
+    private const val MAX_DISTINCT_FAILURES = 200
 
     override fun onSuccess(request: coil.request.ImageRequest, result: coil.request.SuccessResult) {
         if (!BuildConfig.DEBUG) return
@@ -264,6 +265,29 @@ private object ImageDebugEventListener : coil.EventListener {
     }
 
     override fun onError(request: coil.request.ImageRequest, result: coil.request.ErrorResult) {
-        Log.w(TAG, "FAIL: ${request.data} -> ${result.throwable.javaClass.simpleName}: ${result.throwable.message}")
+        // The query string is dropped, not shortened. A Subsonic image URL carries the
+        // account and password (or token and salt) in it, and this line goes into the
+        // rolling log that the About screen invites the user to share. The host and path
+        // are what identify the fault; the credentials are not needed to read it.
+        val where = redactQuery(request.data.toString())
+        if (!failuresSeen.add(where)) return
+        Log.w(TAG, "FAIL: $where -> ${result.throwable.javaClass.simpleName}: ${result.throwable.message}")
+    }
+
+    /**
+     * Distinct failures already logged this process, so one unreachable host cannot fill
+     * the log with a line per image and push the rest of the evidence out of it. Bounded,
+     * because a library browse can attempt thousands.
+     */
+    private val failuresSeen = object : LinkedHashSet<String>() {
+        override fun add(element: String): Boolean {
+            if (size >= MAX_DISTINCT_FAILURES) return false
+            return super.add(element)
+        }
+    }
+
+    private fun redactQuery(url: String): String {
+        val cut = url.indexOf('?')
+        return if (cut < 0) url else url.substring(0, cut)
     }
 }

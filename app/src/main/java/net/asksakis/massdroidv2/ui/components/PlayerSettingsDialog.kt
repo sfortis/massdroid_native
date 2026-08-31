@@ -202,10 +202,14 @@ fun PlayerSettingsDialog(
      */
     fun applyQueueChoice(choice: QueueChoice, value: String) {
         if (value == choice.value) return
-        val before = queueSettings
-        queueSettings = before?.with(choice.copy(value = value))
+        queueSettings = queueSettings?.with(choice.copy(value = value))
         scope.launch {
-            if (onQueueConfigChanged?.invoke(choice.key, value) != true) queueSettings = before
+            if (onQueueConfigChanged?.invoke(choice.key, value) != true) {
+                // Only this one setting goes back. Restoring a whole snapshot would also
+                // undo a different chip the listener tapped while this call was in flight,
+                // leaving the screen disagreeing with the server about that one.
+                queueSettings = queueSettings?.with(choice)
+            }
         }
     }
 
@@ -394,7 +398,14 @@ fun PlayerSettingsDialog(
                             // shown follows what the server actually sent rather than a
                             // version number: a queue that reports these settings gets them
                             // here, anything older keeps the player-config pair below.
-                            if (queueCrossfade != null && onCrossfadeEnabledChanged != null) {
+                            // initialCrossfadeEnabled stays null until the queue toggles are
+                            // seeded. Drawing the switch then would show "off" over a
+                            // crossfade that may be on, so the card waits for a real answer.
+                            // The player-config pair does NOT step in meanwhile: on a server
+                            // that keeps crossfade on the queue, that key is dead.
+                            if (queueCrossfade != null && onCrossfadeEnabledChanged != null &&
+                                initialCrossfadeEnabled != null
+                            ) {
                                 QueueChoiceCard(
                                     title = "Crossfade",
                                     icon = Icons.Default.GraphicEq,
@@ -810,7 +821,11 @@ fun PlayerSettingsDialog(
                             if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
                                 outputCodec?.let { values["output_codec"] = it }
                             }
-                            onSave(player.playerId, values)
+                            // On MA 2.10 crossfade and volume normalization are queue config
+                            // and already applied, so this map can be empty. Sending it would
+                            // fire an admin-gated command for nothing, and a non-admin would
+                            // get the permission notice for a write they never made.
+                            if (values.isNotEmpty()) onSave(player.playerId, values)
                             onDismiss()
                         },
                         enabled = !isLoading

@@ -53,7 +53,12 @@ class QueueTogglesCache @Inject constructor(
                     runCatching { json.decodeFromJsonElement<ServerQueue>(it) }.getOrNull()
                 } ?: return@collect
                 _autoplay.update { it + (queue.queueId to queue.autoplayEnabled) }
-                _crossfade.update { it + (queue.queueId to queue.crossfadeEnabled) }
+                // Recorded only when the server actually said: the field is absent before
+                // MA 2.10, and a default of false would make the map claim "crossfade is
+                // off" for every queue on every older server.
+                queue.crossfadeEnabled?.let { on ->
+                    _crossfade.update { it + (queue.queueId to on) }
+                }
             }
         }
         scope.launch {
@@ -89,7 +94,7 @@ class QueueTogglesCache @Inject constructor(
                 json.decodeFromJsonElement<List<ServerQueue>>(result)
             }.getOrNull() ?: return
             _autoplay.value = queues.associate { it.queueId to it.autoplayEnabled }
-            _crossfade.value = queues.associate { it.queueId to it.crossfadeEnabled }
+            _crossfade.value = queues.mapNotNull { q -> q.crossfadeEnabled?.let { q.queueId to it } }.toMap()
             Log.d(TAG, "Seeded queue toggles from ${queues.size} queues")
         } catch (e: Exception) {
             Log.w(TAG, "refreshAll failed: ${e.message}")

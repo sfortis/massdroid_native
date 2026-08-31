@@ -156,8 +156,10 @@ fun QueueChoiceCard(
             choice?.globalTitle
                 ?.takeIf { choice.followsGlobal }
                 ?.let { "Server default: $it" },
-            options.firstOrNull { it.disabled }
-                ?.let { option -> option.disabledReason?.let { "${option.title}: $it" } }
+            options.filter { it.disabled }
+                .mapNotNull { option -> option.disabledReason?.let { "${option.title}: $it" } }
+                .joinToString("\n")
+                .ifBlank { null }
         ).joinToString("\n").ifBlank { null },
         content = if (options.isEmpty()) {
             null

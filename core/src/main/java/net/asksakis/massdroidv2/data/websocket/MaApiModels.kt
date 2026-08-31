@@ -99,7 +99,7 @@ data class ServerQueue(
      * shuffle and repeat. An older server does not send it and the default below then
      * simply means the app shows no queue-level crossfade control.
      */
-    @SerialName("crossfade_enabled") val crossfadeEnabled: Boolean = false
+    @SerialName("crossfade_enabled") val crossfadeEnabled: Boolean? = null
 )
 
 @Serializable

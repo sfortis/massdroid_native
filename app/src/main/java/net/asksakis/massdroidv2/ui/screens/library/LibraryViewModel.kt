@@ -384,15 +384,29 @@ class LibraryViewModel @Inject constructor(
             PlaylistTypeFilter.SMART -> items.filter { it.isDynamic }
             PlaylistTypeFilter.NORMAL -> items.filterNot { it.isDynamic }
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        // Eagerly, unlike the 5s window used for cheap derived flows: every other tab
+        // exposes pager.items directly, which is always current, and a replay cache that
+        // outlives the subscription would hand the first composition the previous
+        // account's playlists after a switch, and an empty list before the first emission.
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun setPlaylistTypeFilter(type: PlaylistTypeFilter) {
         if (_playlistTypeFilter.value == type) return
         _playlistTypeFilter.value = type
-        // The filter is applied here, not by the server, so the whole tab has to be in
-        // memory for it to mean anything. Without this a filter matching a handful of the
-        // first page leaves a list too short to scroll, and the rest is never fetched.
-        if (type != PlaylistTypeFilter.ALL) playlistsPager.loadAll()
+        exhaustPlaylistsIfFiltered()
+    }
+
+    /**
+     * Load the whole Playlists tab while a type filter is on.
+     *
+     * The filter is applied here and not by the server, so the tab has to be in memory for
+     * it to mean anything: a filter matching a handful of the first fifty leaves a list too
+     * short to scroll, and nothing then asks for page two. Called again after every reload,
+     * because a reload publishes page 0 alone while the filter is still set, which silently
+     * hides every match past the first page.
+     */
+    private fun exhaustPlaylistsIfFiltered() {
+        if (_playlistTypeFilter.value != PlaylistTypeFilter.ALL) playlistsPager.loadAll()
     }
 
     /**
@@ -657,7 +671,15 @@ class LibraryViewModel @Inject constructor(
 
     private fun reloadCurrentTab() {
         val tab = LibraryTabKey.fromIndex(_currentTab.value) ?: return
-        if (tab == LibraryTabKey.BROWSE) applyBrowseFilterSort() else pagerFor(tab)?.reload()
+        if (tab == LibraryTabKey.BROWSE) {
+            applyBrowseFilterSort()
+            return
+        }
+        pagerFor(tab)?.reload()
+        // A reload publishes page 0 and resets the pager, so a client-side filter that was
+        // showing matches from later pages would silently lose them. One place, because
+        // every forced reload (search, sort, provider, favourites, refresh) comes here.
+        if (tab == LibraryTabKey.PLAYLISTS) exhaustPlaylistsIfFiltered()
     }
 
     // The screen calls these only when a tab is still empty (on-settle LaunchedEffect), so they

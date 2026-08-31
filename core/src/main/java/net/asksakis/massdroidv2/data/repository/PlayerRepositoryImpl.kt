@@ -2128,7 +2128,7 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     currentIndex = currentIndex,
     totalItems = items,
     autoplayEnabled = autoplayEnabled,
-    crossfadeEnabled = crossfadeEnabled,
+    crossfadeEnabled = crossfadeEnabled == true,
     currentItem = currentItem?.let { item ->
         QueueItem(
             queueItemId = item.queueItemId,

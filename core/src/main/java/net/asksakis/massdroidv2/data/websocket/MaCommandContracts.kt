@@ -362,10 +362,7 @@ data class PlayIndexArgs(
     }
 }
 
-/**
- * Argument for [MaCommands.PlayerQueues.SET_AUTOPLAY_ENABLED]. The JSON key keeps the
- * pre-2.10 name for the same reason the command does.
- */
+/** Argument for [MaCommands.PlayerQueues.SET_CROSSFADE_ENABLED], new in MA 2.10. */
 data class SetCrossfadeEnabledArgs(
     val queueId: String,
     val enabled: Boolean
@@ -376,6 +373,10 @@ data class SetCrossfadeEnabledArgs(
     }
 }
 
+/**
+ * Argument for [MaCommands.PlayerQueues.SET_AUTOPLAY_ENABLED]. The JSON key keeps the
+ * pre-2.10 name for the same reason the command does.
+ */
 data class SetAutoplayEnabledArgs(
     val queueId: String,
     val enabled: Boolean

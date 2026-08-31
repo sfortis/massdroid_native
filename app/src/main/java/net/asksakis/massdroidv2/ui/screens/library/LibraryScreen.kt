@@ -449,8 +449,13 @@ fun LibraryScreen(
                             // whatever order the tab is sorted by. A pin for a playlist
                             // that is not here (deleted elsewhere, provider down) simply
                             // draws nothing.
-                            val pinned = playlists.filter { it.uri in pinnedPlaylistUris }
-                            val rest = playlists.filterNot { it.uri in pinnedPlaylistUris }
+                            // Remembered: this runs in the composition of a pager page, and
+                            // after an exhaustive load the list can hold thousands, so two
+                            // filters per recomposition is a cost a scrolling tab pays for
+                            // nothing.
+                            val (pinned, rest) = remember(playlists, pinnedPlaylistUris) {
+                                playlists.partition { it.uri in pinnedPlaylistUris }
+                            }
                             MediaList(
                                 items = playlists,
                                 groups = if (pinned.isEmpty()) {
@@ -1219,15 +1224,17 @@ private fun <T> MediaList(
             val listState = rememberLazyListState()
             InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
-                sections.forEachIndexed { sectionIndex, section ->
+                sections.forEach { section ->
                 section.label?.let { label ->
                     item(key = "header_$label") { GroupHeader(label) }
                 }
                 items(
                     items = section.items,
-                    // Prefixed with the section so a key stays unique even if the same
-                    // item ever appears in two groups.
-                    key = { "s$sectionIndex:${key(it)}" },
+                    // The URI, unprefixed. Groups are a partition of one list, so a key
+                    // cannot repeat, and prefixing it with the group would change every
+                    // row's identity the moment something is pinned: the list would then
+                    // dispose and rebuild every visible row and lose the scroll anchor.
+                    key = { key(it) },
                     contentType = { "library_list_item" }
                 ) { item ->
                     MediaItemRow(
@@ -1263,7 +1270,7 @@ private fun <T> MediaList(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                sections.forEachIndexed { sectionIndex, section ->
+                sections.forEach { section ->
                 section.label?.let { label ->
                     item(key = "header_$label", span = { GridItemSpan(maxLineSpan) }) {
                         GroupHeader(label)
@@ -1271,7 +1278,7 @@ private fun <T> MediaList(
                 }
                 items(
                     items = section.items,
-                    key = { "s$sectionIndex:${key(it)}" },
+                    key = { key(it) },
                     contentType = { "library_grid_item" }
                 ) { item ->
                     MediaItemGrid(

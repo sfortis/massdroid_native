@@ -45,22 +45,27 @@ class SendspinDirectEngine(context: Context) : SendspinPlaybackEngine(context) {
     }
 
     /**
-     * Keep the encoded audio across an output-route change and re-anchor to it.
+     * A change of output route costs solo playback nothing.
      *
-     * Only the decoded PCM is tied to the route, through the output latency it
-     * was scheduled against, so only that has to go. The encoded frames are the
-     * same audio on any route, and throwing them away costs the whole buffer for
-     * the rest of the stream: the MA server drains its own model of what we hold
-     * at exactly realtime and never learns that we discarded it, so it goes on
-     * feeding just-in-time instead of sending a fresh burst.
+     * Nothing in flight is invalidated by it. The native callback runs with
+     * `driftCorrection` off in this mode, so it is a plain FIFO that never schedules a
+     * sample against the output latency, and the local anchor is already fixed: the
+     * decoded audio in the ring and the encoded audio behind it are equally good on the
+     * new route as on the old one. So this drops the relock the grouped engine needs, and
+     * with it the mute, the re-arm and the restart.
      *
-     * Measured in the car on 2026-08-28. Two collapses in one drive, both at a
-     * route change during the Bluetooth connect: a full 26 s buffer discarded
-     * (once only 1.3 s after it arrived), then about 0.7 s of runway for the
-     * following seven minutes, with underruns where there had been none. A third
-     * of that drive played on a buffer too thin to absorb a cellular dip.
+     * Measured in the car on 2026-08-28, before any of this: the old full flush threw away
+     * a 26 second buffer at a route change and the MA server never rebuilt it, because it
+     * drains its own model of what we hold at exactly realtime and never re-bursts. A
+     * third of that drive then played on 0.7 s of runway. Keeping only the encoded queue
+     * fixed most of it but still dropped up to 2.5 s of decoded audio, which the ring
+     * reset discards outright (`resetRing` moves the read index to the write index).
+     * Keeping everything is the honest end of that line.
+     *
+     * The stream is still reopened when the bound device disappears, and that path resets
+     * the ring on its own; this is only about not doing it when nothing asked.
      */
-    override fun flushForRouteChange() {
-        flushDecodedOutput()
+    override fun onRouteChangeBoundary() {
+        // Deliberately empty. See above.
     }
 }

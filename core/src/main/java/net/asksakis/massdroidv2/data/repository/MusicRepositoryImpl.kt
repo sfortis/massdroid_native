@@ -338,8 +338,17 @@ class MusicRepositoryImpl @Inject constructor(
      * other way silently replaces a generated playlist with a stale copy of itself.
      */
     private suspend fun isRebuiltOnPlay(uri: String): Boolean = try {
-        wsClient.sendCommand(MaCommands.Music.ITEM_BY_URI, ItemByUriArgs(uri))
-            ?.jsonObject?.get("is_dynamic")?.jsonPrimitive?.booleanOrNull != false
+        val item = wsClient.sendCommand(MaCommands.Music.ITEM_BY_URI, ItemByUriArgs(uri))?.jsonObject
+        if (item == null) {
+            // No answer about this playlist, so nothing is known: leave it whole.
+            true
+        } else {
+            // An ABSENT field is an answer, not silence. A server that predates the
+            // feature never sends it, and on one of those no playlist is rebuilt on play,
+            // so expanding it to filter blocked artists is right there. Reading absence as
+            // "dynamic" would quietly switch that filtering off for every older server.
+            item["is_dynamic"]?.jsonPrimitive?.booleanOrNull == true
+        }
     } catch (e: Exception) {
         Log.d(TAG, "could not tell if $uri is rebuilt on play (${e.message}); leaving it whole")
         true
