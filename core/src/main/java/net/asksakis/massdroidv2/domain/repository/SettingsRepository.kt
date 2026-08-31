@@ -134,6 +134,22 @@ interface SettingsRepository {
      * never reset. Other BT devices keep the normal bridge.
      */
     val carAudioBtDevices: Flow<Set<String>>
+
+    /**
+     * Playlists the listener pinned to the top of the library, by URI.
+     *
+     * Local only: Music Assistant has no notion of a pinned playlist, so this lives
+     * here and nowhere else.
+     *
+     * A pin for a playlist that has since been deleted is left in place rather than
+     * chased: it draws nothing, and pruning by absence would wipe pins whenever a
+     * provider is down or a page limit cut the listing short. Owner's call, and the
+     * stored set is a handful of URIs either way.
+     */
+    val pinnedPlaylistUris: Flow<Set<String>>
+
+    suspend fun setPlaylistPinned(uri: String, pinned: Boolean)
+
     /**
      * Last known Sendspin player volume (0..100), persisted across process
      * death. The MA server resets a re-registering Sendspin player to 100%, so

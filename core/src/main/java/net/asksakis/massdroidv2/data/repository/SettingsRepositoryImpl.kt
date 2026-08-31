@@ -69,6 +69,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SENDSPIN_DITHER = stringPreferencesKey("sendspin_dither")
         private val KEY_KNOWN_BT_DEVICES = stringPreferencesKey("known_bt_devices")
         private val KEY_CAR_AUDIO_BT_DEVICES = stringPreferencesKey("car_audio_bt_devices")
+        private val KEY_PINNED_PLAYLISTS = stringPreferencesKey("pinned_playlists")
         private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
         private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
@@ -450,6 +451,20 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override val carAudioBtDevices: Flow<Set<String>> = safeData.map { prefs ->
         prefs[KEY_CAR_AUDIO_BT_DEVICES]?.split("\n")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    }
+
+    override val pinnedPlaylistUris: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_PINNED_PLAYLISTS]?.split("\n")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    }
+
+    override suspend fun setPlaylistPinned(uri: String, pinned: Boolean) {
+        if (uri.isBlank()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_PINNED_PLAYLISTS]?.split("\n")?.filter { it.isNotBlank() }?.toMutableSet()
+                ?: mutableSetOf()
+            val changed = if (pinned) current.add(uri) else current.remove(uri)
+            if (changed) prefs[KEY_PINNED_PLAYLISTS] = current.joinToString("\n")
+        }
     }
 
     override suspend fun setCarAudioBtDevice(routeKey: String, enabled: Boolean) {

@@ -67,7 +67,14 @@ fun MediaItemRow(
     isBlocked: Boolean = false,
     providerDomains: List<String> = emptyList(),
     providerCache: ProviderManifestCache? = null,
-    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
+    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    /**
+     * A small mark for what KIND of thing this is, drawn on the information line next to
+     * the provider badges. Used for playlists the server rebuilds on play; the trailing
+     * end of the row is left to state and actions (in library, favourite, play).
+     */
+    typeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    typeIconDescription: String? = null
 ) {
     val context = LocalContext.current
     val showProviderBadges = providerCache != null && providerDomains.distinct().size > 1
@@ -92,11 +99,19 @@ fun MediaItemRow(
             )
         },
         supportingContent = {
-            if (subtitle.isNotBlank() || showProviderBadges) {
+            if (subtitle.isNotBlank() || showProviderBadges || typeIcon != null) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    typeIcon?.let {
+                        Icon(
+                            it,
+                            contentDescription = typeIconDescription,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     if (showProviderBadges) {
                         ProviderBadges(
                             providerDomains = providerDomains,
@@ -215,7 +230,10 @@ fun MediaItemGrid(
     isBlocked: Boolean = false,
     providerDomains: List<String> = emptyList(),
     providerCache: ProviderManifestCache? = null,
-    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null
+    fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    /** Same mark as in [MediaItemRow], on the same line, so one rule covers both surfaces. */
+    typeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    typeIconDescription: String? = null
 ) {
     val context = LocalContext.current
     val resolvedFallbackIcon = fallbackIcon ?: Icons.Default.MusicNote
@@ -254,14 +272,31 @@ fun MediaItemGrid(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        if (subtitle.isNotBlank()) {
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        if (subtitle.isNotBlank() || typeIcon != null) {
+            // Kept on one line whatever it holds, so every card in a grid row stays the
+            // same height (the empty case below is the same 14dp).
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                typeIcon?.let {
+                    Icon(
+                        it,
+                        contentDescription = typeIconDescription,
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         } else {
             Spacer(modifier = Modifier.height(14.dp))
         }

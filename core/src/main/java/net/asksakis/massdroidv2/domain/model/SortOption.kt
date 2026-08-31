@@ -37,3 +37,18 @@ enum class LibraryTabKey(
                 ?: key.toIntOrNull()?.let(::fromIndex)
     }
 }
+
+/**
+ * Which kinds of playlist the library shows.
+ *
+ * [SMART] is anything the server rebuilds when it is played (`is_dynamic`): the Smart
+ * Playlists plugin, the built-in Infinite Mixes, and whatever else Music Assistant adds
+ * later. Keyed on that rather than on a provider name so a new generator needs no code.
+ *
+ * The filter runs in the app, because `library_items` offers no server-side equivalent.
+ */
+enum class PlaylistTypeFilter(val label: String) {
+    ALL("All"),
+    NORMAL("Normal"),
+    SMART("Smart")
+}

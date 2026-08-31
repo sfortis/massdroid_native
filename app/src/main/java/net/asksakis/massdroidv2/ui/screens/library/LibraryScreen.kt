@@ -29,6 +29,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -102,6 +105,8 @@ fun LibraryScreen(
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val pinnedPlaylistUris by viewModel.pinnedPlaylistUris.collectAsStateWithLifecycle()
+    val playlistTypeFilter by viewModel.playlistTypeFilter.collectAsStateWithLifecycle()
     val radios by viewModel.radios.collectAsStateWithLifecycle()
     val audiobooks by viewModel.audiobooks.collectAsStateWithLifecycle()
     val podcasts by viewModel.podcasts.collectAsStateWithLifecycle()
@@ -439,8 +444,26 @@ fun LibraryScreen(
                             providerDomains = { it.providerDomains }
                         )
                         TAB_PLAYLISTS -> Box(modifier = Modifier.fillMaxSize()) {
+                            // Pinned first, in their own group, then everything else in
+                            // whatever order the tab is sorted by. A pin for a playlist
+                            // that is not here (deleted elsewhere, provider down) simply
+                            // draws nothing.
+                            val pinned = playlists.filter { it.uri in pinnedPlaylistUris }
+                            val rest = playlists.filterNot { it.uri in pinnedPlaylistUris }
                             MediaList(
                                 items = playlists,
+                                groups = if (pinned.isEmpty()) {
+                                    null
+                                } else {
+                                    listOf(
+                                        MediaListGroup("Pinned", pinned),
+                                        MediaListGroup("All playlists", rest)
+                                    )
+                                },
+                                typeIcon = { p ->
+                                    Icons.Default.AutoAwesome.takeIf { p.isDynamic }
+                                },
+                                typeIconDescription = "Rebuilt on play",
                                 displayMode = pageMode,
                                 isLoadingMore = isLoadingMore && page == selectedTab,
                                 onLoadMore = { viewModel.loadMorePlaylists() },
@@ -685,17 +708,38 @@ fun LibraryScreen(
                     actionSheetItem = null
                 }
             },
-            extraActions = if (target.mediaType == MediaType.TRACK) listOf(
-                MediaActionSheetExtraAction(
-                    title = "Add to Playlist",
-                    icon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
-                    onClick = {
-                        addToPlaylistTrackUri = target.uri
-                        viewModel.loadEditablePlaylists(target.uri)
-                        actionSheetItem = null
-                    }
+            extraActions = when (target.mediaType) {
+                MediaType.TRACK -> listOf(
+                    MediaActionSheetExtraAction(
+                        title = "Add to Playlist",
+                        icon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
+                        onClick = {
+                            addToPlaylistTrackUri = target.uri
+                            viewModel.loadEditablePlaylists(target.uri)
+                            actionSheetItem = null
+                        }
+                    )
                 )
-            ) else emptyList(),
+                MediaType.PLAYLIST -> {
+                    val isPinned = target.uri in pinnedPlaylistUris
+                    listOf(
+                        MediaActionSheetExtraAction(
+                            title = if (isPinned) "Unpin" else "Pin to top",
+                            icon = {
+                                Icon(
+                                    if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                viewModel.setPlaylistPinned(target.uri, !isPinned)
+                                actionSheetItem = null
+                            }
+                        )
+                    )
+                }
+                else -> emptyList()
+            },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onPlayNext = { viewModel.enqueueNext(target.uri) },
@@ -802,6 +846,9 @@ fun LibraryScreen(
             sortDescending = sortDescending,
             favoritesOnly = favoritesOnly,
             displayMode = displayMode,
+            // Only the Playlists tab has a type to filter by; null hides the whole group.
+            playlistTypeFilter = playlistTypeFilter.takeIf { selectedTab == TAB_PLAYLISTS },
+            onPlaylistTypeSelect = { viewModel.setPlaylistTypeFilter(it) },
             onToggleProvider = { viewModel.toggleProviderFilter(it) },
             onClearProviders = { viewModel.clearProviderFilter() },
             onSortSelect = { viewModel.updateSort(it) },
@@ -885,6 +932,8 @@ private fun LibraryControlsSheet(
     sortOption: SortOption,
     sortDescending: Boolean,
     favoritesOnly: Boolean,
+    playlistTypeFilter: PlaylistTypeFilter?,
+    onPlaylistTypeSelect: (PlaylistTypeFilter) -> Unit,
     displayMode: LibraryDisplayMode,
     onToggleProvider: (String) -> Unit,
     onClearProviders: () -> Unit,
@@ -971,6 +1020,30 @@ private fun LibraryControlsSheet(
                             )
                         }
                     }
+                }
+            }
+
+            playlistTypeFilter?.let { selectedType ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Playlist type",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PlaylistTypeFilter.entries.forEach { type ->
+                            FilterChip(
+                                selected = selectedType == type,
+                                onClick = { onPlaylistTypeSelect(type) },
+                                label = { Text(type.label) }
+                            )
+                        }
+                    }
+                    Text(
+                        "Smart playlists are rebuilt by the server each time they play.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
@@ -1090,6 +1163,23 @@ private fun ProviderFilterDropdown(
     }
 }
 
+/**
+ * A labelled run of items inside a [MediaList], for a tab that shows more than one group.
+ * A null [label] draws no header, which is how the ungrouped case is expressed.
+ */
+private data class MediaListGroup<T>(val label: String?, val items: List<T>)
+
+@Composable
+private fun GroupHeader(label: String) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)
+    )
+}
+
 @Composable
 private fun <T> MediaList(
     items: List<T>,
@@ -1106,17 +1196,31 @@ private fun <T> MediaList(
     onMoreClick: ((T) -> Unit)? = null,
     onPlayClick: ((T) -> Unit)? = null,
     isBlocked: (T) -> Boolean = { false },
-    providerDomains: (T) -> List<String> = { emptyList() }
+    providerDomains: (T) -> List<String> = { emptyList() },
+    typeIcon: (T) -> androidx.compose.ui.graphics.vector.ImageVector? = { null },
+    typeIconDescription: String? = null,
+    /**
+     * Groups to draw instead of one flat list, in order, each with an optional header.
+     * Null keeps the flat behaviour every other tab uses.
+     */
+    groups: List<MediaListGroup<T>>? = null
 ) {
     val providerCache = LocalProviderManifestCache.current
+    val sections = groups ?: listOf(MediaListGroup(null, items))
     when (displayMode) {
         LibraryDisplayMode.LIST -> {
             val listState = rememberLazyListState()
             InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
+                sections.forEachIndexed { sectionIndex, section ->
+                section.label?.let { label ->
+                    item(key = "header_$label") { GroupHeader(label) }
+                }
                 items(
-                    items = items,
-                    key = { key(it) },
+                    items = section.items,
+                    // Prefixed with the section so a key stays unique even if the same
+                    // item ever appears in two groups.
+                    key = { "s$sectionIndex:${key(it)}" },
                     contentType = { "library_list_item" }
                 ) { item ->
                     MediaItemRow(
@@ -1130,8 +1234,11 @@ private fun <T> MediaList(
                         onPlayClick = onPlayClick?.let { { it(item) } },
                         isBlocked = isBlocked(item),
                         providerDomains = providerDomains(item),
-                        providerCache = providerCache
+                        providerCache = providerCache,
+                        typeIcon = typeIcon(item),
+                        typeIconDescription = typeIconDescription
                     )
+                }
                 }
                 if (isLoadingMore) {
                     item { LoadingIndicator() }
@@ -1149,9 +1256,15 @@ private fun <T> MediaList(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                sections.forEachIndexed { sectionIndex, section ->
+                section.label?.let { label ->
+                    item(key = "header_$label", span = { GridItemSpan(maxLineSpan) }) {
+                        GroupHeader(label)
+                    }
+                }
                 items(
-                    items = items,
-                    key = { key(it) },
+                    items = section.items,
+                    key = { "s$sectionIndex:${key(it)}" },
                     contentType = { "library_grid_item" }
                 ) { item ->
                     MediaItemGrid(
@@ -1162,8 +1275,11 @@ private fun <T> MediaList(
                         onLongClick = { onLongClick(item) },
                         isBlocked = isBlocked(item),
                         providerDomains = providerDomains(item),
-                        providerCache = providerCache
+                        providerCache = providerCache,
+                        typeIcon = typeIcon(item),
+                        typeIconDescription = typeIconDescription
                     )
+                }
                 }
                 if (isLoadingMore) {
                     item(span = { GridItemSpan(maxLineSpan) }) {

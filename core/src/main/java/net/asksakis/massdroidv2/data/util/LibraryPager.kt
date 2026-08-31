@@ -124,6 +124,48 @@ class LibraryPager<T>(
         }
     }
 
+    /**
+     * Keep loading pages until the server has no more, for a caller that filters the list
+     * itself and therefore cannot rely on scrolling to pull the rest in.
+     *
+     * A filter applied on top of a paged list is only as good as what has been paged: a
+     * filter that matches three of the first fifty leaves a list too short to scroll, so
+     * nothing ever asks for page two and the other matches stay invisible. [maxPages]
+     * bounds a pathological library rather than the ordinary case.
+     */
+    fun loadAll(maxPages: Int = DEFAULT_MAX_PAGES) {
+        if (endReached) return
+        job?.cancel()
+        job = scope.launch {
+            _loadingMore.value = true
+            try {
+                var pages = 0
+                while (!endReached && pages < maxPages) {
+                    val raw = fetch(pageSize, offset)
+                    offset += raw.size
+                    endReached = raw.size < pageSize
+                    pages++
+                    if (raw.isEmpty()) break
+                    val page = transformPage?.invoke(raw) ?: raw
+                    _items.update { current ->
+                        val seen = current.mapTo(HashSet(), key)
+                        current + page.filter { seen.add(key(it)) }
+                    }
+                    onPageLoaded?.invoke(raw)
+                }
+                if (pages >= maxPages && !endReached) {
+                    Log.w(TAG, "loadAll stopped at $maxPages pages with more available")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "loadAll failed: ${e.message}")
+            } finally {
+                _loadingMore.value = false
+            }
+        }
+    }
+
     /** Mutate the published items in place (optimistic favorite/remove updates). */
     fun update(transform: (List<T>) -> List<T>) {
         _items.update(transform)
@@ -141,6 +183,9 @@ class LibraryPager<T>(
 
     companion object {
         const val DEFAULT_PAGE_SIZE = 50
+
+        /** Page ceiling for [loadAll]: 50 pages is 2500 items, far past any real library tab. */
+        const val DEFAULT_MAX_PAGES = 50
         private const val TAG = "LibraryPager"
     }
 }

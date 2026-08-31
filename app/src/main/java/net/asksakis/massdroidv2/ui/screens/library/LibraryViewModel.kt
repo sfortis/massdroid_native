@@ -368,7 +368,36 @@ class LibraryViewModel @Inject constructor(
     val artists: StateFlow<List<Artist>> = artistsPager.items
     val albums: StateFlow<List<Album>> = albumsPager.items
     val tracks: StateFlow<List<Track>> = tracksPager.items
-    val playlists: StateFlow<List<Playlist>> = playlistsPager.items
+    private val _playlistTypeFilter = MutableStateFlow(PlaylistTypeFilter.ALL)
+    val playlistTypeFilter: StateFlow<PlaylistTypeFilter> = _playlistTypeFilter.asStateFlow()
+
+    /** Playlists the listener pinned, kept at the top of the tab. Local, never server state. */
+    val pinnedPlaylistUris: StateFlow<Set<String>> = settingsRepository.pinnedPlaylistUris
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val playlists: StateFlow<List<Playlist>> = combine(
+        playlistsPager.items,
+        _playlistTypeFilter
+    ) { items, type ->
+        when (type) {
+            PlaylistTypeFilter.ALL -> items
+            PlaylistTypeFilter.SMART -> items.filter { it.isDynamic }
+            PlaylistTypeFilter.NORMAL -> items.filterNot { it.isDynamic }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun setPlaylistTypeFilter(type: PlaylistTypeFilter) {
+        if (_playlistTypeFilter.value == type) return
+        _playlistTypeFilter.value = type
+        // The filter is applied here, not by the server, so the whole tab has to be in
+        // memory for it to mean anything. Without this a filter matching a handful of the
+        // first page leaves a list too short to scroll, and the rest is never fetched.
+        if (type != PlaylistTypeFilter.ALL) playlistsPager.loadAll()
+    }
+
+    fun setPlaylistPinned(uri: String, pinned: Boolean) {
+        viewModelScope.launch { settingsRepository.setPlaylistPinned(uri, pinned) }
+    }
     val radios: StateFlow<List<Radio>> = radiosPager.items
     val audiobooks: StateFlow<List<Track>> = audiobooksPager.items
     val podcasts: StateFlow<List<Podcast>> = podcastsPager.items
