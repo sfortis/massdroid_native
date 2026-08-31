@@ -160,7 +160,9 @@ class CarSignInViewModel @Inject constructor(
         val queueMode = queue?.crossfadeMode
         if (queueMode != null) {
             crossfadeOnQueue = true
-            _crossfade.value = resolveQueueCrossfade(id, queueMode)
+            // Left unpublished when the queue's on/off is not known yet: _crossfade stays
+            // null, which is what makes the next connect try again.
+            resolveQueueCrossfade(id, queueMode)?.let { _crossfade.value = it }
             return
         }
         val config = runCatching { playerRepository.getPlayerConfig(id) }.getOrNull() ?: return
@@ -168,18 +170,23 @@ class CarSignInViewModel @Inject constructor(
     }
 
     /**
-     * Fold the queue's two values into the one the car screen shows. Off wins over the
-     * type, because that is what the listener hears; a type set to follow the server-wide
-     * default resolves through it, and anything unrecognised reads as standard, which is
-     * what the server itself falls back to.
+     * Fold the queue's two values into the one the car screen shows, or null when the
+     * on/off is not known yet.
+     *
+     * Off wins over the type, because that is what the listener hears; a type set to
+     * follow the server-wide default resolves through it, and anything unrecognised reads
+     * as standard, which is what the server itself falls back to.
+     *
+     * The null case matters. The toggle cache seeds on the same connect that brought us
+     * here, so it may not hold this queue within the wait. Reporting that as "off" would
+     * publish a value, and publishing a value is what stops the screen from ever asking
+     * again: a head unit slow to answer would then show Disabled for the rest of the
+     * drive over a crossfade that is really on.
      */
-    private suspend fun resolveQueueCrossfade(queueId: String, mode: QueueChoice): CrossfadeMode {
-        // The toggle cache seeds on the same connect that brought us here, so it may not
-        // hold this queue yet. Wait briefly for it rather than reading "off" from an
-        // empty map and showing the driver a crossfade that is really on.
+    private suspend fun resolveQueueCrossfade(queueId: String, mode: QueueChoice): CrossfadeMode? {
         val enabled = withTimeoutOrNull(QUEUE_SEED_WAIT_MS) {
             queueToggles.crossfadeStates.first { it.containsKey(queueId) }[queueId]
-        } ?: false
+        } ?: return null
         if (!enabled) return CrossfadeMode.DISABLED
         val effective = if (mode.followsGlobal) mode.globalValue else mode.value
         return if (effective == SMART_CROSSFADE) CrossfadeMode.SMART else CrossfadeMode.STANDARD
