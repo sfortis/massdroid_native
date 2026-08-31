@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.domain.recommendation
 
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -994,6 +995,9 @@ class SeedTrackMixGenerator @Inject constructor(
                         ?.let { return@async it }
                     val fresh = try {
                         musicRepository.getSimilarArtists(ref.itemId, ref.provider, perSeed)
+                    } catch (e: CancellationException) {
+                        // A cancelled build must stop, not carry on with an empty answer.
+                        throw e
                     } catch (e: Exception) {
                         Log.w(TAG, "similar_artists failed for ${ref.itemId}: ${e.message}")
                         emptyList()
@@ -1130,6 +1134,9 @@ class SeedTrackMixGenerator @Inject constructor(
                     val tracks = cached ?: try {
                         musicRepository.getArtistTopTracks(ref.itemId, ref.provider, MA_TOP_TRACKS_PER_ARTIST)
                             .also { if (it.isNotEmpty()) playHistoryRepository.cacheArtistTracks(art.uri, it) }
+                    } catch (e: CancellationException) {
+                        // A cancelled build must stop, not carry on with an empty answer.
+                        throw e
                     } catch (_: Exception) {
                         emptyList()
                     }
@@ -1247,6 +1254,9 @@ class SeedTrackMixGenerator @Inject constructor(
                         val tracks = serverGate.withPermit {
                             try {
                                 musicRepository.getSimilarTracks(ref.itemId, ref.provider, perSeed)
+                            } catch (e: CancellationException) {
+                                // A cancelled build must stop, not carry on with an empty answer.
+                                throw e
                             } catch (e: Exception) {
                                 Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
                                 emptyList()
@@ -1338,6 +1348,9 @@ class SeedTrackMixGenerator @Inject constructor(
         if (name.isEmpty()) return emptyList()
         return try {
             musicBrainzGenreResolver.cachedGenres(name).orEmpty()
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (_: Exception) {
             emptyList()
         }
@@ -1365,6 +1378,9 @@ class SeedTrackMixGenerator @Inject constructor(
         dbGenres[art.uri]?.takeIf { it.isNotEmpty() }?.let { return orderByFamilyFrequency(it) }
         return try {
             musicBrainzGenreResolver.cachedGenres(art.name).orEmpty()
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (_: Exception) {
             emptyList()
         }
@@ -1560,6 +1576,9 @@ class SeedTrackMixGenerator @Inject constructor(
                     ?: seed.artistName.trim().lowercase()
                 byKey[key]?.let { normalizeArtistKey(seed.artistName) to it }
             }.toMap()
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (_: Exception) {
             emptyMap()
         }
@@ -1743,6 +1762,9 @@ class SeedTrackMixGenerator @Inject constructor(
             playHistoryRepository.getRecentSeedTracks(
                 sinceMs, SEED_MIN_LISTENED_MS, SEED_MIN_SCORE, limit
             )
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "getRecentSeedTracks failed: ${e.message}")
             emptyList()
@@ -1756,6 +1778,9 @@ class SeedTrackMixGenerator @Inject constructor(
                 SEED_CONFIRMED_MIN_PLAYS,
                 limit
             )
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "getConfirmedSeedTracks failed: ${e.message}")
             emptyList()
@@ -1799,6 +1824,9 @@ class SeedTrackMixGenerator @Inject constructor(
     private suspend fun querySeedTracks(sinceMs: Long, minScore: Double, limit: Int): List<SeedTrack> =
         try {
             playHistoryRepository.getSeedTracks(sinceMs, SEED_MIN_LISTENED_MS, minScore, limit)
+        } catch (e: CancellationException) {
+            // A cancelled build must stop, not carry on with an empty answer.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "getSeedTracks failed: ${e.message}")
             emptyList()

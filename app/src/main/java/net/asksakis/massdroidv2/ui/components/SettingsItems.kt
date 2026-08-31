@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
@@ -299,14 +300,19 @@ internal fun QueueOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            // The row is the whole target, and it keeps the 48dp minimum even though the
+            // radio itself is drawn smaller. The radio takes no onClick of its own: two
+            // click semantics on one row is one too many for a screen reader, and the
+            // shrunken control on its own would be below the minimum touch size.
+            .heightIn(min = MIN_TOUCH_TARGET)
             .selectable(selected = selected, enabled = enabled, onClick = onSelect),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Scaled down with the text: the default 48dp radio target would leave the rows
-        // twice as tall as their content and the list would not fit the dialog.
+        // Drawn smaller than the default so a list of these fits the dialog; the row above
+        // supplies the touch area.
         RadioButton(
             selected = selected,
-            onClick = onSelect,
+            onClick = null,
             enabled = enabled,
             modifier = Modifier.size(QUEUE_RADIO_SIZE)
         )
@@ -336,5 +342,8 @@ internal fun QueueOptionRow(
     }
 }
 
-/** Radio target scaled to the smaller row text, so a list of them fits the dialog. */
+/** Radio drawn smaller than default, so a list of them fits the dialog. */
 internal val QUEUE_RADIO_SIZE = 32.dp
+
+/** Material's minimum touch target, kept on the ROW rather than on the shrunken radio. */
+private val MIN_TOUCH_TARGET = 48.dp

@@ -1219,10 +1219,14 @@ private fun <T> MediaList(
 ) {
     val providerCache = LocalProviderManifestCache.current
     val sections = groups ?: listOf(MediaListGroup(null, items))
+    // The handlers compare a LAYOUT index against this count, and a header occupies a slot
+    // in the layout without being an item, so the headers have to be counted too. Without
+    // this, load-more fires one slot early per header present.
+    val slotCount = items.size + sections.count { it.label != null }
     when (displayMode) {
         LibraryDisplayMode.LIST -> {
             val listState = rememberLazyListState()
-            InfiniteListHandler(listState, items.size, threshold = 5, onLoadMore = onLoadMore)
+            InfiniteListHandler(listState, slotCount, threshold = 5, onLoadMore = onLoadMore)
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
                 sections.forEach { section ->
                 section.label?.let { label ->
@@ -1261,7 +1265,7 @@ private fun <T> MediaList(
         }
         LibraryDisplayMode.GRID -> {
             val gridState = rememberLazyGridState()
-            InfiniteGridHandler(gridState, items.size, threshold = 6, onLoadMore = onLoadMore)
+            InfiniteGridHandler(gridState, slotCount, threshold = 6, onLoadMore = onLoadMore)
             LazyVerticalGrid(
                 state = gridState,
                 modifier = Modifier.fillMaxSize().fadingEdges(),
