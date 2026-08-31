@@ -246,10 +246,14 @@ class MusicRepositoryImpl @Inject constructor(
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
 
-    override suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track> {
+    override suspend fun getPlaylistTracks(
+        itemId: String,
+        provider: String,
+        forceRefresh: Boolean
+    ): List<Track> {
         val result = wsClient.sendCommand(
             MaCommands.Music.PLAYLIST_TRACKS,
-            ItemRefArgs(itemId = itemId, provider = provider)
+            PlaylistTracksArgs(itemId = itemId, provider = provider, forceRefresh = forceRefresh)
         )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }

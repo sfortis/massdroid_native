@@ -186,6 +186,25 @@ data class ItemRefArgs(
     }
 }
 
+/**
+ * [ItemRefArgs] plus a re-read of the provider, for [MaCommands.Music.PLAYLIST_TRACKS].
+ *
+ * Music Assistant serves playlist tracks from a cache, and for a playlist the provider
+ * generates (Smart Playlist, Endless Mix) that cache can be a day old. `force_refresh`
+ * is how its own web UI refreshes a listing, so it is what pull-to-refresh sends.
+ */
+data class PlaylistTracksArgs(
+    val itemId: String,
+    val provider: String,
+    val forceRefresh: Boolean = false
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("item_id", itemId)
+        put("provider_instance_id_or_domain", provider)
+        if (forceRefresh) put("force_refresh", true)
+    }
+}
+
 /** [ItemRefArgs] plus a result cap, for the similar-artists / top-tracks lookups. */
 data class ItemRefLimitArgs(
     val itemId: String,

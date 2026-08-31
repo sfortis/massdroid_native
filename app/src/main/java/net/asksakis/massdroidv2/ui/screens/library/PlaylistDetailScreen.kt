@@ -10,6 +10,7 @@ import net.asksakis.massdroidv2.ui.components.MdTextButton
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
@@ -65,6 +66,7 @@ fun PlaylistDetailScreen(
     val isFavorite by viewModel.favorite.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val busyTrackUri by viewModel.busyTrackUri.collectAsStateWithLifecycle()
     val sortKey by viewModel.sortKey.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
@@ -112,10 +114,16 @@ fun PlaylistDetailScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
-        LazyColumn(
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { viewModel.refresh() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+        ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
                 .fadingEdges(),
             contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
         ) {
@@ -220,6 +228,7 @@ fun PlaylistDetailScreen(
                     }
                 )
             }
+        }
         }
     }
 

@@ -53,7 +53,16 @@ interface MusicRepository {
     suspend fun getSimilarTracks(itemId: String, provider: String, limit: Int): List<Track>
     suspend fun getArtistTopTracks(itemId: String, provider: String, limit: Int = 10): List<Track>
     suspend fun getAlbumTracks(itemId: String, provider: String): List<Track>
-    suspend fun getPlaylistTracks(itemId: String, provider: String): List<Track>
+    /**
+     * Tracks of a playlist. [forceRefresh] makes the server re-read them from the
+     * provider instead of its cache, which is what a playlist the provider generates
+     * needs before it will show anything new.
+     */
+    suspend fun getPlaylistTracks(
+        itemId: String,
+        provider: String,
+        forceRefresh: Boolean = false
+    ): List<Track>
 
     suspend fun search(query: String, mediaTypes: List<MediaType>? = null, limit: Int = 25): SearchResult
     suspend fun getQueueItems(queueId: String, limit: Int = 100, offset: Int = 0): List<QueueItem>

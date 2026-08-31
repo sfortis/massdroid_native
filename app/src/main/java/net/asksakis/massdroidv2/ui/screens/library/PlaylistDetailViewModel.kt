@@ -103,6 +103,33 @@ class PlaylistDetailViewModel @Inject constructor(
         _favoritesOnly.value = !_favoritesOnly.value
     }
 
+    /**
+     * Re-read the listing from the provider, as the refresh button in the Music Assistant
+     * web UI does.
+     *
+     * The server serves playlist tracks from a cache, so without asking for a refresh a
+     * playlist the provider generates can show the same day-old sample. That is why this
+     * passes `force_refresh` rather than simply calling the load again.
+     */
+    fun refresh() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                loadTracks(forceRefresh = true)
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    private suspend fun loadTracks(forceRefresh: Boolean) {
+        try {
+            _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider, forceRefresh)
+        } catch (e: Exception) {
+            Log.w(TAG, "Load playlist tracks failed: ${e.message}")
+        }
+    }
+
     private val _playlistName = MutableStateFlow(savedStateHandle.get<String>("name") ?: "Playlist")
     val playlistName: StateFlow<String> = _playlistName.asStateFlow()
 
@@ -120,14 +147,11 @@ class PlaylistDetailViewModel @Inject constructor(
 
     val players = playerRepository.players
 
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     init {
-        viewModelScope.launch {
-            try {
-                _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider)
-            } catch (e: Exception) {
-                Log.w(TAG, "Load playlist tracks failed: ${e.message}")
-            }
-        }
+        viewModelScope.launch { loadTracks(forceRefresh = false) }
         viewModelScope.launch {
             try {
                 _playlists.value = musicRepository.getPlaylists(limit = 200)
