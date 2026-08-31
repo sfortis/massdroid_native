@@ -211,10 +211,12 @@ class MassDroidApp : Application(), ImageLoaderFactory {
             // MediaSession stops answering play/pause/skip entirely (issue #37).
             .okHttpClient { wsClient.getImageClient() }
             .components { add(coil.decode.SvgDecoder.Factory()) }
-            // Debug (dev) builds only: log the exact image URL and its load outcome so a user who
-            // hits "missing images" can share logs (from About) that actually pin the failing URL +
-            // reason (e.g. imageproxy 400/404, unreachable LAN host). Stripped from release builds.
-            .apply { if (BuildConfig.DEBUG) eventListener(ImageDebugEventListener) }
+            // Wired in every build, because a "missing images" report is unanswerable
+            // without it: the listener names the exact URL that failed and why (imageproxy
+            // 400/404, unreachable LAN host). It was debug-only, which meant the one tool
+            // for the job was absent from every build a user actually runs, and issue #66
+            // sat undiagnosed for a week. Successes stay debug-only, see below.
+            .eventListener(ImageDebugEventListener)
             .crossfade(true)
             // Artwork sources differ wildly in HTTP cache headers: fanart.tv sends NONE (no
             // Cache-Control/Last-Modified/ETag), which the default header-respecting policy
@@ -240,15 +242,21 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 }
 
 /**
- * Dev-build image-load tracer. Logs each Coil load's URL and outcome under tag `ImageDbg` at a
- * level that survives release stripping (i/w) and is captured by the persistent logcat writer, so
- * a "missing images" report can be diagnosed from shared logs: compare the URL that fails on browse
- * with the one that works after a manual artist refresh. Wired only when BuildConfig.DEBUG.
+ * Image-load tracer. Logs the exact URL and outcome under tag `ImageDbg` at a level that survives
+ * release stripping (i/w) and is captured by the persistent log writer, so a "missing images"
+ * report can be diagnosed from shared logs: the failing URL and the reason.
+ *
+ * FAILURES are logged in every build. They are rare in a working setup, so the cost is nothing,
+ * and they are the whole of what a bug report needs.
+ *
+ * SUCCESSES stay on debug builds. A library browse loads hundreds of images, and writing a line
+ * for each into a 6x5MB rolling log would push the evidence of the actual fault out of it.
  */
 private object ImageDebugEventListener : coil.EventListener {
     private const val TAG = "ImageDbg"
 
     override fun onSuccess(request: coil.request.ImageRequest, result: coil.request.SuccessResult) {
+        if (!BuildConfig.DEBUG) return
         // Only network loads matter for diagnosis; cache hits just echo an earlier network fetch.
         if (result.dataSource == coil.decode.DataSource.NETWORK) {
             Log.i(TAG, "OK (net): ${request.data}")
