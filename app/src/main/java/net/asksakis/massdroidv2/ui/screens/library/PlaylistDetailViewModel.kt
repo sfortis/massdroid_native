@@ -260,7 +260,7 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (rebuildOnServer) {
-                    musicRepository.playServerResolved(queueId, playlistUri, option = option)
+                    musicRepository.playMedia(queueId, playlistUri, option = option)
                 } else {
                     musicRepository.playMedia(queueId, uris, option = option)
                 }

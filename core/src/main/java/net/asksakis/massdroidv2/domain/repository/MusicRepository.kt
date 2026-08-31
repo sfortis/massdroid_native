@@ -82,18 +82,6 @@ interface MusicRepository {
         awaitResponse: Boolean = false,
         timeoutMs: Long? = null
     )
-    /**
-     * Play a container by handing its URI straight to the server, so the server is the
-     * one that resolves what is inside it.
-     *
-     * This exists for playlists the server rebuilds on every play ([Playlist.isDynamic]).
-     * The single-URI [playMedia] cannot serve them: when the listener has blocked
-     * artists it expands the container into tracks here in order to filter them, and a
-     * playlist that arrives as tracks has nothing left to rebuild. Blocked artists are
-     * therefore not filtered out of a playlist played this way.
-     */
-    suspend fun playServerResolved(queueId: String, uri: String, option: String? = null)
-
     suspend fun createPlaylist(name: String): Playlist
     suspend fun addTrackToPlaylist(playlist: Playlist, trackUri: String)
     suspend fun removeTrackFromPlaylist(playlist: Playlist, position: Int)

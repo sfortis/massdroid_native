@@ -329,17 +329,22 @@ class MusicRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun playServerResolved(queueId: String, uri: String, option: String?) {
-        // The list form is the one that sends what it is given, unexamined. A single URI
-        // in it reaches the server as the container itself.
-        playMedia(queueId, listOf(uri), option = option)
+    /**
+     * Whether the server regenerates this playlist on play (`is_dynamic`).
+     *
+     * Asked only when there are blocked artists to filter and the item is a playlist, so
+     * it costs a round trip in that case alone. An unknown answer counts as yes: leaving
+     * the container intact keeps the server's own behaviour, where guessing wrong the
+     * other way silently replaces a generated playlist with a stale copy of itself.
+     */
+    private suspend fun isRebuiltOnPlay(uri: String): Boolean = try {
+        wsClient.sendCommand(MaCommands.Music.ITEM_BY_URI, ItemByUriArgs(uri))
+            ?.jsonObject?.get("is_dynamic")?.jsonPrimitive?.booleanOrNull != false
+    } catch (e: Exception) {
+        Log.d(TAG, "could not tell if $uri is rebuilt on play (${e.message}); leaving it whole")
+        true
     }
 
-    /**
-     * If the URI is a container (artist/album/playlist) and blocked artists exist,
-     * fetch tracks, filter out blocked, return filtered URIs.
-     * Returns null if no filtering needed (single track, no blocked artists, or unknown URI type).
-     */
     private suspend fun preFilterBlocked(uri: String): List<String>? {
         val repo = playerRepository.get()
         // Fast path: no blocked artists at all
@@ -362,7 +367,15 @@ class MusicRepositoryImpl @Inject constructor(
                 return null // Don't pre-fetch all artist tracks, let server handle
             }
             "album" -> try { getAlbumTracks(itemId, provider) } catch (_: Exception) { return null }
-            "playlist" -> try { getPlaylistTracks(itemId, provider) } catch (_: Exception) { return null }
+            "playlist" -> {
+                // A playlist the server rebuilds when it is played has to reach it whole:
+                // expanding it into tracks here, to drop the blocked ones, would hand the
+                // server a snapshot with nothing left to rebuild. That is issue #67, and
+                // it is answered here rather than per screen so the phone, the TV, Android
+                // Auto and the car all get it right.
+                if (isRebuiltOnPlay(uri)) return null
+                try { getPlaylistTracks(itemId, provider) } catch (_: Exception) { return null }
+            }
             else -> return null
         }
 
