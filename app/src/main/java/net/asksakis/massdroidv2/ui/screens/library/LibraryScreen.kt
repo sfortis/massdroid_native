@@ -107,6 +107,7 @@ fun LibraryScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val pinnedPlaylistUris by viewModel.pinnedPlaylistUris.collectAsStateWithLifecycle()
     val playlistTypeFilter by viewModel.playlistTypeFilter.collectAsStateWithLifecycle()
+    val accountName by viewModel.accountName.collectAsStateWithLifecycle()
     val radios by viewModel.radios.collectAsStateWithLifecycle()
     val audiobooks by viewModel.audiobooks.collectAsStateWithLifecycle()
     val podcasts by viewModel.podcasts.collectAsStateWithLifecycle()
@@ -469,7 +470,13 @@ fun LibraryScreen(
                                 onLoadMore = { viewModel.loadMorePlaylists() },
                                 key = { it.uri },
                                 title = { it.name },
-                                subtitle = { "" },
+                                // Only when someone else made it: a listener's own name on
+                                // every row of their own library says nothing.
+                                subtitle = { p ->
+                                    p.owner.takeIf {
+                                        it.isNotBlank() && !it.equals(accountName, ignoreCase = true)
+                                    }.orEmpty()
+                                },
                                 imageUrl = { it.imageUrl },
                                 favorite = { it.favorite },
                                 onClick = { onPlaylistClick(it) },

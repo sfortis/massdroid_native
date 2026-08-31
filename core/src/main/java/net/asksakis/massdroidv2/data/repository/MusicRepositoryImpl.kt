@@ -919,6 +919,7 @@ class MusicRepositoryImpl @Inject constructor(
             favorite = favorite,
             isEditable = isEditable != false,
             isDynamic = isDynamic == true,
+            owner = owner.orEmpty(),
             providerDomains = extractProviderDomains()
         )
     }

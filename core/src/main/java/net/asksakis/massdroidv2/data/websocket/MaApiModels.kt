@@ -151,6 +151,12 @@ data class ServerMediaItem(
     val year: Int? = null,
     @SerialName("is_editable") val isEditable: Boolean? = null,
     /**
+     * Playlists only: who the playlist belongs to. The account name for a listener's own
+     * playlists, or the generator's name ("Music Assistant", "Smart Playlist") for the
+     * ones the server produces.
+     */
+    val owner: String? = null,
+    /**
      * Playlists only: whether the server re-evaluates the contents each time the
      * playlist is played, as the Smart Playlist and Endless Mix providers do.
      */

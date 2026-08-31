@@ -130,6 +130,12 @@ data class Playlist(
      * played by its own URI. See `PlaylistDetailViewModel.playAll`.
      */
     val isDynamic: Boolean = false,
+    /**
+     * Who the playlist belongs to: the listener's own account name, or the name of
+     * whatever generated it. Shown in the library only when it is NOT the listener, where
+     * it answers where a playlist they did not make came from.
+     */
+    val owner: String = "",
     val providerDomains: List<String> = emptyList()
 )
 

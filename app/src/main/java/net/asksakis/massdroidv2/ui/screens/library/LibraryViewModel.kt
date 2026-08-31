@@ -395,6 +395,14 @@ class LibraryViewModel @Inject constructor(
         if (type != PlaylistTypeFilter.ALL) playlistsPager.loadAll()
     }
 
+    /**
+     * The signed-in account name, used to leave a listener's OWN playlists unlabelled: 89
+     * of 110 in the owner's library say "sfortis", which as a subtitle is just noise. What
+     * is worth showing is the other 21, the ones a generator made.
+     */
+    val accountName: StateFlow<String> = settingsRepository.username
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+
     fun setPlaylistPinned(uri: String, pinned: Boolean) {
         viewModelScope.launch { settingsRepository.setPlaylistPinned(uri, pinned) }
     }
