@@ -136,6 +136,18 @@ interface PlayerRepository {
 
     suspend fun play(playerId: String)
     suspend fun pause(playerId: String)
+
+    /**
+     * Pause and suspend until the server answers the command.
+     *
+     * [pause] is fire-and-forget, which is the right shape for a UI tap: the
+     * server's own state event updates the UI, and a dead socket costs nothing
+     * because the user is looking at the screen and can tap again. Use this
+     * variant when a later step depends on the pause having actually taken
+     * effect, so that a command lost with a broken connection is visible to the
+     * caller as a failure instead of passing silently.
+     */
+    suspend fun pauseConfirmed(playerId: String)
     suspend fun playPause(playerId: String)
     fun notifyPlaybackIntent(willPlay: Boolean)
     fun isArtistUriBlocked(artistUri: String): Boolean

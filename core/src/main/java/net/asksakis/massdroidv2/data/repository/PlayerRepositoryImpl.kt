@@ -1509,6 +1509,11 @@ class PlayerRepositoryImpl @Inject constructor(
         playerCmd("pause", playerId)
     }
 
+    override suspend fun pauseConfirmed(playerId: String) {
+        _playbackIntent.tryEmit(false)
+        playerCmd("pause", playerId, awaitAck = true)
+    }
+
     override suspend fun playPause(playerId: String) {
         val willPlay = _selectedPlayer.value?.state != PlaybackState.PLAYING
         _playbackIntent.tryEmit(willPlay)
@@ -1996,11 +2001,12 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun playerCmd(cmd: String, playerId: String) {
+    private suspend fun playerCmd(cmd: String, playerId: String, awaitAck: Boolean = false) {
         try {
             sendPlayerCommandWithRetry(
                 MaCommands.Players.cmd(cmd),
-                PlayerIdArgs(playerId = playerId)
+                PlayerIdArgs(playerId = playerId),
+                awaitAck = awaitAck
             )
             Log.d(TAG, "playerCmd sent: $cmd($playerId)")
         } catch (e: MaApiException) {
@@ -2019,12 +2025,16 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun sendPlayerCommandWithRetry(command: String, args: MaCommandArgs) {
+    private suspend fun sendPlayerCommandWithRetry(
+        command: String,
+        args: MaCommandArgs,
+        awaitAck: Boolean = false,
+    ) {
         var attempt = 0
         var lastError: MaApiException? = null
         while (attempt < 2) {
             try {
-                wsClient.sendCommand(command, args, awaitResponse = false)
+                wsClient.sendCommand(command, args, awaitResponse = awaitAck)
                 return
             } catch (e: MaApiException) {
                 if (!isTransientWsCommandError(e)) throw e

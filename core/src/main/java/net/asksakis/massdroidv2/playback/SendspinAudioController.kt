@@ -81,6 +81,12 @@ class SendspinAudioController(
         private const val BT_STABILIZE_TIMEOUT_MS = 12_000L
         private const val BT_STABILIZE_QUIET_MS = 1_200L
         private const val BT_STABILIZE_POLL_MS = 250L
+        // How long a reconnect waits for the server to answer the re-asserted
+        // pause before refreshing the Sendspin transport anyway. Bounded because
+        // an unrefreshed transport is a worse outcome than the short leak the
+        // ordering is there to prevent, and because a missing answer means the
+        // connection is broken again, in which case the refresh fails too.
+        private const val PAUSE_REASSERT_TIMEOUT_MS = 5_000L
     }
 
     private val exceptionHandler = CoroutineExceptionHandler { _, e ->
@@ -840,29 +846,86 @@ class SendspinAudioController(
                             "(wantToResume=$wantToResume, userIntent=$intent, " +
                             "sendspinIsSelected=$sendspinIsSelected)"
                     )
-                    sendspinManager.refresh()
-                    if (wantToResume) {
-                        launch {
-                            val ready = withTimeoutOrNull(15_000) {
-                                sendspinManager.connectionState
-                                    .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                            }
-                            if (ready == null) {
-                                Log.w(TAG, "Auto-resume aborted: Sendspin not ready within 15s")
-                                return@launch
-                            }
-                            val id = sendspinPlayerId ?: return@launch
-                            Log.d(TAG, "Auto-resuming play after MA reconnect")
-                            try {
-                                playerRepository.play(id)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Auto-resume play failed: ${e.message}")
-                            }
-                        }
-                    }
+                    launch { resumeOrReassertPause(wantToResume, intent, sendspinIsSelected) }
                 }
                 if (isConnected) connectedBefore = true
             }
+        }
+    }
+
+    /**
+     * Reconcile with the server after the MA connection comes back, then refresh
+     * the Sendspin transport.
+     *
+     * The pause we send when an external sink disappears is fire-and-forget, and
+     * a sink disappears exactly when a car is switched off, which is often the
+     * same moment the phone loses the network. A command written into a socket
+     * whose peer is already unreachable is buffered locally and then discarded
+     * with the connection, with no error: the app believes it paused while the
+     * server keeps the queue playing. When the connection returns, the server
+     * pushes a `stream/start` for the still-playing queue and the engine plays it
+     * out of whatever sink now exists, which is the phone speaker. That is how a
+     * drive ended with the music continuing in the room for eight minutes.
+     *
+     * So when the user does not want playback and the output would land on the
+     * phone speaker, re-assert the pause and WAIT for the server's answer before
+     * refreshing the Sendspin transport. Waiting is the part that keeps it
+     * silent: the two run on separate sockets, so refreshing first lets the
+     * handshake and the `stream/start` overtake the pause and leak a few hundred
+     * milliseconds of audio.
+     *
+     * The condition is read from live state rather than remembered, and the
+     * pause is sent without first asking whether the server agrees, because
+     * pausing an already-paused queue is a no-op. Being on the phone speaker is
+     * what makes it safe: a sink the user chose (car, headphones) never takes
+     * this path, so a head unit that sends its own play is unaffected.
+     */
+    private suspend fun resumeOrReassertPause(
+        wantToResume: Boolean,
+        intent: Boolean,
+        sendspinIsSelected: Boolean,
+    ) {
+        val id = sendspinPlayerId
+        // Paused, and the output would land on the phone speaker. `_userIntent` is
+        // re-read on top of the `intent` the reconnect logged because the user can
+        // press play in the gap before this coroutine runs, and a pause sent after
+        // that would stop the playback they just asked for. The route is resolved
+        // last, being the only expensive check.
+        if (id != null && !intent && !_userIntent.value && sendspinIsSelected &&
+            !resolveOutputRoute().isExternal
+        ) {
+            Log.d(TAG, "Reconnected paused on the phone speaker -> re-asserting pause before refresh")
+            try {
+                val answered = withTimeoutOrNull(PAUSE_REASSERT_TIMEOUT_MS) {
+                    playerRepository.pauseConfirmed(id)
+                }
+                if (answered == null) {
+                    Log.w(TAG, "Pause re-assert not answered within ${PAUSE_REASSERT_TIMEOUT_MS}ms")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Pause re-assert failed: ${e.message}")
+            }
+        }
+        sendspinManager.refresh()
+        if (!wantToResume) return
+        val ready = withTimeoutOrNull(15_000) {
+            sendspinManager.connectionState
+                .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
+        }
+        if (ready == null) {
+            Log.w(TAG, "Auto-resume aborted: Sendspin not ready within 15s")
+            return
+        }
+        val resumeId = sendspinPlayerId ?: return
+        Log.d(TAG, "Auto-resuming play after MA reconnect")
+        try {
+            playerRepository.play(resumeId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Auto-resume play failed: ${e.message}")
         }
     }
 
