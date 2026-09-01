@@ -197,6 +197,57 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
+    fun carConnect_pinLostOnConnect_reAppliedWhenRouteSettles() = runTest(UnconfinedTestDispatcher()) {
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+
+        f.carDevicesFlow.emit(setOf(CAR_KEY))  // enters the session and writes the pin
+        advanceUntilIdle()
+
+        // The sink asserts its own remembered level over AVRCP once the link is up,
+        // which is what left a CREATIVE MUVO 2 at index 4 of 15 with the pin already
+        // logged as written. Android also holds a STREAM_MUSIC index per device, so a
+        // write sent while the sink was merely connected can land on the old one.
+        f.streamIndex = 4
+
+        c.onRouteChanged()  // the route has settled on the car
+        advanceUntilIdle()
+
+        verify(exactly = 2) {
+            f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0)
+        }
+    }
+
+    @Test
+    fun carActive_volumeLoweredAfterPinSettled_isLeftAlone() = runTest(UnconfinedTestDispatcher()) {
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+
+        f.carDevicesFlow.emit(setOf(CAR_KEY))
+        advanceUntilIdle()
+        // The pin held this time, so the settle check finds nothing to do.
+        f.streamIndex = MAX_INDEX
+        c.onRouteChanged()
+        advanceUntilIdle()
+
+        // Later in the drive the level goes down, by the phone keys or the head
+        // unit's own dial. Further route pokes (a flap, an output reopen) must not
+        // slam it back to full.
+        f.streamIndex = 4
+        c.onRouteChanged()
+        c.onRouteChanged()
+        advanceUntilIdle()
+
+        verify(exactly = 1) {
+            f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0)
+        }
+    }
+
+    @Test
     fun carConnect_nonFlaggedRoute_doesNotPinOrLock() = runTest(UnconfinedTestDispatcher()) {
         val f = Fixture().apply { onBtRoute("SomeSpeaker") } // route key bt:SomeSpeaker
         val c = f.build()

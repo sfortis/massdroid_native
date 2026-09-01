@@ -153,7 +153,30 @@ class SendspinVolumeCoordinator(
      * enter/affirm/exit transitions are atomic across the route-event / clientId /
      * car-devices callers that all fire on connect.
      */
-    private data class CarSession(val routeKey: String, val preCarVolume: Int)
+    private data class CarSession(
+        val routeKey: String,
+        val preCarVolume: Int,
+        var pinPhase: CarPinPhase = CarPinPhase.WRITTEN_ON_CONNECT,
+    )
+
+    /**
+     * How far the 100% pin has got for a car session.
+     *
+     * The session is entered optimistically, while the sink is merely CONNECTED
+     * and the audio route has not settled on it yet, because the transport lock
+     * has to be prompt. A volume write at that instant is not reliable: Android
+     * keeps a STREAM_MUSIC index per output device, and an absolute-volume A2DP
+     * sink asserts its own remembered level over AVRCP a moment after the link
+     * comes up. A CREATIVE MUVO 2 flagged as car audio left the phone at index 4
+     * of 15 with the pin write logged as done, which is what the owner heard as
+     * "the phone Bluetooth volume stayed low".
+     *
+     * So the pin is written on the connect edge and then checked ONCE more when
+     * the route has actually settled on the car. [SETTLED] means that check has
+     * run, which is what keeps the pin from fighting a volume the user lowers
+     * themselves later in the drive.
+     */
+    private enum class CarPinPhase { WRITTEN_ON_CONNECT, SETTLED }
     @Volatile private var carSession: CarSession? = null
     private val carLock = Any()
     // Pending settle-windowed exit of the car session (aborted at expiry if still routed to car).
@@ -237,7 +260,7 @@ class SendspinVolumeCoordinator(
             }
         }
         val id = cachedSendspinPlayerId
-        val pinKey: String? = synchronized(carLock) {
+        val action: CarRouteAction = synchronized(carLock) {
             when {
                 carSession == null -> {
                     val key = resolveCarKey() ?: return
@@ -249,29 +272,75 @@ class SendspinVolumeCoordinator(
                     // (often 100%) level on connect, making the restore a no-op.
                     carSession = CarSession(key, phoneVolume)
                     playerRepository.setSelectionLock(PlayerSelectionLock(id, CAR_LOCK_REASON))
-                    key
+                    CarRouteAction.Pin(key)
                 }
                 routedCarActive() -> {
                     // Still on the car (or a flap just re-bound): re-affirm the lock, drop any exit.
                     carLockClearJob?.cancel()
                     carLockClearJob = null
                     id?.let { playerRepository.setSelectionLock(PlayerSelectionLock(it, CAR_LOCK_REASON)) }
-                    null
+                    // The route has settled on the car, so this is the moment a pin
+                    // written on the optimistic connect edge can be checked (see
+                    // [CarPinPhase]). Marked settled here, under the lock, so only
+                    // the first such poke acts.
+                    val session = carSession
+                    if (session != null && session.pinPhase == CarPinPhase.WRITTEN_ON_CONNECT) {
+                        session.pinPhase = CarPinPhase.SETTLED
+                        CarRouteAction.VerifyPin
+                    } else {
+                        CarRouteAction.None
+                    }
                 }
                 else -> {
                     scheduleCarExit()
-                    null
+                    CarRouteAction.None
                 }
             }
         }
-        if (pinKey != null && id != null) {
-            Log.d(TAG, "car-audio $pinKey active -> pin 100% (pre-car ${carSession?.preCarVolume}%)")
-            // Pin to 100% via the normal volume path (MA + STREAM_MUSIC), once.
-            writeStreamMusic(100)
-            recordLocalPush(100)
-            playerRepository.applyVolumeOptimistic(id, 100)
-            launchPushToServer(id, 100, reason = "car-pin")
+        when (action) {
+            is CarRouteAction.Pin -> {
+                if (id == null) return
+                Log.d(TAG, "car-audio ${action.key} active -> pin 100% (pre-car ${carSession?.preCarVolume}%)")
+                // Pin to 100% via the normal volume path (MA + STREAM_MUSIC), once.
+                writeStreamMusic(100)
+                recordLocalPush(100)
+                playerRepository.applyVolumeOptimistic(id, 100)
+                launchPushToServer(id, 100, reason = "car-pin")
+            }
+            CarRouteAction.VerifyPin -> verifyCarPin()
+            CarRouteAction.None -> Unit
         }
+    }
+
+    /** What [onRouteChanged] decided under the lock, carried out after releasing it. */
+    private sealed interface CarRouteAction {
+        data class Pin(val key: String) : CarRouteAction
+        data object VerifyPin : CarRouteAction
+        data object None : CarRouteAction
+    }
+
+    /**
+     * Re-apply the car pin if the connect-edge write did not survive.
+     *
+     * Reads the level back rather than trusting the earlier write, because the
+     * write went out while the sink was only connected: Android holds a
+     * STREAM_MUSIC index per device and an absolute-volume A2DP sink asserts its
+     * own level over AVRCP once the link is up, either of which leaves the pin
+     * logged as done and the phone quiet. Runs once per session, so a level the
+     * user lowers later in the drive is left alone. The read-back is logged
+     * because whether one re-write is enough depends on the sink.
+     */
+    private fun verifyCarPin() {
+        val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (max <= 0) return
+        val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        if (before >= max) {
+            Log.d(TAG, "car-audio pin held on the settled route (index $before/$max)")
+            return
+        }
+        writeStreamMusic(100)
+        val after = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        Log.d(TAG, "car-audio pin was lost on connect (index $before/$max) -> re-pinned, now $after/$max")
     }
 
     /**

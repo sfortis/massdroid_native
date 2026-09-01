@@ -2,12 +2,17 @@ package net.asksakis.massdroidv2.data.repository
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -29,17 +34,39 @@ class PauseDeliveryTest {
 
     private val wsClient = mockk<MaWebSocketClient>(relaxed = true)
 
-    private fun repository() = PlayerRepositoryImpl(
-        wsClient = wsClient,
-        imageResolver = mockk<ImageUrlResolver>(relaxed = true),
-        json = Json { ignoreUnknownKeys = true },
-        playHistoryRepository = mockk<PlayHistoryRepository>(relaxed = true),
-        settingsRepository = mockk<SettingsRepository>(relaxed = true),
-        smartListeningRepository = mockk<SmartListeningRepository>(relaxed = true),
-        musicBrainzGenreResolver = mockk(relaxed = true),
-        sessionEventBus = mockk(relaxed = true),
-        queueItemsCoordinator = mockk(relaxed = true),
-    )
+    /**
+     * The real repository, with every flow its constructor collects backed by a
+     * live empty flow.
+     *
+     * A relaxed mock answers a Flow property with a stub that throws as soon as it
+     * is collected, and the constructor starts four collectors on Dispatchers.IO.
+     * Those exceptions escape the test that built the object and land on whichever
+     * test runs next, which is why they are stubbed here rather than left relaxed.
+     */
+    private fun repository(): PlayerRepositoryImpl {
+        every { wsClient.events } returns MutableSharedFlow()
+        every { wsClient.connectionState } returns MutableStateFlow(ConnectionState.Disconnected)
+        val settings = mockk<SettingsRepository>(relaxed = true) {
+            every { smartListeningEnabled } returns MutableStateFlow(false)
+        }
+        val smartListening = mockk<SmartListeningRepository>(relaxed = true) {
+            every { blockedArtistUris } returns MutableStateFlow(emptySet())
+        }
+        val eventBus = mockk<SessionEventBus>(relaxed = true) {
+            every { resets } returns MutableSharedFlow()
+        }
+        return PlayerRepositoryImpl(
+            wsClient = wsClient,
+            imageResolver = mockk<ImageUrlResolver>(relaxed = true),
+            json = Json { ignoreUnknownKeys = true },
+            playHistoryRepository = mockk<PlayHistoryRepository>(relaxed = true),
+            settingsRepository = settings,
+            smartListeningRepository = smartListening,
+            musicBrainzGenreResolver = mockk(relaxed = true),
+            sessionEventBus = eventBus,
+            queueItemsCoordinator = mockk(relaxed = true),
+        )
+    }
 
     @Test
     fun `pauseConfirmed waits for the server to answer the command`() = runBlocking {
