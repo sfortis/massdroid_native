@@ -171,12 +171,14 @@ class SendspinVolumeCoordinator(
      * of 15 with the pin write logged as done, which is what the owner heard as
      * "the phone Bluetooth volume stayed low".
      *
-     * So the pin is written on the connect edge and then checked ONCE more when
-     * the route has actually settled on the car. [SETTLED] means that check has
-     * run, which is what keeps the pin from fighting a volume the user lowers
-     * themselves later in the drive.
+     * So the pin is written on the connect edge and then checked ONCE more, when
+     * the output is really bound to this session's car. [VERIFYING] claims that
+     * check so no second poke duplicates it, and [SETTLED] records that it
+     * finished, which is what keeps the pin from fighting a volume the user
+     * lowers themselves later in the drive. A check that cannot go ahead returns
+     * the phase to [WRITTEN_ON_CONNECT], so a later poke still gets the chance.
      */
-    private enum class CarPinPhase { WRITTEN_ON_CONNECT, SETTLED }
+    private enum class CarPinPhase { WRITTEN_ON_CONNECT, VERIFYING, SETTLED }
     @Volatile private var carSession: CarSession? = null
     private val carLock = Any()
     // Pending settle-windowed exit of the car session (aborted at expiry if still routed to car).
@@ -279,14 +281,19 @@ class SendspinVolumeCoordinator(
                     carLockClearJob?.cancel()
                     carLockClearJob = null
                     id?.let { playerRepository.setSelectionLock(PlayerSelectionLock(it, CAR_LOCK_REASON)) }
-                    // The route has settled on the car, so this is the moment a pin
-                    // written on the optimistic connect edge can be checked (see
-                    // [CarPinPhase]). Marked settled here, under the lock, so only
-                    // the first such poke acts.
+                    // A pin written on the optimistic connect edge can only be
+                    // checked once the output is REALLY on this session's car, which
+                    // is stricter than [routedCarActive] (see [routedOnSessionCar]).
+                    // Marked verifying here, under the lock, so only the first
+                    // qualifying poke acts; the phase goes back if the write is
+                    // abandoned, so a later, properly settled poke can still do it.
                     val session = carSession
-                    if (session != null && session.pinPhase == CarPinPhase.WRITTEN_ON_CONNECT) {
-                        session.pinPhase = CarPinPhase.SETTLED
-                        CarRouteAction.VerifyPin
+                    if (session != null &&
+                        session.pinPhase == CarPinPhase.WRITTEN_ON_CONNECT &&
+                        routedOnSessionCar(session)
+                    ) {
+                        session.pinPhase = CarPinPhase.VERIFYING
+                        CarRouteAction.VerifyPin(session)
                     } else {
                         CarRouteAction.None
                     }
@@ -307,7 +314,7 @@ class SendspinVolumeCoordinator(
                 playerRepository.applyVolumeOptimistic(id, 100)
                 launchPushToServer(id, 100, reason = "car-pin")
             }
-            CarRouteAction.VerifyPin -> verifyCarPin()
+            is CarRouteAction.VerifyPin -> verifyCarPin(action.session)
             CarRouteAction.None -> Unit
         }
     }
@@ -315,8 +322,27 @@ class SendspinVolumeCoordinator(
     /** What [onRouteChanged] decided under the lock, carried out after releasing it. */
     private sealed interface CarRouteAction {
         data class Pin(val key: String) : CarRouteAction
-        data object VerifyPin : CarRouteAction
+        data class VerifyPin(val session: CarSession) : CarRouteAction
         data object None : CarRouteAction
+    }
+
+    /**
+     * Whether the output is RIGHT NOW bound to [session]'s own car, strictly.
+     *
+     * [routedCarActive] is deliberately loose for its own job of holding a session
+     * open: it accepts a null routed type, and it accepts ANY Bluetooth route as
+     * long as some car-flagged sink is merely connected. That is safe for keeping
+     * a lock, and wrong for deciding where to write a volume. With the car still
+     * listed as connected while earbuds became the routed device, the loose
+     * predicate would have pinned the EARBUDS to full volume.
+     *
+     * So verification requires a concrete Bluetooth routed type AND a resolved
+     * routed key equal to the session's.
+     */
+    private fun routedOnSessionCar(session: CarSession): Boolean {
+        val type = currentOutputDeviceType() ?: return false
+        if (!isBluetoothSink(type)) return false
+        return currentBtRouteKey() == session.routeKey
     }
 
     /**
@@ -329,18 +355,43 @@ class SendspinVolumeCoordinator(
      * logged as done and the phone quiet. Runs once per session, so a level the
      * user lowers later in the drive is left alone. The read-back is logged
      * because whether one re-write is enough depends on the sink.
+     *
+     * The route is revalidated immediately before writing, and the session has to
+     * still be the live one: the phase was claimed under the lock but this runs
+     * after releasing it, so the car can be gone, or replaced, by now. Anything
+     * that stops the write returns the phase so a later poke retries.
      */
-    private fun verifyCarPin() {
+    private fun verifyCarPin(session: CarSession) {
         val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        if (max <= 0) return
+        if (max <= 0 || !stillCurrentCarRoute(session)) {
+            releaseVerification(session)
+            return
+        }
         val before = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         if (before >= max) {
             Log.d(TAG, "car-audio pin held on the settled route (index $before/$max)")
-            return
+        } else {
+            writeStreamMusic(100)
+            val after = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            Log.d(TAG, "car-audio pin was lost on connect (index $before/$max) -> re-pinned, now $after/$max")
         }
-        writeStreamMusic(100)
-        val after = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        Log.d(TAG, "car-audio pin was lost on connect (index $before/$max) -> re-pinned, now $after/$max")
+        synchronized(carLock) {
+            if (carSession === session) session.pinPhase = CarPinPhase.SETTLED
+        }
+    }
+
+    private fun stillCurrentCarRoute(session: CarSession): Boolean = synchronized(carLock) {
+        carSession === session && routedOnSessionCar(session)
+    }
+
+    /** Hand the pin check back so a later, properly routed poke can run it. */
+    private fun releaseVerification(session: CarSession) {
+        synchronized(carLock) {
+            if (carSession === session && session.pinPhase == CarPinPhase.VERIFYING) {
+                session.pinPhase = CarPinPhase.WRITTEN_ON_CONNECT
+            }
+        }
+        Log.d(TAG, "car-audio pin check skipped: route or session no longer current")
     }
 
     /**

@@ -221,6 +221,45 @@ class SendspinVolumeCoordinatorTest {
     }
 
     @Test
+    fun carConnectedButAnotherBtSinkRouted_pinIsNotWrittenToIt() = runTest(UnconfinedTestDispatcher()) {
+        val f = Fixture().apply { onBtRoute() }
+        val c = f.build()
+        c.start(backgroundScope)
+        advanceUntilIdle()
+
+        f.carDevicesFlow.emit(setOf(CAR_KEY))  // enters the session on the car
+        advanceUntilIdle()
+
+        // Earbuds become the routed device while the car is still listed as
+        // connected: getting out with the phone, the earbuds connect, and the
+        // car's entry lingers. The session's own hold predicate stays true here
+        // (any BT route plus a connected car sink), so the pin check has to be
+        // stricter or it writes full volume into someone's ears.
+        f.routeType = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+        f.btRouteKey = "bt:Buds2"
+        f.devices = arrayOf(f.btSink("Buds2"), f.btSink("MINI45864"))
+        f.streamIndex = 4
+
+        c.onRouteChanged()
+        advanceUntilIdle()
+
+        // Only the connect-edge write happened; nothing was pinned for the earbuds.
+        verify(exactly = 1) {
+            f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0)
+        }
+
+        // And the check was only deferred, not spent: back on the car it runs.
+        f.onBtRoute()
+        f.streamIndex = 4
+        c.onRouteChanged()
+        advanceUntilIdle()
+
+        verify(exactly = 2) {
+            f.audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx(100), 0)
+        }
+    }
+
+    @Test
     fun carActive_volumeLoweredAfterPinSettled_isLeftAlone() = runTest(UnconfinedTestDispatcher()) {
         val f = Fixture().apply { onBtRoute() }
         val c = f.build()
