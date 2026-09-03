@@ -286,6 +286,26 @@ class ProximityController(
             }
 
             launch {
+                // A room confirmed while a selection lock is held is dropped by the
+                // repository, and the room detector will not confirm the same room
+                // again, so the switch was lost for good. Leaving the car is exactly
+                // that case: the head unit can hold the Bluetooth link for minutes
+                // after it is switched off, so the car-audio lock outlives the drive
+                // and can still be in place when the office is detected (measured:
+                // room confirmed at confidence 1.00 and rejected in the same
+                // millisecond, lock released 94 seconds later). Re-evaluate the
+                // CURRENT room when a lock goes away, rather than replaying a stale
+                // intent, so a room change during the lock is still respected.
+                var wasLocked = playerRepository.selectionLock.value != null
+                playerRepository.selectionLock.collect { lock ->
+                    val locked = lock != null
+                    val released = wasLocked && !locked
+                    wasLocked = locked
+                    if (released) syncSelectedPlayerToCurrentRoom("selection-lock-released")
+                }
+            }
+
+            launch {
                 var wasMoving = motionGate.isMoving.value
                 motionGate.isMoving.collect { moving ->
                     val risingEdge = moving && !wasMoving
@@ -455,8 +475,11 @@ class ProximityController(
         }
         if (!playbackController.isPlayerAvailable(room.playerId)) return
         if (playerRepository.selectedPlayer.value?.playerId == room.playerId) return
-        playerRepository.selectPlayer(room.playerId)
-        Log.d(TAG, "Proximity selected player ($reason): ${room.playerName}")
+        if (playerRepository.selectPlayer(room.playerId)) {
+            Log.d(TAG, "Proximity selected player ($reason): ${room.playerName}")
+        } else {
+            Log.d(TAG, "Proximity select rejected by a selection lock ($reason): ${room.playerName}")
+        }
     }
 
     private fun currentWifiOnlyRoomConfig(
@@ -869,8 +892,14 @@ class ProximityController(
         }
         if (!playbackController.isPlayerAvailable(detected.playerId)) return
         if (playerRepository.selectedPlayer.value?.playerId == detected.playerId) return
-        playerRepository.selectPlayer(detected.playerId)
-        Log.d(TAG, "Proximity selected player ($reason): ${detected.playerName}")
+        if (playerRepository.selectPlayer(detected.playerId)) {
+            Log.d(TAG, "Proximity selected player ($reason): ${detected.playerName}")
+        } else {
+            // Dropped by a lock, most often the car-audio one while the head unit
+            // still holds the Bluetooth link. The lock-release collector in
+            // start() re-evaluates the room rather than leaving this lost.
+            Log.d(TAG, "Proximity select rejected by a selection lock ($reason): ${detected.playerName}")
+        }
     }
 
     private fun stopEngine() {

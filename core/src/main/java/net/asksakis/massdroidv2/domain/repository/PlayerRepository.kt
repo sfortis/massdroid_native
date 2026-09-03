@@ -131,7 +131,17 @@ interface PlayerRepository {
 
     fun requireSelectedPlayerId(): String?
     suspend fun refreshPlayers()
-    fun selectPlayer(playerId: String)
+    /**
+     * Select [playerId], unless a [PlayerSelectionLock] pins the selection
+     * elsewhere.
+     *
+     * @return true when the selection is in effect, false when a lock rejected
+     * it. Automatic callers need the answer: a room confirmed while the car-audio
+     * lock was held used to be dropped here while the caller logged success, and
+     * because the room detector does not confirm the same room twice the switch
+     * was lost for good.
+     */
+    fun selectPlayer(playerId: String): Boolean
     fun setSelectionLock(lock: PlayerSelectionLock?)
 
     suspend fun play(playerId: String)

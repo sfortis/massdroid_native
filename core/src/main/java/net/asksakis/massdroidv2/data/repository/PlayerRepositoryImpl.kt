@@ -1368,11 +1368,12 @@ class PlayerRepositoryImpl @Inject constructor(
         scope.launch { settingsRepository.setSelectedPlayerId(null) }
     }
 
-    override fun selectPlayer(playerId: String) {
+    override fun selectPlayer(playerId: String): Boolean {
         val lockedPlayerId = _selectionLock.value?.playerId
         val effectivePlayerId = lockedPlayerId ?: playerId
         if (lockedPlayerId != null && playerId != lockedPlayerId) {
             Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
+            return false
         }
         val player = _players.value.find { it.playerId == effectivePlayerId }
         // refreshPlayers() can populate _selectedPlayer.value during a
@@ -1386,7 +1387,7 @@ class PlayerRepositoryImpl @Inject constructor(
             _selectedPlayer.value?.playerId == effectivePlayerId &&
             _queueState.value?.queueId == effectivePlayerId
         ) {
-            return
+            return true
         }
 
         selectedPlayerId = effectivePlayerId
@@ -1399,6 +1400,7 @@ class PlayerRepositoryImpl @Inject constructor(
             refreshQueueForPlayerWithRetry(effectivePlayerId)
             scheduleBlockedQueueCleanup(effectivePlayerId, reason = "select_player", force = true)
         }
+        return true
     }
 
     override fun setSelectionLock(lock: PlayerSelectionLock?) {
