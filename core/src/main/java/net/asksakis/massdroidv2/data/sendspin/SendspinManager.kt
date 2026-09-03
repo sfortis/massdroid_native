@@ -45,16 +45,6 @@ class SendspinManager(
         // The transition is not abrupt because the native ramp fades to it over
         // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
         private const val DUCK_GAIN = 0.1f
-        // Safety net: if AUDIOFOCUS_GAIN is never delivered after a duck (dropped
-        // focus request, flaky car HMI, an interrupter that never abandons focus),
-        // auto-restore the gain so we can never stay stuck ducked - especially in
-        // the car where STREAM_MUSIC is pinned 100% and the quiet would otherwise
-        // persist. Normal transient interruptions return a GAIN within ~1-4s; the
-        // old 45s value left music audibly quiet for up to 45s when the GAIN was
-        // dropped (a notification/SpeedCam alert in the car). Kept short: ducking
-        // means we keep PLAYING (not paused), so restoring a little early over the
-        // tail of a lingering prompt is fine, whereas a long silence is not.
-        private const val DUCK_SAFETY_RESTORE_MS = 10_000L
         private const val HEARTBEAT_INTERVAL_MS = 2000L
         // After stream/end, wait this long before fully releasing the audio
         // resources (Oboe output, wake + Wi-Fi locks). A normal track change is
@@ -101,7 +91,6 @@ class SendspinManager(
     private val lifecycleMutex = Mutex()
     @Volatile private var streamEpoch = 0L
     private var idleTeardownJob: Job? = null
-    private var duckRestoreJob: Job? = null
 
     // Maps the active engine's output-active transitions to [_audioResourcesActive]
     // so the controller holds wake + Wi-Fi locks only while audio actually flows:
@@ -591,20 +580,16 @@ class SendspinManager(
         // too shallow to notice under a loud prompt; DUCK_GAIN (~-14dB) matches
         // the platform's own auto-duck depth. currentVolume is left unchanged so
         // restoreVolume() brings us back to full gain on AUDIOFOCUS_GAIN.
+        // WHEN the gain comes back is not decided here. The release is driven by
+        // the interrupting sound actually stopping, which is audio-focus policy
+        // and lives with the focus listener in
+        // SendspinAudioController.duckUntilInterrupterEnds; this used to be a
+        // flat timer here and it restored full volume over a ringing alarm.
         if (!muted) audio.setVolume(DUCK_GAIN)
         Log.i(TAG, "Duck -> $DUCK_GAIN gain")
-        // Safety net against a lost AUDIOFOCUS_GAIN leaving us stuck ducked.
-        duckRestoreJob?.cancel()
-        duckRestoreJob = scope.launch {
-            delay(DUCK_SAFETY_RESTORE_MS)
-            Log.w(TAG, "Duck safety timeout (${DUCK_SAFETY_RESTORE_MS}ms): no AUDIOFOCUS_GAIN, restoring gain")
-            if (!muted) audio.setVolume(1f)
-        }
     }
 
     fun restoreVolume() {
-        duckRestoreJob?.cancel()
-        duckRestoreJob = null
         if (!muted) audio.setVolume(1f)
     }
 
@@ -869,8 +854,6 @@ class SendspinManager(
         // teardown no-op under the mutex; releaseInternal is idempotent anyway).
         idleTeardownJob?.cancel()
         idleTeardownJob = null
-        duckRestoreJob?.cancel()
-        duckRestoreJob = null
         streamEpoch++
         _audioResourcesActive.value = false
         hasActiveProtocolStream = false

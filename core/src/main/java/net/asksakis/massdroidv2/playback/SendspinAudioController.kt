@@ -23,8 +23,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -87,6 +90,29 @@ class SendspinAudioController(
         // ordering is there to prevent, and because a missing answer means the
         // connection is broken again, in which case the refresh fails too.
         private const val PAUSE_REASSERT_TIMEOUT_MS = 5_000L
+        // How long a duck waits for the interrupting sound to actually show up in
+        // the platform's playback configurations. Nothing there means we cannot
+        // see the interrupter (it may be playing as plain media, or it took focus
+        // without playing at all, which is the SpeedCam Droid case that never
+        // returned a GAIN), so the gain is restored on this deadline exactly as
+        // the old blind timer did.
+        private const val DUCK_INTERRUPTER_WAIT_MS = 10_000L
+        // Safety cap once the interrupter IS visible. Reached only if its player
+        // never leaves the configuration list, so it is generous: a real alarm or
+        // a long voice message is a legitimate reason to stay quiet.
+        private const val DUCK_MAX_MS = 5 * 60_000L
+        // Usages that mean "another app is deliberately talking over us". Our own
+        // output is USAGE_MEDIA, so it can never match.
+        private val INTERRUPTER_USAGES = setOf(
+            AudioAttributes.USAGE_ALARM,
+            AudioAttributes.USAGE_NOTIFICATION,
+            AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
+            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY,
+            AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE,
+            AudioAttributes.USAGE_ASSISTANCE_SONIFICATION,
+            AudioAttributes.USAGE_ASSISTANT,
+            AudioAttributes.USAGE_VOICE_COMMUNICATION,
+        )
     }
 
     private val exceptionHandler = CoroutineExceptionHandler { _, e ->
@@ -307,6 +333,13 @@ class SendspinAudioController(
             }
         }
     }
+
+    // In-flight reconnect reconciliation, kept so a later reconnect supersedes it.
+    private var reconnectReassertJob: Job? = null
+
+    // Watches an active duck so the gain is restored when the interrupting sound
+    // ends, rather than on a fixed timer. See [duckUntilInterrupterEnds].
+    private var duckWatchJob: Job? = null
 
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
@@ -846,7 +879,16 @@ class SendspinAudioController(
                             "(wantToResume=$wantToResume, userIntent=$intent, " +
                             "sendspinIsSelected=$sendspinIsSelected)"
                     )
-                    launch { resumeOrReassertPause(wantToResume, intent, sendspinIsSelected) }
+                    // Supersede an in-flight run. Moving `refresh()` off the
+                    // collector means a second reconnect within the ack wait
+                    // could otherwise refresh the Sendspin transport while the
+                    // first run's pause was still unconfirmed, which is exactly
+                    // the ordering this is here to guarantee. Cancelling only
+                    // abandons the WAIT: that pause has already been written to
+                    // the socket, and this run sends its own.
+                    reconnectReassertJob?.cancel()
+                    reconnectReassertJob =
+                        launch { resumeOrReassertPause(wantToResume, intent, sendspinIsSelected) }
                 }
                 if (isConnected) connectedBefore = true
             }
@@ -934,6 +976,13 @@ class SendspinAudioController(
         collectorJobs.clear()
         autoRecoveryJob?.cancel()
         autoRecoveryJob = null
+        // A duck left in place would be a silent player on the next start, and
+        // nothing else restores the gain once this watch is gone.
+        reconnectReassertJob?.cancel()
+        reconnectReassertJob = null
+        duckWatchJob?.cancel()
+        duckWatchJob = null
+        sendspinManager.restoreVolume()
         reconnectJob?.cancel()
         reconnectJob = null
         abandonAudioFocus()
@@ -1119,6 +1168,8 @@ class SendspinAudioController(
                             Log.i(TAG, "Focus gained during active call (mode=${audioManager.mode}); staying paused until the call ends")
                             return@setOnAudioFocusChangeListener
                         }
+                        duckWatchJob?.cancel()
+                        duckWatchJob = null
                         sendspinManager.restoreVolume()
                         // If the transient loss FROZE the solo output (buffer
                         // preserved), just unfreeze: playback resumes instantly
@@ -1198,18 +1249,90 @@ class SendspinAudioController(
                                 // keeps the stream alive and routed; restoreVolume()
                                 // on GAIN brings the level back.
                                 Log.i(TAG, "Audio focus lost transiently (no call): ducking")
-                                sendspinManager.duck()
+                                duckUntilInterrupterEnds()
                             }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                         Log.i(TAG, "Audio focus: ducking (pre-duck vol=${sendspinManager.currentVolume})")
-                        sendspinManager.duck()
+                        duckUntilInterrupterEnds()
                     }
                 }
             }
             .build()
     }
+
+    /**
+     * Duck, and restore the gain when the interrupting sound actually stops.
+     *
+     * The release used to be a flat ten-second timer whose premise was "no
+     * AUDIOFOCUS_GAIN by now means the GAIN was dropped". That is wrong for any
+     * interruption longer than the timer: measured against a real alarm on two
+     * phones, the GAIN arrived after 14.8 s, 16.4 s, 12.8 s and 19.6 s, so the
+     * timer restored full volume over a still-ringing alarm every time. The
+     * events were never missing, we were second-guessing them.
+     *
+     * The platform does report when another app's sound starts and stops, through
+     * [AudioManager.AudioPlaybackCallback]. An app without MODIFY_AUDIO_ROUTING
+     * still sees the usage of other apps' players (AOSP's
+     * `AudioPlaybackConfiguration.anonymizedCopy` keeps usage, content type and
+     * flags, and strips only the identifiers), which is all this needs.
+     *
+     * So the wait has two phases, each with its own bound. First the interrupter
+     * has to appear, within [DUCK_INTERRUPTER_WAIT_MS]; if it never does we
+     * cannot observe it and restore on that deadline, which preserves the
+     * original fix for an interrupter that takes focus and never gives it back.
+     * Then we wait for it to go away, capped by [DUCK_MAX_MS]. A GAIN arriving at
+     * any point cancels this and restores immediately.
+     *
+     * Both phases collect a freshly seeded flow, so the transition between them
+     * cannot be missed: a registration reports the current state before waiting
+     * for a change.
+     */
+    private fun duckUntilInterrupterEnds() {
+        sendspinManager.duck()
+        duckWatchJob?.cancel()
+        duckWatchJob = scope.launch {
+            val appeared = withTimeoutOrNull(DUCK_INTERRUPTER_WAIT_MS) {
+                interrupterActive().first { it }
+            }
+            if (appeared == null) {
+                Log.w(TAG, "Duck: no interrupting sound visible within ${DUCK_INTERRUPTER_WAIT_MS}ms, restoring gain")
+                sendspinManager.restoreVolume()
+                return@launch
+            }
+            val ended = withTimeoutOrNull(DUCK_MAX_MS) {
+                interrupterActive().first { !it }
+            }
+            if (ended == null) {
+                Log.w(TAG, "Duck: interrupting sound still playing after ${DUCK_MAX_MS}ms, restoring gain")
+            } else {
+                Log.i(TAG, "Duck: interrupting sound ended, restoring gain")
+            }
+            sendspinManager.restoreVolume()
+        }
+    }
+
+    /**
+     * Whether any other app is playing something with an [INTERRUPTER_USAGES]
+     * usage. Emits the current answer on collection, then again on every playback
+     * configuration change.
+     */
+    private fun interrupterActive(): Flow<Boolean> = callbackFlow {
+        fun isActive(configs: List<android.media.AudioPlaybackConfiguration>) =
+            configs.any { it.audioAttributes.usage in INTERRUPTER_USAGES }
+
+        val callback = object : AudioManager.AudioPlaybackCallback() {
+            override fun onPlaybackConfigChanged(configs: MutableList<android.media.AudioPlaybackConfiguration>) {
+                trySend(isActive(configs))
+            }
+        }
+        audioManager.registerAudioPlaybackCallback(callback, null)
+        // Seed with the state at registration time, so a sound that started (or
+        // stopped) before we began listening is not waited for forever.
+        trySend(isActive(audioManager.activePlaybackConfigurations))
+        awaitClose { audioManager.unregisterAudioPlaybackCallback(callback) }
+    }.distinctUntilChanged()
 
     /**
      * Request audio focus for ANY output path (BT, speaker, Android Auto, wired…).
