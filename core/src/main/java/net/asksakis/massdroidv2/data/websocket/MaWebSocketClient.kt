@@ -75,6 +75,9 @@ class MaWebSocketClient(
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
         private const val ERROR_INSUFFICIENT_PERMISSIONS = 22
+        /** Argument values never written to the log; see [redactSecrets]. */
+        private val SENSITIVE_ARG_KEYS = setOf("password", "token")
+        private const val ARGS_LOG_LIMIT = 120
     }
 
     private var okHttpClient: OkHttpClient = baseOkHttpClient
@@ -806,13 +809,13 @@ class MaWebSocketClient(
 
             // Per-command outbound trace. Tagged separately so it can be
             // grepped under "WSOut" regardless of which subsystem fired it.
-            // args summary capped at 120 chars to keep the line scannable. That
-            // cap is also what keeps the `auth` command's token out of the log:
-            // 120 chars reach the JWT header and part of the payload but stop
-            // before the signature, so what lands in a log the user can share is
-            // not a usable credential. Raising the cap would start distributing
-            // whole tokens.
-            Log.d("WSOut", "→ $command args=${args?.toString()?.take(120)}")
+            // Credentials are redacted, not merely truncated: `auth/login` sends
+            // `{"username":…,"password":…,"device_name":"MassDroid"}`, which is
+            // about 82 characters, so the password used to land in the log whole.
+            // Users are asked to attach these logs to bug reports, so the value
+            // has to be gone rather than clipped. args summary still capped at
+            // 120 chars to keep the line scannable.
+            Log.d("WSOut", "→ $command args=${redactSecrets(args)}")
             commandRateTracker.tick(command)
             val ws = webSocket
             if (ws == null || !ws.send(msg.toString())) {
@@ -875,6 +878,25 @@ class MaWebSocketClient(
 
     private fun isAuthCommand(command: String): Boolean {
         return command == "auth" || command == "auth/login"
+    }
+
+    /**
+     * Render a command's arguments for the log with credential values removed.
+     *
+     * Only the values of [SENSITIVE_ARG_KEYS] are replaced; the keys stay, so the
+     * trace still shows the shape of the command. The username is deliberately
+     * kept: it separates "wrong user" from "wrong password" when diagnosing a
+     * login failure, and it is already logged on its own by [loginWithCredentials].
+     */
+    @VisibleForTesting
+    internal fun redactSecrets(args: JsonObject?): String? {
+        if (args == null) return null
+        if (args.keys.none { it in SENSITIVE_ARG_KEYS }) return args.toString().take(ARGS_LOG_LIMIT)
+        return buildJsonObject {
+            for ((key, value) in args) {
+                put(key, if (key in SENSITIVE_ARG_KEYS) JsonPrimitive("<redacted>") else value)
+            }
+        }.toString().take(ARGS_LOG_LIMIT)
     }
 
     private fun shouldRetryCommand(command: String): Boolean = isRetryableCommand(command)
