@@ -806,7 +806,12 @@ class MaWebSocketClient(
 
             // Per-command outbound trace. Tagged separately so it can be
             // grepped under "WSOut" regardless of which subsystem fired it.
-            // args summary capped at 120 chars to keep the line scannable.
+            // args summary capped at 120 chars to keep the line scannable. That
+            // cap is also what keeps the `auth` command's token out of the log:
+            // 120 chars reach the JWT header and part of the payload but stop
+            // before the signature, so what lands in a log the user can share is
+            // not a usable credential. Raising the cap would start distributing
+            // whole tokens.
             Log.d("WSOut", "→ $command args=${args?.toString()?.take(120)}")
             commandRateTracker.tick(command)
             val ws = webSocket

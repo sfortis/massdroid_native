@@ -8,9 +8,12 @@ import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Captures the device's logcat stream to rotating files inside the app's
@@ -36,9 +39,8 @@ object PersistentLogcatWriter {
     private const val MAX_FILE_COUNT = 6
     // Retention ceiling: drop any log file not touched within the last day.
     private const val MAX_AGE_MS = 24L * 60L * 60L * 1000L
-    // The Share logs button sends this many of the most recent lines, as plain
-    // text, so the attachment is small and pasteable (no 100 MB ZIP / ANR).
-    private const val SHARE_TAIL_LINES = 1000
+    // Name of the summary entry placed first in the shared archive.
+    private const val SUMMARY_ENTRY = "device.txt"
 
     @Volatile private var process: Process? = null
 
@@ -88,40 +90,39 @@ object PersistentLogcatWriter {
     }
 
     /**
-     * Build an [Intent] that shares the last [SHARE_TAIL_LINES] log lines as a
-     * plain-text (.txt) attachment — small enough to email/paste and free of the
-     * old whole-history ZIP that froze the UI thread. The text is gathered from
-     * the current `app.log`, topped up from the previous rotated file when the
-     * current one just rolled over, so the tail is always meaningful.
+     * Build an [Intent] that shares the whole retained log history as one ZIP,
+     * with a [SUMMARY_ENTRY] listing app, device and server versions first.
      *
-     * Runs file I/O on [Dispatchers.IO]; returns null if there are no log files
-     * yet (callers should surface a user-visible message).
+     * This deliberately sends everything rather than a tail. A tail was measured
+     * against the real thing: while music plays the log runs at about 440 lines a
+     * minute, so the previous 1000-line window covered roughly two and a half
+     * minutes. Nobody reports a fault that fast. The two audio-focus reports that
+     * prompted this were filed three minutes apart for events that happened hours
+     * earlier and on different occasions, and the Android Auto one can only be
+     * filed after parking. Retention caps the archive: one day, and at most
+     * [MAX_KB_PER_FILE] x [MAX_FILE_COUNT] of text, which zips down to a few MB.
+     *
+     * A ZIP was removed once before (f4b0200) because it was built on the calling
+     * UI thread and ANRed on a whole history. The format was never the problem;
+     * the threading was. This runs inside [withContext] on [Dispatchers.IO], so
+     * the main thread never touches the files.
+     *
+     * Returns null if there are no log files yet (callers should surface a
+     * user-visible message: on Android 11+ `logcat` often yields nothing without
+     * READ_LOGS, and then there is genuinely nothing to send).
      */
-    suspend fun buildShareIntent(context: Context): Intent? = withContext(Dispatchers.IO) {
+    suspend fun buildShareIntent(
+        context: Context,
+        serverVersion: String? = null,
+    ): Intent? = withContext(Dispatchers.IO) {
         val logsDir = File(context.getExternalFilesDir(null), "logs")
-        // Newest first: app.log, then app.log.01, app.log.02, ...
+        // Oldest first, so the archive reads in chronological order.
         val files = logsDir.listFiles()
             ?.filter { it.isFile && it.name.startsWith("app.log") }
-            ?.sortedByDescending { it.lastModified() }
+            ?.sortedBy { it.lastModified() }
             ?: emptyList()
         if (files.isEmpty()) {
             Log.w(TAG, "No log files to share at ${logsDir.absolutePath}")
-            return@withContext null
-        }
-
-        // Collect the last SHARE_TAIL_LINES lines, walking newest -> older.
-        val tail = ArrayDeque<String>()
-        for (file in files) {
-            val fileLines = runCatching { file.readLines() }.getOrDefault(emptyList())
-            var i = fileLines.lastIndex
-            while (i >= 0 && tail.size < SHARE_TAIL_LINES) {
-                tail.addFirst(fileLines[i])
-                i--
-            }
-            if (tail.size >= SHARE_TAIL_LINES) break
-        }
-        if (tail.isEmpty()) {
-            Log.w(TAG, "Log files present but empty; nothing to share")
             return@withContext null
         }
 
@@ -129,16 +130,28 @@ object PersistentLogcatWriter {
         // Drop previously shared snapshots so the cache does not accumulate.
         sharedDir.listFiles()?.forEach { it.delete() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val outFile = File(sharedDir, "massdroid-log-$stamp.txt")
+        val zipFile = File(sharedDir, "massdroid-logs-$stamp.zip")
         return@withContext try {
-            outFile.writeText(tail.joinToString("\n"))
+            ZipOutputStream(FileOutputStream(zipFile).buffered()).use { zip ->
+                zip.putNextEntry(ZipEntry(SUMMARY_ENTRY))
+                zip.write(buildSummary(context, serverVersion, stamp).toByteArray())
+                zip.closeEntry()
+                for (file in files) {
+                    zip.putNextEntry(ZipEntry(file.name))
+                    // The current app.log is being appended to by the logcat
+                    // process; copying it mid-write just yields a short tail.
+                    file.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+            }
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
-                outFile,
+                zipFile,
             )
+            Log.i(TAG, "Sharing ${files.size} log files as ${zipFile.name} (${zipFile.length() / 1024} KB)")
             Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
+                type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
                 putExtra(Intent.EXTRA_SUBJECT, "MassDroid logs $stamp")
                 // ClipData makes the read grant stick on targets that read the
@@ -149,6 +162,25 @@ object PersistentLogcatWriter {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to build share intent: ${e.message}")
             null
+        }
+    }
+
+    /**
+     * The versions a bug report otherwise costs a round trip to establish: which
+     * build, which phone, which Android, which Music Assistant server.
+     */
+    private fun buildSummary(context: Context, serverVersion: String?, stamp: String): String {
+        val appVersion = runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "unknown"
+        return buildString {
+            appendLine("MassDroid log bundle")
+            appendLine("captured: $stamp")
+            appendLine("app: $appVersion (${context.packageName})")
+            appendLine("device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+            appendLine("ma server: ${serverVersion ?: "not connected"}")
         }
     }
 }

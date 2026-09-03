@@ -1086,6 +1086,16 @@ class SendspinAudioController(
 
     // region Audio focus
 
+    /**
+     * The focus transitions below log at INFO, not DEBUG, on purpose. ProGuard
+     * strips `Log.d` and `Log.v` from release builds (`app/proguard-rules.pro`),
+     * so on a release build the only focus line that used to survive was the duck
+     * safety timeout. A field report then cannot be answered: two reports about an
+     * alarm and an Android Auto notification interrupting playback came in with no
+     * way to tell which focus event had arrived or what we did with it. Focus
+     * changes happen a handful of times a day, so keeping them costs nothing in
+     * log volume. Do not demote them back to `Log.d`.
+     */
     private fun setupAudioFocus() {
         val audioAttrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -1100,13 +1110,13 @@ class SendspinAudioController(
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
                         val intent = _userIntent.value
-                        Log.d(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=$intent")
+                        Log.i(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=$intent")
                         hasAudioFocus = true
                         // Phone call still up: do not resume yet (mid-call focus
                         // blip). Keep the output frozen/paused; the real GAIN that
                         // arrives when the call ends (mode == NORMAL) resumes it.
                         if (isInActiveCall()) {
-                            Log.d(TAG, "Focus gained during active call (mode=${audioManager.mode}); staying paused until the call ends")
+                            Log.i(TAG, "Focus gained during active call (mode=${audioManager.mode}); staying paused until the call ends")
                             return@setOnAudioFocusChangeListener
                         }
                         sendspinManager.restoreVolume()
@@ -1114,7 +1124,7 @@ class SendspinAudioController(
                         // preserved), just unfreeze: playback resumes instantly
                         // and click-free from the intact buffer, no flush/rebuffer.
                         if (unfreezeOutput("focus")) {
-                            Log.d(TAG, "Focus regained: unfroze output, buffer preserved")
+                            Log.i(TAG, "Focus regained: unfroze output, buffer preserved")
                             return@setOnAudioFocusChangeListener
                         }
                         // Resume is gated on `_userIntent` — the canonical
@@ -1123,7 +1133,7 @@ class SendspinAudioController(
                         // route-change focus-shuffle that follows a BT disconnect
                         // will not silently hand audio off to the phone speaker.
                         if (!intent) {
-                            Log.d(TAG, "Focus gained but intent is paused, staying paused")
+                            Log.i(TAG, "Focus gained but intent is paused, staying paused")
                             return@setOnAudioFocusChangeListener
                         }
                         if (isStreaming) {
@@ -1147,7 +1157,7 @@ class SendspinAudioController(
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
-                        Log.d(TAG, "Audio focus lost permanently")
+                        Log.i(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
                         unfreezeOutput("focus")
                         // Align intent with the permanent loss: another app
@@ -1176,7 +1186,7 @@ class SendspinAudioController(
                                 // regain solo resumes from the freeze point, grouped
                                 // skips forward to the live group position under the
                                 // mute. See unfreezeOutput.
-                                Log.d(TAG, "Audio focus lost transiently (active call): freezing")
+                                Log.i(TAG, "Audio focus lost transiently (active call): freezing")
                                 freezeOutput("focus")
                             } else {
                                 // SHORT non-call interruption (notification ping,
@@ -1187,13 +1197,13 @@ class SendspinAudioController(
                                 // playback muted long after the ping ended. Ducking
                                 // keeps the stream alive and routed; restoreVolume()
                                 // on GAIN brings the level back.
-                                Log.d(TAG, "Audio focus lost transiently (no call): ducking")
+                                Log.i(TAG, "Audio focus lost transiently (no call): ducking")
                                 sendspinManager.duck()
                             }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                        Log.d(TAG, "Audio focus: ducking (pre-duck vol=${sendspinManager.currentVolume})")
+                        Log.i(TAG, "Audio focus: ducking (pre-duck vol=${sendspinManager.currentVolume})")
                         sendspinManager.duck()
                     }
                 }

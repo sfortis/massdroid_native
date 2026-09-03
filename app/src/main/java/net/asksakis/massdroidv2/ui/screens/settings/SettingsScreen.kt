@@ -429,6 +429,7 @@ private fun RecommendationsScreen(
 @Composable
 private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -445,7 +446,9 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
                 onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
             )
         }
-        DiagnosticsCard()
+        DiagnosticsCard(
+            serverVersion = (connectionState as? ConnectionState.Connected)?.serverInfo?.serverVersion
+        )
         SupportCard()
     }
 }
@@ -487,7 +490,7 @@ private fun SupportCard() {
 }
 
 @Composable
-private fun DiagnosticsCard() {
+private fun DiagnosticsCard(serverVersion: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
@@ -507,7 +510,9 @@ private fun DiagnosticsCard() {
                 style = MaterialTheme.typography.titleMedium
             )
             Text(
-                "Share the most recent debug log lines as plain text through any share target. Useful when reporting a problem.",
+                "Share the stored log files as a zip through any share target. " +
+                    "Attach it to a bug report: it covers up to a day, so it does not " +
+                    "matter how long after the problem you send it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -521,7 +526,7 @@ private fun DiagnosticsCard() {
             MdFilledTonalButton(
                 onClick = {
                     scope.launch {
-                        val intent = PersistentLogcatWriter.buildShareIntent(context)
+                        val intent = PersistentLogcatWriter.buildShareIntent(context, serverVersion)
                         if (intent == null) {
                             status = "No logs available yet."
                             return@launch

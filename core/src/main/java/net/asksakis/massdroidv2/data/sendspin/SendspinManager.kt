@@ -592,7 +592,7 @@ class SendspinManager(
         // the platform's own auto-duck depth. currentVolume is left unchanged so
         // restoreVolume() brings us back to full gain on AUDIOFOCUS_GAIN.
         if (!muted) audio.setVolume(DUCK_GAIN)
-        Log.d(TAG, "Duck -> $DUCK_GAIN gain")
+        Log.i(TAG, "Duck -> $DUCK_GAIN gain")
         // Safety net against a lost AUDIOFOCUS_GAIN leaving us stuck ducked.
         duckRestoreJob?.cancel()
         duckRestoreJob = scope.launch {
