@@ -26,6 +26,7 @@ class CommandLogRedactionTest {
     @Test
     fun `a login password never reaches the log`() {
         val rendered = client.redactSecrets(
+            "auth/login",
             buildJsonObject {
                 put("username", "someuser")
                 put("password", "a-real-password-123")
@@ -34,15 +35,16 @@ class CommandLogRedactionTest {
         )
 
         assertThat(rendered).doesNotContain("a-real-password-123")
+        // The username goes too: it identifies the reporter's account and the
+        // command name already says a login was attempted.
+        assertThat(rendered).doesNotContain("someuser")
         assertThat(rendered).contains("<redacted>")
-        // The username stays: it separates "wrong user" from "wrong password"
-        // when someone reports that sign-in fails.
-        assertThat(rendered).contains("someuser")
     }
 
     @Test
     fun `an auth token never reaches the log`() {
         val rendered = client.redactSecrets(
+            "auth",
             buildJsonObject {
                 put("token", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZm9ydGlzIn0.s1gn4tur3")
                 put("device_name", "MassDroid")
@@ -56,6 +58,7 @@ class CommandLogRedactionTest {
     @Test
     fun `ordinary command arguments are left readable`() {
         val rendered = client.redactSecrets(
+            "players/cmd/volume_set",
             buildJsonObject {
                 put("player_id", "5046ad54")
                 put("volume_level", 40)

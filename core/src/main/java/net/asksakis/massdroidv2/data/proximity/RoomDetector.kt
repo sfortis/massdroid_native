@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+import net.asksakis.massdroidv2.util.LogRedaction
 
 private const val TAG = "RoomDetector"
 private const val TOP_SCORE_ROOMS = 5
@@ -128,7 +129,7 @@ class RoomDetector @Inject constructor() {
             if (commitRoomChange) {
                 _currentRoom.value = match.detected
             }
-            Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via ${wifi.bssid ?: wifi.ssid ?: "unknown"}")
+            Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via ${LogRedaction.networkId(wifi.bssid ?: wifi.ssid)}")
             return if (match.changed) DetectResult.Confirmed(match.detected) else DetectResult.NoDecision
         }
 
@@ -281,7 +282,8 @@ class RoomDetector @Inject constructor() {
             if (currentRoomMatch == null) {
                 Log.w(
                     TAG,
-                    "Multiple rooms matched connected Wi-Fi ${wifi.bssid ?: wifi.ssid}: ${wifiOnlyMatches.joinToString { it.name }}"
+                    "Multiple rooms matched connected Wi-Fi ${LogRedaction.networkId(wifi.bssid ?: wifi.ssid)}: " +
+                        wifiOnlyMatches.joinToString { it.name }
                 )
                 return null
             }

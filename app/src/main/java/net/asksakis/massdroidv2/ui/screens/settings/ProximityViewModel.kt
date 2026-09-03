@@ -39,6 +39,7 @@ import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import java.util.UUID
 import javax.inject.Inject
 import kotlin.math.sqrt
+import net.asksakis.massdroidv2.util.LogRedaction
 
 private const val TAG = "ProximityVM"
 private const val FINGERPRINTS_PER_ROOM = 8
@@ -357,7 +358,7 @@ class ProximityViewModel @Inject constructor(
                 val bssid = connectedWifi?.bssid
                 val ssid = connectedWifi?.ssid
                 if (bssid != null) {
-                    Log.d(TAG, "Connected WiFi BSSID: $bssid${ssid?.let { " ($it)" } ?: ""}")
+                    Log.d(TAG, "Connected WiFi AP: ${LogRedaction.networkId(bssid)} name=${LogRedaction.networkId(ssid)}")
                 }
 
                 // Accept stable addresses normally, and allow private-address devices
@@ -557,7 +558,7 @@ class ProximityViewModel @Inject constructor(
                 Log.d(
                     TAG,
                     "Training data for $roomName: ${rawScans.size} scans, ${nameMap.size} devices, " +
-                        "wifi=${connectedWifi?.bssid ?: "none"}${connectedWifi?.ssid?.let { " ($it)" } ?: ""}"
+                        "wifi=${LogRedaction.networkId(connectedWifi?.bssid)}"
                 )
                 onDone()
             } finally {

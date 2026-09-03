@@ -748,7 +748,7 @@ class MaWebSocketClient(
     }
 
     private suspend fun loginWithCredentials(username: String, password: String) {
-        Log.d(TAG, "Logging in with username: $username")
+        Log.d(TAG, "Logging in with saved credentials")
         val loginResult = sendCommand(MaCommands.Auth.LOGIN, buildJsonObject {
             put("username", username)
             put("password", password)
@@ -809,13 +809,13 @@ class MaWebSocketClient(
 
             // Per-command outbound trace. Tagged separately so it can be
             // grepped under "WSOut" regardless of which subsystem fired it.
-            // Credentials are redacted, not merely truncated: `auth/login` sends
+            // Credentials are removed, not merely truncated: `auth/login` sends
             // `{"username":…,"password":…,"device_name":"MassDroid"}`, which is
             // about 82 characters, so the password used to land in the log whole.
-            // Users are asked to attach these logs to bug reports, so the value
-            // has to be gone rather than clipped. args summary still capped at
-            // 120 chars to keep the line scannable.
-            Log.d("WSOut", "→ $command args=${redactSecrets(args)}")
+            // Users are asked to attach these logs to bug reports. See
+            // [redactSecrets]; args summary still capped to keep the line
+            // scannable.
+            Log.d("WSOut", "→ $command args=${redactSecrets(command, args)}")
             commandRateTracker.tick(command)
             val ws = webSocket
             if (ws == null || !ws.send(msg.toString())) {
@@ -881,16 +881,22 @@ class MaWebSocketClient(
     }
 
     /**
-     * Render a command's arguments for the log with credential values removed.
+     * Render a command's arguments for the log with anything identifying removed.
      *
-     * Only the values of [SENSITIVE_ARG_KEYS] are replaced; the keys stay, so the
-     * trace still shows the shape of the command. The username is deliberately
-     * kept: it separates "wrong user" from "wrong password" when diagnosing a
-     * login failure, and it is already logged on its own by [loginWithCredentials].
+     * The whole argument object is dropped for the two auth commands rather than
+     * cleaned field by field: `auth/login` carries the username as well as the
+     * password, and `auth` carries the token, and none of those values help
+     * diagnose anything that the command name does not already tell us. For every
+     * other command only the values of [SENSITIVE_ARG_KEYS] are replaced, keeping
+     * the keys so the trace still shows the command's shape.
+     *
+     * This matters because the Share logs button sends a day of retained history
+     * as a bug-report attachment, so a value written here leaves the device.
      */
     @VisibleForTesting
-    internal fun redactSecrets(args: JsonObject?): String? {
+    internal fun redactSecrets(command: String, args: JsonObject?): String? {
         if (args == null) return null
+        if (isAuthCommand(command)) return "<redacted>"
         if (args.keys.none { it in SENSITIVE_ARG_KEYS }) return args.toString().take(ARGS_LOG_LIMIT)
         return buildJsonObject {
             for ((key, value) in args) {
