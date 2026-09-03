@@ -512,7 +512,10 @@ private fun DiagnosticsCard(serverVersion: String?) {
             Text(
                 "Share the stored log files as a zip through any share target. " +
                     "Attach it to a bug report: it covers up to a day, so it does not " +
-                    "matter how long after the problem you send it.",
+                    "matter how long after the problem you send it. It is a technical " +
+                    "record of that day, including what you played, the players and " +
+                    "rooms you use and your server address, so send it only to someone " +
+                    "you want to have it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -523,12 +526,23 @@ private fun DiagnosticsCard(serverVersion: String?) {
                     color = MaterialTheme.colorScheme.error
                 )
             }
+            // Disabled while a build runs: each tap used to start its own
+            // coroutine, and two within the same second wrote the same
+            // second-stamped zip at once.
+            var building by remember { mutableStateOf(false) }
             MdFilledTonalButton(
+                enabled = !building,
                 onClick = {
+                    building = true
                     scope.launch {
-                        val intent = PersistentLogcatWriter.buildShareIntent(context, serverVersion)
+                        val intent = try {
+                            PersistentLogcatWriter.buildShareIntent(context, serverVersion)
+                        } finally {
+                            building = false
+                        }
                         if (intent == null) {
-                            status = "No logs available yet."
+                            status = "Could not read any logs. Android does not always let " +
+                                "an app read its own logcat, and then there is nothing to send."
                             return@launch
                         }
                         status = null
@@ -541,7 +555,7 @@ private fun DiagnosticsCard(serverVersion: String?) {
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Share logs")
+                Text(if (building) "Collecting logs…" else "Share logs")
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

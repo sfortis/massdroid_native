@@ -138,14 +138,19 @@ interface PlayerRepository {
     suspend fun pause(playerId: String)
 
     /**
-     * Pause and suspend until the server answers the command.
+     * Pause and suspend until the server answers the command, or until the wait
+     * ends without one.
      *
      * [pause] is fire-and-forget, which is the right shape for a UI tap: the
      * server's own state event updates the UI, and a dead socket costs nothing
      * because the user is looking at the screen and can tap again. Use this
-     * variant when a later step depends on the pause having actually taken
-     * effect, so that a command lost with a broken connection is visible to the
-     * caller as a failure instead of passing silently.
+     * variant when a later step has to happen after the pause rather than
+     * alongside it.
+     *
+     * It does NOT prove delivery. A connection lost mid-wait resolves the pending
+     * request as "no answer" rather than an error, so this returns normally and
+     * the caller cannot tell that apart from a server that answered nothing.
+     * Ordering is what it buys; certainty is not available here.
      */
     suspend fun pauseConfirmed(playerId: String)
     suspend fun playPause(playerId: String)

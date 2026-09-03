@@ -915,17 +915,24 @@ class SendspinAudioController(
      * drive ended with the music continuing in the room for eight minutes.
      *
      * So when the user does not want playback and the output would land on the
-     * phone speaker, re-assert the pause and WAIT for the server's answer before
+     * phone speaker, re-assert the pause and wait for the server's answer before
      * refreshing the Sendspin transport. Waiting is the part that keeps it
      * silent: the two run on separate sockets, so refreshing first lets the
      * handshake and the `stream/start` overtake the pause and leak a few hundred
      * milliseconds of audio.
      *
-     * The condition is read from live state rather than remembered, and the
-     * pause is sent without first asking whether the server agrees, because
-     * pausing an already-paused queue is a no-op. Being on the phone speaker is
-     * what makes it safe: a sink the user chose (car, headphones) never takes
-     * this path, so a head unit that sends its own play is unaffected.
+     * The wait is best effort, not a guarantee. It is bounded, a failure is
+     * caught, and either way the refresh goes ahead, because leaving the
+     * transport unrefreshed is worse; the next reconnect re-asserts. Nor does the
+     * ack prove delivery, see [PlayerRepository.pauseConfirmed].
+     *
+     * The condition mixes live and snapshot state: the route and `_userIntent`
+     * are read here, while `intent`, `sendspinIsSelected` and `wantToResume` are
+     * what the reconnect observed. The pause is sent without first asking whether
+     * the server agrees, because pausing an already-paused queue is a no-op.
+     * Being on the phone speaker is what makes it safe: a sink the user chose
+     * (car, headphones) never takes this path, so a head unit that sends its own
+     * play is unaffected.
      */
     private suspend fun resumeOrReassertPause(
         wantToResume: Boolean,

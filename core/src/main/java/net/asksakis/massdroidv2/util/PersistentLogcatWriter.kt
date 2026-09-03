@@ -23,7 +23,7 @@ import java.util.zip.ZipOutputStream
  * Files land at:
  *   /sdcard/Android/data/<package>/files/logs/app.log[.1..N]
  *
- * Retention is one day: [cleanupOldLogs] (run on start) deletes any log file
+ * Retention aims at one day: [cleanupOldLogs] (run on start ONLY) deletes any log file
  * older than [MAX_AGE_MS], and the size rotation ([MAX_KB_PER_FILE] x
  * [MAX_FILE_COUNT]) is a disk backstop so a high-volume day cannot run away.
  * Pull them manually with:
@@ -41,6 +41,10 @@ object PersistentLogcatWriter {
     private const val MAX_AGE_MS = 24L * 60L * 60L * 1000L
     // Name of the summary entry placed first in the shared archive.
     private const val SUMMARY_ENTRY = "device.txt"
+    // How long a built snapshot stays in the cache. Long enough that a share
+    // target still holding the granted URI can read it, short enough that the
+    // cache does not grow.
+    private const val SNAPSHOT_KEEP_MS = 60L * 60L * 1000L
 
     @Volatile private var process: Process? = null
 
@@ -99,8 +103,11 @@ object PersistentLogcatWriter {
      * minutes. Nobody reports a fault that fast. The two audio-focus reports that
      * prompted this were filed three minutes apart for events that happened hours
      * earlier and on different occasions, and the Android Auto one can only be
-     * filed after parking. Retention caps the archive: one day, and at most
-     * [MAX_KB_PER_FILE] x [MAX_FILE_COUNT] of text, which zips down to a few MB.
+     * filed after parking. Size is bounded by the rotation, at most
+     * [MAX_KB_PER_FILE] x [MAX_FILE_COUNT] of text, which for ordinary log text
+     * compresses heavily. Age is bounded less firmly: [cleanupOldLogs] runs at
+     * process start, so a long-lived process with low log volume can still hold
+     * files older than [MAX_AGE_MS].
      *
      * A ZIP was removed once before (f4b0200) because it was built on the calling
      * UI thread and ANRed on a whole history. The format was never the problem;
@@ -127,29 +134,48 @@ object PersistentLogcatWriter {
         }
 
         val sharedDir = File(context.cacheDir, "shared_logs").apply { mkdirs() }
-        // Drop previously shared snapshots so the cache does not accumulate.
-        sharedDir.listFiles()?.forEach { it.delete() }
+        // Keep recent snapshots. Deleting them all on every build would pull the
+        // file out from under a share target that holds the granted URI but has
+        // not read it yet, e.g. a mail draft the user is still writing.
+        val staleBefore = System.currentTimeMillis() - SNAPSHOT_KEEP_MS
+        sharedDir.listFiles()?.forEach { if (it.lastModified() < staleBefore) it.delete() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val zipFile = File(sharedDir, "massdroid-logs-$stamp.zip")
+        var written = 0
         return@withContext try {
             ZipOutputStream(FileOutputStream(zipFile).buffered()).use { zip ->
                 zip.putNextEntry(ZipEntry(SUMMARY_ENTRY))
                 zip.write(buildSummary(context, serverVersion, stamp).toByteArray())
                 zip.closeEntry()
                 for (file in files) {
-                    zip.putNextEntry(ZipEntry(file.name))
-                    // The current app.log is being appended to by the logcat
-                    // process; copying it mid-write just yields a short tail.
-                    file.inputStream().use { it.copyTo(zip) }
-                    zip.closeEntry()
+                    // logcat owns these files and rotates them underneath us, so a
+                    // name listed a moment ago can already be gone. Skip what
+                    // vanished rather than lose the whole archive to one
+                    // FileNotFoundException. What each entry holds is whatever that
+                    // descriptor saw, which for the live app.log is a prefix that
+                    // may end mid-line.
+                    val copied = runCatching {
+                        zip.putNextEntry(ZipEntry(file.name))
+                        file.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
+                    if (copied.isSuccess) {
+                        written++
+                    } else {
+                        Log.w(TAG, "Skipped ${file.name} while zipping: ${copied.exceptionOrNull()?.message}")
+                    }
                 }
+            }
+            if (written == 0) {
+                Log.w(TAG, "Every log file vanished while zipping")
+                return@withContext null
             }
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
                 zipFile,
             )
-            Log.i(TAG, "Sharing ${files.size} log files as ${zipFile.name} (${zipFile.length() / 1024} KB)")
+            Log.i(TAG, "Sharing $written log files as ${zipFile.name} (${zipFile.length() / 1024} KB)")
             Intent(Intent.ACTION_SEND).apply {
                 type = "application/zip"
                 putExtra(Intent.EXTRA_STREAM, uri)
