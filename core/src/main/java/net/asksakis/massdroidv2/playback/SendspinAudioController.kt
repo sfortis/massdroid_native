@@ -97,10 +97,15 @@ class SendspinAudioController(
         // returned a GAIN), so the gain is restored on this deadline exactly as
         // the old blind timer did.
         private const val DUCK_INTERRUPTER_WAIT_MS = 10_000L
-        // Safety cap once the interrupter IS visible. Reached only if its player
-        // never leaves the configuration list, so it is generous: a real alarm or
-        // a long voice message is a legitimate reason to stay quiet.
-        private const val DUCK_MAX_MS = 5 * 60_000L
+        // Safety cap once the interrupter IS visible. The wait is for ANY
+        // interrupter usage to clear, not the one we ducked for, so a player some
+        // other app leaves registered (navigation guidance during a whole trip is
+        // the obvious candidate) can hold the duck open. Combine that with an
+        // interrupter that never returns a GAIN and the cap is what we are left
+        // with, in a car where STREAM_MUSIC is pinned at 100%: keep it near the
+        // ten seconds the old blind timer recovered in rather than minutes. A real
+        // alarm ringing longer than this justifies the quiet anyway.
+        private const val DUCK_MAX_MS = 60_000L
         // Usages that mean "another app is deliberately talking over us". Our own
         // output is USAGE_MEDIA, so it can never match.
         private val INTERRUPTER_USAGES = setOf(
@@ -1210,6 +1215,12 @@ class SendspinAudioController(
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.i(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
+                        // Nothing is ducking any more. A watch left running can
+                        // only ever restore full gain, so this is tidiness rather
+                        // than safety, but it stops a "no interrupting sound
+                        // visible" warning firing minutes later with no duck.
+                        duckWatchJob?.cancel()
+                        duckWatchJob = null
                         unfreezeOutput("focus")
                         // Align intent with the permanent loss: another app
                         // has taken over, the user is no longer "trying to
@@ -1238,6 +1249,10 @@ class SendspinAudioController(
                                 // skips forward to the live group position under the
                                 // mute. See unfreezeOutput.
                                 Log.i(TAG, "Audio focus lost transiently (active call): freezing")
+                                // The freeze supersedes any duck; see the
+                                // AUDIOFOCUS_LOSS branch for why this is tidiness.
+                                duckWatchJob?.cancel()
+                                duckWatchJob = null
                                 freezeOutput("focus")
                             } else {
                                 // SHORT non-call interruption (notification ping,
@@ -1282,16 +1297,21 @@ class SendspinAudioController(
      * has to appear, within [DUCK_INTERRUPTER_WAIT_MS]; if it never does we
      * cannot observe it and restore on that deadline, which preserves the
      * original fix for an interrupter that takes focus and never gives it back.
-     * Then we wait for it to go away, capped by [DUCK_MAX_MS]. A GAIN arriving at
-     * any point cancels this and restores immediately.
+     * Then we wait for it to go away, capped by [DUCK_MAX_MS]. That second wait
+     * is for ANY interrupter usage to clear, not the one we ducked for, which is
+     * why the cap is kept short rather than generous. A GAIN arriving at any
+     * point cancels this and restores immediately.
      *
      * Both phases collect a freshly seeded flow, so the transition between them
      * cannot be missed: a registration reports the current state before waiting
      * for a change.
      */
     private fun duckUntilInterrupterEnds() {
-        sendspinManager.duck()
+        // Cancel BEFORE ducking: the other order leaves a window in which the
+        // previous watch restores full gain right after this duck applied it, and
+        // then nothing lowers it again for the rest of the interruption.
         duckWatchJob?.cancel()
+        sendspinManager.duck()
         duckWatchJob = scope.launch {
             val appeared = withTimeoutOrNull(DUCK_INTERRUPTER_WAIT_MS) {
                 interrupterActive().first { it }

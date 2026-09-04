@@ -577,8 +577,8 @@ class SendspinManager(
         // Transient focus-loss attenuation on OUR OWN native output gain (not the
         // shared STREAM_MUSIC), so a nav prompt / notification from another app
         // ducks only MassDroid's music and never that app's audio. 0.5 (-6dB) was
-        // too shallow to notice under a loud prompt; DUCK_GAIN (~-14dB) matches
-        // the platform's own auto-duck depth. currentVolume is left unchanged so
+        // too shallow to notice under a loud prompt; DUCK_GAIN (-20dB) is deeper
+        // than the platform's own auto-duck. currentVolume is left unchanged so
         // restoreVolume() brings us back to full gain on AUDIOFOCUS_GAIN.
         // WHEN the gain comes back is not decided here. The release is driven by
         // the interrupting sound actually stopping, which is audio-focus policy
