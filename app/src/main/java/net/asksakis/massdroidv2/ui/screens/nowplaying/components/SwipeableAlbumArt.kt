@@ -25,7 +25,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -83,6 +85,17 @@ internal fun SwipeableAlbumArt(
 
     Box(
         modifier = outerModifier
+            // Symmetric on every side. Android draws two shadows, an ambient one that
+            // surrounds the shape evenly and a spot one cast from above, and the spot
+            // is what makes an ordinary elevated card heavier along its bottom edge.
+            // Only the ambient one is wanted here, so the spot is turned off outright
+            // rather than balanced against.
+            .shadow(
+                elevation = ALBUM_ART_SHADOW_ELEVATION,
+                shape = shape,
+                spotColor = Color.Transparent,
+                ambientColor = ALBUM_ART_SHADOW_COLOR
+            )
             .clip(shape)
             .clipToBounds()
             .pointerInput(canSwipePrevious, canSwipeNext, previousImageUrl, nextImageUrl) {
@@ -269,3 +282,18 @@ internal fun SwipeableAlbumArt(
         )
     }
 }
+
+/**
+ * Wide on purpose. The elevation sets the blur radius as well as the depth, so a small
+ * value gives a short, dense falloff that reads as a dark outline around the cover
+ * rather than as shade. A large radius spreads the same darkness over a long distance,
+ * which is what lets it arrive at nothing.
+ */
+private val ALBUM_ART_SHADOW_ELEVATION = 28.dp
+
+/**
+ * Held well below opaque so the widened shadow stays shade rather than becoming a grey
+ * field. Honoured from API 28; below that the platform uses its own black and the
+ * shadow is correspondingly stronger.
+ */
+private val ALBUM_ART_SHADOW_COLOR = Color.Black.copy(alpha = 0.55f)

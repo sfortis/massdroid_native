@@ -44,7 +44,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -116,6 +118,7 @@ import net.asksakis.massdroidv2.ui.screens.nowplaying.components.LyricsSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SwipeableAlbumArt
 import kotlin.math.max
 import coil.compose.AsyncImage
+import net.asksakis.massdroidv2.ui.util.BlurTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -264,6 +267,7 @@ fun NowPlayingScreen(
     val gradient = Brush.verticalGradient(
         colors = listOf(animatedColor.copy(alpha = gradientAlpha), surfaceColor)
     )
+    val hasArtwork = !imageUrl.isNullOrBlank()
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -312,8 +316,14 @@ fun NowPlayingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(surfaceColor)
-                .background(gradient)
         ) {
+            if (hasArtwork) {
+                AlbumArtBackdrop(imageUrl = imageUrl, isDark = isDark)
+            } else {
+                // No artwork to take the colour from, so fall back to the tint the
+                // screen has always had rather than leaving a flat surface.
+                Box(modifier = Modifier.fillMaxSize().background(gradient))
+            }
             if (isLandscape) {
                 NowPlayingLandscape(
                     paddingValues = paddingValues,
@@ -907,6 +917,114 @@ private fun NowPlayingLandscape(
         }
     }
 }
+
+/**
+ * The album art, blurred, filling the screen behind the player.
+ *
+ * Two things blur it, and the second one is why it looks smooth.
+ *
+ * The artwork is decoded at [BACKDROP_SOURCE_PX] and stretched to the screen, which
+ * softens it but leaves the faceted diamonds that bilinear upscaling always produces.
+ * [BlurTransformation] removes those, and because it works on an image that carries no
+ * detail to begin with, a small radius reads as a long, even falloff rather than a
+ * smeared photograph.
+ *
+ * The blur happens once, at decode. `Modifier.blur` was tried first and measured a
+ * 49% jank rate on a 120 Hz phone, almost all of it in slow draw commands, because it
+ * re-blurs the whole screen every frame for an image that only changes with the track.
+ *
+ * The scrim above it is what keeps the text readable. It is deliberately heavier at
+ * the bottom, where the controls and the track title sit, than at the top.
+ */
+/**
+ * The album art, blurred, filling the screen behind the player.
+ *
+ * Two things blur it, and the second one is why it looks smooth.
+ *
+ * The artwork is decoded at [BACKDROP_SOURCE_PX] and stretched to the screen, which
+ * softens it but leaves the faceted diamonds that bilinear upscaling always produces.
+ * [BlurTransformation] removes those, and because it works on an image that carries no
+ * detail to begin with, a small radius reads as a long, even falloff rather than a
+ * smeared photograph.
+ *
+ * The blur happens once, at decode. `Modifier.blur` was tried first and measured a
+ * 49% jank rate on a 120 Hz phone, almost all of it in slow draw commands, because it
+ * re-blurs the whole screen every frame for an image that only changes with the track.
+ *
+ * The scrim above it is what keeps the text readable. It is deliberately heavier at
+ * the bottom, where the controls and the track title sit, than at the top.
+ */
+@Composable
+private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    // Lighter in the light theme: the same ring that frames a dark screen reads as
+    // dirt on a bright one.
+    val vignetteStrength = if (isDark) 0.55f else 0.28f
+    val scrim = Brush.verticalGradient(
+        colors = listOf(
+            surfaceColor.copy(alpha = if (isDark) 0.30f else 0.45f),
+            surfaceColor.copy(alpha = if (isDark) 0.62f else 0.72f),
+            surfaceColor.copy(alpha = if (isDark) 0.88f else 0.92f)
+        )
+    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(imageUrl)
+                .size(BACKDROP_SOURCE_PX)
+                .crossfade(BACKDROP_CROSSFADE_MS)
+                .memoryCacheKey("backdrop_$imageUrl")
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .transformations(BlurTransformation(BACKDROP_BLUR_PASSES))
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(modifier = Modifier.fillMaxSize().background(scrim))
+        Box(modifier = Modifier.fillMaxSize().drawWithCache {
+            // Deliberate vignette. The blur already darkens the rim on its own, because
+            // it samples past the edge of the artwork and finds nothing there, but that
+            // is a property of one GPU on one Android version rather than something the
+            // platform promises, and below API 31 there is no blur and so no rim at all.
+            // Drawing it explicitly makes every device show the same picture.
+            val radial = Brush.radialGradient(
+                colorStops = arrayOf(
+                    VIGNETTE_CLEAR_STOP to Color.Transparent,
+                    1f to Color.Black.copy(alpha = vignetteStrength)
+                ),
+                center = Offset(size.width / 2f, size.height / 2f),
+                // Reach past the corners, otherwise the gradient ends mid-edge and the
+                // corners read as four dark spots instead of one ring.
+                radius = size.maxDimension * VIGNETTE_RADIUS_SCALE
+            )
+            onDrawBehind { drawRect(radial) }
+        })
+    }
+}
+
+/**
+ * Decode size of the backdrop artwork. Small enough that stretching it to a phone
+ * screen leaves no detail to distract from the text, large enough to keep the
+ * colours and their rough arrangement.
+ */
+private const val BACKDROP_SOURCE_PX = 48
+
+/**
+ * Blur radius in SOURCE pixels, so it scales with [BACKDROP_SOURCE_PX] rather than with
+ * the screen. Six of forty-eight pixels is a wide blur once stretched.
+ */
+private const val BACKDROP_BLUR_PASSES = 6
+
+/** Where the vignette starts to darken. Below this the backdrop is untouched. */
+private const val VIGNETTE_CLEAR_STOP = 0.55f
+
+/** Multiplier on the longest edge, so the gradient reaches beyond the corners. */
+private const val VIGNETTE_RADIUS_SCALE = 0.78f
+
+/** Long enough to read as the artwork changing, short enough not to lag the track. */
+private const val BACKDROP_CROSSFADE_MS = 400
 
 @Composable
 private fun extractDominantColor(imageUrl: String?, isDark: Boolean): State<Color> {
