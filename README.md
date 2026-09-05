@@ -42,6 +42,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - [Installation](#installation)
   - [Stable release](#stable-release)
   - [Dev build](#dev-build-latest-features-may-be-unstable)
+- [Verifying a download](#verifying-a-download)
 - [Configuration](#configuration)
 - [Permissions](#permissions)
 - [Tech Stack](#tech-stack)
@@ -174,6 +175,25 @@ Download the latest signed APK from [GitHub Releases](https://github.com/sfortis
 The most recent debug build is always available at the [dev-latest release](https://github.com/sfortis/massdroid_native/releases/tag/dev-latest).
 
 > Debug and release builds can be installed side by side (different package IDs). Debug builds are not signed with the release key, so you cannot upgrade from debug to release or vice versa.
+
+## Verifying a download
+
+Every release APK is signed with the same key, whether you took it from the Releases
+page, from Obtainium, or the Android TV build. To check a file before you install it:
+
+```
+apksigner verify --print-certs massdroid-v2.33.0.apk
+```
+
+The certificate fingerprint must be:
+
+```
+SHA-256  DC:75:3B:B1:44:8A:83:7F:4F:C3:73:1A:47:7B:3E:2B:3F:1C:81:B6:11:EE:C7:84:DF:DC:95:0D:58:16:DD:F1
+```
+
+A different fingerprint means the file was not built by this project. The key has not
+changed since v2.31.0, so an APK that will not install over your current one because of
+a signature mismatch did not come from here.
 
 ## Configuration
 
