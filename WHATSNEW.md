@@ -1,12 +1,11 @@
-- Smart Mix: better genre matching, faster builds, and it no longer repeats its own past picks. New dislike button to bury a track without penalizing the artist.
-- No API key to set up: genres and artist info now come from Music Assistant and MusicBrainz.
-- Autoplay, previously "don't stop the music": choose what plays when your queue runs out, similar tracks, your library, or a playlist.
-- Search: filter results by type, artist name on album results, and your grid or list choice is remembered.
-- Battery drain, reconnecting after a network drop, car volume and volume keys all improved.
-- Android Automotive: fixed a freeze that could leave the car unable to control playback.
-- Blocked artists: blocking now covers every version of an artist, and there is a separate button to clear them.
-- Follow Me: fixed a crash on launch, and the room now clears when you leave instead of staying pinned.
-- Discover: more suggestions per row, and it no longer suggests the artists a row was built from.
-- Library: sort your albums by year.
-- Artist images: fewer unnecessary reloads, and missing artwork no longer shows as a broken picture.
+- Playlists: pin the ones you use to the top, filter by type, and see who made a playlist that is not yours.
+- Playlists your server builds for you now play correctly and refresh when you pull down.
+- Player settings: a cleaner layout, with the queue settings in their own place.
+- Crossfade, volume normalization and smart shuffle work again on Music Assistant 2.10.
+- In the car: leaving no longer lets the music carry on over the phone speaker, and full volume is applied to the right output.
+- An alarm or a notification no longer leaves the music quiet afterwards.
+- Phone as speaker: fewer dropouts when the audio output changes.
+- Share logs now sends the whole history, and keeps your credentials out of it.
+- Smart Mix: better genre coverage for artists the tag service was slow to answer for.
+- Follow Me: the room is applied even when the player was busy a moment earlier.
 - Various bug fixes.
