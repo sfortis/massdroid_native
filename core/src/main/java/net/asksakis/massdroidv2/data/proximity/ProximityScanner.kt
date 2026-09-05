@@ -12,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import android.os.ParcelUuid
 import android.util.Log
 import android.net.ConnectivityManager
@@ -31,6 +32,36 @@ import javax.inject.Singleton
 private const val TAG = "ProximityScanner"
 private const val SCAN_DURATION_MS = 5_000L
 private const val DEVICE_RETAIN_MS = 30_000L
+
+/**
+ * Above this, a scan result's own timestamp is treated as unusable rather than as
+ * a very old reading. Real batched results are at most one report interval old;
+ * anything beyond a minute means the controller reported something meaningless.
+ */
+private const val MAX_TRUSTED_RESULT_AGE_MS = 60_000L
+
+/**
+ * How often the offloaded batch scan hands its results to us.
+ *
+ * This is the one scan that stays registered while the phone is still, so its
+ * interval is what wakes the application processor through an idle night. It used to
+ * be three seconds, which the controller rounded to about five and a half, and that
+ * was the single largest source of wakeups in a measured day.
+ *
+ * The ceiling is [DEVICE_RETAIN_MS]: a reading is dropped from the buffer once it is
+ * that old, so a batch interval near it would deliver readings already at the edge of
+ * being discarded and leave the buffer empty between deliveries. Half the retain
+ * window leaves every reading a further half window of useful life. Detection while
+ * MOVING does not depend on this value at all, because the persistent scan runs then
+ * and delivers continuously.
+ *
+ * Measured caveat: once the device is properly idle the platform coalesces delivery to
+ * about 22 s on its own, and a control build requesting 3 s was delivered on exactly the
+ * same 22 s cadence. So this value does not govern the deepest idle state. It governs the
+ * lighter screen-off state, which is where a full day of measurement found the batch
+ * being delivered every 5.5 s against a requested 3 s.
+ */
+private const val BACKGROUND_BATCH_INTERVAL_MS = DEVICE_RETAIN_MS / 2
 private const val MIN_VALID_RSSI = -126
 private const val MAX_VALID_RSSI = 20
 private const val INVALID_WIFI_BSSID = "02:00:00:00:00:00"
@@ -426,7 +457,7 @@ class ProximityScanner @Inject constructor(
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-            .setReportDelay(3_000) // Batch results every 3s
+            .setReportDelay(BACKGROUND_BATCH_INTERVAL_MS)
             .build()
 
         try {
@@ -445,17 +476,42 @@ class ProximityScanner @Inject constructor(
         }
     }
 
+    /**
+     * When [result] was actually heard, in wall-clock time.
+     *
+     * A batched result can be a whole report interval old by the time the broadcast
+     * arrives, so stamping it with the delivery time makes a stale reading look
+     * fresh, and the detector reads freshness to decide which room wins. The error
+     * was bounded by the report interval and therefore invisible while that interval
+     * was three seconds; it stops being invisible as the interval grows.
+     *
+     * `timestampNanos` is on the elapsed-realtime clock, so it is converted rather
+     * than used directly. A controller that reports nothing usable (0, or a value in
+     * the future) falls back to [now] rather than inventing an age.
+     */
+    private fun observedAtMs(result: ScanResult, now: Long): Long {
+        val ageMs = (SystemClock.elapsedRealtimeNanos() - result.timestampNanos) / 1_000_000
+        if (ageMs < 0 || ageMs > MAX_TRUSTED_RESULT_AGE_MS) return now
+        return now - ageMs
+    }
+
     /** Called from BroadcastReceiver when background scan results arrive */
     fun handleBackgroundScanResult(results: List<ScanResult>) {
+        val now = System.currentTimeMillis()
         for (result in results) {
             try {
                 val device = toScannedDevice(result) ?: continue
+                val observedAt = observedAtMs(result, now)
+                // One batch routinely carries several readings for the same address.
+                // Without the real timestamps the last one in the list won, which was
+                // not necessarily the most recent one.
+                val previous = persistentLastSeen[device.address]
+                if (previous != null && previous > observedAt) continue
                 persistentDevices[device.address] = device
-                val now = System.currentTimeMillis()
-                persistentLastSeen[device.address] = now
-                lastBackgroundDeliveryMs = now
+                persistentLastSeen[device.address] = observedAt
             } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
+        lastBackgroundDeliveryMs = now
         Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
     }
 

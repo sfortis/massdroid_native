@@ -327,7 +327,7 @@ class ProximityController(
              * Three operating modes based on device state:
              *   SCREEN_ON  – persistent BLE scan + periodic burst reads
              *   SCREEN_OFF + MOTION – wake-lock fast-path burst reads
-             *   SCREEN_OFF + IDLE  – low-power persistent scan, no burst
+             *   SCREEN_OFF + IDLE  - no scan at all, waiting on the sensor hub
              *
              * Within SCREEN_ON:
              *   Motion active → LOW_LATENCY scan, burst every 2 s
@@ -404,12 +404,21 @@ class ProximityController(
                     // path) or the idle poll interval, instead of waking the CPU every 2s.
                     // Transient cooldown states keep the short poll so normal cadence resumes fast.
                     else -> {
-                        ensurePersistentScan(lowPower = true)
                         if (!screenOn && !highAccuracy) {
+                            // Follow Me follows the PHONE, so a room cannot change while the
+                            // phone is still: another scan here can only repeat what the last
+                            // one said. The scan used to be kept alive at LOW_POWER through
+                            // exactly these hours, which is most of a day, and it made the app
+                            // the device's top battery consumer. The buffer is kept so the
+                            // detector still has the last reading on wake, and the
+                            // PendingIntent batch scan stays registered as the path that
+                            // survives a process death.
+                            scanController.stopPersistentScan(clearBuffers = false)
                             withTimeoutOrNull(SCREEN_OFF_IDLE_SCAN_INTERVAL_MS) {
                                 motionGate.isMoving.first { it }
                             }
                         } else {
+                            ensurePersistentScan(lowPower = true)
                             kotlinx.coroutines.delay(2_000)
                         }
                     }
