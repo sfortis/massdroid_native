@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -56,12 +58,22 @@ private data class AdjacentPosition(
     val currentItemId: String?,
 )
 
+/**
+ * The last track seen, kept so the screen does not go blank when the Music Assistant
+ * connection drops while Sendspin keeps playing.
+ *
+ * [playerId] is what the holdover belongs to. Without it the cache outlived the reason
+ * it exists: selecting an idle speaker showed whatever the previously selected player
+ * was playing, artwork and all, because every other source was null and this one was
+ * not. A holdover is only ever valid for the player it was captured from.
+ */
 data class CachedTrackDisplay(
     val title: String,
     val artist: String,
     val album: String,
     val imageUrl: String?,
-    val duration: Double
+    val duration: Double,
+    val playerId: String?
 )
 
 data class SendspinStatusUi(
@@ -263,7 +275,15 @@ class NowPlayingViewModel @Inject constructor(
     private var lastSendspinStatusLogAtMs = 0L
     private var lastLoggedSendspinStatusKey: String? = null
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
-    val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> = _cachedTrackDisplay.asStateFlow()
+
+    /**
+     * The holdover, but only while it still describes the selected player. Filtered here
+     * rather than at the call sites so no screen has to remember the rule.
+     */
+    val cachedTrackDisplay: StateFlow<CachedTrackDisplay?> =
+        combine(_cachedTrackDisplay, playerRepository.selectedPlayer) { cached, player ->
+            cached?.takeIf { it.playerId == null || it.playerId == player?.playerId }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     private val _adjacentArtwork = MutableStateFlow(AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null))
     val adjacentArtwork: StateFlow<AdjacentArtworkUi> = _adjacentArtwork.asStateFlow()
 
@@ -392,7 +412,8 @@ class NowPlayingViewModel @Inject constructor(
                     title = track.name, artist = track.artistNames,
                     album = track.albumName,
                     imageUrl = track.imageUrl ?: qs.currentItem?.imageUrl,
-                    duration = track.duration ?: qs.currentItem?.duration ?: 0.0
+                    duration = track.duration ?: qs.currentItem?.duration ?: 0.0,
+                    playerId = selectedPlayer.value?.playerId
                 )
             }
         }
@@ -403,7 +424,10 @@ class NowPlayingViewModel @Inject constructor(
                     _cachedTrackDisplay.value = CachedTrackDisplay(
                         title = meta.title ?: "", artist = meta.artist ?: "",
                         album = meta.album ?: "", imageUrl = meta.artworkUrl,
-                        duration = dur
+                        duration = dur,
+                        // Sendspin metadata arrives with no player selected at all, so
+                        // this holdover is not tied to one and stays valid.
+                        playerId = null
                     )
                     if (dur > 0.0) optimisticDuration = dur
                 }
@@ -1126,14 +1150,33 @@ class NowPlayingViewModel @Inject constructor(
         return listOf(uri to name)
     }
 
+    /**
+     * Move the queue to [targetPlayerId] and follow it there.
+     *
+     * The selection has to move with the queue. Leaving it behind left this screen
+     * bound to a player that no longer has anything to play, so the transport controls
+     * acted on silence while the music came out of the other speaker. The Players
+     * screen already switched after its own transfer; only this path did not.
+     *
+     * [NonCancellable] because the two steps are one action: navigating away or the
+     * sheet closing must not leave the queue moved and the selection behind.
+     */
     fun transferQueue(targetPlayerId: String) {
         val sourceQueueId = queueState.value?.queueId ?: return
         viewModelScope.launch {
-            try {
-                musicRepository.transferQueue(sourceQueueId, targetPlayerId)
-            } catch (e: Exception) {
-                Log.w(TAG, "transferQueue failed: ${e.message}")
-                _error.tryEmit("Failed to transfer queue")
+            withContext(NonCancellable) {
+                try {
+                    musicRepository.transferQueue(sourceQueueId, targetPlayerId)
+                    if (!playerRepository.selectPlayer(targetPlayerId)) {
+                        // Refused by a selection lock, which is car audio in practice.
+                        // The queue did move, so saying nothing would leave the screen
+                        // showing a player that is no longer the one playing.
+                        _error.tryEmit("Queue moved, but the player stayed locked")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "transferQueue failed: ${e.message}")
+                    _error.tryEmit("Failed to transfer queue")
+                }
             }
         }
     }
