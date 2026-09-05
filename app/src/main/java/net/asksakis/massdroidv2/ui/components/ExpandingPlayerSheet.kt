@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,11 +79,16 @@ fun ExpandingPlayerSheet(
     val navInsetBottomDp = with(density) { navInsetBottomPx.toDp() }.value
     val effectiveBottomBar = if (isLandscape) navInsetBottomDp else bottomBarDp
 
-    val animatable = remember { Animatable(0f) }
+    // Saveable, because rotation recreates the activity: with a plain remember the
+    // player collapsed every time the phone was turned while it was open, and so did
+    // the queue sheet on top of it.
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
+    var expandAfterRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // Start the animation where the restored state says it already is, otherwise a
+    // sheet that comes back expanded would be drawn collapsed until something moved it.
+    val animatable = remember { Animatable(if (expanded) 1f else 0f) }
     val scope = rememberCoroutineScope()
-    var expanded by remember { mutableStateOf(false) }
-    var showQueueSheet by remember { mutableStateOf(false) }
-    var expandAfterRoute by remember { mutableStateOf<String?>(null) }
 
     // Re-expand when returning from detail screen navigated from NowPlaying
     LaunchedEffect(Unit) {
