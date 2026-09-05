@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.di
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import androidx.annotation.VisibleForTesting
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
@@ -339,6 +340,54 @@ object AppModule {
     }
 
     /**
+     * The four steps from v11 to v15, restored.
+     *
+     * They were written as the MusicBrainz Smart Mix engine landed and then deleted
+     * once [MIGRATION_10_17] replaced that whole run with a single hop. Deleting them
+     * was safe for releases, which go from v10 to v17 in one step, but not for
+     * dev-latest: CI published a debug APK for each of those five pushes on
+     * 2026-07-30, so a tester who updated inside that window sits on 11, 12, 13 or 14
+     * with no path forward and loses their listening history to the destructive
+     * fallback. Each statement below is the original one. From v15 the existing
+     * [MIGRATION_15_16] chain carries them the rest of the way.
+     */
+    private val MIGRATION_11_12 = object : Migration(11, 12) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `musicbrainz_artist_tags` (
+                    `artist_name` TEXT NOT NULL,
+                    `mbid` TEXT NOT NULL,
+                    `tags` TEXT NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`artist_name`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
+    /** Empties the tag cache, which v12 had filled with free-text tags. */
+    private val MIGRATION_12_13 = object : Migration(12, 13) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DELETE FROM `musicbrainz_artist_tags`")
+        }
+    }
+
+    private val MIGRATION_13_14 = object : Migration(13, 14) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `artists` ADD COLUMN `mbid` TEXT")
+        }
+    }
+
+    private val MIGRATION_14_15 = object : Migration(14, 15) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("DROP TABLE IF EXISTS `lastfm_similar_tracks`")
+            db.execSQL("DROP TABLE IF EXISTS `track_uri_cache`")
+        }
+    }
+
+    /**
      * Drops the two Last.fm caches for a device that already ran a v15 build.
      *
      * Only reachable from an unreleased version, so it never runs for anyone
@@ -356,11 +405,15 @@ object AppModule {
     /**
      * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
      *
-     * v11..v14 never shipped: they were all added in the same unreleased run, so no
-     * installation is ever on them, and stepping through each would only make an
-     * upgrade do pointless work (one of them emptied a table the previous one had
-     * just created). v10 is what `main` ships, so v10 -> v17 is the path every real
-     * user takes, followed by [MIGRATION_17_18] and [MIGRATION_18_19].
+     * v10 is what the last release before v2.32.0 shipped, so v10 -> v17 is the path
+     * every user coming from a release takes, followed by [MIGRATION_17_18] and
+     * [MIGRATION_18_19]. Stepping through v11 to v16 instead would only make that
+     * upgrade do pointless work, since one of those steps empties a table the
+     * previous one had just created.
+     *
+     * This hop does NOT make v11 to v14 unreachable states. They never reached a
+     * release, but CI did publish a dev-latest build for each of them, so they have
+     * their own small migrations further down.
      */
     private val MIGRATION_10_17 = object : Migration(10, 17) {
         override fun migrate(database: SupportSQLiteDatabase) {
@@ -411,6 +464,31 @@ object AppModule {
         }
     }
 
+    /**
+     * Every migration the database ships with.
+     *
+     * Named rather than inlined so a test can walk it: the gap this list once had at
+     * v11 to v14 was invisible precisely because nothing could read the set back.
+     * `MigrationCoverageTest` asserts that every version from [OLDEST_SHIPPED_SCHEMA]
+     * reaches the current one.
+     */
+    @VisibleForTesting
+    internal val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+        MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+        MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_11_12,
+        MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+        MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
+    )
+
+    /**
+     * The oldest schema that ever reached `origin/dev`, so the oldest an installation
+     * can be on. Established by walking the history of the two AppDatabase paths and
+     * matching both spellings the version constant has had (`version = N` inline in
+     * the annotation until mid-2026, `SCHEMA_VERSION = N` after).
+     */
+    @VisibleForTesting
+    internal const val OLDEST_SHIPPED_SCHEMA = 2
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -426,11 +504,7 @@ object AppModule {
             context,
             AppDatabase::class.java,
             DATABASE_NAME
-        ).addMigrations(
-            MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
-            MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
-        )
+        ).addMigrations(*ALL_MIGRATIONS)
             // Kept so a missing migration cannot brick the app, but no longer
             // silent: see DatabaseResetReporter.
             .fallbackToDestructiveMigration()
