@@ -14,6 +14,8 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
@@ -62,6 +64,11 @@ class SendspinCoordinator(
     // MediaSession). Default no-op so the phone wiring is unaffected.
     private val onMetadata: (SendspinMetadata) -> Unit = {},
     private val onPlayingChanged: (playing: Boolean) -> Unit = {},
+    // The stream is over for good: stream/end (or a dropped connection) with no new
+    // stream/start inside [STREAM_END_GRACE_MS]. A track change is stream/end followed by
+    // stream/start within seconds and does not fire this; neither does a pause. Distinct
+    // from onInactive, which means Sendspin was disabled or the coordinator destroyed.
+    private val onStreamEnded: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "SendspinCoord"
@@ -72,7 +79,11 @@ class SendspinCoordinator(
         // constants are @hide.
         private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
+        /** Longer than the 1 to 3 s stream/end to stream/start gap of a track change. */
+        private const val STREAM_END_GRACE_MS = 5_000L
     }
+
+    private var streamEndJob: Job? = null
 
     var playerId: String? = null
         private set
@@ -102,6 +113,7 @@ class SendspinCoordinator(
         observePlayerId()
         observeEnabled()
         observeConnectionState()
+        observeStreamLifecycle()
         observeAudioFormatPreference()
         observeShortcutActions()
         observePhoneVolume()
@@ -175,6 +187,20 @@ class SendspinCoordinator(
                     isActive = false
                     controller?.stop()
                     onInactive("sendspin_disabled")
+                }
+            }
+        }
+    }
+
+    private fun observeStreamLifecycle() {
+        scope.launch {
+            sendspinManager.streamActive.collect { active ->
+                streamEndJob?.cancel()
+                streamEndJob = null
+                if (active || !isActive) return@collect
+                streamEndJob = launch {
+                    delay(STREAM_END_GRACE_MS)
+                    if (!sendspinManager.streamActive.value) onStreamEnded()
                 }
             }
         }

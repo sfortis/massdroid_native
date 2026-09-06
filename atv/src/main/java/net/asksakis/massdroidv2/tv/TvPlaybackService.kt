@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.tv
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.util.Log
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -98,6 +99,7 @@ class TvPlaybackService : Service() {
             onWifiConnected = {},
             onMetadata = { meta -> mainHandler.post { onMetadata(meta) } },
             onPlayingChanged = { playing -> mainHandler.post { onPlayingChanged(playing) } },
+            onStreamEnded = { mainHandler.post { clearSession("stream ended") } },
         )
         coordinator.start()
         defaultPlayerIcon()
@@ -158,12 +160,19 @@ class TvPlaybackService : Service() {
         // remote card. The session goes active from onMetadata/onPlayingChanged instead.
     }
 
+    /** Sendspin disabled or the coordinator destroyed. */
+    private fun onStreamInactive() = clearSession("sendspin inactive")
+
     /**
-     * The Sendspin stream ended: the server moved on, the player was stopped, or the
-     * device was ungrouped. Drop the track and the session with it, so nothing on the
-     * network keeps offering controls for a speaker that is not playing anything.
+     * Nothing is playing any more: the stream ended for good (server stopped, player
+     * deselected, device ungrouped, connection lost), or Sendspin went away. Drop the track
+     * and the session with it, so nothing on the network keeps offering controls for a
+     * speaker that is not playing anything. Tying this to the coordinator's onInactive alone
+     * left the last title in place after a real stream end, and hasTrack() kept the session
+     * active on it. A pause or a track change never reaches here (see onStreamEnded).
      */
-    private fun onStreamInactive() {
+    private fun clearSession(reason: String) {
+        Log.d(TAG, "Clearing media session: $reason")
         isPlaying = false
         lastMetadata = null
         mediaSession.setMetadata(null)
@@ -253,6 +262,7 @@ class TvPlaybackService : Service() {
     }
 
     companion object {
+        private const val TAG = "TvPlayback"
         private const val CHANNEL_ID = "tv_playback"
         private const val NOTIFICATION_ID = 1
         private const val ICON_WAIT_TICKS = 30

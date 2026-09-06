@@ -292,6 +292,15 @@ class ProximityController(
         return config.enabled && config.rooms.isNotEmpty() && hasFollowMePermissions()
     }
 
+    /**
+     * Whether an entry point may start BLE scanning right now: inside the schedule and not
+     * in doze. Both the engine start and the startup warm-up ask this; the warm-up used to
+     * check only the schedule and started scans in doze that the loop's doze gate then
+     * stopped on its first pass, one start and one stop against the budget for no data.
+     * On doze exit the loop starts the motion gate and the active branches resume scans.
+     */
+    private fun radioAllowed(): Boolean = isWithinSchedule() && !isDeviceInDoze()
+
     private fun isDeviceInDoze(): Boolean {
         val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
         return pm.isDeviceIdleMode
@@ -310,10 +319,7 @@ class ProximityController(
         Log.d(TAG, "Starting proximity engine")
         proximityScanner.startWifiMonitor()
 
-        // No radio outside the schedule or inside doze: the loop's doze gate would only stop
-        // these scans again on its first pass, one start and one stop against the budget for
-        // no data. On doze exit the loop starts the motion gate and the active branches resume.
-        if (isWithinSchedule() && !isDeviceInDoze()) {
+        if (radioAllowed()) {
             motionGate.start()
             // Fast from the first millisecond. Starting LOW_POWER here and asking for
             // LOW_LATENCY in the warm-up two lines later never worked: the scan
@@ -326,7 +332,7 @@ class ProximityController(
         proximityJob = scope.launch {
             var scheduleSuspended = !isWithinSchedule()
             // Startup warmup: use short high-accuracy snapshots instead of 4s burst spacing.
-            if (isWithinSchedule()) {
+            if (radioAllowed()) {
                 runStartupWarmup()
                 val config = proximityConfigStore.config.value
                 val hasWifiOnlyRooms = config.rooms.any { room ->

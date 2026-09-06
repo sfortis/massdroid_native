@@ -84,6 +84,14 @@ class SendspinManager(
     private val _audioResourcesActive = MutableStateFlow(false)
     val audioResourcesActive: StateFlow<Boolean> = _audioResourcesActive.asStateFlow()
 
+    // The protocol stream itself: true from stream/start to stream/end, to stop(), or to a
+    // dropped connection. Unlike [audioResourcesActive] it carries no grace and does not
+    // fall on a long pause, so a front-end can tell "the stream is over" from "paused".
+    // A track change is stream/end then stream/start within seconds; consumers debounce.
+    // An engine swap on group join/leave is NOT a stream end and does not touch this.
+    private val _streamActive = MutableStateFlow(false)
+    val streamActive: StateFlow<Boolean> = _streamActive.asStateFlow()
+
     // Serializes the stream/start, stream/end-teardown, stop, and engine-swap
     // lifecycle transitions so a grace-timer teardown cannot release the engine
     // while a concurrent stream/start is configuring it. [streamEpoch] bumps on
@@ -213,6 +221,10 @@ class SendspinManager(
         stateJob = scope.launch {
             client.state.collect { state ->
                 _connectionState.value = state
+                // A dropped socket ends the stream without a stream/end message.
+                if (state == SendspinState.DISCONNECTED || state == SendspinState.ERROR) {
+                    _streamActive.value = false
+                }
             }
         }
 
@@ -343,6 +355,7 @@ class SendspinManager(
                 idleTeardownJob?.cancel()
                 idleTeardownJob = null
                 _audioResourcesActive.value = true
+                _streamActive.value = true
                 val info = incoming.payload.player
                 val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
                 Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
@@ -370,6 +383,7 @@ class SendspinManager(
                 val myEpoch = lifecycleMutex.withLock {
                     Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                     hasActiveProtocolStream = false
+                    _streamActive.value = false
                     lastStreamInfo = null
                     audio.onStreamEnd()
                     idleTeardownJob?.cancel()
@@ -875,6 +889,7 @@ class SendspinManager(
         idleTeardownJob = null
         streamEpoch++
         _audioResourcesActive.value = false
+        _streamActive.value = false
         hasActiveProtocolStream = false
         lastStreamInfo = null
         _enabled.value = false
