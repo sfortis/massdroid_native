@@ -506,10 +506,14 @@ class ProximityScanner @Inject constructor(
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
         try {
-            if (!running) {
-                // Real (cold) start: what was seen before no longer says anything about now.
-                // A restart of a running scan (mode or filter change) keeps the warmth: resetting
-                // it here made LOW_POWER<->LOW_LATENCY oscillate every 10 to 13 s (a cold buffer
+            val filtersChanged = running &&
+                (anchorAddresses != persistentAnchorAddresses || anchorNames != persistentAnchorNames)
+            if (!running || filtersChanged) {
+                // A new collection period. Cold start: what was seen before says nothing about
+                // now. New anchor set: the buffer is kept, but it holds no reading of the new
+                // anchors yet, and a gate judged warm on the old ones would let a read commit
+                // before they have spoken. A MODE change alone keeps the warmth: resetting it
+                // there made LOW_POWER<->LOW_LATENCY oscillate every 10 to 13 s (a cold buffer
                 // asks for LOW_LATENCY, the restart makes it cold again) and kept commits gated.
                 val startedAt = System.currentTimeMillis()
                 persistentStartedMs = startedAt

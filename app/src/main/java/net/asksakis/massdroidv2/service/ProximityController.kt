@@ -275,11 +275,17 @@ class ProximityController(
      */
     private fun applyConfigWhileRunning(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig) {
         val held = roomDetector.currentRoom.value ?: return
-        if (config.rooms.none { it.id == held.roomId }) {
+        val room = config.rooms.find { it.id == held.roomId }
+        if (room == null) {
             Log.d(TAG, "Held room ${held.roomName} was removed from the config, clearing")
             roomDetector.reset()
             getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
+            return
         }
+        // A new speaker or name for the room we are in: re-bind without re-detecting. Later
+        // reads of the same room id are "no change" and would never refresh the stored copy,
+        // so reapplyConfirmedRoom() kept selecting the old speaker.
+        roomDetector.refreshHeldRoom(DetectedRoom(room.id, room.name, room.playerId, room.playerName))
     }
 
     private fun shouldRunProximity(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig): Boolean {
@@ -304,8 +310,10 @@ class ProximityController(
         Log.d(TAG, "Starting proximity engine")
         proximityScanner.startWifiMonitor()
 
-        // Skip full radio startup if outside schedule
-        if (isWithinSchedule()) {
+        // No radio outside the schedule or inside doze: the loop's doze gate would only stop
+        // these scans again on its first pass, one start and one stop against the budget for
+        // no data. On doze exit the loop starts the motion gate and the active branches resume.
+        if (isWithinSchedule() && !isDeviceInDoze()) {
             motionGate.start()
             // Fast from the first millisecond. Starting LOW_POWER here and asking for
             // LOW_LATENCY in the warm-up two lines later never worked: the scan
@@ -1066,6 +1074,10 @@ class ProximityController(
     private fun stopEngine() {
         proximityJob?.cancel()
         proximityJob = null
+        // Lifecycle state belongs to the engine instance. Left set across a restart (BT off
+        // and on while idle) the next idle pass saw "already suspended" and never stopped the
+        // scans the restart had started.
+        scanningSuspended = false
         motionGate.stop()
         scanController.stopPersistentScan()
         scanController.stopBackgroundScan()

@@ -111,6 +111,18 @@ class RoomDetector @Inject constructor() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "RoomDetector must run on the main thread" }
     }
 
+    /**
+     * Update the stored copy of the room we hold (speaker or name changed in the config)
+     * without touching detection state. No-op unless [room] is the held room and differs.
+     */
+    fun refreshHeldRoom(room: DetectedRoom) {
+        assertMainThread()
+        val held = _currentRoom.value ?: return
+        if (held.roomId != room.roomId || held == room) return
+        _currentRoom.value = room
+        Log.d(TAG, "Held room re-bound: ${room.roomName} -> ${room.playerName}")
+    }
+
     /** Set current room directly (e.g., after calibration) without going through confidence logic */
     fun seedRoom(room: DetectedRoom) {
         assertMainThread()
