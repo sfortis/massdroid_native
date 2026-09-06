@@ -231,6 +231,75 @@ class PlaylistMembershipControllerTest {
         coVerify(exactly = 1) { musicRepository.removeTrackFromPlaylist(any(), 1) }
     }
 
+    /**
+     * A track change while the list is still loading used to empty the dialog: the
+     * load in flight was discarded because the generation had moved, and the reload
+     * it asked for was refused because a load was running. Which track is selected
+     * says nothing about which playlists exist.
+     */
+    @Test
+    fun `changing the track while the list loads still leaves the list populated`() = runTest {
+        coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(100)
+            listOf(playlist("1"), playlist("2"))
+        }
+
+        val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
+        controller.open("library://track/9", reload = true)
+        testScheduler.advanceTimeBy(10)
+        controller.open("library://track/10", reload = true)
+        testScheduler.advanceUntilIdle()
+
+        assertThat(controller.playlists.value.map { it.itemId }).containsExactly("1", "2")
+        assertThat(controller.isLoading.value).isFalse()
+    }
+
+    /** An account switch mid-load must not leave the previous account's playlists. */
+    @Test
+    fun `resetting while the list loads refetches instead of keeping the old list`() = runTest {
+        var call = 0
+        coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } coAnswers {
+            call++
+            kotlinx.coroutines.delay(100)
+            if (call == 1) listOf(playlist("old")) else listOf(playlist("new"))
+        }
+
+        val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
+        controller.open("library://track/9", reload = true)
+        testScheduler.advanceTimeBy(10)
+        controller.reset()
+        controller.open("library://track/9", reload = true)
+        testScheduler.advanceUntilIdle()
+
+        assertThat(controller.playlists.value.map { it.itemId }).containsExactly("new")
+    }
+
+    /**
+     * A write that lands after the listener moved to another track is answering a
+     * question nobody is asking, and it used to tick a row for the new one.
+     */
+    @Test
+    fun `an add that lands after the track changed does not tick the new track`() = runTest {
+        coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns
+            listOf(playlist("1"))
+        coEvery { musicRepository.addTrackToPlaylist(any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(100)
+        }
+
+        val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
+        controller.open("library://track/9")
+        testScheduler.advanceUntilIdle()
+
+        var reportedDone = false
+        controller.add(playlist("1")) { reportedDone = true }
+        testScheduler.advanceTimeBy(10)
+        controller.open("library://track/10")
+        testScheduler.advanceUntilIdle()
+
+        assertThat(controller.containsTrack.value).isEmpty()
+        assertThat(reportedDone).isFalse()
+    }
+
     /** The spinner covers the playlist fetch only, never a tick check. */
     @Test
     fun `the loading flag is down once the playlists arrive`() = runTest {

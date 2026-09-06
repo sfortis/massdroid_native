@@ -59,6 +59,15 @@ class AlbumDetailViewModel @Inject constructor(
 
     val players = playerRepository.players
 
+    // Playlist management for the track action sheet. Declared above init because
+    // init collects this controller's error flow, and a property declared after
+    // init is still null while init runs.
+    private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)
+    val editablePlaylists: StateFlow<List<Playlist>> = playlistMembership.playlists
+    val isLoadingEditablePlaylists: StateFlow<Boolean> = playlistMembership.isLoading
+    val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
+    val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
+
     init {
         viewModelScope.launch { loadData(lazy = true) }
         viewModelScope.launch {
@@ -335,13 +344,6 @@ class AlbumDetailViewModel @Inject constructor(
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }
-
-    // Playlist management for track action sheet
-    private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)
-    val editablePlaylists: StateFlow<List<Playlist>> = playlistMembership.playlists
-    val isLoadingEditablePlaylists: StateFlow<Boolean> = playlistMembership.isLoading
-    val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
-    val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
 
     /** Point the add-to-playlist dialog at [trackUri] and load the list. */
     fun loadEditablePlaylists(trackUri: String) {

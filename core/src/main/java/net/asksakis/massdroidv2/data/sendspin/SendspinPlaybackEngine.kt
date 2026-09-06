@@ -377,7 +377,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         configured = true
         playbackActive = true
         playbackStarted = false
-        paused = false
+        // Same question as at the top of configure(), asked again because the
+        // rebuild resets the playback state: a format change while the transport
+        // stays STREAMING produces no new streaming edge for anything else to
+        // catch, so clearing this unconditionally reopened audio without focus.
+        paused = !outputAllowed()
         // Armed silent until the new stream's audio starts (lifted in writeChunk).
         beginStartupMute()
         transitionSyncState(SyncState.IDLE)

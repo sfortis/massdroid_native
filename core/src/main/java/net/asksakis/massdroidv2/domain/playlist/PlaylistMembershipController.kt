@@ -75,11 +75,25 @@ class PlaylistMembershipController(
     private var targetTrackUri: String? = null
 
     /**
-     * Bumped whenever the target track changes or the account behind the playlists does,
-     * so results still in flight from before are dropped rather than ticking the wrong
-     * rows or restoring a list that no longer belongs to anyone here.
+     * Bumped whenever the target track changes, so ticks still in flight from the
+     * previous track are dropped rather than marking the wrong rows.
      */
     private var generation = 0
+
+    /**
+     * Bumped when the account behind the playlists changes, which is the only thing
+     * that invalidates the list itself.
+     *
+     * It has to be separate from [generation]. Sharing one counter meant a track
+     * change during a load discarded that load's result, while the reload it asked
+     * for was refused because a load was still in flight, and nothing rescheduled
+     * either: the dialog was left with no playlists at all. Which track is selected
+     * has no bearing on which playlists exist.
+     */
+    private var listGeneration = 0
+
+    /** A reload asked for while one was already running, run when that one ends. */
+    private var reloadWhenIdle = false
 
     /**
      * Point the dialog at [trackUri] and make sure the playlist list is loaded.
@@ -99,6 +113,7 @@ class PlaylistMembershipController(
         loadPlaylists(force = reload)
     }
 
+
     /** Re-fetch the playlist list from the server, discarding the cached one. */
     fun reload() {
         loadPlaylists(force = true)
@@ -108,6 +123,7 @@ class PlaylistMembershipController(
     fun reset() {
         targetTrackUri = null
         generation++
+        listGeneration++
         _playlists.value = emptyList()
         _containsTrack.value = emptySet()
         scope.launch { mutex.withLock { resolvedPlaylistUris.clear() } }
@@ -115,20 +131,28 @@ class PlaylistMembershipController(
 
     @Suppress("TooGenericExceptionCaught")
     private fun loadPlaylists(force: Boolean) {
-        if (_isLoading.value) return
+        if (_isLoading.value) {
+            // Remember it rather than drop it, so a load asked for while another
+            // was running still happens and the dialog cannot be left empty.
+            if (force) reloadWhenIdle = true
+            return
+        }
         if (!force && _playlists.value.isNotEmpty()) return
-        val currentGeneration = generation
+        val currentGeneration = listGeneration
         scope.launch {
             _isLoading.value = true
             try {
                 val loaded = musicRepository.getPlaylists(limit = PLAYLIST_LIMIT)
                     .filter { it.acceptsManualTracks }
-                if (currentGeneration == generation) _playlists.value = loaded
+                if (currentGeneration == listGeneration) _playlists.value = loaded
             } catch (e: Exception) {
                 Log.w(TAG, "loadPlaylists failed: ${e.message}")
                 _errors.tryEmit("Failed to load playlists")
             } finally {
                 _isLoading.value = false
+                val queued = reloadWhenIdle || currentGeneration != listGeneration
+                reloadWhenIdle = false
+                if (queued) loadPlaylists(force = true)
             }
         }
     }
@@ -191,12 +215,12 @@ class PlaylistMembershipController(
     fun add(playlist: Playlist, onDone: () -> Unit = {}) {
         val track = targetTrackUri ?: return
         if (_pendingPlaylistId.value != null) return
+        val currentGeneration = generation
         scope.launch {
             _pendingPlaylistId.value = playlist.itemId
             try {
                 musicRepository.addTrackToPlaylist(playlist, track)
-                markContains(playlist.uri, holdsTrack = true)
-                onDone()
+                if (markContains(playlist.uri, holdsTrack = true, currentGeneration)) onDone()
             } catch (e: Exception) {
                 Log.w(TAG, "add to ${playlist.uri} failed: ${e.message}")
                 if (isPlaylistWriteUnsupported(e)) {
@@ -216,6 +240,7 @@ class PlaylistMembershipController(
     fun remove(playlist: Playlist, onDone: () -> Unit = {}) {
         val track = targetTrackUri ?: return
         if (_pendingPlaylistId.value != null) return
+        val currentGeneration = generation
         scope.launch {
             _pendingPlaylistId.value = playlist.itemId
             try {
@@ -224,8 +249,7 @@ class PlaylistMembershipController(
                 if (position >= 0) {
                     musicRepository.removeTrackFromPlaylist(playlist, position)
                 }
-                markContains(playlist.uri, holdsTrack = false)
-                onDone()
+                if (markContains(playlist.uri, holdsTrack = false, currentGeneration)) onDone()
             } catch (e: Exception) {
                 Log.w(TAG, "remove from ${playlist.uri} failed: ${e.message}")
                 _errors.tryEmit("Failed to remove track from playlist")
@@ -242,12 +266,16 @@ class PlaylistMembershipController(
     @Suppress("TooGenericExceptionCaught")
     fun createAndAdd(name: String, onCreated: (Playlist) -> Unit = {}) {
         val track = targetTrackUri ?: return
+        val currentGeneration = generation
         scope.launch {
             try {
                 val playlist = musicRepository.createPlaylist(name)
                 musicRepository.addTrackToPlaylist(playlist, track)
                 _playlists.value = _playlists.value + playlist
-                markContains(playlist.uri, holdsTrack = true)
+                markContains(playlist.uri, holdsTrack = true, currentGeneration)
+                // Unconditional, unlike the tick above: the playlist now exists
+                // whatever the dialog is pointed at, and callers use this to show
+                // it wherever else they list playlists.
                 onCreated(playlist)
             } catch (e: Exception) {
                 Log.w(TAG, "createAndAdd failed: ${e.message}")
@@ -256,13 +284,27 @@ class PlaylistMembershipController(
         }
     }
 
-    private suspend fun markContains(playlistUri: String, holdsTrack: Boolean) = mutex.withLock {
+    /**
+     * Record that [playlistUri] does or does not hold the track, unless the dialog
+     * has moved on.
+     *
+     * A write that lands after the target track changed is answering a question
+     * nobody is asking any more, and applying it would tick a row for the wrong
+     * track.
+     */
+    private suspend fun markContains(
+        playlistUri: String,
+        holdsTrack: Boolean,
+        currentGeneration: Int
+    ): Boolean = mutex.withLock {
+        if (currentGeneration != generation) return@withLock false
         resolvedPlaylistUris.add(playlistUri)
         _containsTrack.value = if (holdsTrack) {
             _containsTrack.value + playlistUri
         } else {
             _containsTrack.value - playlistUri
         }
+        true
     }
 
     /**
