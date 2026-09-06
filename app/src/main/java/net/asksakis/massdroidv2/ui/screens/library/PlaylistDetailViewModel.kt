@@ -128,9 +128,16 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Whether the listing has actually arrived, which is what tells an empty playlist
+     * apart from one that simply has not loaded yet. See [playWhole].
+     */
+    private var tracksLoaded = false
+
     private suspend fun loadTracks(forceRefresh: Boolean) {
         try {
             _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider, forceRefresh)
+            tracksLoaded = true
         } catch (e: Exception) {
             Log.w(TAG, "Load playlist tracks failed: ${e.message}")
         }
@@ -245,21 +252,35 @@ class PlaylistDetailViewModel @Inject constructor(
     /**
      * Send the whole playlist to the queue.
      *
-     * A dynamic playlist goes by its own URI so the server rebuilds it, which is the
-     * whole point of one and what playing it from the library list has always done.
-     * Everything else goes as the track list on screen, which is deliberate: this screen
-     * sorts and filters, and a static playlist should play in the order being looked at.
+     * The playlist goes as its own container URI whenever the list on screen is the
+     * server's own order (default sort, no favourites filter): the server then resolves
+     * the playlist in one paged pass and starts playback almost at once, the way playing
+     * it from the library list does. A dynamic playlist always goes this way so the
+     * server rebuilds it.
+     *
+     * Only once the user has re-sorted or filtered does it fall back to sending the
+     * explicit track list, so that what plays matches what is being looked at. That path
+     * makes the server resolve every track URI one by one, which for a large streaming
+     * playlist (Apple Music, ...) can take minutes before the first track starts.
      */
     private fun playWhole(option: String, what: String) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         val uris = tracks.value.map { it.uri }
+        val listedInServerOrder = sortKey.value == PlaylistSortKey.POSITION &&
+            !sortDescending.value &&
+            !_favoritesOnly.value
         // The URI is a navigation argument and can be absent; without it there is no
         // container to hand over and the track list is all there is, rebuild or not.
-        val rebuildOnServer = isDynamic && playlistUri.isNotBlank()
-        if (!rebuildOnServer && uris.isEmpty()) return
+        val useContainer = playlistUri.isNotBlank() && (isDynamic || listedInServerOrder)
+        // A playlist that has loaded and holds nothing has nothing to play, and must not
+        // replace what is already in the queue with emptiness. An empty list BEFORE the
+        // listing arrives means "not loaded yet", where the container is exactly the right
+        // thing to send; a dynamic playlist is drawn fresh by the server either way.
+        if (tracksLoaded && uris.isEmpty() && !isDynamic) return
+        if (!useContainer && uris.isEmpty()) return
         viewModelScope.launch {
             try {
-                if (rebuildOnServer) {
+                if (useContainer) {
                     musicRepository.playMedia(queueId, playlistUri, option = option)
                 } else {
                     musicRepository.playMedia(queueId, uris, option = option)
