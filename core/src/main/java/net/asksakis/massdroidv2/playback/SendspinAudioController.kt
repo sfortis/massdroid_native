@@ -759,8 +759,15 @@ class SendspinAudioController(
         // a stream that starts again raises no edge. That is the ordinary restart
         // after another app took focus for good, and it left the engine paused
         // with nothing to lift it, because configure() keeps a new stream paused
-        // while the output is not allowed to play. streamActive follows the
-        // protocol itself, so every start is seen, the first one included.
+        // while the output is not allowed to play.
+        //
+        // The counter, not the streamActive flag, is what this reads. A flag can
+        // be raised and lowered faster than a collector runs, and a continuation
+        // start while it is already true says nothing at all, so a start that
+        // needed focus back could be missed. The counter moves on every start,
+        // continuations included. It can still collapse several starts into one
+        // emission, which is fine: acting once on the latest start is the whole
+        // job.
         //
         // Both halves matter. A grant has to release the output, or playback the
         // server started stays silent. A refusal has to keep it paused, or the
@@ -770,19 +777,29 @@ class SendspinAudioController(
         // lands on playback the listener had stopped.
         //
         // Landing before configure() is fine too, and slightly better: the
-        // manager raises this flag before it configures the engine, so focus won
+        // manager counts the start before it configures the engine, so focus won
         // here means configure() never pauses the output in the first place.
         collectorJobs += scope.launch {
             // No distinctUntilChanged: a StateFlow already conflates, so this
-            // only runs when the flag actually flips.
-            sendspinManager.streamActive
-                .collect { active ->
-                    if (!active) return@collect
-                    if (hasAudioFocus || requestFocusToPlay()) {
-                        sendspinManager.resumeAudio()
-                    } else {
-                        Log.w(TAG, "Stream started without audio focus: keeping the output paused")
-                        sendspinManager.pauseAudio()
+            // only runs when the counter actually moves.
+            sendspinManager.streamGeneration
+                .collect { generation ->
+                    // The initial value is not a stream start, it is the counter
+                    // sitting at zero before anything has played.
+                    if (generation == 0L) return@collect
+                    when (AudioFocusPolicy.onStreamStart(hasAudioFocus) { requestAudioFocus() }) {
+                        AudioFocusPolicy.StreamStart.PLAY ->
+                            sendspinManager.resumeAudio()
+                        AudioFocusPolicy.StreamStart.WAIT_FOR_GAIN -> {
+                            Log.i(TAG, "Stream started while the focus grant is delayed: silent until it arrives")
+                            resumeOnFocusGain = true
+                            sendspinManager.pauseAudio()
+                        }
+                        AudioFocusPolicy.StreamStart.STAY_SILENT -> {
+                            Log.w(TAG, "Stream started without audio focus: keeping the output paused")
+                            abandonPlaybackIntent()
+                            sendspinManager.pauseAudio()
+                        }
                     }
                 }
         }
@@ -894,35 +911,38 @@ class SendspinAudioController(
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")
             }
 
-            launch {
-                val readyState = withTimeoutOrNull(10_000) {
-                    sendspinManager.connectionState
-                        .first { it == SendspinState.SYNCING || it == SendspinState.STREAMING }
-                }
-                if (readyState == null) {
-                    Log.w(TAG, "Startup: sendspin did not reach ready state, skipping snapshot restore")
-                    return@launch
-                }
-                // Bootstrap user intent from the server's persisted playback
-                // state. When the MA player was left playing before the app
-                // restarted, the engine follows the server and streams, but no
-                // local play() ran, so _userIntent stays false. A later transient
-                // focus dip (e.g. another app plays a short clip) then refuses to
-                // resume on focus regain and silently kills playback. Adopting a
-                // server-confirmed PLAYING session as intent once at startup
-                // closes that gap without deriving intent from transport (the
-                // focus-loss handlers remain the sole writers of intent=false).
-                val startedPlaying = withTimeoutOrNull(8_000) {
-                    playerRepository.players
-                        .map { list -> list.firstOrNull { it.playerId == clientId }?.state }
-                        .first { it == PlaybackState.PLAYING }
-                }
-                if (startedPlaying != null && !_userIntent.value) {
-                    Log.d(TAG, "Startup: adopting server-initiated playback as user intent")
+        }
+
+        // Collector: adopt playback the SERVER started as the listener's intent.
+        //
+        // Intent is written locally by play and pause, so playback nobody started
+        // from this phone leaves it false: the MA player was left playing before
+        // the app restarted, or someone pressed play in Music Assistant. Two
+        // things then go wrong. The derived currentIsPlaying stays false, so the
+        // media session shows paused while music plays. And a later interruption
+        // refuses to resume, because the gain reads the same false intent, which
+        // kills the playback silently.
+        //
+        // This used to run once at startup behind an eight second window, which
+        // covered the restart case and missed every later one, the restart after a
+        // permanent focus loss included.
+        //
+        // The server's own report is the right source and needs no guard against a
+        // local pause racing it. This reacts to the TRANSITION into PLAYING, and a
+        // pause the listener presses produces no such transition: the state is
+        // already PLAYING and moves to PAUSED. So intent is never resurrected
+        // behind a pause, and the focus-loss handlers stay the only writers of
+        // false.
+        collectorJobs += scope.launch {
+            playerRepository.players
+                .map { list -> list.firstOrNull { it.playerId == sendspinPlayerId }?.state }
+                .distinctUntilChanged()
+                .collect { state ->
+                    if (state != PlaybackState.PLAYING || _userIntent.value) return@collect
+                    Log.i(TAG, "Adopting server-started playback as the listener's intent")
                     _userIntent.value = true
                     if (!hasAudioFocus) requestAudioFocus()
                 }
-            }
         }
 
         // Collector 6: Refresh Sendspin transport when MA reconnects, and
@@ -1266,14 +1286,14 @@ class SendspinAudioController(
                         // interruption.
                         if (resumeOnFocusGain) {
                             resumeOnFocusGain = false
-                            // Only back onto this phone, and only if it is still
-                            // the chosen output. Someone who moved to another
-                            // player during the interruption does not want the
-                            // music arriving here when it ends.
                             val resumeId = sendspinPlayerId
-                            val stillSelected =
+                            val selected = resumeId != null &&
                                 playerRepository.selectedPlayer.value?.playerId == resumeId
-                            if (resumeId == null || !stillSelected) {
+                            val outcome = AudioFocusPolicy.onFocusGain(
+                                resumeOwed = true,
+                                localPlayerSelected = selected
+                            )
+                            if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
                                 Log.i(TAG, "Focus regained: not resuming, the phone is no longer the selected player")
                                 return@setOnAudioFocusChangeListener
                             }
@@ -1512,9 +1532,6 @@ class SendspinAudioController(
      * Returns true only when focus is held right now; the engine plays regardless
      * (focus is advisory for our own output), the result just drives ducking/resume.
      */
-    /** The three answers the platform gives to a focus request. */
-    private enum class FocusRequestResult { GRANTED, DELAYED, FAILED }
-
     private fun requestAudioFocus(): FocusRequestResult {
         val result = when (audioManager.requestAudioFocus(focusRequest)) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
