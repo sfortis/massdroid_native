@@ -4,7 +4,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -31,6 +30,7 @@ import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
@@ -162,14 +162,11 @@ class NowPlayingViewModel @Inject constructor(
     val sendspinSyncHistory = sendspinManager.syncHistory
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
-    private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
-    val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
-    private val _isLoadingPlaylists = MutableStateFlow(false)
-    val isLoadingPlaylists: StateFlow<Boolean> = _isLoadingPlaylists.asStateFlow()
-    private val _addingToPlaylistId = MutableStateFlow<String?>(null)
-    val addingToPlaylistId: StateFlow<String?> = _addingToPlaylistId.asStateFlow()
-    private val _playlistContainsTrack = MutableStateFlow<Set<String>>(emptySet())
-    val playlistContainsTrack: StateFlow<Set<String>> = _playlistContainsTrack.asStateFlow()
+    private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)
+    val playlists: StateFlow<List<Playlist>> = playlistMembership.playlists
+    val isLoadingPlaylists: StateFlow<Boolean> = playlistMembership.isLoading
+    val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
+    val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
 
     private val _lyricsEntries = MutableStateFlow<Map<String, LyricsEntry>>(emptyMap())
     private val _lyricsTimingOffsetMs = MutableStateFlow(0)
@@ -295,6 +292,9 @@ class NowPlayingViewModel @Inject constructor(
     val optimisticElapsed: StateFlow<Double?> = _optimisticElapsed.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            playlistMembership.errors.collect { _error.tryEmit(it) }
+        }
         viewModelScope.launch {
             smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
@@ -888,38 +888,14 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /** Point the add-to-playlist dialog at the track playing now and load the list. */
     fun loadPlaylists(force: Boolean = false) {
-        if (_isLoadingPlaylists.value) return
-        if (!force && _playlists.value.isNotEmpty()) return
-        viewModelScope.launch {
-            _isLoadingPlaylists.value = true
-            try {
-                val loaded = musicRepository.getPlaylists(limit = 200)
-                    .filter { it.isEditable }
-                _playlists.value = loaded
-                checkTrackInPlaylists(loaded)
-            } catch (e: Exception) {
-                Log.w(TAG, "loadPlaylists failed: ${e.message}")
-                _error.tryEmit("Failed to load playlists")
-            } finally {
-                _isLoadingPlaylists.value = false
-            }
-        }
+        playlistMembership.open(queueState.value?.currentItem?.track?.uri, reload = force)
     }
 
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun checkTrackInPlaylists(playlists: List<Playlist>) {
-        val trackUri = queueState.value?.currentItem?.track?.uri ?: return
-        val containing = mutableSetOf<String>()
-        for (playlist in playlists) {
-            try {
-                val tracks = musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider)
-                if (tracks.any { it.uri == trackUri }) {
-                    containing += playlist.uri
-                }
-            } catch (_: Exception) { }
-        }
-        _playlistContainsTrack.value = containing
+    /** Resolve the tick marks for the playlist rows currently on screen. */
+    fun onPlaylistsVisible(playlistUris: List<String>) {
+        playlistMembership.onPlaylistsVisible(playlistUris)
     }
 
     fun preloadLyrics() {
@@ -1066,77 +1042,15 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun removeCurrentTrackFromPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {
-        val track = queueState.value?.currentItem?.track ?: return
-        if (_addingToPlaylistId.value != null) return
-        viewModelScope.launch {
-            _addingToPlaylistId.value = playlist.itemId
-            try {
-                val tracks = musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider)
-                val position = tracks.indexOfFirst { it.uri == track.uri }
-                if (position >= 0) {
-                    musicRepository.removeTrackFromPlaylist(playlist, position)
-                    _playlistContainsTrack.value = _playlistContainsTrack.value - playlist.uri
-                }
-                onDone()
-            } catch (e: Exception) {
-                Log.w(TAG, "removeCurrentTrackFromPlaylist failed: ${e.message}")
-                _error.tryEmit("Failed to remove track from playlist")
-            } finally {
-                _addingToPlaylistId.value = null
-            }
-        }
+        playlistMembership.remove(playlist, onDone)
     }
 
     fun createPlaylistAndAddTrack(name: String, onDone: () -> Unit = {}) {
-        val track = queueState.value?.currentItem?.track ?: return
-        viewModelScope.launch {
-            try {
-                val playlist = musicRepository.createPlaylist(name)
-                musicRepository.addTrackToPlaylist(playlist, track.uri)
-                _playlists.value = _playlists.value + playlist
-                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
-                onDone()
-            } catch (e: Exception) {
-                Log.w(TAG, "createPlaylistAndAddTrack failed: ${e.message}")
-                _error.tryEmit("Failed to create playlist")
-            }
-        }
+        playlistMembership.createAndAdd(name) { onDone() }
     }
 
     fun addCurrentTrackToPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {
-        val track = queueState.value?.currentItem?.track ?: return
-        if (_addingToPlaylistId.value != null) return
-        viewModelScope.launch {
-            _addingToPlaylistId.value = playlist.itemId
-            try {
-                musicRepository.addTrackToPlaylist(playlist, track.uri)
-                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
-                onDone()
-            } catch (e: Exception) {
-                Log.w(TAG, "addCurrentTrackToPlaylist failed: ${e.message}")
-                if (isPlaylistWriteUnsupported(e)) {
-                    _playlists.value = _playlists.value.filterNot { it.uri == playlist.uri }
-                    _error.tryEmit("This playlist is read-only")
-                } else {
-                    _error.tryEmit("Failed to add track to playlist")
-                }
-            } finally {
-                _addingToPlaylistId.value = null
-            }
-        }
-    }
-
-    private fun isPlaylistWriteUnsupported(error: Exception): Boolean {
-        val message = error.message?.lowercase().orEmpty()
-        return error is MaApiException && (
-            message.contains("read-only") ||
-                message.contains("readonly") ||
-                message.contains("not supported") ||
-                message.contains("unsupported") ||
-                message.contains("cannot add") ||
-                message.contains("auto") ||
-                message.contains("generated")
-            )
+        playlistMembership.add(playlist, onDone)
     }
 
     private fun trackArtists(artistItemId: String?, artistUri: String?, artistNames: String): List<Pair<String, String>> {

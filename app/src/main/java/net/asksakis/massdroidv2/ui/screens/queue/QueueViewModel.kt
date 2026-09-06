@@ -16,6 +16,7 @@ import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
+import net.asksakis.massdroidv2.domain.model.acceptsManualTracks
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -478,7 +479,9 @@ class QueueViewModel @Inject constructor(
     }
 
     fun getPlaylists() = viewModelScope.launch {
-        try { _playlists.value = musicRepository.getPlaylists() } catch (_: Exception) { }
+        try {
+            _playlists.value = musicRepository.getPlaylists().filter { it.acceptsManualTracks }
+        } catch (_: Exception) { }
     }
 
     private val _playlists = MutableStateFlow<List<net.asksakis.massdroidv2.domain.model.Playlist>>(emptyList())

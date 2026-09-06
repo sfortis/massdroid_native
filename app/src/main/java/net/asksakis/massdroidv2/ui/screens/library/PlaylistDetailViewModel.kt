@@ -161,6 +161,7 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _playlists.value = musicRepository.getPlaylists(limit = 200)
+                    .filter { it.acceptsManualTracks }
             } catch (e: Exception) {
                 Log.w(TAG, "Load playlists failed: ${e.message}")
             }

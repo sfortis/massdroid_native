@@ -410,6 +410,7 @@ fun NowPlayingScreen(
             addingToPlaylistId = addingToPlaylistId,
             onDismiss = { showPlaylistDialog = false },
             onRetry = { viewModel.loadPlaylists(force = true) },
+            onPlaylistsVisible = viewModel::onPlaylistsVisible,
             onPlaylistClick = { playlist ->
                 viewModel.addCurrentTrackToPlaylist(playlist) {}
             },

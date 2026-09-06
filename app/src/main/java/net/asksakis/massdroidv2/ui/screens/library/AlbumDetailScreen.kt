@@ -302,11 +302,12 @@ fun AlbumDetailScreen(
             isLoading = isLoadingPlaylists,
             addingToPlaylistId = addingToPlaylistId,
             onDismiss = { addToPlaylistTrackUri = null },
-            onRetry = { viewModel.loadEditablePlaylists(trackUri) },
+            onRetry = { viewModel.reloadEditablePlaylists() },
             onPlaylistClick = { playlist -> viewModel.addTrackToPlaylist(playlist, trackUri) },
             onCreatePlaylist = { name -> viewModel.createPlaylistAndAddTrack(name, trackUri) },
             onRemoveFromPlaylist = { playlist -> viewModel.removeTrackFromPlaylist(playlist, trackUri) },
-            containsTrack = playlistContainsTrack
+            containsTrack = playlistContainsTrack,
+            onPlaylistsVisible = viewModel::onPlaylistsVisible
         )
     }
 }

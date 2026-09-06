@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -40,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.flow.distinctUntilChanged
 import net.asksakis.massdroidv2.domain.model.Playlist
 
 @Composable
@@ -63,7 +66,8 @@ fun AddToPlaylistDialog(
     onCreatePlaylist: (String) -> Unit = {},
     onRemoveFromPlaylist: (Playlist) -> Unit = {},
     containsTrack: Set<String> = emptySet(),
-    suggestedName: String = ""
+    suggestedName: String = "",
+    onPlaylistsVisible: (List<String>) -> Unit = {}
 ) {
     var newPlaylistName by remember { mutableStateOf(suggestedName) }
     var showCreateField by remember { mutableStateOf(false) }
@@ -148,7 +152,17 @@ fun AddToPlaylistDialog(
                             Text("No playlists available.")
                             MdTextButton(onClick = onRetry) { Text("Reload") }
                         } else {
+                            val listState = rememberLazyListState()
+                            LaunchedEffect(listState, playlists) {
+                                snapshotFlow {
+                                    listState.layoutInfo.visibleItemsInfo
+                                        .mapNotNull { it.key as? String }
+                                }
+                                    .distinctUntilChanged()
+                                    .collect { onPlaylistsVisible(it) }
+                            }
                             LazyColumn(
+                                state = listState,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .heightIn(max = 320.dp),

@@ -20,6 +20,7 @@ import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.*
+import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -455,16 +456,16 @@ class LibraryViewModel @Inject constructor(
 
     // ---- playlist management state (declared before init: collectors may run synchronously) ----
 
-    private val _editablePlaylists = MutableStateFlow<List<Playlist>>(emptyList())
-    val editablePlaylists: StateFlow<List<Playlist>> = _editablePlaylists.asStateFlow()
-    private val _isLoadingEditablePlaylists = MutableStateFlow(false)
-    val isLoadingEditablePlaylists: StateFlow<Boolean> = _isLoadingEditablePlaylists.asStateFlow()
-    private val _addingToPlaylistId = MutableStateFlow<String?>(null)
-    val addingToPlaylistId: StateFlow<String?> = _addingToPlaylistId.asStateFlow()
-    private val _playlistContainsTrack = MutableStateFlow<Set<String>>(emptySet())
-    val playlistContainsTrack: StateFlow<Set<String>> = _playlistContainsTrack.asStateFlow()
+    private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)
+    val editablePlaylists: StateFlow<List<Playlist>> = playlistMembership.playlists
+    val isLoadingEditablePlaylists: StateFlow<Boolean> = playlistMembership.isLoading
+    val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
+    val playlistContainsTrack: StateFlow<Set<String>> = playlistMembership.containsTrack
 
     init {
+        viewModelScope.launch {
+            playlistMembership.errors.collect { _error.tryEmit(it) }
+        }
         // Load all settings eagerly before any data loading
         viewModelScope.launch {
             _displayModes.value = settingsRepository.libraryDisplayModes.first()
@@ -567,8 +568,7 @@ class LibraryViewModel @Inject constructor(
         searchJob?.cancel()
         _searchQuery.value = ""
         allPagers.forEach { it.clear() }
-        _editablePlaylists.value = emptyList()
-        _playlistContainsTrack.value = emptySet()
+        playlistMembership.reset()
         _browseItemsRaw.value = emptyList()
         _browseItems.value = emptyList()
         _browsePath.value = null
@@ -935,12 +935,12 @@ class LibraryViewModel @Inject constructor(
 
     // ---- playlist management -------------------------------------------------------------------
 
+    @Suppress("TooGenericExceptionCaught")
     fun createPlaylist(name: String) {
         viewModelScope.launch {
             try {
                 val playlist = musicRepository.createPlaylist(name)
                 playlistsPager.update { it + playlist }
-                _editablePlaylists.value = _editablePlaylists.value + playlist
             } catch (e: Exception) {
                 Log.w(TAG, "createPlaylist failed: ${e.message}")
                 _error.tryEmit("Failed to create playlist")
@@ -948,83 +948,33 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** Point the add-to-playlist dialog at [trackUri] and load the list. */
     fun loadEditablePlaylists(trackUri: String) {
-        if (_isLoadingEditablePlaylists.value) return
-        viewModelScope.launch {
-            _isLoadingEditablePlaylists.value = true
-            try {
-                val loaded = musicRepository.getPlaylists(limit = 200).filter { it.isEditable }
-                _editablePlaylists.value = loaded
-                checkTrackInPlaylists(trackUri, loaded)
-            } catch (e: Exception) {
-                Log.w(TAG, "loadEditablePlaylists failed: ${e.message}")
-            } finally {
-                _isLoadingEditablePlaylists.value = false
-            }
-        }
+        playlistMembership.open(trackUri, reload = true)
     }
 
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun checkTrackInPlaylists(trackUri: String, playlists: List<Playlist>) {
-        val containing = mutableSetOf<String>()
-        for (playlist in playlists) {
-            try {
-                val tracks = musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider)
-                if (tracks.any { it.uri == trackUri }) containing += playlist.uri
-            } catch (_: Exception) { }
-        }
-        _playlistContainsTrack.value = containing
+    /** Resolve the tick marks for the playlist rows currently on screen. */
+    fun onPlaylistsVisible(playlistUris: List<String>) {
+        playlistMembership.onPlaylistsVisible(playlistUris)
+    }
+
+    fun reloadEditablePlaylists() {
+        playlistMembership.reload()
     }
 
     fun addTrackToPlaylist(playlist: Playlist, trackUri: String) {
-        if (_addingToPlaylistId.value != null) return
-        viewModelScope.launch {
-            _addingToPlaylistId.value = playlist.itemId
-            try {
-                musicRepository.addTrackToPlaylist(playlist, trackUri)
-                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
-            } catch (e: Exception) {
-                Log.w(TAG, "addTrackToPlaylist failed: ${e.message}")
-                _error.tryEmit("Failed to add track to playlist")
-            } finally {
-                _addingToPlaylistId.value = null
-            }
-        }
+        playlistMembership.open(trackUri)
+        playlistMembership.add(playlist)
     }
 
     fun removeTrackFromPlaylist(playlist: Playlist, trackUri: String) {
-        if (_addingToPlaylistId.value != null) return
-        viewModelScope.launch {
-            _addingToPlaylistId.value = playlist.itemId
-            try {
-                val tracks = musicRepository.getPlaylistTracks(playlist.itemId, playlist.provider)
-                val position = tracks.indexOfFirst { it.uri == trackUri }
-                if (position >= 0) {
-                    musicRepository.removeTrackFromPlaylist(playlist, position)
-                    _playlistContainsTrack.value = _playlistContainsTrack.value - playlist.uri
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "removeTrackFromPlaylist failed: ${e.message}")
-                _error.tryEmit("Failed to remove track from playlist")
-            } finally {
-                _addingToPlaylistId.value = null
-            }
-        }
+        playlistMembership.open(trackUri)
+        playlistMembership.remove(playlist)
     }
 
     fun createPlaylistAndAddTrack(name: String, trackUri: String) {
-        viewModelScope.launch {
-            try {
-                val playlist = musicRepository.createPlaylist(name)
-                musicRepository.addTrackToPlaylist(playlist, trackUri)
-                playlistsPager.update { it + playlist }
-                _editablePlaylists.value = _editablePlaylists.value + playlist
-                _playlistContainsTrack.value = _playlistContainsTrack.value + playlist.uri
-            } catch (e: Exception) {
-                Log.w(TAG, "createPlaylistAndAddTrack failed: ${e.message}")
-                _error.tryEmit("Failed to create playlist")
-            }
-        }
+        playlistMembership.open(trackUri)
+        playlistMembership.createAndAdd(name) { playlist -> playlistsPager.update { it + playlist } }
     }
 
     // ---- item state toggles ----------------------------------------------------------------------

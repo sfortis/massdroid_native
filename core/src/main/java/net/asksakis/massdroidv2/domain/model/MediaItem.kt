@@ -139,6 +139,18 @@ data class Playlist(
     val providerDomains: List<String> = emptyList()
 )
 
+/**
+ * Whether a listener may add tracks to this playlist or take them out by hand.
+ *
+ * Two separate things make a playlist refuse a hand-written track. A playlist the server
+ * itself owns, such as "Recently added tracks", reports `isEditable = false`. A smart
+ * playlist reports `isEditable = true`, because what is editable there is the rule that
+ * fills it, not its contents; those are the ones that carry `isDynamic`. Offering either
+ * in the add-to-playlist dialog produces a server error on tap, so both are excluded.
+ */
+val Playlist.acceptsManualTracks: Boolean
+    get() = isEditable && !isDynamic
+
 @Serializable
 data class Radio(
     val itemId: String,
