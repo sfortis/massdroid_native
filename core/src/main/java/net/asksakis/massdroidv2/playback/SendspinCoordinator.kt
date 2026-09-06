@@ -198,14 +198,23 @@ class SendspinCoordinator(
 
     private fun observeStreamLifecycle() {
         scope.launch {
+            // Starts come from the generation counter, which moves on every stream/start
+            // (a continuation start does not flip streamActive). The first value seen is
+            // the current one, not an event.
+            var handledGeneration = sendspinManager.streamGeneration.value
+            sendspinManager.streamGeneration.collect { generation ->
+                if (generation == handledGeneration) return@collect
+                handledGeneration = generation
+                streamEndJob?.cancel()
+                streamEndJob = null
+                if (isActive) onStreamStarted()
+            }
+        }
+        scope.launch {
             sendspinManager.streamActive.collect { active ->
                 streamEndJob?.cancel()
                 streamEndJob = null
-                if (!isActive) return@collect
-                if (active) {
-                    onStreamStarted()
-                    return@collect
-                }
+                if (active || !isActive) return@collect
                 streamEndJob = launch {
                     delay(STREAM_END_GRACE_MS)
                     if (!sendspinManager.streamActive.value) onStreamEnded()

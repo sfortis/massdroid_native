@@ -92,6 +92,14 @@ class SendspinManager(
     private val _streamActive = MutableStateFlow(false)
     val streamActive: StateFlow<Boolean> = _streamActive.asStateFlow()
 
+    // Counts protocol stream/start messages, continuation starts included. [streamActive] is
+    // state and cannot carry every start: a fast end/start conflates before a collector runs,
+    // and a continuation start while already active changes nothing. A consumer that must act
+    // on each start (re-acquire audio focus, say) compares this with the last value it handled;
+    // rapid starts may still collapse into one change, and one is enough to act on the latest.
+    private val _streamGeneration = MutableStateFlow(0L)
+    val streamGeneration: StateFlow<Long> = _streamGeneration.asStateFlow()
+
     // Serializes the stream/start, stream/end-teardown, stop, and engine-swap
     // lifecycle transitions so a grace-timer teardown cannot release the engine
     // while a concurrent stream/start is configuring it. [streamEpoch] bumps on
@@ -356,6 +364,7 @@ class SendspinManager(
                 idleTeardownJob = null
                 _audioResourcesActive.value = true
                 _streamActive.value = true
+                _streamGeneration.value += 1
                 val info = incoming.payload.player
                 val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
                 Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
