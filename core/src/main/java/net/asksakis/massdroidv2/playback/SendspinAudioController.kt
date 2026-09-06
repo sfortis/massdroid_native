@@ -577,29 +577,10 @@ class SendspinAudioController(
                 // manager's audioResourcesActive flow (collector below), so they
                 // release once the phone stops being an actual output even though
                 // the client stays connected (STREAMING) as an available player.
+                // Audio focus is NOT settled here any more; it follows every
+                // protocol stream/start instead. See the streamActive collector.
                 if (!wasStreaming && transportState == SendspinState.STREAMING) {
-                    // A new stream needs focus settled and then the output
-                    // released, in that order, and both halves matter.
-                    //
-                    // configure() keeps the output paused when the engine is not
-                    // allowed to play, which is the case here because the stream
-                    // arrives before this edge and focus has not been asked for
-                    // yet. So an immediate grant has to un-pause it: without that
-                    // a playback the server starts, a cold start or the queue
-                    // rolling on, stayed silent with nothing to lift it. And a
-                    // refusal has to keep it paused, or the same stream would play
-                    // over whatever owns the output.
-                    //
-                    // Un-pausing here is safe because a stream/start means the
-                    // server is playing: pausing ends the stream and resuming
-                    // arrives as a fresh stream/start, so this edge never lands on
-                    // a playback the listener had stopped.
-                    if (hasAudioFocus || requestFocusToPlay()) {
-                        sendspinManager.resumeAudio()
-                    } else {
-                        Log.w(TAG, "Stream started without audio focus: keeping the output paused")
-                        sendspinManager.pauseAudio()
-                    }
+                    Log.d(TAG, "Transport reached STREAMING")
                 }
                 if (wasStreaming && transportState != SendspinState.STREAMING) {
                     Log.d(TAG, "Sendspin dropped while streaming")
@@ -768,6 +749,41 @@ class SendspinAudioController(
 
                     notifyMetadataChanged()
                     notifyStateChanged()
+                }
+        }
+
+        // Collector: settle audio focus on every protocol stream/start.
+        //
+        // This used to hang off the transport reaching STREAMING, which is the
+        // wrong signal: the transport does not leave STREAMING on stream/end, so
+        // a stream that starts again raises no edge. That is the ordinary restart
+        // after another app took focus for good, and it left the engine paused
+        // with nothing to lift it, because configure() keeps a new stream paused
+        // while the output is not allowed to play. streamActive follows the
+        // protocol itself, so every start is seen, the first one included.
+        //
+        // Both halves matter. A grant has to release the output, or playback the
+        // server started stays silent. A refusal has to keep it paused, or the
+        // same stream plays over whatever owns the output. Releasing it here is
+        // safe because a stream/start means the server is playing: a pause ends
+        // the stream and a resume arrives as a fresh stream/start, so this never
+        // lands on playback the listener had stopped.
+        //
+        // Landing before configure() is fine too, and slightly better: the
+        // manager raises this flag before it configures the engine, so focus won
+        // here means configure() never pauses the output in the first place.
+        collectorJobs += scope.launch {
+            // No distinctUntilChanged: a StateFlow already conflates, so this
+            // only runs when the flag actually flips.
+            sendspinManager.streamActive
+                .collect { active ->
+                    if (!active) return@collect
+                    if (hasAudioFocus || requestFocusToPlay()) {
+                        sendspinManager.resumeAudio()
+                    } else {
+                        Log.w(TAG, "Stream started without audio focus: keeping the output paused")
+                        sendspinManager.pauseAudio()
+                    }
                 }
         }
 
