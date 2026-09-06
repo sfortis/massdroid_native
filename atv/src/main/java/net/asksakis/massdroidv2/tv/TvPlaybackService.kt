@@ -72,9 +72,13 @@ class TvPlaybackService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // Not active yet. An active session with no metadata is picked up by Google's
+        // cross-device media controls and shown on every phone on the account as a
+        // "MassDroid TV / SHIELD Android TV" card with a dead play button, while the
+        // TV is on another app entirely. The session goes active when a stream does.
         mediaSession = MediaSessionCompat(this, "MassDroidTv").apply {
             setCallback(mediaCallback)
-            isActive = true
+            isActive = false
         }
         startForegroundCompat()
         coordinator = SendspinCoordinator(
@@ -89,8 +93,8 @@ class TvPlaybackService : Service() {
             clientName = "MassDroid TV",
             onConnectionStateChanged = {},
             onTargetChanged = {},
-            onActive = {},
-            onInactive = {},
+            onActive = { mainHandler.post { onStreamActive() } },
+            onInactive = { mainHandler.post { onStreamInactive() } },
             onWifiConnected = {},
             onMetadata = { meta -> mainHandler.post { onMetadata(meta) } },
             onPlayingChanged = { playing -> mainHandler.post { onPlayingChanged(playing) } },
@@ -114,6 +118,9 @@ class TvPlaybackService : Service() {
             }
             .build()
         mediaSession.setMetadata(md)
+        // A real track arrived: that is what makes this session worth showing, whether the
+        // stream is playing or paused. Paused-before-metadata must not leave it inactive.
+        if (hasTrack()) mediaSession.isActive = true
         updateNotification()
     }
 
@@ -137,7 +144,35 @@ class TvPlaybackService : Service() {
             )
             .build()
         mediaSession.setPlaybackState(pb)
-        mediaSession.isActive = true
+        // Paused with a real track is still a session worth showing (the remote card can
+        // resume it); paused with nothing loaded is not.
+        mediaSession.isActive = playing || hasTrack()
+        updateNotification()
+    }
+
+    private fun hasTrack(): Boolean = lastMetadata?.title?.isNotBlank() == true
+
+    private fun onStreamActive() {
+        // Deliberately nothing. This fires when the Sendspin CLIENT connects, which happens
+        // a few seconds after boot with no track loaded; activating here recreated the dead
+        // remote card. The session goes active from onMetadata/onPlayingChanged instead.
+    }
+
+    /**
+     * The Sendspin stream ended: the server moved on, the player was stopped, or the
+     * device was ungrouped. Drop the track and the session with it, so nothing on the
+     * network keeps offering controls for a speaker that is not playing anything.
+     */
+    private fun onStreamInactive() {
+        isPlaying = false
+        lastMetadata = null
+        mediaSession.setMetadata(null)
+        mediaSession.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_STOPPED, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 0f)
+                .build()
+        )
+        mediaSession.isActive = false
         updateNotification()
     }
 
