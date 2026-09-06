@@ -51,7 +51,7 @@ interface PlayerRepository {
     val serverPositionUpdates: SharedFlow<PlaybackPosition>
 
     /** Emits immediately when a playback command is issued, before server round-trip. */
-    val playbackIntent: SharedFlow<Boolean>
+    val playbackIntent: SharedFlow<PlaybackIntent>
 
     /** Emits when an action requires a selected player but none is available. */
     val noPlayerSelectedEvent: SharedFlow<Unit>
@@ -145,7 +145,7 @@ interface PlayerRepository {
     fun setSelectionLock(lock: PlayerSelectionLock?)
 
     suspend fun play(playerId: String)
-    suspend fun pause(playerId: String)
+    suspend fun pause(playerId: String, cause: PlaybackIntentCause = PlaybackIntentCause.LISTENER)
 
     /**
      * Pause and suspend until the server answers the command, or until the wait
@@ -165,6 +165,15 @@ interface PlayerRepository {
     suspend fun pauseConfirmed(playerId: String)
     suspend fun playPause(playerId: String)
     fun notifyPlaybackIntent(willPlay: Boolean)
+
+    /**
+     * Register the gate consulted before a play command is sent, or pass null to
+     * remove it. Used by the phone-as-speaker output so audio focus is decided
+     * BEFORE the server is told to start streaming: the decision cannot be taken
+     * after the command, because the server then opens a stream and the output
+     * starts feeding it.
+     */
+    fun registerLocalPlaybackGate(gate: LocalPlaybackGate?)
     fun isArtistUriBlocked(artistUri: String): Boolean
     fun isArtistBlocked(artistName: String, artistUri: String): Boolean
     fun hasBlockedArtists(): Boolean

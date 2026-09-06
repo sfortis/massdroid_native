@@ -651,6 +651,7 @@ class SendspinManager(
         streamEpoch++
         val carrySyncDelay = engine.syncDelayMs
         val carryAcoustic = engine.routeAcousticExtraUs
+        val carryOutputAllowed = outputAllowed
         engine.onSyncStateChanged = null
         engine.onSyncSample = null
         engine.release()
@@ -659,6 +660,7 @@ class SendspinManager(
         target.clockSynchronizer = clockSynchronizer
         target.syncDelayMs = carrySyncDelay
         target.routeAcousticExtraUs = carryAcoustic
+        (target as? SendspinPlaybackEngine)?.outputAllowed = carryOutputAllowed
         (target as? SendspinPlaybackEngine)?.onRoutingChanged = routingChangedCallback
         setupSyncStateCallback()
         _syncState.value = target.syncState
@@ -755,6 +757,23 @@ class SendspinManager(
     fun onTransportFailure() {
         audio.onTransportFailure()
         _syncState.value = audio.syncState
+    }
+
+    // Asked on every new stream: may the output make a sound? Held here so an
+    // engine swap (group join or leave) carries it, like the other per-engine
+    // settings. Defaults to allowing playback.
+    private var outputAllowed: () -> Boolean = { true }
+
+    /**
+     * Set the question the output asks before a new stream is allowed to play.
+     *
+     * The audio controller supplies audio-focus state. Without this, a stream the
+     * server starts clears the engine's paused flag on its own, so a play command
+     * refused for want of focus still became audible.
+     */
+    fun setOutputAllowed(allowed: () -> Boolean) {
+        outputAllowed = allowed
+        (engine as? SendspinPlaybackEngine)?.outputAllowed = allowed
     }
 
     fun setRouteAcousticExtraUs(valueUs: Long) {

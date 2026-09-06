@@ -218,6 +218,22 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     // the gate is clear.
     @Volatile private var awaitingFreshStreamSinceMs = 0L
     @Volatile private var paused = false
+
+    /**
+     * Whether the output may make a sound right now, asked on every new stream.
+     *
+     * Audio focus is the reason this exists. A play command can be refused
+     * because another app owns the output, but the server does not know that: if
+     * it has already been told to stream, [configure] runs and used to clear
+     * [paused] on its own, so the refusal produced audio anyway. The controller
+     * that owns focus policy answers here instead, which keeps focus a live
+     * constraint on the output rather than a check made once at the command.
+     *
+     * Defaults to allowing playback, so an engine with no controller attached
+     * behaves exactly as before.
+     */
+    @Volatile
+    var outputAllowed: () -> Boolean = { true }
     @Volatile private var configureGeneration = 0L
     @Volatile private var playbackGeneration = 0L
     @Volatile protected var activeCodec = "flac"
@@ -324,7 +340,12 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // can arrive as stream/start (not setPaused(false)), so we must clear
         // the paused flag here or onBinaryMessage keeps dropping every frame and
         // the playback loop stays asleep -> stuck IDLE after pause/play.
-        paused = false
+        //
+        // Unless the output is not allowed to make a sound. Clearing this
+        // unconditionally meant any stream the server started put audio out
+        // regardless of audio focus, which is how a play command that had been
+        // refused still ended up audible. See [outputAllowed].
+        paused = !outputAllowed()
         resetSyncMetrics()
 
         if (sameFormat) {

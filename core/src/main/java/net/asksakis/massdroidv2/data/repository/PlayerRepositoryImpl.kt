@@ -15,7 +15,10 @@ import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
+import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntent
+import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
@@ -137,8 +140,13 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private val _playbackIntent = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
-    override val playbackIntent: SharedFlow<Boolean> = _playbackIntent.asSharedFlow()
+    private val _playbackIntent = MutableSharedFlow<PlaybackIntent>(extraBufferCapacity = 1)
+    override val playbackIntent: SharedFlow<PlaybackIntent> = _playbackIntent.asSharedFlow()
+
+    // Consulted before a play command reaches the server, so the local output can
+    // settle audio focus first. Null whenever that output is not running.
+    @Volatile
+    private var localPlaybackGate: LocalPlaybackGate? = null
 
     private val _queueItemsChanged = MutableSharedFlow<String>(extraBufferCapacity = 1)
     override val queueItemsChanged: SharedFlow<String> = _queueItemsChanged.asSharedFlow()
@@ -1502,28 +1510,49 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     override suspend fun play(playerId: String) {
-        _playbackIntent.tryEmit(true)
+        if (!allowedToPlay(playerId)) return
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = true))
         playerCmd("play", playerId)
     }
 
-    override suspend fun pause(playerId: String) {
-        _playbackIntent.tryEmit(false)
+    override suspend fun pause(playerId: String, cause: PlaybackIntentCause) {
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = false, cause = cause))
         playerCmd("pause", playerId)
     }
 
     override suspend fun pauseConfirmed(playerId: String) {
-        _playbackIntent.tryEmit(false)
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = false))
         playerCmd("pause", playerId, awaitAck = true)
     }
 
     override suspend fun playPause(playerId: String) {
         val willPlay = _selectedPlayer.value?.state != PlaybackState.PLAYING
-        _playbackIntent.tryEmit(willPlay)
+        if (willPlay && !allowedToPlay(playerId)) return
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = willPlay))
         playerCmd("play_pause", playerId)
     }
 
+    /**
+     * Whether a play command may be sent for [playerId].
+     *
+     * The phone-as-speaker output has to hold audio focus before the server opens
+     * a stream for it, because once that stream arrives the output starts feeding
+     * it and nothing downstream asks again. Refusing here is the only point where
+     * the answer still changes the outcome.
+     */
+    private fun allowedToPlay(playerId: String): Boolean {
+        val gate = localPlaybackGate ?: return true
+        if (gate.allowsPlay(playerId)) return true
+        Log.d(TAG, "play($playerId) not sent: the local output may not start yet")
+        return false
+    }
+
     override fun notifyPlaybackIntent(willPlay: Boolean) {
-        _playbackIntent.tryEmit(willPlay)
+        _playbackIntent.tryEmit(PlaybackIntent(willPlay = willPlay))
+    }
+
+    override fun registerLocalPlaybackGate(gate: LocalPlaybackGate?) {
+        localPlaybackGate = gate
     }
 
     override fun isArtistUriBlocked(artistUri: String): Boolean =
