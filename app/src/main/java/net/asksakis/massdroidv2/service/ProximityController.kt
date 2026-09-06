@@ -50,6 +50,33 @@ class ProximityController(
         private const val AWAY_MODE_TIMEOUT_MS = 5 * 60 * 1000L
         private const val AWAY_MODE_SCAN_INTERVAL_MS = 60_000L
         private const val SCREEN_OFF_IDLE_SCAN_INTERVAL_MS = 2 * 60 * 1000L
+
+        /**
+         * How long after the last step the scan keeps running while the detector has not
+         * yet agreed with itself. The old rule stopped at a 60 s cap counted from the
+         * FIRST step, so a 55 s walk left a 2 s tail: the correct room landed with two
+         * seconds to spare (2026-09-06, 07:41:53 vs 07:41:55) and a slightly longer walk
+         * would have frozen the previous room. This is the ceiling, not the usual case:
+         * the scan stops the moment the detection settles.
+         */
+        private const val SETTLE_AFTER_MOTION_MAX_MS = 90_000L
+
+        /** Only reached if the idle-mode broadcast never arrives; long on purpose. */
+        private const val DOZE_FALLBACK_POLL_MS = 10 * 60 * 1000L
+
+        /**
+         * A room may be committed only once the picture has stopped changing: no device
+         * seen for the first time since the scan started for this long, and the scan at
+         * least [BUFFER_MIN_AGE_MS] old. At a cold start the buffer went 5, 7, 8 devices
+         * over twenty seconds and the room was committed at 7, on the two loudest anchors'
+         * silence. Detection still runs and still accumulates its consecutive wins during
+         * warm-up, so the commit lands the moment the gate opens rather than two reads later.
+         */
+        private const val BUFFER_STABLE_MS = 5_000L
+        private const val BUFFER_MIN_AGE_MS = 4_000L
+
+        /** How long the buffer must stay quiet before a read. */
+        private const val BUFFER_QUIET_MS = 1_000L
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
         private const val BG_CONFIRM_MIN_DEVICES = 4
         private const val MOTION_BOOST_DEBOUNCE_MS = 1_000L
@@ -79,6 +106,10 @@ class ProximityController(
 
     private var proximityJob: Job? = null
     private var proximityQuickRetryJob: Job? = null
+    /** Wall-clock of the last loop pass that saw the phone moving. */
+    private var lastMotionSeenMs = 0L
+    /** True while both scans are deliberately off because the phone is still and the room settled. */
+    private var scanningSuspended = false
     private var lastRoomSwitchMs = 0L
     private var highAccuracyUntilMs = 0L
     private var highAccuracyStartedAtMs = 0L
@@ -97,6 +128,13 @@ class ProximityController(
             android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION),
             androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        // A protected system broadcast, so it must be registered as exported.
+        androidx.core.content.ContextCompat.registerReceiver(
+            service,
+            dozeReceiver,
+            android.content.IntentFilter(android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED),
+            androidx.core.content.ContextCompat.RECEIVER_EXPORTED
+        )
         observeProximityConfig()
         noRoomStopController.start()
     }
@@ -105,6 +143,7 @@ class ProximityController(
         stopEngine()
         noRoomStopController.stop()
         try { service.unregisterReceiver(bleScanReceiver) } catch (_: Exception) { }
+        try { service.unregisterReceiver(dozeReceiver) } catch (_: Exception) { }
     }
 
     fun handleStartCommand(intent: Intent?): Boolean {
@@ -115,9 +154,31 @@ class ProximityController(
     private fun getSystemService(name: String): Any? = service.getSystemService(name)
     private fun checkSelfPermission(permission: String): Int = service.checkSelfPermission(permission)
 
+    /**
+     * Fires when the device enters or leaves doze. The doze branch of the main loop waits on
+     * this instead of polling every 30 s: Android already tells us the moment it wakes the
+     * device (its own significant-motion detector, the charger, the screen), so the first
+     * room change after a long idle no longer pays up to half a minute of polling latency.
+     */
+    private val dozeChanged = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    private val dozeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action == android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED) {
+                dozeChanged.tryEmit(Unit)
+            }
+        }
+    }
+
     private val bleScanReceiver = object : android.content.BroadcastReceiver() {
         @android.annotation.SuppressLint("InlinedApi")
         override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            val errorCode = intent?.getIntExtra(android.bluetooth.le.BluetoothLeScanner.EXTRA_ERROR_CODE, 0) ?: 0
+            if (errorCode != 0) {
+                // Nothing is delivered after an error; the next ensureScans restarts the scan.
+                proximityScanner.onBackgroundScanError(errorCode)
+                return
+            }
             val results = intent?.getParcelableArrayListExtra<android.bluetooth.le.ScanResult>(
                 android.bluetooth.le.BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT
             ) ?: return
@@ -135,41 +196,18 @@ class ProximityController(
                 proximityScanner.toScannedDevice(result)
             }
             scanController.logBleDevices("bg-receiver", backgroundDevices, config)
-            val currentWifi = currentConnectedWifi()
-            if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
-                Log.d(TAG, "Wi-Fi-only room hold (bg-receiver): keeping ${roomDetector.currentRoom.value?.roomName}")
-                return
-            }
-            val rssiMap = scanController.buildDetectionAnchorSnapshot(backgroundDevices, config)
-            val allowCommit = rssiMap.size >= BG_CONFIRM_MIN_DEVICES
-            val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
-            when (val result = roomDetector.detectDetailed(
-                rssiMap,
-                config,
+            // Decide from the SAME picture the main loop sees. The raw batch is MAC-only
+            // (the offloaded filter cannot match names), so judging it alone let the
+            // receiver and the loop vote for different rooms on the same walk.
+            val merged = scanController.readDetectionSnapshot(preferFresh = true)
+            evaluateSnapshot(
+                trigger = "bg-merged",
+                devices = merged,
+                config = config,
+                wifi = currentConnectedWifi(),
                 motionActive = motionGate.isMoving.value,
-                wifi = currentWifi.toWifiMatchContext(),
-                commitRoomChange = allowCommit
-            )) {
-                is DetectResult.Confirmed -> {
-                    if (!allowCommit) {
-                        Log.d(
-                            TAG,
-                            "Background confirm suppressed: ${result.room.roomName} from tiny batch " +
-                                "(${rssiMap.size} unique devices)"
-                        )
-                        scheduleQuickProximityRetry("bg-receiver:tiny-batch")
-                        return
-                    }
-                    Log.d(TAG, "Background room change: ${result.room.roomName}")
-                    handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
-                }
-                is DetectResult.Borderline -> {
-                    if (shouldQuickRetryBorderline(result.winner.roomId, motionGate.isMoving.value)) {
-                        scheduleQuickProximityRetry("bg-receiver:${result.reason}")
-                    }
-                }
-                else -> Unit
-            }
+                minDevicesToCommit = BG_CONFIRM_MIN_DEVICES
+            )
         }
     }
 
@@ -207,10 +245,6 @@ class ProximityController(
     private fun observeProximityConfig() {
         scope.launch {
             proximityConfigStore.load()
-            var wasEnabled = false
-            var roomCount = 0
-            var roomHash = 0
-            var wasBtOn = true
             // Bluetooth is a RUNTIME gate, not a persisted toggle. While BT is off we stop scanning
             // but keep the user's enabled intent in config, so a BT flap (common on car connect) no
             // longer permanently disables Follow Me: it resumes automatically when BT returns. The
@@ -222,19 +256,29 @@ class ProximityController(
             ) { config, btOn -> config to btOn }
                 .collect { (config, btOn) ->
                     val shouldRun = shouldRunProximity(config) && btOn
-                    val currentHash = config.rooms.sumOf { it.beaconProfiles.size + it.id.hashCode() }
-                    val structureChanged = config.enabled != wasEnabled ||
-                        config.rooms.size != roomCount || currentHash != roomHash || btOn != wasBtOn
-                    wasEnabled = config.enabled
-                    roomCount = config.rooms.size
-                    roomHash = currentHash
-                    wasBtOn = btOn
-                    if (shouldRun && (structureChanged || proximityJob?.isActive != true)) {
-                        startProximityEngine()
-                    } else if (!shouldRun) {
-                        stopEngine()
+                    when {
+                        !shouldRun -> stopEngine()
+                        proximityJob?.isActive != true -> startProximityEngine()
+                        else -> applyConfigWhileRunning(config)
                     }
                 }
+        }
+    }
+
+    /**
+     * A config write while the engine runs is NOT a restart. The detector reads the config on
+     * every read, and the scan filters are reconciled from it by [ensureScans] on the next
+     * cycle. Restarting here made a room calibration cost far more than it needed: `stopEngine`
+     * cleared the held room and the buffer, cancelled the notification and spent two scan
+     * starts, and the warm gate then withheld commits until the buffer had refilled. The one
+     * thing to handle is a held room that the write removed, because the detector still holds it.
+     */
+    private fun applyConfigWhileRunning(config: net.asksakis.massdroidv2.data.proximity.ProximityConfig) {
+        val held = roomDetector.currentRoom.value ?: return
+        if (config.rooms.none { it.id == held.roomId }) {
+            Log.d(TAG, "Held room ${held.roomName} was removed from the config, clearing")
+            roomDetector.reset()
+            getSystemService(NotificationManager::class.java)?.cancel(PROXIMITY_NOTIFICATION_ID)
         }
     }
 
@@ -263,7 +307,11 @@ class ProximityController(
         // Skip full radio startup if outside schedule
         if (isWithinSchedule()) {
             motionGate.start()
-            ensurePersistentScan(lowPower = true)
+            // Fast from the first millisecond. Starting LOW_POWER here and asking for
+            // LOW_LATENCY in the warm-up two lines later never worked: the scan
+            // controller defers a mode flip within 10 s of a restart, so the whole cold
+            // start ran at the low duty cycle and took 27 s to hear all eight anchors.
+            ensureScans(lowPower = false)
             scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
         }
 
@@ -341,6 +389,9 @@ class ProximityController(
              */
             val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             Log.d(TAG, "Proximity main loop starting, enabled=${proximityConfigStore.config.value.enabled}")
+            // Give startup the same bounded settle window a walk gets: with no room yet and
+            // no motion seen, the loop would otherwise suspend on its very first pass.
+            lastMotionSeenMs = System.currentTimeMillis()
             while (proximityConfigStore.config.value.enabled) {
 
                 // ── Gate: schedule ──
@@ -352,12 +403,21 @@ class ProximityController(
 
                 // ── Gate: doze ──
                 if (isDeviceInDoze()) {
-                    scanController.stopPersistentScan(); proximityScanner.stopBackgroundScan(); motionGate.stop()
+                    // Go through the same suspend/resume pair as the idle branch, so the
+                    // suspended flag stays truthful. Restarting the scans directly here left
+                    // it set: a doze exit without motion (plugging in the charger) then ran
+                    // both scans for ever, because suspendScanning() saw "already suspended".
+                    suspendScanning()
+                    motionGate.stop()
                     highAccuracyUntilMs = 0L; highAccuracyStartedAtMs = 0L
-                    kotlinx.coroutines.delay(30_000)
+                    // Event-driven: wake on the idle-mode broadcast. The timeout is only a
+                    // safety net for a missed broadcast, not the normal path.
+                    withTimeoutOrNull(DOZE_FALLBACK_POLL_MS) { dozeChanged.first() }
                     if (!isDeviceInDoze() && isWithinSchedule()) {
-                        motionGate.start(); scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
-                        ensurePersistentScan(lowPower = true)
+                        // Only the motion gate. Starting the scans here had the next pass
+                        // stopping them again on a still phone, one start and one stop against
+                        // the scan-start budget for no data; the active branches resume them.
+                        motionGate.start()
                     }
                     continue
                 }
@@ -371,30 +431,50 @@ class ProximityController(
                 // screen-off motion burst + wakelock loop forever. Gate it on screenOn defensively.
                 val highAccuracy = updateHighAccuracyWindow(isMoving) ||
                     (screenOn && proximityScanner.uiHighAccuracyRequested)
-                val cooledDown = System.currentTimeMillis() - lastRoomSwitchMs >= COOLDOWN_AFTER_SWITCH_MS
+                val nowMs = System.currentTimeMillis()
+                val cooledDown = nowMs - lastRoomSwitchMs >= COOLDOWN_AFTER_SWITCH_MS
+                if (isMoving) lastMotionSeenMs = nowMs
+                // Keep listening after the walk ends until the detector agrees with itself,
+                // bounded so an ambiguous spot cannot hold the radio open for ever.
+                val settling = !isDetectionSettled() &&
+                    lastMotionSeenMs > 0L &&
+                    nowMs - lastMotionSeenMs < SETTLE_AFTER_MOTION_MAX_MS
 
                 when {
                     // ── Screen ON ──
                     screenOn && cooledDown -> {
+                        resumeScanning()
                         // Away mode: no room matched for 5 min, conserve battery
                         if (isInAwayMode()) {
-                            ensurePersistentScan(lowPower = true)
-                            scanController.recoverScannerIfNeeded(false, proximityConfigStore.config.value)
+                            ensureScans(lowPower = true)
                             burstScan("away")
                             kotlinx.coroutines.delay(AWAY_MODE_SCAN_INTERVAL_MS)
                             continue
                         }
-                        // Normal: scan aggressiveness follows motion state
-                        ensurePersistentScan(lowPower = !highAccuracy)
-                        scanController.recoverScannerIfNeeded(highAccuracy, proximityConfigStore.config.value)
+                        // Normal: scan aggressiveness follows motion state, and a buffer that is
+                        // still filling counts as a reason to hurry. The warm gate bounds it:
+                        // once no new device has appeared for a few seconds this drops back.
+                        val warming = !bufferWarm()
+                        ensureScans(lowPower = !highAccuracy && !warming)
                         burstScan(if (highAccuracy) "motion" else "screen")
-                        kotlinx.coroutines.delay(if (highAccuracy) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3)
+                        // While the buffer is still filling the scan is already fast, so poll
+                        // at the fast cadence too; otherwise a commit whose gate opened at
+                        // second 14 waited for the 12 s tick and landed at second 19.
+                        awaitBufferQuiet(
+                            if (highAccuracy || warming) MOTION_SCAN_INTERVAL_MS else BURST_SCAN_INTERVAL_MS * 3
+                        )
                     }
 
                     // ── Screen OFF + motion ──
-                    !screenOn && highAccuracy && cooledDown -> {
+                    // Also the tail after motion: the phone is down but the detector has not
+                    // yet confirmed where, so this is exactly the moment to keep both scans up.
+                    // Motion, or the tail after it until the detector settles. NOT the
+                    // high-accuracy window: once settled and still, that window only kept
+                    // the radio on for nothing.
+                    !screenOn && (isMoving || settling) && cooledDown -> {
+                        resumeScanning()
                         screenOffMotionBurst()
-                        kotlinx.coroutines.delay(MOTION_SCAN_INTERVAL_MS)
+                        awaitBufferQuiet(MOTION_SCAN_INTERVAL_MS)
                     }
 
                     // ── Screen OFF + idle (or transient cooldown) ──
@@ -404,21 +484,25 @@ class ProximityController(
                     // path) or the idle poll interval, instead of waking the CPU every 2s.
                     // Transient cooldown states keep the short poll so normal cadence resumes fast.
                     else -> {
-                        if (!screenOn && !highAccuracy) {
-                            // Follow Me follows the PHONE, so a room cannot change while the
-                            // phone is still: another scan here can only repeat what the last
-                            // one said. The scan used to be kept alive at LOW_POWER through
-                            // exactly these hours, which is most of a day, and it made the app
-                            // the device's top battery consumer. The buffer is kept so the
-                            // detector still has the last reading on wake, and the
-                            // PendingIntent batch scan stays registered as the path that
-                            // survives a process death.
-                            scanController.stopPersistentScan(clearBuffers = false)
+                        if (!screenOn && !isMoving && !settling) {
+                            // Follow Me follows the PHONE. Once it is still AND the detector has
+                            // settled on a room, nothing new can be learned until it moves, so
+                            // BOTH scans stop and no room decision is taken until motion.
+                            //
+                            // The first version of this stopped only the persistent scan and
+                            // left the MAC-only batch scan feeding the detector. That scan
+                            // cannot hear NAME anchors, the scorer read their silence as
+                            // "definitely not in that room", and a still phone in the living
+                            // room was moved to the bathroom speaker four minutes after it had
+                            // correctly found the living room. Stopping the data source is what
+                            // makes the decision safe, not filtering the decision.
+                            suspendScanning()
                             withTimeoutOrNull(SCREEN_OFF_IDLE_SCAN_INTERVAL_MS) {
                                 motionGate.isMoving.first { it }
                             }
                         } else {
-                            ensurePersistentScan(lowPower = true)
+                            resumeScanning()
+                            ensureScans(lowPower = bufferWarm())
                             kotlinx.coroutines.delay(2_000)
                         }
                     }
@@ -428,7 +512,7 @@ class ProximityController(
     }
 
     private suspend fun runStartupWarmup() {
-        ensurePersistentScan(lowPower = false)
+        ensureScans(lowPower = false)
         repeat(STARTUP_WARMUP_SNAPSHOTS) { index ->
             if (index > 0) {
                 kotlinx.coroutines.delay(STARTUP_WARMUP_INTERVAL_MS)
@@ -436,16 +520,20 @@ class ProximityController(
             val devices = scanController.readDetectionSnapshot(preferFresh = true)
             if (devices.isEmpty()) return@repeat
             val rssi = scanController.buildDetectionAnchorSnapshot(devices, proximityConfigStore.config.value)
+            // Warm-up primes the detector's consecutive-win count on a filling buffer; it
+            // must never be the read that commits. It used to be exactly that: its first
+            // read was win one, the main loop's first burst win two, four seconds in.
             roomDetector.detectDetailed(
                 scanResults = rssi,
                 config = proximityConfigStore.config.value,
                 motionActive = false,
-                wifi = currentConnectedWifi().toWifiMatchContext()
+                wifi = currentConnectedWifi().toWifiMatchContext(),
+                commitRoomChange = false
             )
             if (roomDetector.currentRoom.value != null) return
         }
         if (!updateHighAccuracyWindow(motionGate.isMoving.value) && !proximityScanner.uiHighAccuracyRequested) {
-            ensurePersistentScan(lowPower = true)
+            ensureScans(lowPower = true)
         }
     }
 
@@ -453,8 +541,7 @@ class ProximityController(
         Log.d(TAG, "Proximity schedule inactive: suspending Follow Me")
         proximityQuickRetryJob?.cancel()
         proximityQuickRetryJob = null
-        scanController.stopPersistentScan()
-        proximityScanner.stopBackgroundScan()
+        suspendScanning()
         motionGate.stop()
         roomDetector.reset()
         noRoomStopController.cancel("outside-schedule")
@@ -469,8 +556,8 @@ class ProximityController(
         Log.d(TAG, "Proximity schedule active: resuming Follow Me")
         suppressNextProximityRoomAction = true
         motionGate.start()
-        scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
-        ensurePersistentScan(lowPower = true)
+        resumeScanning()
+        ensureScans(lowPower = bufferWarm())
         runStartupWarmup()
         syncSelectedPlayerToCurrentRoom("schedule-resume")
         Log.d(TAG, "Proximity warmup: ${roomDetector.currentRoom.value?.roomName ?: "no room"}")
@@ -535,6 +622,60 @@ class ProximityController(
             now - lastConfirmedWifiAtMs <= WIFI_ROOM_GRACE_MS
     }
 
+    /**
+     * The one place a snapshot becomes a room decision. Every trigger (main-loop burst,
+     * screen-off motion fast path, motion boost, quick retry, batch receiver) used to carry
+     * its own copy of this block and the copies drifted: paths that skipped empty snapshots
+     * never evaluated Wi-Fi-only rooms, and a path that withheld the BLE commit dropped the
+     * Wi-Fi answer with it.
+     *
+     * BLE evidence needs a warm buffer (see [bufferWarm]): a cold radio hearing nothing says
+     * nothing, so such a read is evaluated for Wi-Fi only. A warm radio hearing nothing is
+     * evidence and is counted (it is how "left all rooms" gets counted with the screen off).
+     * The Wi-Fi override commits on its own evidence inside the detector, independent of the
+     * BLE commit gate.
+     */
+    private fun evaluateSnapshot(
+        trigger: String,
+        devices: List<ProximityScanner.ScannedDevice>,
+        config: net.asksakis.massdroidv2.data.proximity.ProximityConfig,
+        wifi: ProximityScanner.ConnectedWifiInfo?,
+        motionActive: Boolean,
+        minDevicesToCommit: Int = 0,
+    ): DetectResult {
+        if (shouldHoldWifiOnlyRoom(config, wifi)) {
+            Log.d(TAG, "Wi-Fi-only room hold ($trigger): keeping ${roomDetector.currentRoom.value?.roomName}")
+            return DetectResult.NoDecision
+        }
+        Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
+        scanController.logBleDevices(trigger, devices, config)
+        val rssiMap = scanController.buildDetectionAnchorSnapshot(devices, config)
+        val warm = bufferWarm()
+        val wifiContext = wifi.toWifiMatchContext()
+        val hadRoom = roomDetector.currentRoom.value != null
+        val result = if (rssiMap.isEmpty() && !warm) {
+            roomDetector.detectWifiOnly(config, wifiContext)
+        } else {
+            roomDetector.detectDetailed(
+                rssiMap,
+                config,
+                motionActive,
+                wifiContext,
+                commitRoomChange = warm && rssiMap.size >= minDevicesToCommit
+            )
+        }
+        when (result) {
+            is DetectResult.Confirmed -> handleConfirmedRoom(result.room, config, hadRoom)
+            is DetectResult.Borderline -> {
+                if (shouldQuickRetryBorderline(result.winner.roomId, motionActive)) {
+                    scheduleQuickProximityRetry("$trigger:${result.reason}")
+                }
+            }
+            else -> Unit
+        }
+        return result
+    }
+
     private fun handleConfirmedRoom(
         detected: DetectedRoom,
         config: net.asksakis.massdroidv2.data.proximity.ProximityConfig,
@@ -577,6 +718,67 @@ class ProximityController(
         handleRoomChange(detected, config)
     }
 
+    /**
+     * Sleep until the buffer changes materially, then until it has been quiet for
+     * [BUFFER_QUIET_MS], so one read sees a whole burst of results rather than its first
+     * packet. [maxWaitMs] is the ceiling when nothing changes at all, which makes the old
+     * polling interval the worst case instead of the normal case, drain included.
+     */
+    private suspend fun awaitBufferQuiet(maxWaitMs: Long) {
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        withTimeoutOrNull(maxWaitMs) { proximityScanner.bufferChanged.first() } ?: return
+        // Drain inside the same ceiling, so the old interval really is the worst case.
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return
+            withTimeoutOrNull(minOf(BUFFER_QUIET_MS, remaining)) { proximityScanner.bufferChanged.first() } ?: return
+        }
+    }
+
+    /** See [BUFFER_STABLE_MS]. False while no persistent scan is running. */
+    private fun bufferWarm(): Boolean {
+        val w = proximityScanner.bufferWarmth()
+        if (!w.scanRunning || w.scanFailed || w.scanStartedMs == 0L) return false
+        val now = System.currentTimeMillis()
+        return now - w.scanStartedMs >= BUFFER_MIN_AGE_MS && now - w.lastNewDeviceMs >= BUFFER_STABLE_MS
+    }
+
+    /**
+     * Whether the detector currently agrees with itself: it holds a room, and the most
+     * recent read named that same room. A held room with a dissenting last read is an
+     * oscillation in progress and is not settled.
+     */
+    private fun isDetectionSettled(): Boolean {
+        val room = roomDetector.currentRoom.value ?: return false
+        val last = roomDetector.lastDetection.value ?: return false
+        // Agreement must come from a read taken after the phone stopped moving; a read from
+        // before the walk agreeing with the room we then left is not settlement.
+        return last.roomId == room.roomId && roomDetector.lastDetectionAtMs > lastMotionSeenMs
+    }
+
+    /**
+     * Turn every BLE source off. The buffer is kept so a wake within the 30 s retain
+     * window still has the last full reading; anything older prunes itself.
+     * A pending quick retry is cancelled because it would re-read that buffer and vote.
+     */
+    private fun suspendScanning() {
+        if (scanningSuspended) return
+        scanningSuspended = true
+        proximityQuickRetryJob?.cancel()
+        proximityQuickRetryJob = null
+        scanController.stopPersistentScan(clearBuffers = false)
+        scanController.stopBackgroundScan()
+        Log.d(TAG, "Scanning suspended: phone still and room settled")
+    }
+
+    /** Undo [suspendScanning]. Idempotent, so every active branch may call it freely. */
+    private fun resumeScanning() {
+        if (!scanningSuspended) return
+        scanningSuspended = false
+        scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
+        Log.d(TAG, "Scanning resumed")
+    }
+
     private fun updateHighAccuracyWindow(isMoving: Boolean): Boolean {
         val now = System.currentTimeMillis()
         if (!isMoving) {
@@ -599,8 +801,8 @@ class ProximityController(
         return highAccuracyUntilMs > now
     }
 
-    private fun ensurePersistentScan(lowPower: Boolean) {
-        scanController.ensurePersistentScan(lowPower = lowPower, config = proximityConfigStore.config.value)
+    private fun ensureScans(lowPower: Boolean) {
+        scanController.ensureScans(lowPower = lowPower, config = proximityConfigStore.config.value)
     }
 
     /** Reset away mode so the next scan cycle runs at full speed. */
@@ -625,27 +827,15 @@ class ProximityController(
         val wl = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "massdroid:proximity")
         wl.acquire(15_000)
         try {
-            ensurePersistentScan(lowPower = false)
+            ensureScans(lowPower = false)
             val wifi = currentConnectedWifi()
             val cfg = proximityConfigStore.config.value
             for (burst in 1..2) {
                 val devices = scanController.readFastPathSnapshotWithWarmRetry(
                     logPrefix = "BLE fast-path", detailPrefix = "motion $burst/2"
                 )
-                if (devices.isNotEmpty()) {
-                    if (shouldHoldWifiOnlyRoom(cfg, wifi)) {
-                        Log.d(TAG, "Wi-Fi-only room hold (fast-path:motion-$burst): keeping ${roomDetector.currentRoom.value?.roomName}")
-                        break
-                    }
-                    Log.d(TAG, "BLE fast-path (motion $burst/2): ${devices.size} devices")
-                    scanController.logBleDevices("fast-path:motion-$burst", devices, cfg)
-                    val rssiMap = scanController.buildDetectionAnchorSnapshot(devices, cfg)
-                    val hadRoom = roomDetector.currentRoom.value != null
-                    when (val result = roomDetector.detectDetailed(rssiMap, cfg, motionActive = true, wifi = wifi.toWifiMatchContext())) {
-                        is DetectResult.Confirmed -> { handleConfirmedRoom(result.room, cfg, hadRoom); break }
-                        else -> Unit
-                    }
-                }
+                val result = evaluateSnapshot("fast-path:motion-$burst", devices, cfg, wifi, motionActive = true)
+                if (result is DetectResult.Confirmed) break
                 if (burst < 2) kotlinx.coroutines.delay(1_500)
             }
         } catch (e: Exception) {
@@ -667,7 +857,8 @@ class ProximityController(
         lastMotionBoostMs = now
 
         updateHighAccuracyWindow(true)
-        ensurePersistentScan(lowPower = false)
+        resumeScanning()
+        ensureScans(lowPower = false)
         Log.d(TAG, logMessage)
 
         if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
@@ -686,26 +877,13 @@ class ProximityController(
                         logPrefix = "Motion boost",
                         detailPrefix = detailPrefix
                     )
-                    if (devices.isNotEmpty()) {
-                        val cfg = proximityConfigStore.config.value
-                        val currentWifi = currentConnectedWifi()
-                        if (shouldHoldWifiOnlyRoom(cfg, currentWifi)) {
-                            Log.d(TAG, "Wi-Fi-only room hold ($detailPrefix): keeping ${roomDetector.currentRoom.value?.roomName}")
-                            return
-                        }
-                        scanController.logBleDevices("motion-boost:$detailPrefix", devices, cfg)
-                        val rssiMap = scanController.buildDetectionAnchorSnapshot(devices, cfg)
-                        val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
-                        when (val result = roomDetector.detectDetailed(
-                            rssiMap,
-                            cfg,
-                            motionActive = true,
-                            wifi = currentWifi.toWifiMatchContext()
-                        )) {
-                            is DetectResult.Confirmed -> handleConfirmedRoom(result.room, cfg, hadCurrentRoomBeforeDetection)
-                            else -> Unit
-                        }
-                    }
+                    evaluateSnapshot(
+                        trigger = "motion-boost:$detailPrefix",
+                        devices = devices,
+                        config = proximityConfigStore.config.value,
+                        wifi = currentConnectedWifi(),
+                        motionActive = true
+                    )
                 } finally {
                     if (wl.isHeld) wl.release()
                 }
@@ -728,25 +906,7 @@ class ProximityController(
             } else {
                 proximityScanner.readSnapshot()
             }
-            val currentWifi = currentConnectedWifi()
-            if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
-                Log.d(TAG, "Wi-Fi-only room hold (burst:$trigger): keeping ${roomDetector.currentRoom.value?.roomName}")
-                return
-            }
-            val rssiMap = scanController.buildDetectionAnchorSnapshot(devices, config)
-            Log.d(TAG, "BLE snapshot ($trigger): ${devices.size} devices")
-            scanController.logBleDevices("snapshot:$trigger", devices, config)
-
-            val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
-            when (val result = roomDetector.detectDetailed(rssiMap, config, motionActive, currentWifi.toWifiMatchContext())) {
-                is DetectResult.Confirmed -> handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
-                is DetectResult.Borderline -> {
-                    if (shouldQuickRetryBorderline(result.winner.roomId, motionActive)) {
-                        scheduleQuickProximityRetry("burst-$trigger:${result.reason}")
-                    }
-                }
-                else -> Unit
-            }
+            evaluateSnapshot("snapshot:$trigger", devices, config, currentConnectedWifi(), motionActive)
         } catch (e: Exception) {
             Log.w(TAG, "Burst scan failed: ${e.message}")
         }
@@ -755,7 +915,9 @@ class ProximityController(
     private fun scheduleQuickProximityRetry(reason: String) {
         if (proximityQuickRetryJob?.isActive == true) return
         proximityQuickRetryJob = scope.launch {
-            kotlinx.coroutines.delay(QUICK_RETRY_DELAY_MS)
+            // A retry only makes sense on new evidence; wait for the buffer to move, with
+            // the old fixed delay kept as the ceiling.
+            awaitBufferQuiet(QUICK_RETRY_DELAY_MS * 4)
             val config = proximityConfigStore.config.value
             if (!config.enabled || !isWithinSchedule()) return@launch
             if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return@launch
@@ -765,7 +927,7 @@ class ProximityController(
 
             try {
                 if (!screenOn && motionGate.isMoving.value) {
-                    ensurePersistentScan(lowPower = false)
+                    ensureScans(lowPower = false)
                 }
                 val devices = if (!screenOn && motionGate.isMoving.value) {
                     scanController.readFastPathSnapshotWithWarmRetry(
@@ -784,36 +946,26 @@ class ProximityController(
                             "oldest=${snapshot.oldestAgeMs}ms, lastPersistent=${snapshot.lastPersistentCallbackAgeMs}ms, " +
                             "lastBackground=${snapshot.lastBackgroundDeliveryAgeMs}ms, running=${snapshot.persistentRunning})"
                     )
-                    return@launch
                 }
-                scanController.logBleDevices("quick-retry:$reason", devices, config)
-                val currentWifi = currentConnectedWifi()
-                if (shouldHoldWifiOnlyRoom(config, currentWifi)) {
-                    Log.d(TAG, "Wi-Fi-only room hold (quick-retry:$reason): keeping ${roomDetector.currentRoom.value?.roomName}")
-                    return@launch
+                // Same commit floor as the batch receiver. This retry re-reads the buffer that a
+                // receiver read may have just rejected as too small, and it used to commit by
+                // default, so the rejection could be undone 1.5 s later by the very read it had
+                // scheduled.
+                val result = evaluateSnapshot(
+                    trigger = "quick-retry:$reason",
+                    devices = devices,
+                    config = config,
+                    wifi = currentConnectedWifi(),
+                    motionActive = motionGate.isMoving.value,
+                    minDevicesToCommit = BG_CONFIRM_MIN_DEVICES
+                )
+                val outcome = when (result) {
+                    is DetectResult.Confirmed -> "confirmed ${result.room.roomName}"
+                    is DetectResult.Borderline -> "borderline ${result.winner.roomName} (${result.reason})"
+                    DetectResult.NoCoverage -> "no coverage"
+                    DetectResult.NoDecision -> "no decision"
                 }
-
-                val hadCurrentRoomBeforeDetection = roomDetector.currentRoom.value != null
-                when (val result = roomDetector.detectDetailed(
-                    scanController.buildDetectionAnchorSnapshot(devices, config),
-                    config,
-                    motionGate.isMoving.value,
-                    currentWifi.toWifiMatchContext()
-                )) {
-                    is DetectResult.Confirmed -> {
-                        Log.d(TAG, "Quick retry ($reason): confirmed ${result.room.roomName}")
-                        handleConfirmedRoom(result.room, config, hadCurrentRoomBeforeDetection)
-                    }
-                    is DetectResult.Borderline -> {
-                        Log.d(TAG, "Quick retry ($reason): borderline ${result.winner.roomName} (${result.reason}) from ${devices.size} devices")
-                    }
-                    DetectResult.NoCoverage -> {
-                        Log.d(TAG, "Quick retry ($reason): no coverage from ${devices.size} devices")
-                    }
-                    DetectResult.NoDecision -> {
-                        Log.d(TAG, "Quick retry ($reason): no decision from ${devices.size} devices")
-                    }
-                }
+                Log.d(TAG, "Quick retry ($reason): $outcome from ${devices.size} devices")
             } catch (e: Exception) {
                 Log.w(TAG, "Quick retry ($reason) failed: ${e.message}")
             }
@@ -916,7 +1068,7 @@ class ProximityController(
         proximityJob = null
         motionGate.stop()
         scanController.stopPersistentScan()
-        proximityScanner.stopBackgroundScan()
+        scanController.stopBackgroundScan()
         proximityScanner.stopWifiMonitor()
         roomDetector.reset()
         proximityQuickRetryJob?.cancel()

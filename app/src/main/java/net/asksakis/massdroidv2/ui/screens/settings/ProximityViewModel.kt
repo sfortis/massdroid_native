@@ -21,8 +21,6 @@ import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
-import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.AUTO_FINGERPRINT_CYCLES
-import net.asksakis.massdroidv2.data.proximity.ProximityScanner.Companion.CALIBRATION_SAMPLES_PER_SCAN_SESSION
 import net.asksakis.massdroidv2.data.proximity.rankBeaconProfilesForDetection
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.RoomConfusion
@@ -321,25 +319,20 @@ class ProximityViewModel @Inject constructor(
                 val addressTypes = mutableMapOf<String, ProximityScanner.AddressType>()
                 val anchorTypes = mutableMapOf<String, AnchorType>()
                 val preferredNameAnchors = existingNameAnchorsForRoom(roomId)
-                val scanSessions = calibrationScanSessions()
 
                 var progress = 0
-                repeat(scanSessions) {
-                    val windows = scanner.scanCalibrationSamples(lowPower = false)
-                    for (devices in windows) {
-                        if (progress >= AUTO_FINGERPRINT_CYCLES) break
-                        val scanMap = buildAnchorScan(
-                            devices,
-                            nameMap,
-                            categoryMap,
-                            addressTypes,
-                            anchorTypes,
-                            preferredNameAnchors
-                        )
-                        rawScans.add(scanMap)
-                        progress++
-                        _autoFingerprintProgress.value = progress
-                    }
+                scanner.calibrationWindows(lowPower = false).collect { devices ->
+                    val scanMap = buildAnchorScan(
+                        devices,
+                        nameMap,
+                        categoryMap,
+                        addressTypes,
+                        anchorTypes,
+                        preferredNameAnchors,
+                    )
+                    rawScans.add(scanMap)
+                    progress++
+                    _autoFingerprintProgress.value = progress
                 }
                 _autoFingerprintProgress.value = null
 
@@ -520,26 +513,21 @@ class ProximityViewModel @Inject constructor(
                 val anchorTypeMap = mutableMapOf<String, AnchorType>()
                 val addrTypeMap = mutableMapOf<String, ProximityScanner.AddressType>()
                 val preferredNameAnchors = existingNameAnchorsForRoom(roomId)
-                val scanSessions = calibrationScanSessions()
                 _autoFingerprintProgress.value = 0
 
                 var progress = 0
-                repeat(scanSessions) {
-                    val windows = scanner.scanCalibrationSamples(lowPower = false)
-                    for (devices in windows) {
-                        if (progress >= AUTO_FINGERPRINT_CYCLES) break
-                        val scanMap = buildAnchorScan(
-                            devices,
-                            nameMap,
-                            categoryMap,
-                            addrTypeMap,
-                            anchorTypeMap,
-                            preferredNameAnchors
-                        )
-                        rawScans.add(scanMap)
-                        progress++
-                        _autoFingerprintProgress.value = progress
-                    }
+                scanner.calibrationWindows(lowPower = false).collect { devices ->
+                    val scanMap = buildAnchorScan(
+                        devices,
+                        nameMap,
+                        categoryMap,
+                        addrTypeMap,
+                        anchorTypeMap,
+                        preferredNameAnchors,
+                    )
+                    rawScans.add(scanMap)
+                    progress++
+                    _autoFingerprintProgress.value = progress
                 }
 
                 val connectedWifi = scanner.readConnectedWifiInfo()
@@ -969,9 +957,6 @@ class ProximityViewModel @Inject constructor(
             ?.map { it.anchorKey }
             ?.toSet()
             .orEmpty()
-
-    private fun calibrationScanSessions(): Int =
-        (AUTO_FINGERPRINT_CYCLES + CALIBRATION_SAMPLES_PER_SCAN_SESSION - 1) / CALIBRATION_SAMPLES_PER_SCAN_SESSION
 
     private fun robustMean(values: List<Int>): Double {
         if (values.isEmpty()) return 0.0

@@ -21,6 +21,9 @@ import android.net.wifi.WifiInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
@@ -30,8 +33,21 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "ProximityScanner"
+
+/** Outcome of a synchronous scan start; see [ProximityScanner.startPersistentScan]. */
+enum class ScanStartResult {
+    /** Running as requested (started now, or already so). */
+    STARTED,
+    /** No slot in the [ScanStartBudget]; nothing changed, ask again on the next cycle. */
+    DEFERRED,
+    /** The platform refused or threw. */
+    FAILED,
+}
 private const val SCAN_DURATION_MS = 5_000L
 private const val DEVICE_RETAIN_MS = 30_000L
+
+/** One calibration sample window. Twenty of them make one fingerprint set (see [ProximityScanner.calibrationWindows]). */
+private const val CALIBRATION_WINDOW_MS = SCAN_DURATION_MS / 2
 
 /**
  * Above this, a scan result's own timestamp is treated as unusable rather than as
@@ -39,6 +55,12 @@ private const val DEVICE_RETAIN_MS = 30_000L
  * anything beyond a minute means the controller reported something meaningless.
  */
 private const val MAX_TRUSTED_RESULT_AGE_MS = 60_000L
+
+/** RSSI jitter on a still phone is a couple of dB; below this a change is noise, not news. */
+private const val RSSI_CHANGE_DB = 4
+
+/** Floor on a budget wait, so a wake at the exact boundary cannot spin. */
+private const val MIN_BUDGET_WAIT_MS = 50L
 
 /**
  * How often the offloaded batch scan hands its results to us.
@@ -338,22 +360,121 @@ class ProximityScanner @Inject constructor(
     private var persistentCallback: ScanCallback? = null
     @Volatile private var persistentRunning = false
     @Volatile private var lastPersistentCallbackMs = 0L
+    // Buffer warmth. A room decision taken while devices are still arriving judges a
+    // half-drawn picture: at a cold start the buffer here went 5 -> 7 -> 8 devices over
+    // twenty seconds, and the room was committed at 7, before the two loudest anchors
+    // had spoken. The controller reads these to hold commits until the set of devices
+    // seen since the scan started has stopped growing. The set is what is tracked, not
+    // the pruned buffer, so a marginal beacon flapping in and out does not count as new.
+    /**
+     * Fires when the buffer changed in a way a room decision could care about: a device
+     * seen for the first time since the scan started, or an anchor whose RSSI moved by at
+     * least [RSSI_CHANGE_DB]. NOT on every advertisement; those arrive several times a
+     * second and would make "the buffer went quiet" unreachable. Consumers wait on this
+     * instead of polling on a timer.
+     */
+    private val _bufferChanged = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    val bufferChanged: kotlinx.coroutines.flow.SharedFlow<Unit> = _bufferChanged
+
+    /**
+     * Warmth and change are tracked per ANCHOR IDENTITY, not per address. The Shield
+     * advertises with a resolvable private address and showed up under four addresses in
+     * one session; keyed by address, every rotation looked like a new device, reset the
+     * warm gate, and flipped the scan to LOW_LATENCY (19 mode switches in 20 minutes on a
+     * still phone). The identity key is the same one the detector scores on.
+     */
+    private val lastRssiByIdentity = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Current address per identity, so a rotated anchor does not linger under its old one. */
+    private val addressByIdentity = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun noteObservation(device: ScannedDevice, now: Long) {
+        val key = classifyAnchorIdentity(device).key
+        // One entry per identity in the buffer. Without this the Shield's previous address
+        // stayed for the 30 s retain window next to its new one, inflating the device count
+        // and letting a stale, stronger reading outscore the live one.
+        val previousAddress = addressByIdentity.put(key, device.address)
+        if (previousAddress != null && previousAddress != device.address) {
+            persistentDevices.remove(previousAddress)
+            persistentLastSeen.remove(previousAddress)
+        }
+        if (seenSinceScanStart.add(key)) lastNewDeviceMs = now
+        val previousRssi = lastRssiByIdentity.put(key, device.rssi)
+        if (previousRssi == null || kotlin.math.abs(previousRssi - device.rssi) >= RSSI_CHANGE_DB) {
+            _bufferChanged.tryEmit(Unit)
+        }
+    }
+
+    @Volatile private var persistentStartedMs = 0L
+    @Volatile private var lastScanFailureMs = 0L
+    @Volatile private var lastNewDeviceMs = 0L
+    private val seenSinceScanStart = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile private var lastBackgroundDeliveryMs = 0L
 
     @Volatile var zeroDeviceStreak = 0
+
+    /** Every scan start goes through this; see [ScanStartBudget] for the platform rule it enforces. */
+    private val startBudget = ScanStartBudget()
+
+    /** Suspends until a slot in [startBudget] is reserved for the caller's start. */
+    private suspend fun acquireScanStart(what: String) {
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            if (startBudget.tryAcquire(now)) return
+            val waitMs = startBudget.msUntilAllowed(now).coerceAtLeast(MIN_BUDGET_WAIT_MS)
+            Log.d(TAG, "$what waits ${waitMs}ms for the scan-start budget")
+            delay(waitMs)
+        }
+    }
+
+    val isPersistentScanRunning: Boolean get() = persistentRunning
+    val isBackgroundScanRunning: Boolean get() = backgroundScanPending != null
+    private var persistentAnchorAddresses: Set<String> = emptySet()
+    private var persistentAnchorNames: Set<String> = emptySet()
+    private var backgroundAddresses: Set<String>? = null
     @Volatile var uiHighAccuracyRequested = false
 
     @SuppressLint("MissingPermission")
     private var persistentLowPower: Boolean? = null
 
-    fun startPersistentScan(lowPower: Boolean = true, anchorAddresses: Set<String> = emptySet(), anchorNames: Set<String> = emptySet()) {
-        val scanner = getScanner() ?: return
+    /**
+     * Start the filtered persistent scan, switch its mode, or refresh its anchor filters
+     * while it runs.
+     *
+     * A start while the scan is running (a new mode or a new anchor set) is a restart of the
+     * radio, not of what we know: the buffer and its warmth survive it. Returns
+     * [ScanStartResult.DEFERRED] when the [ScanStartBudget] has no slot, in which case a
+     * running scan keeps running as it was, and [ScanStartResult.FAILED] when the platform
+     * refused. Callers re-ask on their next cycle rather than waiting here, because this
+     * runs on the main loop.
+     */
+    fun startPersistentScan(
+        lowPower: Boolean = true,
+        anchorAddresses: Set<String> = emptySet(),
+        anchorNames: Set<String> = emptySet()
+    ): ScanStartResult {
+        val scanner = getScanner() ?: return ScanStartResult.FAILED
         val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
-        if (persistentRunning && persistentCallback != null) {
-            if (persistentLowPower == lowPower) return // Same mode, skip
-            // Mode differs: restart with new mode, keep buffers
-            stopPersistentScan(clearBuffers = false)
+        val running = persistentRunning && persistentCallback != null
+        if (running && persistentLowPower == lowPower &&
+            anchorAddresses == persistentAnchorAddresses && anchorNames == persistentAnchorNames
+        ) {
+            return ScanStartResult.STARTED // already exactly as requested
         }
+        // Reserved before the running scan is torn down, so a deferral costs nothing.
+        val now = SystemClock.elapsedRealtime()
+        if (!startBudget.tryAcquire(now)) {
+            Log.d(
+                TAG,
+                "Persistent scan ${if (running) "restart" else "start"} deferred " +
+                    "${startBudget.msUntilAllowed(now)}ms: scan-start budget"
+            )
+            return ScanStartResult.DEFERRED
+        }
+        if (running) stopPersistentScan(clearBuffers = false)
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 try {
@@ -362,12 +483,14 @@ class ProximityScanner @Inject constructor(
                     val now = System.currentTimeMillis()
                     persistentLastSeen[device.address] = now
                     lastPersistentCallbackMs = now
+                    noteObservation(device, now)
                 } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
             }
 
             override fun onScanFailed(errorCode: Int) {
                 Log.w(TAG, "Persistent scan failed: errorCode=$errorCode")
                 persistentRunning = false
+                lastScanFailureMs = System.currentTimeMillis()
             }
         }
         // Use ScanFilters so Android delivers results even with screen off.
@@ -383,19 +506,36 @@ class ProximityScanner @Inject constructor(
         }
         val settings = ScanSettings.Builder().setScanMode(mode).build()
         try {
+            if (!running) {
+                // Real (cold) start: what was seen before no longer says anything about now.
+                // A restart of a running scan (mode or filter change) keeps the warmth: resetting
+                // it here made LOW_POWER<->LOW_LATENCY oscillate every 10 to 13 s (a cold buffer
+                // asks for LOW_LATENCY, the restart makes it cold again) and kept commits gated.
+                val startedAt = System.currentTimeMillis()
+                persistentStartedMs = startedAt
+                lastNewDeviceMs = startedAt
+                seenSinceScanStart.clear()
+                lastRssiByIdentity.clear()
+                addressByIdentity.clear()
+            }
             scanner.startScan(filters, settings, callback)
+            lastScanFailureMs = 0L
             persistentCallback = callback
             persistentRunning = true
             persistentLowPower = lowPower
+            persistentAnchorAddresses = anchorAddresses
+            persistentAnchorNames = anchorNames
             Log.d(
                 TAG,
                 "Persistent scan: ${if (lowPower) "LOW_POWER" else "LOW_LATENCY"} " +
-                    "(buffer=${persistentDevices.size})"
+                    "(buffer=${persistentDevices.size}, filters=${macFilters.size} MAC + ${nameFilters.size} name)"
             )
+            return ScanStartResult.STARTED
         } catch (e: Exception) {
             persistentCallback = null
             persistentRunning = false
             Log.w(TAG, "Persistent scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            return ScanStartResult.FAILED
         }
     }
 
@@ -436,18 +576,31 @@ class ProximityScanner @Inject constructor(
      * wakes the process continuously for devices we can never anchor on. Callers
      * with only name anchors rely on [startPersistentScan] instead, which can carry
      * real name filters.
+     *
+     * A start with the address set already running is a no-op. The PendingIntent
+     * variant of `startScan` reports most refusals as a RETURN CODE, not an exception,
+     * so the code is checked; a later error arrives as `EXTRA_ERROR_CODE` on the
+     * broadcast and is reported through [onBackgroundScanError].
      */
     @SuppressLint("MissingPermission")
-    fun startBackgroundScan(beaconAddresses: Set<String>) {
-        val scanner = getScanner() ?: return
-        stopBackgroundScan()
+    fun startBackgroundScan(beaconAddresses: Set<String>): ScanStartResult {
+        val scanner = getScanner() ?: return ScanStartResult.FAILED
         if (beaconAddresses.isEmpty()) {
+            stopBackgroundScan()
             Log.d(TAG, "Background scan skipped: no MAC anchors to filter on")
-            return
+            return ScanStartResult.STARTED
         }
+        if (backgroundScanPending != null && beaconAddresses == backgroundAddresses) return ScanStartResult.STARTED
+        // Reserved before the running scan is torn down, so a deferral costs nothing.
+        val now = SystemClock.elapsedRealtime()
+        if (!startBudget.tryAcquire(now)) {
+            Log.d(TAG, "Background scan start deferred ${startBudget.msUntilAllowed(now)}ms: scan-start budget")
+            return ScanStartResult.DEFERRED
+        }
+        stopBackgroundScan()
 
         val intent = Intent(BLE_SCAN_ACTION).setPackage(context.packageName)
-        backgroundScanPending = PendingIntent.getBroadcast(
+        val pending = PendingIntent.getBroadcast(
             context, 0, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -460,12 +613,28 @@ class ProximityScanner @Inject constructor(
             .setReportDelay(BACKGROUND_BATCH_INTERVAL_MS)
             .build()
 
-        try {
-            scanner.startScan(filters, settings, backgroundScanPending!!)
-            Log.d(TAG, "Background PendingIntent scan started for ${beaconAddresses.size} beacons")
+        return try {
+            val code = scanner.startScan(filters, settings, pending)
+            if (code != 0) {
+                Log.w(TAG, "Background scan refused: code=$code")
+                ScanStartResult.FAILED
+            } else {
+                backgroundScanPending = pending
+                backgroundAddresses = beaconAddresses
+                Log.d(TAG, "Background PendingIntent scan started for ${beaconAddresses.size} beacons")
+                ScanStartResult.STARTED
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Background scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            ScanStartResult.FAILED
         }
+    }
+
+    /** The platform reported an error on the PendingIntent scan. Nothing is delivered after it. */
+    fun onBackgroundScanError(errorCode: Int) {
+        Log.w(TAG, "Background scan error: code=$errorCode")
+        backgroundScanPending = null
+        backgroundAddresses = null
     }
 
     @SuppressLint("MissingPermission")
@@ -474,6 +643,7 @@ class ProximityScanner @Inject constructor(
             try { getScanner()?.stopScan(pi) } catch (_: Exception) { }
             backgroundScanPending = null
         }
+        backgroundAddresses = null
     }
 
     /**
@@ -509,6 +679,7 @@ class ProximityScanner @Inject constructor(
                 if (previous != null && previous > observedAt) continue
                 persistentDevices[device.address] = device
                 persistentLastSeen[device.address] = observedAt
+                noteObservation(device, now)
             } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
         }
         lastBackgroundDeliveryMs = now
@@ -535,6 +706,21 @@ class ProximityScanner @Inject constructor(
         if (devices.isEmpty()) zeroDeviceStreak++ else zeroDeviceStreak = 0
         return devices
     }
+
+    /**
+     * When the persistent scan started and when a device was last seen for the FIRST
+     * time since then. Zero when no scan has started. Both wall-clock millis.
+     */
+    data class BufferWarmth(
+        val scanStartedMs: Long,
+        val lastNewDeviceMs: Long,
+        val scanRunning: Boolean,
+        /** The radio reported a failure since the last start; an empty read then means nothing. */
+        val scanFailed: Boolean
+    )
+
+    fun bufferWarmth(): BufferWarmth =
+        BufferWarmth(persistentStartedMs, lastNewDeviceMs, persistentRunning, lastScanFailureMs > persistentStartedMs)
 
     fun snapshotDebugState(): SnapshotDebugState {
         val now = System.currentTimeMillis()
@@ -609,6 +795,7 @@ class ProximityScanner @Inject constructor(
         val scanner = getScanner() ?: return emptyList()
         val devices = ConcurrentHashMap<String, ScannedDevice>()
         val scanFailed = CompletableDeferred<Unit>()
+        acquireScanStart("One-shot scan")
 
         return withTimeoutOrNull(SCAN_DURATION_MS + 1_000) {
             val callback = object : ScanCallback() {
@@ -651,65 +838,66 @@ class ProximityScanner @Inject constructor(
         } ?: devices.values.toList()
     }
 
+    /**
+     * The calibration scan: ONE scan start, sampled in [windows] windows of [windowMs].
+     *
+     * It used to be ten short scans of two windows each, twice the number of starts
+     * Android accepts in thirty seconds. The later sessions were accepted and delivered
+     * nothing (14 windows out of 20 on 2026-09-06), and the persistent scan that restarted
+     * after the save was refused the same silent way. Each non-empty window is emitted as
+     * it completes so the UI can show progress. The flow ends early on a scan failure.
+     */
     @kotlin.OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @SuppressLint("MissingPermission")
-    suspend fun scanCalibrationSamples(
+    fun calibrationWindows(
         lowPower: Boolean = false,
-        sampleWindows: Int = CALIBRATION_SAMPLES_PER_SCAN_SESSION
-    ): List<List<ScannedDevice>> {
-        val scanner = getScanner() ?: return emptyList()
-        val windows = mutableListOf<List<ScannedDevice>>()
+        windows: Int = AUTO_FINGERPRINT_CYCLES,
+        windowMs: Long = CALIBRATION_WINDOW_MS
+    ): Flow<List<ScannedDevice>> = flow {
+        val scanner = getScanner() ?: return@flow
         val windowDevices = ConcurrentHashMap<String, ScannedDevice>()
-        val samples = sampleWindows.coerceAtLeast(1)
         val scanFailed = CompletableDeferred<Unit>()
-
-        return withTimeoutOrNull(SCAN_DURATION_MS + 1_000) {
-            val callback = object : ScanCallback() {
-                override fun onScanResult(callbackType: Int, result: ScanResult) {
-                    try {
-                        val device = toScannedDevice(result) ?: return
-                        windowDevices[device.address] = device
-                    } catch (e: Exception) {
-                        Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}")
-                    }
-                }
-
-                override fun onScanFailed(errorCode: Int) {
-                    Log.w(TAG, "BLE calibration scan failed: $errorCode")
-                    scanFailed.complete(Unit)
-                }
-            }
-
-            val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
-            val settings = ScanSettings.Builder().setScanMode(mode).build()
-
-            try {
-                scanner.startScan(null, settings, callback)
-            } catch (e: Exception) {
-                Log.w(TAG, "BLE calibration scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                return@withTimeoutOrNull emptyList()
-            }
-
-            val intervalMs = (SCAN_DURATION_MS / samples).coerceAtLeast(1_000L)
-            try {
-                repeat(samples) {
-                    val failedEarly = select<Boolean> {
-                        scanFailed.onAwait { true }
-                        onTimeout(intervalMs) { false }
-                    }
-                    windows += windowDevices.values.toList()
-                    windowDevices.clear()
-                    if (failedEarly) {
-                        return@withTimeoutOrNull emptyList()
-                    }
-                }
-                windows.filter { it.isNotEmpty() }
-            } finally {
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
                 try {
-                    scanner.stopScan(callback)
-                } catch (_: Exception) { }
+                    val device = toScannedDevice(result) ?: return
+                    windowDevices[device.address] = device
+                } catch (e: Exception) {
+                    Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}")
+                }
             }
-        } ?: windows.filter { it.isNotEmpty() }
+
+            override fun onScanFailed(errorCode: Int) {
+                Log.w(TAG, "BLE calibration scan failed: $errorCode")
+                scanFailed.complete(Unit)
+            }
+        }
+        val mode = if (lowPower) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_LOW_LATENCY
+        val settings = ScanSettings.Builder().setScanMode(mode).build()
+
+        acquireScanStart("Calibration scan")
+        try {
+            scanner.startScan(null, settings, callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "BLE calibration scan start failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            return@flow
+        }
+        try {
+            repeat(windows.coerceAtLeast(1)) {
+                val failedEarly = select<Boolean> {
+                    scanFailed.onAwait { true }
+                    onTimeout(windowMs) { false }
+                }
+                if (failedEarly) return@flow
+                val window = windowDevices.values.toList()
+                windowDevices.clear()
+                if (window.isNotEmpty()) emit(window)
+            }
+        } finally {
+            try {
+                scanner.stopScan(callback)
+            } catch (_: Exception) { }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -763,7 +951,6 @@ class ProximityScanner @Inject constructor(
     companion object {
         const val BLE_SCAN_ACTION = "net.asksakis.massdroidv2.BLE_SCAN_RESULT"
         const val AUTO_FINGERPRINT_CYCLES = 20
-        const val CALIBRATION_SAMPLES_PER_SCAN_SESSION = 2
         fun isBluetoothEnabled(context: Context): Boolean {
             val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             return btManager?.adapter?.isEnabled == true

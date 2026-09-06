@@ -11,6 +11,8 @@ import javax.inject.Singleton
 import net.asksakis.massdroidv2.util.LogRedaction
 
 private const val TAG = "RoomDetector"
+/** A Wi-Fi association is a hard match; reported as such where a confidence is expected. */
+private const val WIFI_OVERRIDE_CONFIDENCE = 1.0
 private const val TOP_SCORE_ROOMS = 5
 private const val COVERAGE_ANCHORS = 8
 private const val STAY_BIAS_FACTOR = 1.08
@@ -70,12 +72,26 @@ class RoomDetector @Inject constructor() {
     private val _lastDetection = MutableStateFlow<DetectionStatus?>(null)
     val lastDetection: StateFlow<DetectionStatus?> = _lastDetection.asStateFlow()
 
+    /**
+     * When [lastDetection] was last written. Empty and no-coverage reads do not write it, so
+     * a caller judging "has the detector settled since X" must check this, not just that the
+     * last winner matches: otherwise a stale agreement from before a walk counts as settled.
+     */
+    var lastDetectionAtMs = 0L
+        private set
+
+    private fun recordDetection(status: DetectionStatus) {
+        _lastDetection.value = status
+        lastDetectionAtMs = System.currentTimeMillis()
+    }
+
     private var consecutiveWinnerId: String? = null
     private var consecutiveWinCount = 0
     var noMatchStreak = 0
         private set
+    /** Public read (the controller's away-mode timer uses it); the setter is opened only for tests. */
     var lastConfirmedAtMs = 0L
-        private set
+        @androidx.annotation.VisibleForTesting internal set
     /** Last scan that actually returned devices. Only a real read updates this. */
     private var lastScanActivityMs = 0L
 
@@ -114,6 +130,41 @@ class RoomDetector @Inject constructor() {
         else -> null
     }
 
+    /**
+     * Only the Wi-Fi override, for a read whose BLE side carries no evidence (a cold buffer
+     * that heard nothing). A Wi-Fi-only room must still be confirmed on such a read; skipping
+     * it left those rooms unconfirmed on every screen-off path.
+     */
+    fun detectWifiOnly(config: ProximityConfig, wifi: WifiMatchContext): DetectResult {
+        assertMainThread()
+        if (suppressed || config.rooms.isEmpty()) return DetectResult.NoDecision
+        return applyWifiOverride(config, wifi) ?: DetectResult.NoDecision
+    }
+
+    /**
+     * Connected-Wi-Fi match for a Wi-Fi-only room. Commits on its own evidence: the BLE commit
+     * gate ([detectDetailed]'s `commitRoomChange`) exists because a half-filled BLE buffer is
+     * not yet a picture, and the access point the phone is connected to does not depend on it.
+     * Null when no Wi-Fi room matches.
+     */
+    private fun applyWifiOverride(config: ProximityConfig, wifi: WifiMatchContext): DetectResult? {
+        val match = resolveWifiOverride(config.rooms, wifi) ?: return null
+        consecutiveWinnerId = match.room.id
+        consecutiveWinCount = maxOf(consecutiveWinCount, 1)
+        recordDetection(DetectionStatus(match.room.id, WIFI_OVERRIDE_CONFIDENCE, 0.0, 0, 0))
+        Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via ${LogRedaction.networkId(wifi.bssid ?: wifi.ssid)}")
+        lastConfirmedAtMs = System.currentTimeMillis()
+        if (!match.changed) return DetectResult.NoDecision
+        _currentRoom.value = match.detected
+        return DetectResult.Confirmed(match.detected)
+    }
+
+    /**
+     * @param commitRoomChange whether a passing BLE decision may be STORED. False while the
+     * caller's BLE picture is not trustworthy yet (buffer still filling, batch too small);
+     * the decision then comes back as `Borderline("commit-withheld")`. `Confirmed` always
+     * means stored. The Wi-Fi override is not gated by this, see [applyWifiOverride].
+     */
     fun detectDetailed(
         scanResults: Map<String, Int>,
         config: ProximityConfig,
@@ -123,15 +174,7 @@ class RoomDetector @Inject constructor() {
     ): DetectResult {
         assertMainThread()
         if (suppressed || config.rooms.isEmpty()) return DetectResult.NoDecision
-        resolveWifiOverride(config.rooms, wifi)?.let { match ->
-            consecutiveWinnerId = match.room.id
-            consecutiveWinCount = maxOf(consecutiveWinCount, 1)
-            if (commitRoomChange) {
-                _currentRoom.value = match.detected
-            }
-            Log.d(TAG, "Wi-Fi AP override: ${match.room.name} via ${LogRedaction.networkId(wifi.bssid ?: wifi.ssid)}")
-            return if (match.changed) DetectResult.Confirmed(match.detected) else DetectResult.NoDecision
-        }
+        applyWifiOverride(config, wifi)?.let { return it }
 
         if (scanResults.isEmpty()) {
             handleNoMatch("empty scan")
@@ -184,7 +227,7 @@ class RoomDetector @Inject constructor() {
                 "policy=${winnerRoom.detectionPolicy}, top$TOP_SCORE_ROOMS=$topRoomFits"
         )
 
-        _lastDetection.value = DetectionStatus(winnerId, confidence, margin, winner.matchedAnchors, winner.expectedAnchors)
+        recordDetection(DetectionStatus(winnerId, confidence, margin, winner.matchedAnchors, winner.expectedAnchors))
 
         val winnerDetected = winnerRoom.toDetectedRoom()
         val candidateWinCount = if (winnerId == consecutiveWinnerId) consecutiveWinCount + 1 else 1
@@ -218,11 +261,27 @@ class RoomDetector @Inject constructor() {
         consecutiveWinnerId = winnerId
         consecutiveWinCount = candidateWinCount
         val changed = _currentRoom.value?.roomId != winnerRoom.id
-        if (commitRoomChange) {
-            _currentRoom.value = winnerDetected
-            lastConfirmedAtMs = System.currentTimeMillis()
+        if (!changed) {
+            // Re-confirming the room we hold is still a confirmation: this stamp is the grace
+            // that keeps a passing no-coverage read from clearing a room you are sitting in.
+            if (commitRoomChange) lastConfirmedAtMs = System.currentTimeMillis()
+            return DetectResult.NoDecision
         }
-        return if (changed) DetectResult.Confirmed(winnerDetected) else DetectResult.NoDecision
+        if (!commitRoomChange) {
+            // The evidence passed but the caller asked us not to act on it (buffer still
+            // filling, batch too small). Say so, rather than returning Confirmed for a
+            // room we did not store: callers switched the player on that answer, and
+            // because nothing was stored every later read looked like a change again.
+            return DetectResult.Borderline(
+                winner = winnerDetected,
+                confidence = confidence,
+                margin = margin,
+                reason = "commit-withheld"
+            )
+        }
+        _currentRoom.value = winnerDetected
+        lastConfirmedAtMs = System.currentTimeMillis()
+        return DetectResult.Confirmed(winnerDetected)
     }
 
     fun reset() {

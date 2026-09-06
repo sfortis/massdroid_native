@@ -71,7 +71,11 @@ class MotionGate @Inject constructor(
                 sensorManager.requestTriggerSensor(triggerListener, motionSensor)
             }
 
-            val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+            // Prefer the wake-up variant so a few steps to the next room wake the CPU even
+            // when the significant-motion detector, which Android allows to miss short
+            // movements, does not fire. Falls back to the default where none exists.
+            val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR, true)
+                ?: sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
             if (stepSensor != null) {
                 stepListener = object : SensorEventListener {
                     override fun onSensorChanged(event: SensorEvent?) {
