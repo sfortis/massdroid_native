@@ -260,11 +260,22 @@ class PlaylistMembershipController(
     }
 
     /**
-     * Create a playlist named [name], put the target track in it, and hand the new
-     * playlist to [onCreated] so callers can also show it wherever else they list playlists.
+     * Create a playlist named [name] and put the target track in it.
+     *
+     * The two callbacks answer different questions and cannot be the same one.
+     * [onCreated] says the playlist now exists, which is true whatever the dialog
+     * has moved on to, and callers use it to show the playlist wherever else they
+     * list playlists. [onDone] says this dialog's work is finished, which callers
+     * use to close it, so it runs only while the dialog is still pointed at the
+     * track the creation was for. Sharing one callback meant changing track and
+     * reopening the dialog while a creation was in flight closed the new dialog.
      */
     @Suppress("TooGenericExceptionCaught")
-    fun createAndAdd(name: String, onCreated: (Playlist) -> Unit = {}) {
+    fun createAndAdd(
+        name: String,
+        onCreated: (Playlist) -> Unit = {},
+        onDone: () -> Unit = {}
+    ) {
         val track = targetTrackUri ?: return
         val currentGeneration = generation
         scope.launch {
@@ -272,11 +283,10 @@ class PlaylistMembershipController(
                 val playlist = musicRepository.createPlaylist(name)
                 musicRepository.addTrackToPlaylist(playlist, track)
                 _playlists.value = _playlists.value + playlist
-                markContains(playlist.uri, holdsTrack = true, currentGeneration)
-                // Unconditional, unlike the tick above: the playlist now exists
-                // whatever the dialog is pointed at, and callers use this to show
-                // it wherever else they list playlists.
+                val stillCurrent =
+                    markContains(playlist.uri, holdsTrack = true, currentGeneration)
                 onCreated(playlist)
+                if (stillCurrent) onDone()
             } catch (e: Exception) {
                 Log.w(TAG, "createAndAdd failed: ${e.message}")
                 _errors.tryEmit("Failed to create playlist")

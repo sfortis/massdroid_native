@@ -300,6 +300,64 @@ class PlaylistMembershipControllerTest {
         assertThat(reportedDone).isFalse()
     }
 
+    /**
+     * Creating a playlist answers two questions with different lifetimes. The
+     * playlist exists whatever the dialog moved on to, so the list refresh must
+     * run; the dialog's completion closes it, so it must not fire for a dialog
+     * that is now pointed at another track.
+     */
+    @Test
+    fun `a creation that lands after the track changed refreshes the list but does not complete`() = runTest {
+        coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns emptyList()
+        coEvery { musicRepository.createPlaylist(any()) } returns playlist("new")
+        coEvery { musicRepository.addTrackToPlaylist(any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(100)
+        }
+
+        val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
+        controller.open("library://track/9")
+        testScheduler.advanceUntilIdle()
+
+        var created: Playlist? = null
+        var reportedDone = false
+        controller.createAndAdd(
+            "New one",
+            onCreated = { created = it },
+            onDone = { reportedDone = true }
+        )
+        testScheduler.advanceTimeBy(10)
+        controller.open("library://track/10")
+        testScheduler.advanceUntilIdle()
+
+        assertThat(created?.itemId).isEqualTo("new")
+        assertThat(reportedDone).isFalse()
+        assertThat(controller.containsTrack.value).isEmpty()
+    }
+
+    /** With the track unchanged, both callbacks run. */
+    @Test
+    fun `a creation for the current track completes the dialog`() = runTest {
+        coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns emptyList()
+        coEvery { musicRepository.createPlaylist(any()) } returns playlist("new")
+
+        val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
+        controller.open("library://track/9")
+        testScheduler.advanceUntilIdle()
+
+        var created: Playlist? = null
+        var reportedDone = false
+        controller.createAndAdd(
+            "New one",
+            onCreated = { created = it },
+            onDone = { reportedDone = true }
+        )
+        testScheduler.advanceUntilIdle()
+
+        assertThat(created?.itemId).isEqualTo("new")
+        assertThat(reportedDone).isTrue()
+        assertThat(controller.containsTrack.value).containsExactly("library://playlist/new")
+    }
+
     /** The spinner covers the playlist fetch only, never a tick check. */
     @Test
     fun `the loading flag is down once the playlists arrive`() = runTest {

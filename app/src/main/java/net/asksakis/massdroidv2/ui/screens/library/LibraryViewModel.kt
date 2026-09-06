@@ -974,7 +974,10 @@ class LibraryViewModel @Inject constructor(
 
     fun createPlaylistAndAddTrack(name: String, trackUri: String) {
         playlistMembership.open(trackUri)
-        playlistMembership.createAndAdd(name) { playlist -> playlistsPager.update { it + playlist } }
+        playlistMembership.createAndAdd(
+            name,
+            onCreated = { playlist -> playlistsPager.update { it + playlist } }
+        )
     }
 
     // ---- item state toggles ----------------------------------------------------------------------

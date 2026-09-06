@@ -578,10 +578,25 @@ class SendspinAudioController(
                 // release once the phone stops being an actual output even though
                 // the client stays connected (STREAMING) as an available player.
                 if (!wasStreaming && transportState == SendspinState.STREAMING) {
-                    // configure() clears the output's paused flag for every new
-                    // stream, so focus has to be re-asserted on this edge or a
-                    // server-started stream would play over whatever holds it.
-                    if (!hasAudioFocus && !requestFocusToPlay()) {
+                    // A new stream needs focus settled and then the output
+                    // released, in that order, and both halves matter.
+                    //
+                    // configure() keeps the output paused when the engine is not
+                    // allowed to play, which is the case here because the stream
+                    // arrives before this edge and focus has not been asked for
+                    // yet. So an immediate grant has to un-pause it: without that
+                    // a playback the server starts, a cold start or the queue
+                    // rolling on, stayed silent with nothing to lift it. And a
+                    // refusal has to keep it paused, or the same stream would play
+                    // over whatever owns the output.
+                    //
+                    // Un-pausing here is safe because a stream/start means the
+                    // server is playing: pausing ends the stream and resuming
+                    // arrives as a fresh stream/start, so this edge never lands on
+                    // a playback the listener had stopped.
+                    if (hasAudioFocus || requestFocusToPlay()) {
+                        sendspinManager.resumeAudio()
+                    } else {
                         Log.w(TAG, "Stream started without audio focus: keeping the output paused")
                         sendspinManager.pauseAudio()
                     }

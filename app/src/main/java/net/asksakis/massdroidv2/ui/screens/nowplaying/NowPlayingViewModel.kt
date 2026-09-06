@@ -1046,7 +1046,7 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     fun createPlaylistAndAddTrack(name: String, onDone: () -> Unit = {}) {
-        playlistMembership.createAndAdd(name) { onDone() }
+        playlistMembership.createAndAdd(name, onDone = onDone)
     }
 
     fun addCurrentTrackToPlaylist(playlist: Playlist, onDone: () -> Unit = {}) {
