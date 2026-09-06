@@ -413,7 +413,11 @@ class ProximityController(
                     if (!scheduleSuspended) { suspendProximityForSchedule(); scheduleSuspended = true }
                     kotlinx.coroutines.delay(60_000); continue
                 }
-                if (scheduleSuspended) { resumeProximityAfterSchedule(); scheduleSuspended = false }
+                // The schedule resumes only when the radio may run: resuming inside doze
+                // started scans and the warm-up that the doze gate right below stopped
+                // again. While in doze the doze gate handles the wait; the resume happens
+                // on the first pass after doze exit.
+                if (scheduleSuspended && radioAllowed()) { resumeProximityAfterSchedule(); scheduleSuspended = false }
 
                 // ── Gate: doze ──
                 if (isDeviceInDoze()) {

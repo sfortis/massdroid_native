@@ -60,6 +60,12 @@ class TvPlaybackService : Service() {
 
     private var lastMetadata: SendspinMetadata? = null
     private var isPlaying = false
+    /**
+     * True between the coordinator's stream start and its (debounced) stream end. Metadata
+     * that arrives outside a live stream is stale (the controller keeps the last track and
+     * re-sends it on state pushes) and must not re-activate a session that was just cleared.
+     */
+    private var streamLive = false
 
     private val mediaCallback = object : MediaSessionCompat.Callback() {
         override fun onPlay() { coordinator.controller?.handlePlay() }
@@ -100,12 +106,17 @@ class TvPlaybackService : Service() {
             onMetadata = { meta -> mainHandler.post { onMetadata(meta) } },
             onPlayingChanged = { playing -> mainHandler.post { onPlayingChanged(playing) } },
             onStreamEnded = { mainHandler.post { clearSession("stream ended") } },
+            onStreamStarted = { mainHandler.post { streamLive = true } },
         )
         coordinator.start()
         defaultPlayerIcon()
     }
 
     private fun onMetadata(meta: SendspinMetadata) {
+        if (!streamLive) {
+            Log.d(TAG, "Ignoring metadata outside a live stream: ${meta.title}")
+            return
+        }
         lastMetadata = meta
         val md = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, meta.title)
@@ -148,7 +159,7 @@ class TvPlaybackService : Service() {
         mediaSession.setPlaybackState(pb)
         // Paused with a real track is still a session worth showing (the remote card can
         // resume it); paused with nothing loaded is not.
-        mediaSession.isActive = playing || hasTrack()
+        mediaSession.isActive = playing || (streamLive && hasTrack())
         updateNotification()
     }
 
@@ -173,6 +184,7 @@ class TvPlaybackService : Service() {
      */
     private fun clearSession(reason: String) {
         Log.d(TAG, "Clearing media session: $reason")
+        streamLive = false
         isPlaying = false
         lastMetadata = null
         mediaSession.setMetadata(null)

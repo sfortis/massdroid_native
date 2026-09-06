@@ -69,6 +69,10 @@ class SendspinCoordinator(
     // stream/start within seconds and does not fire this; neither does a pause. Distinct
     // from onInactive, which means Sendspin was disabled or the coordinator destroyed.
     private val onStreamEnded: () -> Unit = {},
+    // A protocol stream began (stream/start). Fires on every start, including the one that
+    // follows a track change; front-ends use it to know that metadata now belongs to a
+    // live stream rather than to one that has ended.
+    private val onStreamStarted: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "SendspinCoord"
@@ -197,7 +201,11 @@ class SendspinCoordinator(
             sendspinManager.streamActive.collect { active ->
                 streamEndJob?.cancel()
                 streamEndJob = null
-                if (active || !isActive) return@collect
+                if (!isActive) return@collect
+                if (active) {
+                    onStreamStarted()
+                    return@collect
+                }
                 streamEndJob = launch {
                     delay(STREAM_END_GRACE_MS)
                     if (!sendspinManager.streamActive.value) onStreamEnded()
