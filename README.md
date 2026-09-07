@@ -52,6 +52,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+- Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
 - Now Playing: the album art now colours the whole player screen.
 - Now Playing: an idle speaker no longer shows another player's track, and Transfer Queue switches you to the target player.
 - The full player stays open when you turn the phone.

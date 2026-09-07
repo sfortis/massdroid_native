@@ -1,9 +1,1 @@
-- Now Playing: the album art now colours the whole player screen.
-- Now Playing: an idle speaker no longer shows another player's track, and Transfer Queue switches you to the target player.
-- The full player stays open when you turn the phone.
-- Follow Me: scans only while you walk and stops once your room is settled, which is far lighter on the battery.
-- Follow Me: calibrating a room or changing its speaker no longer restarts detection, and room changes are more reliable with the phone in your pocket.
-- Phone as speaker: music pauses when another app plays audio instead of playing on quietly underneath, and plays again properly when you press play.
-- Add to playlist: the dialog opens at once and only offers playlists that accept tracks.
-- Android TV: the remote-control card on your phone goes away when the TV is not playing.
-- Various bug fixes.
+- Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
