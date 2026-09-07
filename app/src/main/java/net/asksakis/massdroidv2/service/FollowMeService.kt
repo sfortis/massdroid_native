@@ -179,10 +179,19 @@ class FollowMeService : Service() {
             )
             isForeground = true
         } catch (e: IllegalStateException) {
-            Log.w(TAG, "Foreground refused (started from the background): ${e.javaClass.simpleName}; stopping until the app is opened")
-            isForeground = false
-            stopSelf()
+            // ForegroundServiceStartNotAllowedException and its API 31+ parent both derive from this.
+            refuseForeground("started from the background", e)
+        } catch (e: SecurityException) {
+            // API 34+: the connectedDevice type needs a granted Bluetooth permission at the moment of
+            // the call; a user who revokes Nearby devices later would otherwise crash the app here.
+            refuseForeground("permission missing", e)
         }
+    }
+
+    private fun refuseForeground(reason: String, e: Exception) {
+        Log.w(TAG, "Foreground refused ($reason); stopping until the app is opened", e)
+        isForeground = false
+        stopSelf()
     }
 
     private fun stopFollowMe() {
