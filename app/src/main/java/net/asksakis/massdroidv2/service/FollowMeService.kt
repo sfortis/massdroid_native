@@ -155,15 +155,34 @@ class FollowMeService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Go foreground, or stop if the platform refuses.
+     *
+     * A START_STICKY restart after a process kill (the user swiping the task away is the
+     * common one, an install is another) recreates this service from the BACKGROUND, and
+     * on Android 12+ `startForeground` then throws ForegroundServiceStartNotAllowedException.
+     * Uncaught, that took the process down, the sticky restart brought it straight back into
+     * the same refusal, and the phone showed "MassDroid keeps stopping" (2026-09-07, two
+     * crashes three seconds apart). The exception is an IllegalStateException subclass, so
+     * the catch also covers older platforms' variants. Without foreground status this service
+     * cannot hold its BLE scans, so it stops itself; the next foreground entry point
+     * (MainActivity, PlaybackService) starts it again, and an explicit stop ends the sticky loop.
+     */
     private fun enterForeground() {
         if (isForeground) return
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        )
-        isForeground = true
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            )
+            isForeground = true
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Foreground refused (started from the background): ${e.javaClass.simpleName}; stopping until the app is opened")
+            isForeground = false
+            stopSelf()
+        }
     }
 
     private fun stopFollowMe() {
