@@ -52,16 +52,14 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Playlists: pin the ones you use to the top, filter by type, and see who made a playlist that is not yours.
-- Playlists your server builds for you now play correctly and refresh when you pull down.
-- Player settings: a cleaner layout, with the queue settings in their own place.
-- Crossfade, volume normalization and smart shuffle work again on Music Assistant 2.10.
-- In the car: leaving no longer lets the music carry on over the phone speaker, and full volume is applied to the right output.
-- An alarm or a notification no longer leaves the music quiet afterwards.
-- Phone as speaker: fewer dropouts when the audio output changes.
-- Share logs now sends the whole history, and keeps your credentials out of it.
-- Smart Mix: better genre coverage for artists the tag service was slow to answer for.
-- Follow Me: the room is applied even when the player was busy a moment earlier.
+- Now Playing: the album art now colours the whole player screen.
+- Now Playing: an idle speaker no longer shows another player's track, and Transfer Queue switches you to the target player.
+- The full player stays open when you turn the phone.
+- Follow Me: scans only while you walk and stops once your room is settled, which is far lighter on the battery.
+- Follow Me: calibrating a room or changing its speaker no longer restarts detection, and room changes are more reliable with the phone in your pocket.
+- Phone as speaker: music pauses when another app plays audio instead of playing on quietly underneath, and plays again properly when you press play.
+- Add to playlist: the dialog opens at once and only offers playlists that accept tracks.
+- Android TV: the remote-control card on your phone goes away when the TV is not playing.
 - Various bug fixes.
 
 ## Screenshots
