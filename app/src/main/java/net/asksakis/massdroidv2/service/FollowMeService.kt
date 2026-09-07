@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +67,9 @@ class FollowMeService : Service() {
         private const val NOTIFICATION_ID = 7
         const val PROXIMITY_REEVALUATE_ACTION = "net.asksakis.massdroidv2.PROXIMITY_REEVALUATE"
         const val PROXIMITY_PLAY_ACTION = "net.asksakis.massdroidv2.PROXIMITY_PLAY"
+        /** From the "Follow Me stopped" notification: a tap is a user interaction, so foreground is allowed. */
+        const val RESUME_ACTION = "net.asksakis.massdroidv2.FOLLOW_ME_RESUME"
+        private const val RESUME_NOTIFICATION_ID = 8
 
         /**
          * Start (or nudge) the service; it self-gates on config.
@@ -86,6 +90,22 @@ class FollowMeService : Service() {
                 context.startService(Intent(context, FollowMeService::class.java))
             } catch (e: IllegalStateException) {
                 Log.w(TAG, "Start refused (no foreground context): ${e.javaClass.simpleName}")
+            }
+        }
+
+        /**
+         * Start from a context the platform exempts from the background restriction (a
+         * BOOT_COMPLETED or MY_PACKAGE_REPLACED broadcast, see [FollowMeStartReceiver]). This
+         * must be `startForegroundService`: a plain `startService` from the background is
+         * refused regardless of the exemption. The caller has checked that Follow Me is
+         * enabled, so `onStartCommand` goes foreground at once.
+         */
+        fun startFromExemption(context: Context, reason: String) {
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, FollowMeService::class.java))
+                Log.i(TAG, "Started after $reason")
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Start after $reason refused: ${e.javaClass.simpleName}")
             }
         }
     }
@@ -149,8 +169,10 @@ class FollowMeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // If launched while already enabled, make sure we are foreground promptly.
-        if (proximityConfigStore.config.value.enabled) enterForeground()
+        // If launched while already enabled, make sure we are foreground promptly. A resume tap
+        // goes foreground without waiting for the config: the notification only exists while
+        // Follow Me is enabled, and a fresh process has not loaded the config yet.
+        if (intent?.action == RESUME_ACTION || proximityConfigStore.config.value.enabled) enterForeground()
         proximityController?.handleStartCommand(intent)
         return START_STICKY
     }
@@ -178,6 +200,7 @@ class FollowMeService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             )
             isForeground = true
+            getSystemService(NotificationManager::class.java)?.cancel(RESUME_NOTIFICATION_ID)
         } catch (e: IllegalStateException) {
             // ForegroundServiceStartNotAllowedException and its API 31+ parent both derive from this.
             refuseForeground("started from the background", e)
@@ -189,8 +212,12 @@ class FollowMeService : Service() {
     }
 
     private fun refuseForeground(reason: String, e: Exception) {
-        Log.w(TAG, "Foreground refused ($reason); stopping until the app is opened", e)
+        Log.w(TAG, "Foreground refused ($reason); stopping until resumed", e)
         isForeground = false
+        // Silence here left room detection off without anyone knowing. A plain notification
+        // is allowed from the background, and tapping it is a user interaction, which is one
+        // of the platform's exemptions: the service may then go foreground again.
+        getSystemService(NotificationManager::class.java)?.notify(RESUME_NOTIFICATION_ID, buildResumeNotification())
         stopSelf()
     }
 
@@ -244,6 +271,23 @@ class FollowMeService : Service() {
             .setShowWhen(false)
             .setContentIntent(contentIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    private fun buildResumeNotification(): android.app.Notification {
+        val resume = PendingIntent.getForegroundService(
+            this,
+            1,
+            Intent(this, FollowMeService::class.java).setAction(RESUME_ACTION),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Follow Me stopped")
+            .setContentText("Tap to resume room detection")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setAutoCancel(true)
+            .setContentIntent(resume)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
