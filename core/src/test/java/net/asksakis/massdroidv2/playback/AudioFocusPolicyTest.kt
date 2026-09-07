@@ -76,6 +76,118 @@ class AudioFocusPolicyTest {
         assertThat(outcome).isEqualTo(AudioFocusPolicy.StreamStart.PLAY)
     }
 
+    /**
+     * The counter is a StateFlow and the manager never resets it, so a controller
+     * that starts again is handed the last stream's number at once. Acting on it
+     * asked for focus with nothing to play, which could silence another app.
+     */
+    @Test
+    fun `an old stream number with no stream running does not ask for focus`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 5L,
+            handled = null,
+            streamActive = false
+        )
+        assertThat(needsFocus).isFalse()
+    }
+
+    /**
+     * The opposite case, and the reason the replayed value cannot simply be
+     * dropped: a controller can subscribe while a stream is genuinely playing, and
+     * that stream does need focus.
+     */
+    @Test
+    fun `a stream already live when we subscribe is adopted`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 5L,
+            handled = null,
+            streamActive = true
+        )
+        assertThat(needsFocus).isTrue()
+    }
+
+    /** An ordinary new start, which is what the collector exists for. */
+    @Test
+    fun `a new stream number with a live stream asks for focus`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 6L,
+            handled = 5L,
+            streamActive = true
+        )
+        assertThat(needsFocus).isTrue()
+    }
+
+    /** The same number twice is one start, not two. */
+    @Test
+    fun `the same stream number is not treated as a second start`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 6L,
+            handled = 6L,
+            streamActive = true
+        )
+        assertThat(needsFocus).isFalse()
+    }
+
+    /** Nothing has ever played, so there is nothing to give focus to. */
+    @Test
+    fun `a stream number of zero is not a start`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 0L,
+            handled = null,
+            streamActive = true
+        )
+        assertThat(needsFocus).isFalse()
+    }
+
+    /**
+     * A start whose stream has already ended by the time the collector runs has
+     * nothing to give focus to either.
+     */
+    @Test
+    fun `a start whose stream already ended asks for nothing`() {
+        val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+            generation = 6L,
+            handled = 5L,
+            streamActive = false
+        )
+        assertThat(needsFocus).isFalse()
+    }
+
+    /**
+     * Local play and pause write the intent before the server answers, so a
+     * PLAYING report can describe the play that came BEFORE a later pause.
+     * Adopting it put the intent back behind the pause and a reconnect could then
+     * resume music the listener had stopped.
+     */
+    @Test
+    fun `a PLAYING report older than the pause just sent is not adopted`() {
+        val adopt = AudioFocusPolicy.adoptRemotePlaying(
+            localIntent = false,
+            pauseAwaitingConfirmation = true
+        )
+        assertThat(adopt).isFalse()
+    }
+
+    /** Once the pause is confirmed, a PLAYING report is genuinely later. */
+    @Test
+    fun `a PLAYING report after the pause is confirmed is adopted`() {
+        val adopt = AudioFocusPolicy.adoptRemotePlaying(
+            localIntent = false,
+            pauseAwaitingConfirmation = false
+        )
+        assertThat(adopt).isTrue()
+    }
+
+    /** Nothing to adopt when the listener is already playing from this phone. */
+    @Test
+    fun `a PLAYING report is not adopted when playback is already intended`() {
+        val adopt = AudioFocusPolicy.adoptRemotePlaying(
+            localIntent = true,
+            pauseAwaitingConfirmation = false
+        )
+        assertThat(adopt).isFalse()
+    }
+
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {

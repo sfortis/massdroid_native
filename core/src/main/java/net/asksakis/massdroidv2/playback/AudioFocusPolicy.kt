@@ -59,6 +59,47 @@ object AudioFocusPolicy {
     }
 
     /**
+     * Whether a stream-generation reading describes a live stream that still needs
+     * focus settled, or something that only looks like one.
+     *
+     * The counter is a StateFlow, so a collector that subscribes gets the latest
+     * value replayed at once, and the manager does not reset the counter when it
+     * stops: only the active flag goes down. Acting on that replay treated a
+     * stream that had ended long ago as a fresh start, which asked for focus with
+     * no playback behind it and could interrupt whatever else was playing. So the
+     * reading has to be both new and backed by a stream that is running right now.
+     *
+     * [handled] is the last reading already acted on, or null when this is the
+     * value replayed at subscription. Null is not the same as "skip": a controller
+     * can subscribe while a stream is genuinely live, and that stream does need
+     * focus, which is why a blind drop of the first value would be wrong.
+     */
+    fun streamNeedsFocus(generation: Long, handled: Long?, streamActive: Boolean): Boolean {
+        if (generation == 0L) return false
+        if (!streamActive) return false
+        return handled == null || generation != handled
+    }
+
+    /**
+     * Whether a server report of PLAYING should be adopted as the listener's wish
+     * to play.
+     *
+     * Local play and pause write the intent before the server has answered, so a
+     * PLAYING report can arrive after a pause that came later than the play it
+     * describes. Adopting it there put the intent back to true behind the pause,
+     * and the PAUSED report that followed did not take it down again, so a later
+     * reconnect could resume music the listener had stopped. Latency alone
+     * produces this; nothing has to arrive out of order.
+     *
+     * [pauseAwaitingConfirmation] is what tells the two apart. While a pause we
+     * sent has not been confirmed, a PLAYING report is older than that pause and
+     * is ignored. Once confirmed, a PLAYING report is genuinely later and is
+     * adopted, which is what keeps remote play working.
+     */
+    fun adoptRemotePlaying(localIntent: Boolean, pauseAwaitingConfirmation: Boolean): Boolean =
+        !localIntent && !pauseAwaitingConfirmation
+
+    /**
      * Decide whether a focus gain should start playback.
      *
      * [localPlayerSelected] is what stops the music arriving back on this phone

@@ -361,6 +361,14 @@ class SendspinAudioController(
     @Volatile
     private var resumeOnFocusGain = false
 
+    // True from the moment a pause is issued locally until the server confirms the
+    // player is no longer playing. While it is set, a server report of PLAYING is
+    // older than that pause and must not be read as someone pressing play
+    // elsewhere. Local commands write the intent before the server answers, so
+    // this needs only latency, not reordering. See [adoptServerPlayback].
+    @Volatile
+    private var pauseAwaitingConfirmation = false
+
     // Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -780,27 +788,36 @@ class SendspinAudioController(
         // manager counts the start before it configures the engine, so focus won
         // here means configure() never pauses the output in the first place.
         collectorJobs += scope.launch {
-            // No distinctUntilChanged: a StateFlow already conflates, so this
-            // only runs when the counter actually moves.
+            // The counter is a StateFlow, so subscribing replays its latest value,
+            // and the manager does not reset it on stop: only the active flag goes
+            // down. Treating that replay as a start asked for focus with nothing
+            // to play, which could interrupt another app. So the value present at
+            // subscription is checked against the active flag rather than acted on
+            // blindly, and dropping it outright would be wrong too, because a
+            // controller can subscribe while a stream is genuinely live.
+            var handled: Long? = null
+            // No distinctUntilChanged: a StateFlow already conflates, so this only
+            // runs when the counter actually moves.
             sendspinManager.streamGeneration
                 .collect { generation ->
-                    // The initial value is not a stream start, it is the counter
-                    // sitting at zero before anything has played.
-                    if (generation == 0L) return@collect
-                    when (AudioFocusPolicy.onStreamStart(hasAudioFocus) { requestAudioFocus() }) {
-                        AudioFocusPolicy.StreamStart.PLAY ->
-                            sendspinManager.resumeAudio()
-                        AudioFocusPolicy.StreamStart.WAIT_FOR_GAIN -> {
-                            Log.i(TAG, "Stream started while the focus grant is delayed: silent until it arrives")
-                            resumeOnFocusGain = true
-                            sendspinManager.pauseAudio()
+                    val needsFocus = AudioFocusPolicy.streamNeedsFocus(
+                        generation = generation,
+                        handled = handled,
+                        // Read now, not when the counter moved: the stream may have
+                        // ended in between, and then there is nothing to give focus
+                        // to. The manager raises this flag before it counts the
+                        // start, so a live start always reads true here.
+                        streamActive = sendspinManager.streamActive.value
+                    )
+                    val isNew = handled == null || generation != handled
+                    handled = generation
+                    if (!needsFocus) {
+                        if (isNew && generation != 0L) {
+                            Log.d(TAG, "Stream generation $generation with no active stream: no focus asked for")
                         }
-                        AudioFocusPolicy.StreamStart.STAY_SILENT -> {
-                            Log.w(TAG, "Stream started without audio focus: keeping the output paused")
-                            abandonPlaybackIntent()
-                            sendspinManager.pauseAudio()
-                        }
+                        return@collect
                     }
+                    settleFocusForStreamStart()
                 }
         }
 
@@ -816,8 +833,10 @@ class SendspinAudioController(
                 if (intent.willPlay) {
                     _userIntent.value = true
                     // Playback is starting, so nothing is owed to a later focus
-                    // gain and any duck still in place is stale.
+                    // gain, any duck still in place is stale, and no pause is
+                    // waiting to be confirmed any more.
                     resumeOnFocusGain = false
+                    pauseAwaitingConfirmation = false
                     clearDuck()
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
                     if (isReady) {
@@ -826,6 +845,10 @@ class SendspinAudioController(
                         ensureSendspinConnected()
                     }
                 } else {
+                    // A pause has been sent and the server has not answered yet, so
+                    // any PLAYING report still in flight describes the play BEFORE
+                    // this pause and must not be adopted as remote playback.
+                    pauseAwaitingConfirmation = true
                     // Every pause funnels through here, including the one this
                     // controller issues when another app takes focus, so the two
                     // can only be told apart by the cause the command carried. A
@@ -938,7 +961,23 @@ class SendspinAudioController(
                 .map { list -> list.firstOrNull { it.playerId == sendspinPlayerId }?.state }
                 .distinctUntilChanged()
                 .collect { state ->
-                    if (state != PlaybackState.PLAYING || _userIntent.value) return@collect
+                    if (state != PlaybackState.PLAYING) {
+                        // Anything other than PLAYING is the server having caught
+                        // up with the pause we sent, so a PLAYING report after this
+                        // one is genuinely later and can be adopted.
+                        pauseAwaitingConfirmation = false
+                        return@collect
+                    }
+                    val adopt = AudioFocusPolicy.adoptRemotePlaying(
+                        localIntent = _userIntent.value,
+                        pauseAwaitingConfirmation = pauseAwaitingConfirmation
+                    )
+                    if (!adopt) {
+                        if (pauseAwaitingConfirmation) {
+                            Log.i(TAG, "Ignoring a PLAYING report older than the pause just sent")
+                        }
+                        return@collect
+                    }
                     Log.i(TAG, "Adopting server-started playback as the listener's intent")
                     _userIntent.value = true
                     if (!hasAudioFocus) requestAudioFocus()
@@ -1398,6 +1437,31 @@ class SendspinAudioController(
                 }
             }
             .build()
+    }
+
+    /**
+     * Settle audio focus for a stream that is starting, and release or hold the
+     * output accordingly.
+     *
+     * Both halves matter. A grant has to release the output, which configure()
+     * left paused, or playback the server started stays silent. A refusal has to
+     * keep it paused, or the same stream plays over whatever owns the output.
+     */
+    private fun settleFocusForStreamStart() {
+        when (AudioFocusPolicy.onStreamStart(hasAudioFocus) { requestAudioFocus() }) {
+            AudioFocusPolicy.StreamStart.PLAY ->
+                sendspinManager.resumeAudio()
+            AudioFocusPolicy.StreamStart.WAIT_FOR_GAIN -> {
+                Log.i(TAG, "Stream started while the focus grant is delayed: silent until it arrives")
+                resumeOnFocusGain = true
+                sendspinManager.pauseAudio()
+            }
+            AudioFocusPolicy.StreamStart.STAY_SILENT -> {
+                Log.w(TAG, "Stream started without audio focus: keeping the output paused")
+                abandonPlaybackIntent()
+                sendspinManager.pauseAudio()
+            }
+        }
     }
 
     /**
