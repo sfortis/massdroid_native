@@ -109,10 +109,10 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Artist & Album Detail** : Rich detail views with descriptions, genres, similar artists, and now-playing indicators
 - **Player Controls** : Play, pause, skip, seek, volume, shuffle, repeat across all MA players
 - **Now Playing** : Full-screen player with album art, seek bar, favorite toggle, synced/plain lyrics, tap-to-seek on synced lyric lines, timing adjustment, and artist blocking
-- **Audiobooks** : Dedicated library section with chapter list, chapter-aware transport, 30-second skip back/forward, and H:M:S timing
+- **Audiobooks & Podcasts** : Dedicated library sections with chapter and episode lists, chapter-aware transport, 30-second skip back/forward, and H:M:S timing
 - **Queue Management** : View, drag-to-reorder, transfer between players, and manage the playback queue with action sheets
 - **Favorites** : Mark artists, albums, tracks, and playlists as favorites, filter library by favorites
-- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player, solo or grouped with other MA players in tight sync. Audio streams as Opus or FLAC over WebSocket, decoded and played through your phone speaker, headphones, or Bluetooth device. Smart mode can switch format automatically based on network conditions. A built-in acoustic calibration measures real Bluetooth latency via microphone so grouped playback stays in sync even on wireless speakers. A streaming status sheet shows live sync graph, output latency, network mode, and a static delay control.
+- **Phone as Speaker** : Sendspin protocol turns your phone into a Music Assistant player, solo or grouped with other MA players in tight sync. Audio streams as Opus, FLAC, or PCM over WebSocket, decoded and played through your phone speaker, headphones, or Bluetooth device. Smart mode picks the format from the network you are on. A built-in acoustic calibration measures real Bluetooth latency via microphone so grouped playback stays in sync even on wireless speakers. A streaming status sheet shows live sync graph, output latency, network mode, and a static delay control.
 - **Follow Me** : Room detection with auto-transfer, per-room playlists, volume, and scheduling. Uses BLE fingerprinting by default, with optional Wi-Fi BSSID or SSID matching for distinct locations.
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
@@ -156,7 +156,7 @@ See [Recommendation Engine](docs/recommendations.md) for the scoring model and d
 
 MassDroid communicates with your Music Assistant server over a persistent WebSocket connection. All player state, library data, queue changes, and favorites are synced in real time through server-pushed events. The app never polls; updates appear instantly as they happen on the server or from other clients.
 
-When Sendspin is enabled, the phone registers as a Music Assistant player. Audio is streamed as Opus or FLAC over a second WebSocket, decoded on-device, and played through the phone speaker or headphones. In Smart mode, the app can switch formats automatically based on network conditions.
+When Sendspin is enabled, the phone registers as a Music Assistant player. Audio is streamed as Opus, FLAC, or PCM over a second WebSocket, decoded on-device, and played through the phone speaker, headphones, or a Bluetooth device. In Smart mode the app picks the format from the network you are on.
 
 ## Requirements
 
