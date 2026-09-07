@@ -11,10 +11,12 @@ Features:
 * Group playback: join the phone to a sync group and fine-tune per-speaker timing by ear.
 * Local recommendation engine: personalised Smart Mix and Genre Radio built from your own listening history, focused on music exploration and discovery.
 * Search across all your connected music providers.
+* Follow Me: room detection from Bluetooth fingerprints moves playback to the room you walk into.
+* Audiobooks and podcasts with chapter-aware controls.
 * Android Auto and Android TV support.
 * Material You dynamic theming.
 
-Optional Last.fm integration enriches artist and genre metadata for better recommendations; the app works fine without it.
+Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device.
 
 About permissions:
 
