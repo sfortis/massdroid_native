@@ -59,6 +59,29 @@ object AudioFocusPolicy {
     }
 
     /**
+     * Whether another app's sound is audible right now, given what the platform
+     * will tell us about the players it has active.
+     *
+     * The usage list alone was blind to an app playing plain media, and it cannot
+     * simply be widened to include media, because our own output is media too. 122
+     * ducks measured on a phone settle how: our own player is present in every
+     * single one, reported as media usage with an UNKNOWN content type, which is
+     * exactly what TikTok reports for itself. So the content type separates
+     * nothing either.
+     *
+     * Arithmetic does. Our output is exactly one media entry, never two across
+     * those 122 samples, so a second media entry belongs to somebody else. Of the
+     * 22 samples where the usage list saw nothing, 9 were precisely that shape,
+     * our player plus one more.
+     *
+     * [interrupterUsagePresent] is whether any active player carries a usage that
+     * means another app is deliberately talking over us. [mediaPlayerCount] is how
+     * many active players carry the plain media usage, ours included.
+     */
+    fun interrupterAudible(interrupterUsagePresent: Boolean, mediaPlayerCount: Int): Boolean =
+        interrupterUsagePresent || mediaPlayerCount > 1
+
+    /**
      * Whether a stream-generation reading describes a live stream that still needs
      * focus settled, or something that only looks like one.
      *

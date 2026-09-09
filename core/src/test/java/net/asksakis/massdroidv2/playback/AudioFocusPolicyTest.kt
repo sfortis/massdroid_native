@@ -188,6 +188,58 @@ class AudioFocusPolicyTest {
         assertThat(adopt).isFalse()
     }
 
+    /**
+     * A notification or an alarm carries a usage that says so, which is the case
+     * the filter always handled.
+     */
+    @Test
+    fun `a sound with an interrupting usage is audible`() {
+        val audible = AudioFocusPolicy.interrupterAudible(
+            interrupterUsagePresent = true,
+            mediaPlayerCount = 1
+        )
+        assertThat(audible).isTrue()
+    }
+
+    /**
+     * Our own output is the one media player present in every duck measured, so
+     * seeing it alone must not read as another app talking over us. Widening the
+     * usage list to include media would have made this true forever and the duck
+     * would never have released.
+     */
+    @Test
+    fun `our own output alone is not an interrupting sound`() {
+        val audible = AudioFocusPolicy.interrupterAudible(
+            interrupterUsagePresent = false,
+            mediaPlayerCount = 1
+        )
+        assertThat(audible).isFalse()
+    }
+
+    /**
+     * The case this was written for: an app that asks to duck us and plays as
+     * plain media, which no usage in the list describes. It is a second media
+     * player beside ours, and that is what gives it away.
+     */
+    @Test
+    fun `a second media player is another app talking over us`() {
+        val audible = AudioFocusPolicy.interrupterAudible(
+            interrupterUsagePresent = false,
+            mediaPlayerCount = 2
+        )
+        assertThat(audible).isTrue()
+    }
+
+    /** Nothing playing at all, which is 13 of the 122 ducks measured. */
+    @Test
+    fun `silence is not an interrupting sound`() {
+        val audible = AudioFocusPolicy.interrupterAudible(
+            interrupterUsagePresent = false,
+            mediaPlayerCount = 0
+        )
+        assertThat(audible).isFalse()
+    }
+
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {

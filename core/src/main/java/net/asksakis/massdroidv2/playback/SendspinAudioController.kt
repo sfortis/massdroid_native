@@ -91,8 +91,17 @@ class SendspinAudioController(
         // ordering is there to prevent, and because a missing answer means the
         // connection is broken again, in which case the refresh fails too.
         private const val PAUSE_REASSERT_TIMEOUT_MS = 5_000L
-        // Usages that mean "another app is deliberately talking over us". Our own
-        // output is USAGE_MEDIA, so it can never match.
+        // How long a duck waits for the other sound to appear before concluding
+        // that nothing is playing. Measured on a phone: when something IS playing
+        // it shows up in the configuration list at once, so this only ever expires
+        // on an app that took focus and made no sound, which is 13 of 122 observed
+        // ducks. Restoring then is right, because there is nothing to be quiet
+        // under.
+        private const val DUCK_INTERRUPTER_WAIT_MS = 10_000L
+        // Usages that mean "another app is deliberately talking over us". Plain
+        // media is NOT here and cannot be: our own output carries that usage, so
+        // it would match permanently. Another app's media is caught by counting
+        // instead, in AudioFocusPolicy.interrupterAudible.
         private val INTERRUPTER_USAGES = setOf(
             AudioAttributes.USAGE_ALARM,
             AudioAttributes.USAGE_NOTIFICATION,
@@ -1552,10 +1561,25 @@ class SendspinAudioController(
         duckWatchJob?.cancel()
         sendspinManager.duck()
         duckWatchJob = scope.launch {
-            // Wait for the interrupting sound to appear and then to stop. Each
-            // collection is freshly seeded, so a sound that started or stopped
-            // between the two is still seen.
-            interrupterActive().first { it }
+            // First half: wait for the other sound to appear, on a deadline. This
+            // deadline was removed once, because while the filter was blind to an
+            // app playing plain media it fired over sound that was still going.
+            // Now that such an app is counted, nothing visible by the deadline
+            // really does mean nothing is playing, and staying quiet under silence
+            // is the fault this restores from. It is the only bounded recovery for
+            // an app that takes focus and never returns it.
+            val appeared = withTimeoutOrNull(DUCK_INTERRUPTER_WAIT_MS) {
+                interrupterActive().first { it }
+            }
+            if (appeared == null) {
+                Log.i(TAG, "Duck: nothing else is playing after ${DUCK_INTERRUPTER_WAIT_MS}ms, restoring gain")
+                sendspinManager.restoreVolume()
+                return@launch
+            }
+            // Second half: no deadline. While the other sound is still there,
+            // being quiet is the whole point, and a cap here restored full volume
+            // over a ringing alarm. Each collection is freshly seeded, so a sound
+            // that stopped between the two halves is still seen.
             interrupterActive().first { !it }
             Log.i(TAG, "Duck: interrupting sound ended, restoring gain")
             sendspinManager.restoreVolume()
@@ -1569,7 +1593,14 @@ class SendspinAudioController(
      */
     private fun interrupterActive(): Flow<Boolean> = callbackFlow {
         fun isActive(configs: List<android.media.AudioPlaybackConfiguration>) =
-            configs.any { it.audioAttributes.usage in INTERRUPTER_USAGES }
+            AudioFocusPolicy.interrupterAudible(
+                interrupterUsagePresent = configs.any {
+                    it.audioAttributes.usage in INTERRUPTER_USAGES
+                },
+                mediaPlayerCount = configs.count {
+                    it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA
+                }
+            )
 
         val callback = object : AudioManager.AudioPlaybackCallback() {
             override fun onPlaybackConfigChanged(configs: MutableList<android.media.AudioPlaybackConfiguration>) {
