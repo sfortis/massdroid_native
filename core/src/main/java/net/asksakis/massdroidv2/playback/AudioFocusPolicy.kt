@@ -125,17 +125,21 @@ object AudioFocusPolicy {
     /**
      * Decide whether a focus gain should start playback.
      *
-     * [localOutputStillStreaming] is the same condition the pause was taken under,
-     * which is what makes the pair symmetric: the interruption paused this phone
-     * because it was streaming, so the gain resumes it while it still is.
+     * [localOutputStillStreaming] must come from the STREAM, not from the
+     * connection. The protocol client deliberately stays connected as an available
+     * player after the music leaves, so the connection state still reads STREAMING
+     * once another speaker has taken over, while the stream flag goes down on
+     * stream/end. Feeding it the connection state resumes a phone the music has
+     * moved away from, and two speakers play at once.
      *
-     * This used to ask whether the phone was the SELECTED player instead, which
-     * was wrong and measurably so. Two days of logs show it refusing 16 of 41
-     * resumes, every one with the phone streaming and the transport mid-reconnect,
-     * where the selected player reads as nothing at all because the player list
-     * has not arrived yet. So a notification paused the music and it never came
-     * back. Streaming answers the same question the guard was meant to ask, since
-     * a listener who moves the music elsewhere stops this phone streaming.
+     * Two earlier attempts at this condition were both wrong and both measurable.
+     * Asking whether the phone was the SELECTED player refused 16 of 41 resumes
+     * over two days, every one with the transport mid-reconnect where the selection
+     * momentarily reads as nothing, so a notification paused the music for good.
+     * Asking the connection state instead fixed those but opened the two-speaker
+     * case, because selecting another player does not pause the one being left.
+     * The stream flag answers both: it stays up through a reconnect and goes down
+     * when the music actually leaves.
      */
     fun onFocusGain(resumeOwed: Boolean, localOutputStillStreaming: Boolean): FocusGain =
         if (resumeOwed && localOutputStillStreaming) FocusGain.RESUME else FocusGain.IGNORE

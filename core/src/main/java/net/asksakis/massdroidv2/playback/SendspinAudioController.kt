@@ -1333,16 +1333,26 @@ class SendspinAudioController(
                         // play, which is what the listener asked for before the
                         // interruption.
                         if (resumeOnFocusGain) {
-                            resumeOnFocusGain = false
                             val resumeId = sendspinPlayerId
                             val outcome = AudioFocusPolicy.onFocusGain(
                                 resumeOwed = true,
-                                localOutputStillStreaming = isStreaming
+                                // The STREAM, not the connection: the client stays
+                                // connected as an available player after the music
+                                // moves to another speaker, so the connection state
+                                // would resume a phone that is no longer playing.
+                                localOutputStillStreaming = sendspinManager.streamActive.value
                             )
                             if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
-                                Log.i(TAG, "Focus regained: not resuming, this phone is no longer streaming")
+                                // The owed resume is deliberately NOT cleared here.
+                                // Discarding it is how the previous version turned a
+                                // momentary "cannot tell" into music that never came
+                                // back; every real end of playback clears it
+                                // elsewhere, through a listener pause, a permanent
+                                // loss, a local play or teardown.
+                                Log.i(TAG, "Focus regained: not resuming, this phone is not streaming")
                                 return@setOnAudioFocusChangeListener
                             }
+                            resumeOnFocusGain = false
                             Log.i(TAG, "Focus regained: resuming the playback the interruption paused")
                             _userIntent.value = true
                             sendspinManager.resumeAudio()

@@ -264,11 +264,10 @@ class AudioFocusPolicyTest {
     }
 
     /**
-     * The condition is streaming, deliberately NOT whether this phone is the
-     * selected player. Asking about selection refused 16 of 41 real resumes,
-     * every one of them mid-reconnect with the phone still streaming and the
-     * selection momentarily unknown, which left a notification able to pause the
-     * music for good.
+     * The condition is the stream, deliberately NOT whether this phone is the
+     * selected player. Asking about selection refused 16 of 41 real resumes, every
+     * one of them mid-reconnect with the selection momentarily unknown, which left
+     * a notification able to pause the music for good.
      */
     @Test
     fun `a streaming phone resumes even while the selected player is unknown`() {
@@ -277,6 +276,23 @@ class AudioFocusPolicyTest {
             localOutputStillStreaming = true
         )
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
+    }
+
+    /**
+     * And deliberately NOT the connection state either, which is the other way to
+     * get this wrong. The protocol client stays connected as an available player
+     * after the music moves to another speaker, so a connection-based answer
+     * resumes a phone that is no longer playing and two speakers play at once.
+     * Selecting another player does not pause the one being left, so nothing else
+     * catches it.
+     */
+    @Test
+    fun `a phone that has handed the music to another speaker is not resumed`() {
+        val outcome = AudioFocusPolicy.onFocusGain(
+            resumeOwed = true,
+            localOutputStillStreaming = false
+        )
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
     }
 
     /** A gain with nothing owed must not start playback of its own accord. */
