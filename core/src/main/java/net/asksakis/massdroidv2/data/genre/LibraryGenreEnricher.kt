@@ -493,11 +493,15 @@ class LibraryGenreEnricher @Inject constructor(
                 Log.w(TAG, "Could not verify ${row.uri}: ${e.message}")
                 null
             } ?: continue
-            verifiedUnlistedUris += row.uri
-            if (server.name.isBlank() || server.name.equals(row.name, ignoreCase = true)) continue
+            if (server.name.isBlank() || server.name.equals(row.name, ignoreCase = true)) {
+                verifiedUnlistedUris += row.uri
+                continue
+            }
             Log.d(TAG, "Unlisted library id reused: ${row.uri} was '${row.name}', now '${server.name}'")
             dao.replaceArtistIdentity(row.uri, server.name, server.mbid)
             dao.deleteArtistGenres(row.uri)
+            // Marked only once the repoint is written: a failed write must be retried next pass.
+            verifiedUnlistedUris += row.uri
             repointed++
         }
         return repointed
