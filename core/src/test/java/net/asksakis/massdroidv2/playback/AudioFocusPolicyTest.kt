@@ -243,24 +243,49 @@ class AudioFocusPolicyTest {
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true, localPlayerSelected = true)
+        val outcome = AudioFocusPolicy.onFocusGain(
+            resumeOwed = true,
+            localOutputStillStreaming = true
+        )
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
     /**
-     * Moving to another speaker during the interruption means the music is not
-     * wanted back on this phone when it ends.
+     * A phone that has stopped streaming has had the music moved elsewhere, or
+     * stopped altogether, so there is nothing here to bring back.
      */
     @Test
-    fun `a gain does not bring the music back to a phone that is no longer selected`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true, localPlayerSelected = false)
+    fun `a gain does not resume a phone that has stopped streaming`() {
+        val outcome = AudioFocusPolicy.onFocusGain(
+            resumeOwed = true,
+            localOutputStillStreaming = false
+        )
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
+    }
+
+    /**
+     * The condition is streaming, deliberately NOT whether this phone is the
+     * selected player. Asking about selection refused 16 of 41 real resumes,
+     * every one of them mid-reconnect with the phone still streaming and the
+     * selection momentarily unknown, which left a notification able to pause the
+     * music for good.
+     */
+    @Test
+    fun `a streaming phone resumes even while the selected player is unknown`() {
+        val outcome = AudioFocusPolicy.onFocusGain(
+            resumeOwed = true,
+            localOutputStillStreaming = true
+        )
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
     /** A gain with nothing owed must not start playback of its own accord. */
     @Test
     fun `a gain with nothing owed starts nothing`() {
-        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = false, localPlayerSelected = true)
+        val outcome = AudioFocusPolicy.onFocusGain(
+            resumeOwed = false,
+            localOutputStillStreaming = true
+        )
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
     }
 }

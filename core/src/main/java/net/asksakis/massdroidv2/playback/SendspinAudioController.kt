@@ -1335,14 +1335,12 @@ class SendspinAudioController(
                         if (resumeOnFocusGain) {
                             resumeOnFocusGain = false
                             val resumeId = sendspinPlayerId
-                            val selected = resumeId != null &&
-                                playerRepository.selectedPlayer.value?.playerId == resumeId
                             val outcome = AudioFocusPolicy.onFocusGain(
                                 resumeOwed = true,
-                                localPlayerSelected = selected
+                                localOutputStillStreaming = isStreaming
                             )
                             if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
-                                Log.i(TAG, "Focus regained: not resuming, the phone is no longer the selected player")
+                                Log.i(TAG, "Focus regained: not resuming, this phone is no longer streaming")
                                 return@setOnAudioFocusChangeListener
                             }
                             Log.i(TAG, "Focus regained: resuming the playback the interruption paused")

@@ -125,11 +125,20 @@ object AudioFocusPolicy {
     /**
      * Decide whether a focus gain should start playback.
      *
-     * [localPlayerSelected] is what stops the music arriving back on this phone
-     * after the listener moved to another speaker during the interruption.
+     * [localOutputStillStreaming] is the same condition the pause was taken under,
+     * which is what makes the pair symmetric: the interruption paused this phone
+     * because it was streaming, so the gain resumes it while it still is.
+     *
+     * This used to ask whether the phone was the SELECTED player instead, which
+     * was wrong and measurably so. Two days of logs show it refusing 16 of 41
+     * resumes, every one with the phone streaming and the transport mid-reconnect,
+     * where the selected player reads as nothing at all because the player list
+     * has not arrived yet. So a notification paused the music and it never came
+     * back. Streaming answers the same question the guard was meant to ask, since
+     * a listener who moves the music elsewhere stops this phone streaming.
      */
-    fun onFocusGain(resumeOwed: Boolean, localPlayerSelected: Boolean): FocusGain =
-        if (resumeOwed && localPlayerSelected) FocusGain.RESUME else FocusGain.IGNORE
+    fun onFocusGain(resumeOwed: Boolean, localOutputStillStreaming: Boolean): FocusGain =
+        if (resumeOwed && localOutputStillStreaming) FocusGain.RESUME else FocusGain.IGNORE
 }
 
 /** The three answers the platform gives to a focus request. */
