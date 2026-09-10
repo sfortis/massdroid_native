@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.ArtistNeedingGenres
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
@@ -41,6 +42,19 @@ class LibraryGenreEnricher @Inject constructor(
         val enriched: Int = 0,
         val isRunning: Boolean = false
     )
+
+    /**
+     * Why a run's empty answers were empty. "4/242 enriched" on its own could not
+     * say whether MusicBrainz had no tags, did not know the artists, or never
+     * answered because it was rate limiting; those call for different reactions.
+     */
+    private class OutcomeTally {
+        private val counts = java.util.EnumMap<GenreOutcome, Int>(GenreOutcome::class.java)
+        fun add(outcome: GenreOutcome) { counts[outcome] = (counts[outcome] ?: 0) + 1 }
+        fun describe(): String =
+            "no tags ${counts[GenreOutcome.NO_GENRES] ?: 0}, not found ${counts[GenreOutcome.NOT_FOUND] ?: 0}, " +
+                "unavailable ${counts[GenreOutcome.UNAVAILABLE] ?: 0}, answered before ${counts[GenreOutcome.CACHED_EMPTY] ?: 0}"
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var enrichJob: Job? = null
@@ -77,6 +91,7 @@ class LibraryGenreEnricher @Inject constructor(
         Log.d(TAG, "Backfill completed")
         var enriched = 0
         var total = 0
+        val tally = OutcomeTally()
         while (true) {
             val artist = pendingQueue.poll() ?: break
             val name = artist.name.trim()
@@ -85,10 +100,11 @@ class LibraryGenreEnricher @Inject constructor(
             try {
                 // The resolver answers from its own cache when it can, and the
                 // MusicBrainz rate limiter only paces real calls.
-                val tags = musicBrainzGenreResolver.resolve(name, artist.mbid)
+                val answer = musicBrainzGenreResolver.resolveDetailed(name, artist.mbid)
                 enrichedNames += name
-                if (tags.isNotEmpty()) {
-                    writeArtistGenres(artist, tags)
+                tally.add(answer.outcome)
+                if (answer.genres.isNotEmpty()) {
+                    writeArtistGenres(artist, answer.genres)
                     enriched++
                 }
             } catch (e: Exception) {
@@ -96,7 +112,7 @@ class LibraryGenreEnricher @Inject constructor(
             }
         }
         if (total > 0) {
-            Log.d(TAG, "Background enrichment done: $enriched/$total enriched")
+            Log.d(TAG, "Background enrichment done: $enriched/$total enriched (${tally.describe()})")
         }
     }
 
@@ -182,12 +198,14 @@ class LibraryGenreEnricher @Inject constructor(
                 _progress.value = EnrichmentProgress(total = gaps.size, isRunning = true)
                 var enriched = 0
                 var processed = 0
+                val tally = OutcomeTally()
                 for (gap in gaps) {
                     try {
-                        val genres = musicBrainzGenreResolver
-                            .resolve(gap.name, gap.mbid, gap.sampleTrack)
-                        if (genres.isNotEmpty()) {
-                            writeArtistGenres(gap.name, genres)
+                        val answer = musicBrainzGenreResolver
+                            .resolveDetailed(gap.name, gap.mbid, gap.sampleTrack)
+                        tally.add(answer.outcome)
+                        if (answer.genres.isNotEmpty()) {
+                            writeArtistGenres(gap.name, answer.genres)
                             enriched++
                         }
                     } catch (e: Exception) {
@@ -196,7 +214,7 @@ class LibraryGenreEnricher @Inject constructor(
                     processed++
                     _progress.value = _progress.value.copy(processed = processed, enriched = enriched)
                 }
-                Log.d(TAG, "Genre enrichment done: $enriched/${gaps.size} enriched")
+                Log.d(TAG, "Genre enrichment done: $enriched/${gaps.size} enriched (${tally.describe()})")
                 _progress.value = EnrichmentProgress(
                     total = gaps.size, processed = processed, enriched = enriched, isRunning = false
                 )
@@ -297,6 +315,7 @@ class LibraryGenreEnricher @Inject constructor(
         val attempted = mutableSetOf<String>()
         var enriched = 0
         var asked = 0
+        val tally = OutcomeTally()
         while (true) {
             val allGaps = try {
                 dao.getDiscoveryArtistsWithoutGenres()
@@ -317,10 +336,11 @@ class LibraryGenreEnricher @Inject constructor(
                 attempted += gap.name
                 asked++
                 try {
-                    val genres = musicBrainzGenreResolver
-                        .resolve(gap.name, gap.mbid, gap.sampleTrack)
-                    if (genres.isNotEmpty()) {
-                        writeDiscoveryArtistGenres(gap, genres)
+                    val answer = musicBrainzGenreResolver
+                        .resolveDetailed(gap.name, gap.mbid, gap.sampleTrack)
+                    tally.add(answer.outcome)
+                    if (answer.genres.isNotEmpty()) {
+                        writeDiscoveryArtistGenres(gap, answer.genres)
                         enriched++
                     }
                 } catch (e: CancellationException) {
@@ -338,7 +358,7 @@ class LibraryGenreEnricher @Inject constructor(
             Log.d(TAG, "No discovery artists left to enrich")
             return
         }
-        Log.d(TAG, "Discovery enrichment done: $enriched/$asked enriched")
+        Log.d(TAG, "Discovery enrichment done: $enriched/$asked enriched (${tally.describe()})")
     }
 
     /**

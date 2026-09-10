@@ -131,10 +131,24 @@ class MusicBrainzGenreResolver @Inject constructor(
         artistName: String,
         mbid: String? = null,
         trackHint: String? = null
-    ): List<String> {
+    ): List<String> = resolveDetailed(artistName, mbid, trackHint).genres
+
+    /**
+     * [resolve], plus WHICH kind of answer it was. An enrichment run that ends
+     * "4 of 242 enriched" says nothing about the other 238 unless the empties are
+     * told apart: artists MusicBrainz has no tags for, artists it does not know,
+     * and requests that never completed and will be asked again.
+     */
+    suspend fun resolveDetailed(
+        artistName: String,
+        mbid: String? = null,
+        trackHint: String? = null
+    ): GenreResolution {
         val key = cacheKey(artistName, mbid)
-        if (key.isEmpty()) return emptyList()
-        cachedGenres(artistName, mbid)?.let { return it }
+        if (key.isEmpty()) return GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
+        cachedGenres(artistName, mbid)?.let {
+            return GenreResolution(it, if (it.isEmpty()) GenreOutcome.CACHED_EMPTY else GenreOutcome.GENRES)
+        }
         return withContext(Dispatchers.IO) {
             // Identity, best evidence first.
             //
@@ -165,22 +179,26 @@ class MusicBrainzGenreResolver @Inject constructor(
                 is Lookup.Found -> byRecording.value
                 else -> when (val byName = findMbid(artistName)) {
                     is Lookup.Found -> byName.value
-                    Lookup.Unavailable -> return@withContext emptyList()
+                    Lookup.Unavailable -> return@withContext GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
                     Lookup.Missing -> {
                         // Only authoritative when every step actually answered.
                         if (byRecording != Lookup.Unavailable) {
                             cache(key, mbid = "", genres = emptyList())
+                            return@withContext GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
                         }
-                        return@withContext emptyList()
+                        return@withContext GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
                     }
                 }
             }
             when (val fetched = fetchGenres(resolvedMbid)) {
                 is Lookup.Found -> {
                     cache(key, resolvedMbid, fetched.value)
-                    fetched.value
+                    GenreResolution(
+                        fetched.value,
+                        if (fetched.value.isEmpty()) GenreOutcome.NO_GENRES else GenreOutcome.GENRES
+                    )
                 }
-                else -> emptyList()
+                else -> GenreResolution(emptyList(), GenreOutcome.UNAVAILABLE)
             }
         }
     }
@@ -313,9 +331,10 @@ class MusicBrainzGenreResolver @Inject constructor(
         // MusicBrainz answers 503 when it considers the caller over the rate
         // limit, and it counts more strictly than one-per-second suggests: a
         // background enrichment run hit it repeatedly at a 1.1s interval. A 503
-        // is a "come back later", not a failure, so it is retried once after a
-        // pause and then reported as [Lookup.Unavailable], which the caller must
-        // not record as "this artist has no genres".
+        // is a "come back later", not a failure, so it is retried after a pause
+        // that doubles each time (see MusicBrainzRateLimiter.backOff) and only
+        // then reported as [Lookup.Unavailable], which the caller must not record
+        // as "this artist has no genres".
         repeat(RATE_LIMIT_RETRIES + 1) { attempt ->
             rateLimiter.acquire()
             val result = try {
@@ -323,7 +342,10 @@ class MusicBrainzGenreResolver @Inject constructor(
                 val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
                 okHttpClient.newCall(request).execute().use { response ->
                     when {
-                        response.isSuccessful -> response.body?.string()
+                        response.isSuccessful -> {
+                            rateLimiter.noteSuccess()
+                            response.body?.string()
+                        }
                         response.code == HTTP_SERVICE_UNAVAILABLE -> {
                             rateLimiter.backOff(response.header("Retry-After")?.toLongOrNull())
                             null
@@ -341,7 +363,7 @@ class MusicBrainzGenreResolver @Inject constructor(
                 return Lookup.Unavailable
             }
             if (result != null) return Lookup.Found(result)
-            if (attempt == RATE_LIMIT_RETRIES) Log.w(TAG, "rate-limited, giving up on $url")
+            if (attempt == RATE_LIMIT_RETRIES) Log.w(TAG, "rate-limited ${attempt + 1} times, giving up on $url")
         }
         return Lookup.Unavailable
     }
@@ -383,9 +405,25 @@ class MusicBrainzGenreResolver @Inject constructor(
          */
         const val EXACT_NAME_MIN_SCORE = 80
         const val HTTP_SERVICE_UNAVAILABLE = 503
-        const val RATE_LIMIT_RETRIES = 1
+        const val RATE_LIMIT_RETRIES = 3
     }
 }
+
+/** Which kind of answer a genre lookup produced; see [MusicBrainzGenreResolver.resolveDetailed]. */
+enum class GenreOutcome {
+    /** Genres found (fresh or cached). */
+    GENRES,
+    /** MusicBrainz knows the artist and lists no genres. A fact, cached. */
+    NO_GENRES,
+    /** MusicBrainz does not know the artist. A fact, cached. */
+    NOT_FOUND,
+    /** No answer (rate limited, HTTP error, network). Not cached; asked again later. */
+    UNAVAILABLE,
+    /** An earlier run already recorded an empty answer; not asked this time. */
+    CACHED_EMPTY,
+}
+
+data class GenreResolution(val genres: List<String>, val outcome: GenreOutcome)
 
 /** One result of a MusicBrainz artist search. */
 internal data class MbArtistCandidate(val id: String, val name: String, val score: Int)

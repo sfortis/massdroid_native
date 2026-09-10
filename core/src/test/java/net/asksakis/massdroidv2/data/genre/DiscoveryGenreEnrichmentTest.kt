@@ -11,6 +11,8 @@ import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.ArtistNeedingGenres
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.TransactionRunner
+import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
+import net.asksakis.massdroidv2.data.musicbrainz.GenreResolution
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -61,7 +63,7 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } returns listOf(
             MusicBrainzGenreResolver.ArtistRef("Alabaster Deplume", null)
         )
-        coEvery { resolver.resolve("Alabaster Deplume", null) } returns listOf("jazz", "spoken word")
+        coEvery { resolver.resolveDetailed("Alabaster Deplume", null) } returns GenreResolution(listOf("jazz", "spoken word"), GenreOutcome.GENRES)
         // The same artist is also known under a library uri.
         coEvery { dao.getArtistUrisByName("Alabaster Deplume") } returns listOf("library://artist/7")
 
@@ -85,7 +87,7 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } returns listOf(
             MusicBrainzGenreResolver.ArtistRef("Nina Simone", "mbid-1")
         )
-        coEvery { resolver.resolve("Nina Simone", "mbid-1") } returns listOf("soul")
+        coEvery { resolver.resolveDetailed("Nina Simone", "mbid-1") } returns GenreResolution(listOf("soul"), GenreOutcome.GENRES)
         coEvery { dao.getArtistUrisByName(any()) } returns emptyList()
 
         enricher.enrichDiscoveryArtists()
@@ -109,12 +111,12 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } returns listOf(
             MusicBrainzGenreResolver.ArtistRef("Never Asked", null)
         )
-        coEvery { resolver.resolve(any(), any()) } returns emptyList()
+        coEvery { resolver.resolveDetailed(any(), any()) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 1) { resolver.resolve("Never Asked", null) }
-        coVerify(exactly = 0) { resolver.resolve("Known Nothing", any()) }
+        coVerify(exactly = 1) { resolver.resolveDetailed("Never Asked", null) }
+        coVerify(exactly = 0) { resolver.resolveDetailed("Known Nothing", any()) }
     }
 
     @Test
@@ -123,13 +125,13 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { dao.getDiscoveryArtistsWithoutGenres() } returnsMany listOf(many, emptyList())
         coEvery { resolver.stillWorthAsking(any()) } returns
             many.map { MusicBrainzGenreResolver.ArtistRef(it.name, null) }
-        coEvery { resolver.resolve(any(), any()) } returns emptyList()
+        coEvery { resolver.resolveDetailed(any(), any()) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
 
         enricher.enrichDiscoveryArtists()
 
         // The old 300 cap meant an app left open all day stopped after twenty
         // minutes and the backlog only moved on websocket reconnects.
-        coVerify(exactly = 500) { resolver.resolve(any(), any()) }
+        coVerify(exactly = 500) { resolver.resolveDetailed(any(), any()) }
     }
 
     @Test
@@ -142,11 +144,11 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } returns listOf(
             MusicBrainzGenreResolver.ArtistRef("Never Cached", null)
         )
-        coEvery { resolver.resolve(any(), any()) } returns emptyList()
+        coEvery { resolver.resolveDetailed(any(), any()) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 1) { resolver.resolve("Never Cached", null) }
+        coVerify(exactly = 1) { resolver.resolveDetailed("Never Cached", null) }
     }
 
     @Test
@@ -157,12 +159,12 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } answers {
             firstArg<Collection<MusicBrainzGenreResolver.ArtistRef>>().toList()
         }
-        coEvery { resolver.resolve(any(), any()) } returns emptyList()
+        coEvery { resolver.resolveDetailed(any(), any()) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 1) { resolver.resolve("First", null) }
-        coVerify(exactly = 1) { resolver.resolve("Arrived Later", null) }
+        coVerify(exactly = 1) { resolver.resolveDetailed("First", null) }
+        coVerify(exactly = 1) { resolver.resolveDetailed("Arrived Later", null) }
     }
 
     @Test
@@ -172,7 +174,7 @@ class DiscoveryGenreEnrichmentTest {
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 0) { resolver.resolve(any(), any()) }
+        coVerify(exactly = 0) { resolver.resolveDetailed(any(), any()) }
     }
 
     @Test
@@ -185,13 +187,13 @@ class DiscoveryGenreEnrichmentTest {
             MusicBrainzGenreResolver.ArtistRef("Boom", null),
             MusicBrainzGenreResolver.ArtistRef("Fine", null),
         )
-        coEvery { resolver.resolve("Boom", null) } throws RuntimeException("network")
-        coEvery { resolver.resolve("Fine", null) } returns listOf("house")
+        coEvery { resolver.resolveDetailed("Boom", null) } throws RuntimeException("network")
+        coEvery { resolver.resolveDetailed("Fine", null) } returns GenreResolution(listOf("house"), GenreOutcome.GENRES)
         coEvery { dao.getArtistUrisByName(any()) } returns emptyList()
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 1) { resolver.resolve("Fine", null) }
+        coVerify(exactly = 1) { resolver.resolveDetailed("Fine", null) }
     }
 
     @Test
@@ -204,14 +206,14 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { dao.getDiscoveryArtistsWithoutGenres() } returns many
         coEvery { resolver.stillWorthAsking(any()) } returns
             many.map { MusicBrainzGenreResolver.ArtistRef(it.name, null) }
-        coEvery { resolver.resolve("Artist 1", null) } returns emptyList()
-        coEvery { resolver.resolve("Artist 2", null) } throws CancellationException("cancelled")
+        coEvery { resolver.resolveDetailed("Artist 1", null) } returns GenreResolution(emptyList(), GenreOutcome.NOT_FOUND)
+        coEvery { resolver.resolveDetailed("Artist 2", null) } throws CancellationException("cancelled")
 
         assertThrows(CancellationException::class.java) {
             runBlocking { enricher.enrichDiscoveryArtists() }
         }
 
-        coVerify(exactly = 0) { resolver.resolve("Artist 3", null) }
+        coVerify(exactly = 0) { resolver.resolveDetailed("Artist 3", null) }
     }
 
     @Test
@@ -230,12 +232,12 @@ class DiscoveryGenreEnrichmentTest {
         coEvery { resolver.stillWorthAsking(any()) } returns listOf(
             MusicBrainzGenreResolver.ArtistRef("Labelle", null)
         )
-        coEvery { resolver.resolve(any(), any(), any()) } returns listOf("maloya")
+        coEvery { resolver.resolveDetailed(any(), any(), any()) } returns GenreResolution(listOf("maloya"), GenreOutcome.GENRES)
         coEvery { dao.getArtistUrisByName(any()) } returns emptyList()
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify { resolver.resolve("Labelle", null, "Playing at the End of the Universe") }
+        coVerify { resolver.resolveDetailed("Labelle", null, "Playing at the End of the Universe") }
     }
 
     @Test
@@ -244,6 +246,6 @@ class DiscoveryGenreEnrichmentTest {
 
         enricher.enrichDiscoveryArtists()
 
-        coVerify(exactly = 0) { resolver.resolve(any(), any()) }
+        coVerify(exactly = 0) { resolver.resolveDetailed(any(), any()) }
     }
 }
