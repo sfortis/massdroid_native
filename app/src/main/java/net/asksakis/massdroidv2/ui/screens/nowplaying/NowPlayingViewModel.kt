@@ -31,6 +31,9 @@ import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
+import net.asksakis.massdroidv2.domain.player.QueueTransfer
+import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
+import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
@@ -163,6 +166,7 @@ class NowPlayingViewModel @Inject constructor(
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)
+    private val queueTransfer = QueueTransfer(musicRepository, playerRepository)
     val playlists: StateFlow<List<Playlist>> = playlistMembership.playlists
     val isLoadingPlaylists: StateFlow<Boolean> = playlistMembership.isLoading
     val addingToPlaylistId: StateFlow<String?> = playlistMembership.pendingPlaylistId
@@ -1079,18 +1083,9 @@ class NowPlayingViewModel @Inject constructor(
         val sourceQueueId = queueState.value?.queueId ?: return
         viewModelScope.launch {
             withContext(NonCancellable) {
-                try {
-                    musicRepository.transferQueue(sourceQueueId, targetPlayerId)
-                    if (!playerRepository.selectPlayer(targetPlayerId)) {
-                        // Refused by a selection lock, which is car audio in practice.
-                        // The queue did move, so saying nothing would leave the screen
-                        // showing a player that is no longer the one playing.
-                        _error.tryEmit("Queue moved, but the player stayed locked")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "transferQueue failed: ${e.message}")
-                    _error.tryEmit("Failed to transfer queue")
-                }
+                val outcome = queueTransfer.moveAndFollow(sourceQueueId, targetPlayerId)
+                if (outcome is QueueTransferOutcome.Failed) Log.w(TAG, "transferQueue failed: ${outcome.cause.message}")
+                _error.tryEmit(outcome.userMessage())
             }
         }
     }

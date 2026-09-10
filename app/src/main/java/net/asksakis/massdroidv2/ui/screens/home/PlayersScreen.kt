@@ -117,11 +117,22 @@ fun PlayersScreen(
         playerCards.flatMap { playerRoomMap[it.playerId].orEmpty() }.distinct().size
     }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.error.collect { message ->
+            snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             Spacer(modifier = Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
+        },
+        // The mini player floats over the bottom edge, so the snackbar sits above it.
+        snackbarHost = {
+            SnackbarHost(snackbarHostState, modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current))
         }
     ) { paddingValues ->
         Column(

@@ -22,6 +22,9 @@ import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.domain.model.GroupProviderOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.player.QueueTransfer
+import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
+import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -87,6 +90,7 @@ class HomeViewModel @Inject constructor(
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+    private val queueTransfer = QueueTransfer(musicRepository, playerRepository)
     private var hasConnectedOnce = false
     private var reconnectUiJob: Job? = null
 
@@ -342,12 +346,9 @@ class HomeViewModel @Inject constructor(
     fun transferQueue(sourceId: String, targetId: String) {
         viewModelScope.launch {
             withContext(NonCancellable) {
-                try {
-                    musicRepository.transferQueue(sourceId, targetId)
-                    playerRepository.selectPlayer(targetId)
-                } catch (e: Exception) {
-                    Log.w(TAG, "transferQueue failed: ${e.message}")
-                }
+                val outcome = queueTransfer.moveAndFollow(sourceId, targetId)
+                if (outcome is QueueTransferOutcome.Failed) Log.w(TAG, "transferQueue failed: ${outcome.cause.message}")
+                _error.tryEmit(outcome.userMessage())
             }
         }
     }
