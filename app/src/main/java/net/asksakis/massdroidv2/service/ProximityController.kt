@@ -37,6 +37,8 @@ class ProximityController(
     private val motionGate: MotionGate,
     private val shouldBlockProximitySelectionForBt: () -> Boolean,
     private val sendVolumeCommand: (playerId: String, volume: Int) -> Unit,
+    /** True while a Bluetooth sink flagged as car audio is connected; see [CarAudioPresence]. */
+    private val carAudioConnected: kotlinx.coroutines.flow.StateFlow<Boolean>,
 ) {
     companion object {
         private const val TAG = "ProximityCtrl"
@@ -80,6 +82,8 @@ class ProximityController(
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
         private const val BG_CONFIRM_MIN_DEVICES = 4
         private const val MOTION_BOOST_DEBOUNCE_MS = 1_000L
+        /** A skipped motion boost is logged at most this often, not once per trigger. */
+        private const val GATE_LOG_INTERVAL_MS = 60_000L
         private const val STARTUP_WARMUP_SNAPSHOTS = 3
         private const val STARTUP_WARMUP_INTERVAL_MS = 1_200L
         private const val WIFI_ROOM_GRACE_MS = 10_000L
@@ -373,13 +377,31 @@ class ProximityController(
                     val risingEdge = moving && !wasMoving
                     wasMoving = moving
                     if (!risingEdge) return@collect
+                    // Steps are a walk, and a walk is how the user arrives somewhere, so being
+                    // away from every anchor does not gate them; only the car does.
+                    if (skipMotionBoost(carOnly = true)) return@collect
                     performMotionDetection("Motion boost: immediate high-accuracy escalation", "motion-open", "immediate")
                 }
             }
 
             launch {
                 motionGate.motionEvents.collect {
+                    if (skipMotionBoost(carOnly = false)) return@collect
                     performMotionDetection("Motion boost: significant-motion refresh", "motion-refresh", "significant-motion")
+                }
+            }
+
+            launch {
+                // Leaving the car is the arrival somewhere: the office, or a room at home after
+                // parking. Re-detect at once instead of waiting for the next step window, and
+                // drop away mode so the first read is not throttled to the away cadence.
+                var wasConnected = carAudioConnected.value
+                carAudioConnected.collect { connected ->
+                    val released = wasConnected && !connected
+                    wasConnected = connected
+                    if (!released) return@collect
+                    resetAwayMode("car-released")
+                    performMotionDetection("Motion boost: car audio released, re-detecting the room", "car-released", "car-released")
                 }
             }
 
@@ -829,6 +851,33 @@ class ProximityController(
         Log.d(TAG, "Away mode reset ($reason)")
         roomDetector.resetNoMatchStreak()
         highAccuracyStartedAtMs = System.currentTimeMillis()
+    }
+
+    private var lastGateLogMs = 0L
+
+    /**
+     * Whether a motion boost should not run at all, and why.
+     *
+     * In the car the significant-motion sensor fires every few seconds and every trigger
+     * cost a wakelock and a BLE burst that could hear nothing: 66 triggers and 384 empty
+     * reads in 15 minutes on 2026-09-10. Two gates: a connected car-audio device (the
+     * user's own flag, see [CarAudioPresence]) blocks every boost; being away from every
+     * anchor for five minutes blocks significant-motion refreshes only, because a step
+     * window is a walk and a walk may be the arrival. The car's falling edge and the next
+     * confirmed room lift the gates. Logged at most once a minute.
+     */
+    private fun skipMotionBoost(carOnly: Boolean): Boolean {
+        val reason = when {
+            carAudioConnected.value -> "car audio connected"
+            !carOnly && isInAwayMode() -> "away from every anchor"
+            else -> return false
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastGateLogMs >= GATE_LOG_INTERVAL_MS) {
+            lastGateLogMs = now
+            Log.d(TAG, "Motion boost skipped: $reason")
+        }
+        return true
     }
 
     /** No room detected for 5+ minutes: likely not at home. */

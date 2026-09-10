@@ -28,6 +28,7 @@ import net.asksakis.massdroidv2.data.proximity.MotionGate
 import net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
+import net.asksakis.massdroidv2.data.sendspin.CarAudioPresence
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
@@ -117,6 +118,7 @@ class FollowMeService : Service() {
     @Inject lateinit var roomDetector: RoomDetector
     @Inject lateinit var motionGate: MotionGate
     @Inject lateinit var sendspinManager: SendspinManager
+    @Inject lateinit var carAudioPresence: CarAudioPresence
     @Inject lateinit var wsClient: MaWebSocketClient
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -129,6 +131,7 @@ class FollowMeService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        carAudioPresence.start()
         proximityController = ProximityController(
             service = this,
             scope = scope,
@@ -140,6 +143,7 @@ class FollowMeService : Service() {
             motionGate = motionGate,
             shouldBlockProximitySelectionForBt = { shouldBlockProximitySelectionForBt() },
             sendVolumeCommand = { playerId, volume -> sendVolumeCommand(playerId, volume) },
+            carAudioConnected = carAudioPresence.connected,
         ).also { it.start() }
 
         // Getting out of the car is the moment the hold above stops applying,
