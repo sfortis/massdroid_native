@@ -67,6 +67,8 @@ class LibraryGenreEnricher @Inject constructor(
     // requests, so running both costs no extra traffic.
     private var discoveryJob: Job? = null
     private val enrichedNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /** Library uris the server has confirmed since this process started; see [verifyUnlistedLibraryArtists]. */
+    private val verifiedUnlistedUris: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val pendingQueue = ConcurrentLinkedQueue<Artist>()
     private val _progress = MutableStateFlow(EnrichmentProgress())
     val progress: StateFlow<EnrichmentProgress> = _progress.asStateFlow()
@@ -473,11 +475,14 @@ class LibraryGenreEnricher @Inject constructor(
      * was stored locally as one artist while the server had another there.
      *
      * So anything we hold locally but the listing did not mention is confirmed
-     * one id at a time. Only stale rows cost a round-trip after the first pass,
-     * since a row that already agrees with the server is left alone.
+     * one id at a time, and a uri confirmed once is not asked again for the life
+     * of the process. Without that memory every sync re-asked the same first
+     * [UNLISTED_VERIFY_LIMIT] rows: 60 identical `get_artist` calls after each of
+     * the day's seven reconnects on 2026-09-10, and the rows beyond the first 60
+     * were never reached at all. Now each pass takes the next unconfirmed batch.
      */
     private suspend fun verifyUnlistedLibraryArtists(listed: Set<String>): Int {
-        val unlisted = dao.getLibraryArtistUris().filter { it.uri !in listed }
+        val unlisted = dao.getLibraryArtistUris().filter { it.uri !in listed && it.uri !in verifiedUnlistedUris }
         if (unlisted.isEmpty()) return 0
         var repointed = 0
         for (row in unlisted.take(UNLISTED_VERIFY_LIMIT)) {
@@ -488,6 +493,7 @@ class LibraryGenreEnricher @Inject constructor(
                 Log.w(TAG, "Could not verify ${row.uri}: ${e.message}")
                 null
             } ?: continue
+            verifiedUnlistedUris += row.uri
             if (server.name.isBlank() || server.name.equals(row.name, ignoreCase = true)) continue
             Log.d(TAG, "Unlisted library id reused: ${row.uri} was '${row.name}', now '${server.name}'")
             dao.replaceArtistIdentity(row.uri, server.name, server.mbid)
