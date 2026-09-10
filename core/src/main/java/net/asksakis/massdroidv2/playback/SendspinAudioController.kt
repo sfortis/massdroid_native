@@ -1312,7 +1312,22 @@ class SendspinAudioController(
         focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(audioAttrs)
             .setAcceptsDelayedFocusGain(true)
-            .setWillPauseWhenDucked(false)
+            // Always be told about a duckable loss, and never let the framework
+            // attenuate us on our behalf.
+            //
+            // The flag's name says pause, but what it selects is who handles the
+            // duck: false lets the platform duck the player itself and may skip
+            // the callback entirely, true guarantees the callback and leaves the
+            // handling to us. We must have the callback, because the only thing
+            // that attenuates this app is the manual duck on the native output
+            // gain. On this phone the policy happens to notify anyway, verified in
+            // dumpsys and by 27 duck events in the logs, so this changes nothing
+            // here; on a device whose policy does not, we would be neither told
+            // nor turned down, and the music would play over the interruption at
+            // full volume. Safe under either reading of what the framework can do
+            // to an AAudio stream: if it cannot shape ours, this is the fix, and
+            // if it can, this simply keeps the decision in one place.
+            .setWillPauseWhenDucked(true)
             .setOnAudioFocusChangeListener { focusChange ->
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
