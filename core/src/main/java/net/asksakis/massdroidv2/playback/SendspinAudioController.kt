@@ -945,6 +945,32 @@ class SendspinAudioController(
 
         }
 
+        // Collector: choosing another player cancels a resume owed to this phone.
+        //
+        // This is the single case the focus-gain conditions were trying to cover,
+        // and trying to answer it at the moment of the gain went wrong three times.
+        // Moving to another speaker sends NO pause to the player being left, so
+        // nothing else clears the owed resume, and the gain would then start this
+        // phone alongside the speaker the listener actually chose. Answered here,
+        // when the choice is made, it needs no guessing afterwards.
+        //
+        // A null selection is ignored on purpose: it means the player list has not
+        // arrived, which happens on every reconnect, and treating that as a
+        // decision is how an earlier version lost 16 resumes out of 41.
+        collectorJobs += scope.launch {
+            playerRepository.selectedPlayer
+                .map { it?.playerId }
+                .distinctUntilChanged()
+                .collect { selectedId ->
+                    if (!resumeOnFocusGain) return@collect
+                    if (!AudioFocusPolicy.selectionCancelsOwedResume(selectedId, sendspinPlayerId)) {
+                        return@collect
+                    }
+                    Log.i(TAG, "Another player was chosen: dropping the resume owed to this phone")
+                    resumeOnFocusGain = false
+                }
+        }
+
         // Collector: adopt playback the SERVER started as the listener's intent.
         //
         // Intent is written locally by play and pause, so playback nobody started
@@ -1349,22 +1375,9 @@ class SendspinAudioController(
                         // interruption.
                         if (resumeOnFocusGain) {
                             val resumeId = sendspinPlayerId
-                            val outcome = AudioFocusPolicy.onFocusGain(
-                                resumeOwed = true,
-                                // The STREAM, not the connection: the client stays
-                                // connected as an available player after the music
-                                // moves to another speaker, so the connection state
-                                // would resume a phone that is no longer playing.
-                                localOutputStillStreaming = sendspinManager.streamActive.value
-                            )
+                            val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
                             if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
-                                // The owed resume is deliberately NOT cleared here.
-                                // Discarding it is how the previous version turned a
-                                // momentary "cannot tell" into music that never came
-                                // back; every real end of playback clears it
-                                // elsewhere, through a listener pause, a permanent
-                                // loss, a local play or teardown.
-                                Log.i(TAG, "Focus regained: not resuming, this phone is not streaming")
+                                Log.i(TAG, "Focus regained: nothing to resume")
                                 return@setOnAudioFocusChangeListener
                             }
                             resumeOnFocusGain = false

@@ -243,65 +243,66 @@ class AudioFocusPolicyTest {
     /** The gain that ends an interruption starts what the interruption stopped. */
     @Test
     fun `a gain resumes the playback an interruption owed`() {
-        val outcome = AudioFocusPolicy.onFocusGain(
-            resumeOwed = true,
-            localOutputStillStreaming = true
-        )
+        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
     /**
-     * A phone that has stopped streaming has had the music moved elsewhere, or
-     * stopped altogether, so there is nothing here to bring back.
+     * The regression this replaced. Every earlier version asked a second question
+     * at the moment of the gain, and the last one asked whether the stream was
+     * still up. Pausing is what ends the stream, measured at 0.8 s after our own
+     * pause, so that question was already answered no at every gain that followed
+     * an interruption: three owed resumes out of three were lost, and two deferred
+     * plays went with them. Nothing but the owed flag may gate this.
      */
     @Test
-    fun `a gain does not resume a phone that has stopped streaming`() {
-        val outcome = AudioFocusPolicy.onFocusGain(
-            resumeOwed = true,
-            localOutputStillStreaming = false
-        )
-        assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
-    }
-
-    /**
-     * The condition is the stream, deliberately NOT whether this phone is the
-     * selected player. Asking about selection refused 16 of 41 real resumes, every
-     * one of them mid-reconnect with the selection momentarily unknown, which left
-     * a notification able to pause the music for good.
-     */
-    @Test
-    fun `a streaming phone resumes even while the selected player is unknown`() {
-        val outcome = AudioFocusPolicy.onFocusGain(
-            resumeOwed = true,
-            localOutputStillStreaming = true
-        )
+    fun `a gain resumes even though the pause has already ended the stream`() {
+        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
-    }
-
-    /**
-     * And deliberately NOT the connection state either, which is the other way to
-     * get this wrong. The protocol client stays connected as an available player
-     * after the music moves to another speaker, so a connection-based answer
-     * resumes a phone that is no longer playing and two speakers play at once.
-     * Selecting another player does not pause the one being left, so nothing else
-     * catches it.
-     */
-    @Test
-    fun `a phone that has handed the music to another speaker is not resumed`() {
-        val outcome = AudioFocusPolicy.onFocusGain(
-            resumeOwed = true,
-            localOutputStillStreaming = false
-        )
-        assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
     }
 
     /** A gain with nothing owed must not start playback of its own accord. */
     @Test
     fun `a gain with nothing owed starts nothing`() {
-        val outcome = AudioFocusPolicy.onFocusGain(
-            resumeOwed = false,
-            localOutputStillStreaming = true
-        )
+        val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = false)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.IGNORE)
+    }
+
+    /**
+     * The one case the old conditions existed for, answered where the choice is
+     * made: moving to another speaker sends no pause to the player being left, so
+     * without this the gain would start this phone beside the chosen one.
+     */
+    @Test
+    fun `choosing another player cancels the resume owed to this phone`() {
+        val cancels = AudioFocusPolicy.selectionCancelsOwedResume(
+            newSelectedPlayerId = "kitchen",
+            localPlayerId = "phone"
+        )
+        assertThat(cancels).isTrue()
+    }
+
+    /** Choosing this phone again is not a cancellation. */
+    @Test
+    fun `choosing this phone does not cancel its own owed resume`() {
+        val cancels = AudioFocusPolicy.selectionCancelsOwedResume(
+            newSelectedPlayerId = "phone",
+            localPlayerId = "phone"
+        )
+        assertThat(cancels).isFalse()
+    }
+
+    /**
+     * And an unknown selection is not a decision. It reads as null on every
+     * reconnect, before the player list arrives, which is exactly how an earlier
+     * version threw away 16 resumes out of 41.
+     */
+    @Test
+    fun `an unknown selection does not cancel an owed resume`() {
+        val cancels = AudioFocusPolicy.selectionCancelsOwedResume(
+            newSelectedPlayerId = null,
+            localPlayerId = "phone"
+        )
+        assertThat(cancels).isFalse()
     }
 }

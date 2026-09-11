@@ -123,26 +123,44 @@ object AudioFocusPolicy {
         !localIntent && !pauseAwaitingConfirmation
 
     /**
-     * Decide whether a focus gain should start playback.
+     * Decide whether a focus gain should start the playback an interruption owed.
      *
-     * [localOutputStillStreaming] must come from the STREAM, not from the
-     * connection. The protocol client deliberately stays connected as an available
-     * player after the music leaves, so the connection state still reads STREAMING
-     * once another speaker has taken over, while the stream flag goes down on
-     * stream/end. Feeding it the connection state resumes a phone the music has
-     * moved away from, and two speakers play at once.
+     * There is deliberately no second condition here any more, and the history is
+     * the argument. Three were tried and each was wrong in the field. Whether this
+     * phone was the SELECTED player lost 16 of 41 resumes, because the selection
+     * momentarily reads as nothing during a reconnect. Whether the transport was
+     * connected resumed a phone the music had moved away from, because the client
+     * stays connected as an available player. Whether the STREAM was up lost every
+     * single resume, because pausing is what ends the stream: the server sent
+     * stream/end 0.8 s after our own pause, so the condition was already false at
+     * every gain that followed one, and it swallowed deferred plays with it.
      *
-     * Two earlier attempts at this condition were both wrong and both measurable.
-     * Asking whether the phone was the SELECTED player refused 16 of 41 resumes
-     * over two days, every one with the transport mid-reconnect where the selection
-     * momentarily reads as nothing, so a notification paused the music for good.
-     * Asking the connection state instead fixed those but opened the two-speaker
-     * case, because selecting another player does not pause the one being left.
-     * The stream flag answers both: it stays up through a reconnect and goes down
-     * when the music actually leaves.
+     * The flag is the answer. It is set only when this controller paused for
+     * focus or deferred a play, and every reason not to resume clears it where
+     * that reason happens: a pause the listener asked for, a permanent loss, a
+     * local play, teardown, and the listener choosing another player. Asking a
+     * second question at the moment of the gain means asking about a world that
+     * has already changed, which is what went wrong three times.
      */
-    fun onFocusGain(resumeOwed: Boolean, localOutputStillStreaming: Boolean): FocusGain =
-        if (resumeOwed && localOutputStillStreaming) FocusGain.RESUME else FocusGain.IGNORE
+    fun onFocusGain(resumeOwed: Boolean): FocusGain =
+        if (resumeOwed) FocusGain.RESUME else FocusGain.IGNORE
+
+    /**
+     * Whether the listener choosing [newSelectedPlayerId] cancels a resume owed to
+     * the local player [localPlayerId].
+     *
+     * This is the one case the old conditions existed for: moving to another
+     * speaker mid-interruption, which sends no pause to the player being left, so
+     * nothing else would clear the owed resume and the gain would start a second
+     * speaker. It is answered here, when the choice is made, rather than guessed
+     * at afterwards.
+     *
+     * A null selection is NOT a cancellation. It means the player list has not
+     * arrived, which happens on every reconnect, and treating it as a decision is
+     * exactly how the selected-player condition lost 16 resumes.
+     */
+    fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
+        newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId
 }
 
 /** The three answers the platform gives to a focus request. */
