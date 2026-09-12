@@ -261,6 +261,25 @@ class AudioFocusPolicyTest {
         assertThat(outcome).isEqualTo(AudioFocusPolicy.FocusGain.RESUME)
     }
 
+    /**
+     * The fault the owed-flag gate exposed: a transient loss while the phone was
+     * PAUSED still owed a resume, so the gain that followed started music the
+     * listener had stopped (2026-09-12 20:08, 20:18, 20:21, 20:23, each undone by
+     * hand). Nothing playing means nothing to pause and nothing owed.
+     */
+    @Test
+    fun `a transient loss while paused owes nothing`() {
+        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = false)
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.TransientLoss.NOTHING_PLAYING)
+    }
+
+    /** The interruption case itself must keep working: playing, so pause and owe. */
+    @Test
+    fun `a transient loss while playing pauses and owes a resume`() {
+        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = true)
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.TransientLoss.PAUSE_AND_OWE)
+    }
+
     /** A gain with nothing owed must not start playback of its own accord. */
     @Test
     fun `a gain with nothing owed starts nothing`() {

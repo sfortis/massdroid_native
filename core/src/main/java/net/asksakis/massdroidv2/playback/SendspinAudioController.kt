@@ -1447,6 +1447,16 @@ class SendspinAudioController(
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         hasAudioFocus = false
+                        // Asked BEFORE the pause below, which is what clears the
+                        // intent, and above the call split so the freeze path is
+                        // covered too: a loss while nothing plays must not owe a
+                        // resume or freeze an idle output.
+                        val transientLoss = AudioFocusPolicy.onTransientLoss(_userIntent.value)
+                        if (transientLoss == AudioFocusPolicy.TransientLoss.NOTHING_PLAYING) {
+                            Log.i(TAG, "Focus lost while nothing was playing: nothing to pause, no resume owed")
+                            clearDuck()
+                            return@setOnAudioFocusChangeListener
+                        }
                         if (isStreaming) {
                             if (isInActiveCall()) {
                                 // PHONE CALL: freeze (preserve the buffer) instead

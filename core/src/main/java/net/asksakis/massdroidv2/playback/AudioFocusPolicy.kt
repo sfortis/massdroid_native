@@ -159,6 +159,32 @@ object AudioFocusPolicy {
      * arrived, which happens on every reconnect, and treating it as a decision is
      * exactly how the selected-player condition lost 16 resumes.
      */
+    /** What a transient (non-duck) focus loss should do. */
+    enum class TransientLoss {
+        /** We were playing: pause, and owe a resume to the gain that follows. */
+        PAUSE_AND_OWE,
+
+        /** Nothing was playing: nothing to pause, and nothing may be owed. */
+        NOTHING_PLAYING
+    }
+
+    /**
+     * Decide what a transient focus loss does.
+     *
+     * We keep audio focus while paused, so another app's transient request reaches
+     * us whether we are playing or not. The loss handler used to owe a resume
+     * unconditionally, and while the gain still asked a second question that debt
+     * was masked. Once the owed flag became the whole gate (the fix for the lost
+     * resumes), every TikTok clip, keyboard click or notification that took focus
+     * while the phone was PAUSED created a phantom debt, and the gain that followed
+     * started music the listener had stopped: five self-starts in sixteen minutes on
+     * 2026-09-12. The listener's intent at the moment of the loss is the only thing
+     * that says whether there is anything to pause, so it is asked here, before the
+     * pause clears it.
+     */
+    fun onTransientLoss(listenerWantsPlayback: Boolean): TransientLoss =
+        if (listenerWantsPlayback) TransientLoss.PAUSE_AND_OWE else TransientLoss.NOTHING_PLAYING
+
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
         newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId
 }
