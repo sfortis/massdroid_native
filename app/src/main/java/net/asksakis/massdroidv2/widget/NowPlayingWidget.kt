@@ -8,7 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.ColorFilter
@@ -43,6 +44,7 @@ import androidx.glance.layout.size
 import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
+import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -70,7 +72,10 @@ class NowPlayingWidget : GlanceAppWidget() {
         fun nowPlayingWidgetStore(): NowPlayingWidgetStore
     }
 
-    override val sizeMode: SizeMode = SizeMode.Responsive(setOf(COMPACT, FULL))
+    // Exact, not Responsive: with breakpoints the composition is told the breakpoint's size,
+    // not the host's, so the artwork stopped short of the card's height and nothing could be
+    // centred in the space actually available. One widget re-rendering per resize is cheap.
+    override val sizeMode: SizeMode = SizeMode.Exact
 
     /**
      * The render session Glance keeps open re-composes on an update but does not call
@@ -103,61 +108,79 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     @Composable
     private fun Content(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
-        val compact = LocalSize.current.height < FULL.height
+        val size = LocalSize.current
+        val innerHeight = size.height - CARD_PADDING * 2
+        val innerWidth = size.width - CARD_PADDING * 2
         Box(
             modifier = GlanceModifier
                 .fillMaxSize()
                 .background(GlanceTheme.colors.surface)
                 .cornerRadius(28.dp)
                 .padding(CARD_PADDING)
-                .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING))
+                .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING)),
+            contentAlignment = Alignment.Center
         ) {
-            if (compact) CompactRow(snapshot, artwork) else FullCard(snapshot, artwork)
+            if (innerHeight < COMPACT_MAX_HEIGHT) {
+                CompactRow(snapshot, artwork, innerHeight)
+            } else {
+                FullCard(snapshot, artwork, innerWidth, innerHeight)
+            }
         }
     }
 
-    /** One cell high: artwork, two text lines and the three buttons in a single row. */
+    /** One cell high: artwork, two text lines and the buttons in a single centred row. */
     @Composable
-    private fun CompactRow(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
-        Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(artwork, 52.dp, 14.dp)
+    private fun CompactRow(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerHeight: Dp) {
+        val play = innerHeight.coerceIn(40.dp, 56.dp)
+        Row(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Artwork(artwork, innerHeight, 14.dp)
             Spacer(GlanceModifier.width(12.dp))
-            Column(modifier = GlanceModifier.defaultWeight()) {
-                TitleLine(snapshot, 15.sp)
-                SubtitleLine(snapshot, 13.sp)
+            Column(modifier = GlanceModifier.defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
+                TitleLine(snapshot, 15.sp, centred = false)
+                SubtitleLine(snapshot, 13.sp, centred = false)
             }
             Spacer(GlanceModifier.width(8.dp))
-            TransportButtons(snapshot, sideSize = 44.dp, playSize = 52.dp)
+            TransportButtons(snapshot, sideSize = play * 0.8f, playSize = play)
         }
     }
 
     /**
-     * Two cells high: the artwork fills the card's height on the left; on the right one
-     * centred column holds the player chip, title, artist and, directly under them and
-     * left-aligned with them, the three buttons. Nothing is pinned to the card's edges.
+     * Two or more cells high: the artwork takes the card's full height on the left (capped
+     * so text keeps room on narrow hosts); the rest is one column centred both ways with
+     * the player chip, title, artist and the buttons, all centred on the same axis.
      */
     @Composable
-    private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
-        val artSize = LocalSize.current.height - CARD_PADDING * 2
-        Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(artwork, artSize, 24.dp)
+    private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerWidth: Dp, innerHeight: Dp) {
+        val art = minOf(innerHeight, innerWidth * 0.42f)
+        val play = (innerHeight * 0.3f).coerceIn(48.dp, 72.dp)
+        Row(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Artwork(artwork, art, 24.dp)
             Spacer(GlanceModifier.width(16.dp))
             Column(
                 modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 PlayerChip(snapshot)
                 Spacer(GlanceModifier.height(8.dp))
-                TitleLine(snapshot, 17.sp)
-                SubtitleLine(snapshot, 14.sp)
+                TitleLine(snapshot, 17.sp, centred = true)
+                SubtitleLine(snapshot, 14.sp, centred = true)
                 Spacer(GlanceModifier.height(10.dp))
-                TransportButtons(snapshot, sideSize = 48.dp, playSize = 56.dp)
+                TransportButtons(snapshot, sideSize = play * 0.8f, playSize = play)
             }
         }
     }
 
     @Composable
-    private fun Artwork(artwork: Bitmap?, sizeDp: androidx.compose.ui.unit.Dp, radius: androidx.compose.ui.unit.Dp) {
+    private fun Artwork(artwork: Bitmap?, sizeDp: Dp, radius: Dp) {
         val modifier = GlanceModifier.size(sizeDp).cornerRadius(radius)
         if (artwork != null) {
             Image(
@@ -217,16 +240,21 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun TitleLine(snapshot: NowPlayingWidgetSnapshot, size: androidx.compose.ui.unit.TextUnit) {
+    private fun TitleLine(snapshot: NowPlayingWidgetSnapshot, size: TextUnit, centred: Boolean) {
         Text(
             text = if (snapshot.hasTrack) snapshot.title else "Nothing playing",
             maxLines = 1,
-            style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = size, fontWeight = FontWeight.Bold)
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurface,
+                fontSize = size,
+                fontWeight = FontWeight.Bold,
+                textAlign = if (centred) TextAlign.Center else TextAlign.Start
+            )
         )
     }
 
     @Composable
-    private fun SubtitleLine(snapshot: NowPlayingWidgetSnapshot, size: androidx.compose.ui.unit.TextUnit) {
+    private fun SubtitleLine(snapshot: NowPlayingWidgetSnapshot, size: TextUnit, centred: Boolean) {
         val text = when {
             snapshot.hasTrack -> snapshot.artist
             snapshot.playerName.isBlank() -> "Open MassDroid to pick a player"
@@ -236,7 +264,11 @@ class NowPlayingWidget : GlanceAppWidget() {
         Text(
             text = text,
             maxLines = 1,
-            style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = size)
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = size,
+                textAlign = if (centred) TextAlign.Center else TextAlign.Start
+            )
         )
     }
 
@@ -247,8 +279,8 @@ class NowPlayingWidget : GlanceAppWidget() {
     @Composable
     private fun TransportButtons(
         snapshot: NowPlayingWidgetSnapshot,
-        sideSize: androidx.compose.ui.unit.Dp,
-        playSize: androidx.compose.ui.unit.Dp
+        sideSize: Dp,
+        playSize: Dp
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(R.drawable.ic_widget_skip_previous, "Previous", TransportCommand.PREVIOUS, sideSize, filled = false)
@@ -270,7 +302,7 @@ class NowPlayingWidget : GlanceAppWidget() {
         icon: Int,
         description: String,
         command: TransportCommand,
-        buttonSize: androidx.compose.ui.unit.Dp,
+        buttonSize: Dp,
         filled: Boolean
     ) {
         val base = GlanceModifier
@@ -298,8 +330,8 @@ class NowPlayingWidget : GlanceAppWidget() {
     )
 
     companion object {
-        private val COMPACT = DpSize(180.dp, 56.dp)
-        private val FULL = DpSize(180.dp, 140.dp)
+        /** Below this inner height the card is one cell high and uses the single-row layout. */
+        private val COMPACT_MAX_HEIGHT = 84.dp
         private const val ARTWORK_PX = 320
         private val CARD_PADDING = 14.dp
     }
