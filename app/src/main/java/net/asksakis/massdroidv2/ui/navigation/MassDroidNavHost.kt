@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.navigation
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -155,6 +157,7 @@ fun MassDroidNavHost(
         composable(Routes.NOW_PLAYING) {
             NowPlayingScreen(
                 onBack = { navController.popBackStack() },
+                topBarInsets = WindowInsets.statusBars,
                 onNavigateToArtist = { itemId, provider, name ->
                     navController.navigate(Routes.artistDetail(itemId, provider, name))
                 },
