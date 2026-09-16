@@ -498,24 +498,29 @@ class SendspinManager(
 
     private fun startTimeSync() {
         timeSyncJob?.cancel()
-        val previousOffsetUs = clockSynchronizer.currentOffsetUs()
-        if (previousOffsetUs != 0L) {
-            // The server clock reference does not change when we leave/rejoin a
-            // group, so a recently-converged offset is still good on rejoin. If
-            // the prior filter had converged, seed at a TIGHT covariance (~3 ms)
-            // so the playback-start gate (error <= 5 ms) passes immediately,
-            // instead of the wide ~31 ms seed that forces a full re-convergence.
-            // A transient RTT spike at the join moment could otherwise stretch
-            // that re-convergence to 20-30 s of "rebuffering". The tight seed
-            // still lets good-RTT samples pull the offset and effectively ignores
-            // bad-RTT ones (their variance dwarfs the seed). A prior that had NOT
-            // converged keeps the conservative wide seed.
-            val priorConverged = clockSynchronizer.currentSampleCount() >= 8 &&
-                clockSynchronizer.errorUs() in 1L..2_000L
-            val seedCovariance = if (priorConverged) 9_000_000.0 else 1_000_000_000.0
+        // The server clock reference does not change when we leave/rejoin a group, so
+        // a recently converged offset is still good on rejoin and a TIGHT seed (~3 ms)
+        // lets the playback-start gate pass at once instead of re-converging through a
+        // possible RTT spike. But the offset is against System.nanoTime(), which stops
+        // while the phone sleeps: a prior from before a nap is stale by the slept time,
+        // and trusting it tightly left the phone silent (2026-09-16, 870 s stale). The
+        // policy corrects the offset by the measured pause and goes WIDE unless the
+        // prior is converged, recent and unpaused. See ClockSeedPolicy.
+        val pauseUs = clockSynchronizer.monotonicPauseSinceLastSampleUs()
+        val seed = ClockSeedPolicy.seedForRejoin(
+            previousOffsetUs = clockSynchronizer.currentOffsetUs(),
+            monotonicPauseUs = pauseUs,
+            sinceLastSampleUs = clockSynchronizer.bootUsSinceLastSample(),
+            priorSamples = clockSynchronizer.currentSampleCount(),
+            priorErrorUs = clockSynchronizer.errorUs(),
+        )
+        if (seed != null) {
+            if (kotlin.math.abs(pauseUs) > ClockSeedPolicy.PAUSE_TOLERANCE_US) {
+                Log.i(TAG, "Clock seed: monotonic clock paused ${pauseUs / 1000} ms since the last sample, offset corrected")
+            }
             clockSynchronizer.softReset(
-                previousOffsetUs = previousOffsetUs,
-                initialCovariance = seedCovariance,
+                previousOffsetUs = seed.offsetUs,
+                initialCovariance = seed.covariance,
             )
             clockSynced = true
         }
