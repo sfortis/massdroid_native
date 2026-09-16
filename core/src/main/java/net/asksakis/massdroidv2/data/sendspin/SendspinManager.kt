@@ -330,6 +330,20 @@ class SendspinManager(
                     serverTransmittedUs = t3,
                     clientReceivedUs = t4
                 )
+                if (ClockSeedPolicy.seedRejected(clockSynchronizer.currentSampleCount(), clockSynchronizer.lastResidualUs())) {
+                    // The seed and the world disagree by more than any prior could drift:
+                    // start over from this sample rather than average a wrong offset down
+                    // for minutes while the output waits on a timeline in the future.
+                    Log.w(TAG, "Clock seed rejected: sample disagrees by ${clockSynchronizer.lastResidualUs() / 1000} ms, " +
+                        "restarting the filter from it")
+                    clockSynchronizer.reset()
+                    clockSynchronizer.processTimeResponse(
+                        clientTransmittedUs = t1,
+                        serverReceivedUs = t2,
+                        serverTransmittedUs = t3,
+                        clientReceivedUs = t4
+                    )
+                }
                 clockSynced = clockSynchronizer.isSynced()
                 val count = clockSynchronizer.currentSampleCount()
                 if (count <= 5 || count % 20 == 0) {

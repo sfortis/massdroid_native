@@ -51,6 +51,9 @@ class ClockSynchronizer(
     // since then tells a rejoin how old the prior is and how long the phone slept.
     private var lastSampleBootUs = 0L
     private var lastSampleBootMinusMonoUs = 0L
+    // Measurement minus the offset the filter held before it, for the sample just processed.
+    // Read-only diagnostic: the seeding layer uses it to notice a seed the world contradicts.
+    @Volatile private var lastResidualUs = 0L
 
     // Drift significance gating (from JS reference)
     private var useDrift = false
@@ -110,6 +113,7 @@ class ClockSynchronizer(
         lastUpdateUs = clientReceivedUs
 
         // First measurement: seed offset
+        lastResidualUs = round(measurement - offset).toLong()
         if (count <= 0) {
             count = 1
             offset = measurement
@@ -256,6 +260,9 @@ class ClockSynchronizer(
 
     @Synchronized
     fun currentSampleCount(): Int = count
+
+    /** How far the last sample sat from the offset held before it, in microseconds. */
+    fun lastResidualUs(): Long = lastResidualUs
 
     /** Boot-clock time since the last accepted sample, or 0 when there is none. */
     @Synchronized

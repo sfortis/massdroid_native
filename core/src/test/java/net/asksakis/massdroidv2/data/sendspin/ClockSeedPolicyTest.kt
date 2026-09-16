@@ -40,4 +40,17 @@ class ClockSeedPolicyTest {
     fun `no prior means no seed`() {
         assertThat(ClockSeedPolicy.seedForRejoin(0, 0, 0, 0, 0)).isNull()
     }
+
+    @Test
+    fun `a first sample far from the seed rejects it`() {
+        assertThat(ClockSeedPolicy.seedRejected(samplesSinceSeedIncluded = 3, residualUs = 870_000_000)).isTrue()
+        assertThat(ClockSeedPolicy.seedRejected(samplesSinceSeedIncluded = 3, residualUs = -600_000)).isTrue()
+    }
+
+    @Test
+    fun `ordinary residuals and later samples never reject`() {
+        assertThat(ClockSeedPolicy.seedRejected(3, 40_000)).isFalse()
+        assertThat(ClockSeedPolicy.seedRejected(50, 870_000_000)).isFalse()
+        assertThat(ClockSeedPolicy.seedRejected(1, 870_000_000)).isFalse()
+    }
 }
