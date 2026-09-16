@@ -78,10 +78,15 @@ object WidgetBackdrop {
     /** Same source size and blur as the player's AlbumArtBackdrop. */
     private const val SOURCE_PX = 48
     private const val BLUR_RADIUS = 6
-    private val DARK_SCRIM = Triple(0.30f, 0.62f, 0.88f)
-    private val LIGHT_SCRIM = Triple(0.45f, 0.72f, 0.92f)
-    private const val DARK_VIGNETTE = 0.55f
-    private const val LIGHT_VIGNETTE = 0.28f
+
+    // Lighter than the player's scrim (0.30/0.62/0.88 and 0.55 vignette): those were tuned
+    // for a whole screen with text over the darkest band, and on a card two cells high
+    // they left nothing of the image but a tint. Readability comes from the artwork being
+    // blurred to a wash plus a moderate pull toward the surface colour.
+    private val DARK_SCRIM = Triple(0.18f, 0.42f, 0.66f)
+    private val LIGHT_SCRIM = Triple(0.35f, 0.58f, 0.78f)
+    private const val DARK_VIGNETTE = 0.38f
+    private const val LIGHT_VIGNETTE = 0.22f
     private const val VIGNETTE_CLEAR_STOP = 0.55f
     private const val VIGNETTE_RADIUS_SCALE = 0.78f
 }
