@@ -214,9 +214,12 @@ class NowPlayingWidget : GlanceAppWidget() {
      */
     @Composable
     private fun TallCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerWidth: Dp, innerHeight: Dp) {
-        val reserved = TALL_TEXT_BLOCK + 8.dp + 56.dp
+        // Everything under the artwork is a fixed stack; the artwork gets what is left.
+        // Measured, not guessed: chip ~32, title ~26, artist ~20, three spacers 32, the
+        // play button, plus a margin, or the buttons fall off the bottom of the card.
+        val play = TALL_PLAY_SIZE
+        val reserved = TALL_TEXT_BLOCK + TALL_SPACERS + play + TALL_SAFETY
         val art = minOf(innerWidth, innerHeight - reserved).coerceAtLeast(96.dp)
-        val play = (innerHeight * 0.18f).coerceIn(56.dp, 72.dp)
         Column(
             modifier = GlanceModifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically,
@@ -395,7 +398,10 @@ class NowPlayingWidget : GlanceAppWidget() {
         private const val HALF_LUMINANCE = 0.5
         /** Above this height-to-width ratio the card is laid out as a small player. */
         private const val TALL_ASPECT = 0.75f
-        /** Chip, title and artist rows of the tall layout, reserved before sizing the artwork. */
-        private val TALL_TEXT_BLOCK = 96.dp
+        /** Chip (~32), title (~26) and artist (~20) rows of the tall layout, reserved before sizing the artwork. */
+        private val TALL_TEXT_BLOCK = 78.dp
+        private val TALL_SPACERS = 32.dp
+        private val TALL_PLAY_SIZE = 64.dp
+        private val TALL_SAFETY = 16.dp
     }
 }
