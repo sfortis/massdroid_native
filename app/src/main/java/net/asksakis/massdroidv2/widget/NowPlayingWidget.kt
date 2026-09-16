@@ -8,7 +8,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Dp
+import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -93,7 +95,19 @@ class NowPlayingWidget : GlanceAppWidget() {
                 value = snapshot.imageUrl?.let { loadArtwork(context, it) }
             }
             GlanceTheme {
-                Content(snapshot, artwork)
+                val size = LocalSize.current
+                val surface = GlanceTheme.colors.surface.getColor(context).toArgb()
+                val isDark = ColorUtils.calculateLuminance(surface) < HALF_LUMINANCE
+                val density = context.resources.displayMetrics.density
+                val backdrop by produceState<Bitmap?>(initialValue = null, snapshot.imageUrl, size, surface) {
+                    val url = snapshot.imageUrl
+                    value = if (url == null) null else {
+                        val w = (size.width.value * density).toInt().coerceAtMost(BACKDROP_MAX_PX)
+                        val h = (w * size.height.value / size.width.value).toInt()
+                        WidgetBackdrop.render(context, url, w, h, surface, isDark)
+                    }
+                }
+                Content(snapshot, artwork, backdrop)
             }
         }
     }
@@ -108,7 +122,7 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun Content(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
+    private fun Content(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, backdrop: Bitmap?) {
         val size = LocalSize.current
         val innerHeight = size.height - CARD_PADDING * 2
         val innerWidth = size.width - CARD_PADDING * 2
@@ -121,14 +135,23 @@ class NowPlayingWidget : GlanceAppWidget() {
                 .appWidgetBackground()
                 .background(GlanceTheme.colors.surface)
                 .cornerRadius(android.R.dimen.system_app_widget_background_radius)
-                .padding(CARD_PADDING)
                 .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING)),
             contentAlignment = Alignment.Center
         ) {
-            if (innerHeight < COMPACT_MAX_HEIGHT) {
-                CompactRow(snapshot, artwork, innerHeight)
-            } else {
-                FullCard(snapshot, artwork, innerWidth, innerHeight)
+            if (backdrop != null) {
+                Image(
+                    provider = ImageProvider(backdrop),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = GlanceModifier.fillMaxSize()
+                )
+            }
+            Box(modifier = GlanceModifier.fillMaxSize().padding(CARD_PADDING), contentAlignment = Alignment.Center) {
+                if (innerHeight < COMPACT_MAX_HEIGHT) {
+                    CompactRow(snapshot, artwork, innerHeight)
+                } else {
+                    FullCard(snapshot, artwork, innerWidth, innerHeight)
+                }
             }
         }
     }
@@ -341,5 +364,8 @@ class NowPlayingWidget : GlanceAppWidget() {
         private val CARD_PADDING = 14.dp
         /** Material's minimum touch target; the side buttons never shrink below it. */
         private val MIN_TOUCH_TARGET = 48.dp
+        /** The baked backdrop never exceeds this width; RemoteViews bitmaps count against a small budget. */
+        private const val BACKDROP_MAX_PX = 640
+        private const val HALF_LUMINANCE = 0.5
     }
 }
