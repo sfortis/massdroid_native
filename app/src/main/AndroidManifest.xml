@@ -79,6 +79,18 @@
             </intent-filter>
         </service>
 
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_now_playing_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+        </receiver>
+
         <!-- Registers MassDroid as a media-button target so the OS routes hardware
              media/volume keys (wired/BT headset buttons, and Samsung's "media key
              app" picker) to the Media3 session, and wakes the service when a button

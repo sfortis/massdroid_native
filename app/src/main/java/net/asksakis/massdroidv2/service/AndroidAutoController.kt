@@ -38,6 +38,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.player.TransportCommand
 import net.asksakis.massdroidv2.ui.MainActivity
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
@@ -193,6 +194,32 @@ class AndroidAutoController(
         }
     }
 
+    /**
+     * Route a transport request the way every external controller's is routed: to the
+     * phone's own output while Sendspin is the active output, otherwise to the selected
+     * player. The widget comes in here so it can never pick a different target.
+     */
+    fun dispatchTransport(command: TransportCommand) {
+        val sendspin = if (shouldRouteToSendspin()) sendspinController() else null
+        when (command) {
+            TransportCommand.PLAY_PAUSE -> {
+                if (sendspin != null) return sendspin.handlePlay()
+                val id = activePlayerId() ?: return
+                scope.launch { playerRepository.playPause(id) }
+            }
+            TransportCommand.NEXT -> {
+                if (sendspin != null) return sendspin.handleNext()
+                val id = activePlayerId() ?: return
+                scope.launch { playerRepository.next(id) }
+            }
+            TransportCommand.PREVIOUS -> {
+                if (sendspin != null) return sendspin.handlePrev()
+                val id = activePlayerId() ?: return
+                scope.launch { playerRepository.previous(id) }
+            }
+        }
+    }
+
     private fun createRemotePlayer(): RemoteControlPlayer {
         return RemoteControlPlayer(
             Looper.getMainLooper(),
@@ -212,22 +239,8 @@ class AndroidAutoController(
                     scope.launch { playerRepository.pause(id) }
                 }
             },
-            onNext = {
-                if (shouldRouteToSendspin()) {
-                    sendspinController()?.handleNext()
-                } else {
-                    val id = activePlayerId() ?: return@RemoteControlPlayer
-                    scope.launch { playerRepository.next(id) }
-                }
-            },
-            onPrevious = {
-                if (shouldRouteToSendspin()) {
-                    sendspinController()?.handlePrev()
-                } else {
-                    val id = activePlayerId() ?: return@RemoteControlPlayer
-                    scope.launch { playerRepository.previous(id) }
-                }
-            },
+            onNext = { dispatchTransport(TransportCommand.NEXT) },
+            onPrevious = { dispatchTransport(TransportCommand.PREVIOUS) },
             onSeekToMediaItem = { mediaItemIndex ->
                 playQueueIndex(mediaItemIndex, reason = "seek_to_media_item")
             },

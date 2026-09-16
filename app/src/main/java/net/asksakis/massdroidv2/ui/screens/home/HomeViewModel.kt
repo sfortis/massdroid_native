@@ -34,6 +34,7 @@ private const val TAG = "HomeVM"
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    private val savedCredentialsConnector: net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector,
     @ApplicationContext context: Context,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
@@ -97,21 +98,10 @@ class HomeViewModel @Inject constructor(
     init {
         // Auto-connect on startup if we have saved credentials
         viewModelScope.launch {
-            wsClient.startupReady.first { it }
-            val state = wsClient.connectionState.value
             // Error counts as "needs connecting": a spent retry budget leaves the client
             // parked in Error, and opening the app must always be able to revive it.
-            if (state.needsConnect() && !wsClient.userDisconnected) {
-                val url = settingsRepository.serverUrl.first()
-                val token = settingsRepository.authToken.first()
-                if (url.isNotBlank() && token.isNotBlank()) {
-                    wsClient.connect(url, token)
-                    // Wait for successful connection (covers token-fail + credential-fallback cycle)
-                    kotlinx.coroutines.withTimeoutOrNull(5000) {
-                        wsClient.connectionState.first { it is ConnectionState.Connected }
-                    }
-                }
-            }
+            // The connector waits for the connection (token, then credential fallback).
+            savedCredentialsConnector.connectIfNeeded()
             _isInitializing.value = false
         }
 
