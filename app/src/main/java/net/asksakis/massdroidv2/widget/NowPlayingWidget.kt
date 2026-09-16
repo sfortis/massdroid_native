@@ -96,48 +96,57 @@ class NowPlayingWidget : GlanceAppWidget() {
             modifier = GlanceModifier
                 .fillMaxSize()
                 .background(GlanceTheme.colors.surface)
-                .cornerRadius(20.dp)
-                .padding(12.dp)
+                .cornerRadius(28.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING))
         ) {
             if (compact) CompactRow(snapshot, artwork) else FullCard(snapshot, artwork)
         }
     }
 
+    /** One cell high: artwork, two text lines and the three buttons in a single row. */
     @Composable
     private fun CompactRow(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
         Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(artwork, 44.dp)
-            Spacer(GlanceModifier.width(10.dp))
+            Artwork(artwork, 52.dp, 14.dp)
+            Spacer(GlanceModifier.width(12.dp))
             Column(modifier = GlanceModifier.defaultWeight()) {
-                TitleLine(snapshot)
-                SubtitleLine(snapshot)
+                TitleLine(snapshot, 15.sp)
+                SubtitleLine(snapshot, 13.sp)
             }
-            TransportButtons(snapshot, 36.dp)
+            Spacer(GlanceModifier.width(8.dp))
+            TransportButtons(snapshot, sideSize = 44.dp, playSize = 52.dp)
         }
     }
 
+    /** Two cells high: artwork on the left, player chip and text on the right, buttons below. */
     @Composable
     private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
-        Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(artwork, 96.dp)
-            Spacer(GlanceModifier.width(12.dp))
-            Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
-                PlayerLine(snapshot)
-                Spacer(GlanceModifier.height(2.dp))
-                TitleLine(snapshot)
-                SubtitleLine(snapshot)
-                Spacer(GlanceModifier.defaultWeight())
-                Row(modifier = GlanceModifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-                    TransportButtons(snapshot, 40.dp)
+        Column(modifier = GlanceModifier.fillMaxSize()) {
+            Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
+                Artwork(artwork, 84.dp, 18.dp)
+                Spacer(GlanceModifier.width(16.dp))
+                Column(modifier = GlanceModifier.defaultWeight()) {
+                    PlayerChip(snapshot)
+                    Spacer(GlanceModifier.height(6.dp))
+                    TitleLine(snapshot, 17.sp)
+                    SubtitleLine(snapshot, 14.sp)
                 }
+            }
+            Spacer(GlanceModifier.height(8.dp))
+            Row(
+                modifier = GlanceModifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TransportButtons(snapshot, sideSize = 52.dp, playSize = 64.dp)
             }
         }
     }
 
     @Composable
-    private fun Artwork(artwork: Bitmap?, sizeDp: androidx.compose.ui.unit.Dp) {
-        val modifier = GlanceModifier.size(sizeDp).cornerRadius(12.dp)
+    private fun Artwork(artwork: Bitmap?, sizeDp: androidx.compose.ui.unit.Dp, radius: androidx.compose.ui.unit.Dp) {
+        val modifier = GlanceModifier.size(sizeDp).cornerRadius(radius)
         if (artwork != null) {
             Image(
                 provider = ImageProvider(artwork),
@@ -160,43 +169,52 @@ class NowPlayingWidget : GlanceAppWidget() {
         }
     }
 
+    /** The selected player as an assist-chip: tonal pill with a speaker icon; opens the Players screen. */
     @Composable
-    private fun PlayerLine(snapshot: NowPlayingWidgetSnapshot) {
+    private fun PlayerChip(snapshot: NowPlayingWidgetSnapshot) {
         val label = when {
-            snapshot.playerName.isBlank() -> "No player selected"
+            snapshot.playerName.isBlank() -> "No player"
             snapshot.connected -> snapshot.playerName
-            else -> "${snapshot.playerName} (not connected)"
+            else -> "${snapshot.playerName} (offline)"
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = GlanceModifier.clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_PLAYERS))
+            modifier = GlanceModifier
+                .background(GlanceTheme.colors.secondaryContainer)
+                .cornerRadius(16.dp)
+                .padding(horizontal = 10.dp, vertical = 5.dp)
+                .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_PLAYERS))
         ) {
             Image(
                 provider = ImageProvider(R.drawable.ic_widget_speaker),
                 contentDescription = null,
-                colorFilter = ColorFilter.tint(GlanceTheme.colors.primary),
+                colorFilter = ColorFilter.tint(GlanceTheme.colors.onSecondaryContainer),
                 modifier = GlanceModifier.size(14.dp)
             )
-            Spacer(GlanceModifier.width(4.dp))
+            Spacer(GlanceModifier.width(6.dp))
             Text(
                 text = label,
                 maxLines = 1,
-                style = TextStyle(color = GlanceTheme.colors.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSecondaryContainer,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
             )
         }
     }
 
     @Composable
-    private fun TitleLine(snapshot: NowPlayingWidgetSnapshot) {
+    private fun TitleLine(snapshot: NowPlayingWidgetSnapshot, size: androidx.compose.ui.unit.TextUnit) {
         Text(
             text = if (snapshot.hasTrack) snapshot.title else "Nothing playing",
             maxLines = 1,
-            style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = size, fontWeight = FontWeight.Bold)
         )
     }
 
     @Composable
-    private fun SubtitleLine(snapshot: NowPlayingWidgetSnapshot) {
+    private fun SubtitleLine(snapshot: NowPlayingWidgetSnapshot, size: androidx.compose.ui.unit.TextUnit) {
         val text = when {
             snapshot.hasTrack -> snapshot.artist
             snapshot.playerName.isBlank() -> "Open MassDroid to pick a player"
@@ -206,42 +224,58 @@ class NowPlayingWidget : GlanceAppWidget() {
         Text(
             text = text,
             maxLines = 1,
-            style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 12.sp)
+            style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = size)
         )
     }
 
+    /**
+     * Previous and next as plain icon buttons, play/pause as a filled tonal circle in
+     * between, the Material 3 arrangement every media notification uses.
+     */
     @Composable
-    private fun TransportButtons(snapshot: NowPlayingWidgetSnapshot, buttonSize: androidx.compose.ui.unit.Dp) {
+    private fun TransportButtons(
+        snapshot: NowPlayingWidgetSnapshot,
+        sideSize: androidx.compose.ui.unit.Dp,
+        playSize: androidx.compose.ui.unit.Dp
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TransportButton(R.drawable.ic_widget_skip_previous, "Previous", TransportCommand.PREVIOUS, buttonSize)
-            TransportButton(
+            IconButton(R.drawable.ic_widget_skip_previous, "Previous", TransportCommand.PREVIOUS, sideSize, filled = false)
+            Spacer(GlanceModifier.width(8.dp))
+            IconButton(
                 if (snapshot.isPlaying) R.drawable.ic_widget_pause else R.drawable.ic_widget_play,
                 if (snapshot.isPlaying) "Pause" else "Play",
                 TransportCommand.PLAY_PAUSE,
-                buttonSize
+                playSize,
+                filled = true
             )
-            TransportButton(R.drawable.ic_widget_skip_next, "Next", TransportCommand.NEXT, buttonSize)
+            Spacer(GlanceModifier.width(8.dp))
+            IconButton(R.drawable.ic_widget_skip_next, "Next", TransportCommand.NEXT, sideSize, filled = false)
         }
     }
 
     @Composable
-    private fun TransportButton(
+    private fun IconButton(
         icon: Int,
         description: String,
         command: TransportCommand,
-        buttonSize: androidx.compose.ui.unit.Dp
+        buttonSize: androidx.compose.ui.unit.Dp,
+        filled: Boolean
     ) {
+        val base = GlanceModifier
+            .size(buttonSize)
+            .cornerRadius(buttonSize / 2)
+            .clickable(actionRunCallback<WidgetTransportAction>(actionParametersOf(WidgetTransportAction.COMMAND to command.name)))
         Box(
-            modifier = GlanceModifier
-                .size(buttonSize)
-                .clickable(actionRunCallback<WidgetTransportAction>(actionParametersOf(WidgetTransportAction.COMMAND to command.name))),
+            modifier = if (filled) base.background(GlanceTheme.colors.primaryContainer) else base,
             contentAlignment = Alignment.Center
         ) {
             Image(
                 provider = ImageProvider(icon),
                 contentDescription = description,
-                colorFilter = ColorFilter.tint(GlanceTheme.colors.onSurface),
-                modifier = GlanceModifier.size(buttonSize * 3 / 5)
+                colorFilter = ColorFilter.tint(
+                    if (filled) GlanceTheme.colors.onPrimaryContainer else GlanceTheme.colors.onSurface
+                ),
+                modifier = GlanceModifier.size(buttonSize * 9 / 16)
             )
         }
     }
@@ -252,8 +286,8 @@ class NowPlayingWidget : GlanceAppWidget() {
     )
 
     companion object {
-        private val COMPACT = DpSize(180.dp, 48.dp)
-        private val FULL = DpSize(180.dp, 110.dp)
+        private val COMPACT = DpSize(180.dp, 56.dp)
+        private val FULL = DpSize(180.dp, 130.dp)
         private const val ARTWORK_PX = 256
     }
 }

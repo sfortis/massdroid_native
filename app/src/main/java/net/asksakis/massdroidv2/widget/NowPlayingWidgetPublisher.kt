@@ -44,6 +44,12 @@ class NowPlayingWidgetPublisher @Inject constructor(
         }
     }
 
+    /** A widget was just placed: give it the current state instead of waiting for a change. */
+    suspend fun publishCurrent() {
+        val state = wsClient.connectionState.value
+        publish(NowPlayingWidgetSnapshot.from(playerRepository.selectedPlayer.value, state is ConnectionState.Connected))
+    }
+
     private suspend fun publish(snapshot: NowPlayingWidgetSnapshot) {
         val placed = try {
             GlanceAppWidgetManager(context).getGlanceIds(NowPlayingWidget::class.java).isNotEmpty()
