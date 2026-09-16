@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Rect
@@ -38,13 +37,11 @@ object WidgetBackdrop {
         val canvas = Canvas(out)
         val paint = Paint(Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(blurred, coverCrop(blurred, widthPx, heightPx), Rect(0, 0, widthPx, heightPx), paint)
-        val (top, mid, bottom) = if (isDark) DARK_SCRIM else LIGHT_SCRIM
-        paint.shader = LinearGradient(
-            0f, 0f, 0f, heightPx.toFloat(),
-            intArrayOf(withAlpha(surfaceArgb, top), withAlpha(surfaceArgb, mid), withAlpha(surfaceArgb, bottom)),
-            floatArrayOf(0f, 0.5f, 1f),
-            Shader.TileMode.CLAMP
-        )
+        // A flat scrim, not the player's top-to-bottom gradient: on a card the gradient
+        // reads as a blob of colour parked in one corner. Flat tint plus a centred
+        // vignette keeps the wash symmetric whatever the card's shape.
+        paint.shader = null
+        paint.color = withAlpha(surfaceArgb, if (isDark) DARK_SCRIM else LIGHT_SCRIM)
         canvas.drawRect(0f, 0f, widthPx.toFloat(), heightPx.toFloat(), paint)
         val vignette = if (isDark) DARK_VIGNETTE else LIGHT_VIGNETTE
         paint.shader = RadialGradient(
@@ -83,8 +80,8 @@ object WidgetBackdrop {
     // for a whole screen with text over the darkest band, and on a card two cells high
     // they left nothing of the image but a tint. Readability comes from the artwork being
     // blurred to a wash plus a moderate pull toward the surface colour.
-    private val DARK_SCRIM = Triple(0.25f, 0.50f, 0.75f)
-    private val LIGHT_SCRIM = Triple(0.40f, 0.62f, 0.82f)
+    private const val DARK_SCRIM = 0.55f
+    private const val LIGHT_SCRIM = 0.68f
     private const val DARK_VIGNETTE = 0.45f
     private const val LIGHT_VIGNETTE = 0.25f
     private const val VIGNETTE_CLEAR_STOP = 0.55f
