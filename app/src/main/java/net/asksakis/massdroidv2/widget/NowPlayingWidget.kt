@@ -109,7 +109,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 .fillMaxSize()
                 .background(GlanceTheme.colors.surface)
                 .cornerRadius(28.dp)
-                .padding(16.dp)
+                .padding(CARD_PADDING)
                 .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING))
         ) {
             if (compact) CompactRow(snapshot, artwork) else FullCard(snapshot, artwork)
@@ -132,28 +132,26 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     /**
-     * Two cells high, laid out like the Material 3 media notification: artwork fills the
-     * left edge, the player chip and the two text lines sit top right, and the buttons
-     * sit bottom right under the text, so the card has no dead band in the middle.
+     * Two cells high: the artwork fills the card's height on the left; on the right one
+     * centred column holds the player chip, title, artist and, directly under them and
+     * left-aligned with them, the three buttons. Nothing is pinned to the card's edges.
      */
     @Composable
     private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
+        val artSize = LocalSize.current.height - CARD_PADDING * 2
         Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(artwork, 124.dp, 22.dp)
+            Artwork(artwork, artSize, 24.dp)
             Spacer(GlanceModifier.width(16.dp))
-            Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
+            Column(
+                modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 PlayerChip(snapshot)
-                Spacer(GlanceModifier.height(6.dp))
+                Spacer(GlanceModifier.height(8.dp))
                 TitleLine(snapshot, 17.sp)
                 SubtitleLine(snapshot, 14.sp)
-                Spacer(GlanceModifier.defaultWeight())
-                Row(
-                    modifier = GlanceModifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TransportButtons(snapshot, sideSize = 48.dp, playSize = 56.dp)
-                }
+                Spacer(GlanceModifier.height(10.dp))
+                TransportButtons(snapshot, sideSize = 48.dp, playSize = 56.dp)
             }
         }
     }
@@ -302,6 +300,7 @@ class NowPlayingWidget : GlanceAppWidget() {
     companion object {
         private val COMPACT = DpSize(180.dp, 56.dp)
         private val FULL = DpSize(180.dp, 140.dp)
-        private const val ARTWORK_PX = 256
+        private const val ARTWORK_PX = 320
+        private val CARD_PADDING = 14.dp
     }
 }
