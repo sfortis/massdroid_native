@@ -147,10 +147,10 @@ class NowPlayingWidget : GlanceAppWidget() {
                 )
             }
             Box(modifier = GlanceModifier.fillMaxSize().padding(CARD_PADDING), contentAlignment = Alignment.Center) {
-                if (innerHeight < COMPACT_MAX_HEIGHT) {
-                    CompactRow(snapshot, artwork, innerHeight)
-                } else {
-                    FullCard(snapshot, artwork, innerWidth, innerHeight)
+                when {
+                    innerHeight < COMPACT_MAX_HEIGHT -> CompactRow(snapshot, artwork, innerHeight)
+                    innerHeight > innerWidth * TALL_ASPECT -> TallCard(snapshot, artwork, innerWidth, innerHeight)
+                    else -> FullCard(snapshot, artwork, innerWidth, innerHeight)
                 }
             }
         }
@@ -204,6 +204,32 @@ class NowPlayingWidget : GlanceAppWidget() {
                 Spacer(GlanceModifier.height(10.dp))
                 TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
             }
+        }
+    }
+
+    /**
+     * Taller than wide, the way a widget stretched to three or four rows ends up: a small
+     * player. The artwork takes the width (capped so the text and buttons keep their
+     * rows), then the chip, the two text lines and the buttons, all centred.
+     */
+    @Composable
+    private fun TallCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerWidth: Dp, innerHeight: Dp) {
+        val reserved = TALL_TEXT_BLOCK + 8.dp + 56.dp
+        val art = minOf(innerWidth, innerHeight - reserved).coerceAtLeast(96.dp)
+        val play = (innerHeight * 0.18f).coerceIn(56.dp, 72.dp)
+        Column(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Artwork(artwork, art, 24.dp)
+            Spacer(GlanceModifier.height(12.dp))
+            PlayerChip(snapshot)
+            Spacer(GlanceModifier.height(8.dp))
+            TitleLine(snapshot, 18.sp, centred = true)
+            SubtitleLine(snapshot, 14.sp, centred = true)
+            Spacer(GlanceModifier.height(12.dp))
+            TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
         }
     }
 
@@ -367,5 +393,9 @@ class NowPlayingWidget : GlanceAppWidget() {
         /** The baked backdrop never exceeds this width; RemoteViews bitmaps count against a small budget. */
         private const val BACKDROP_MAX_PX = 640
         private const val HALF_LUMINANCE = 0.5
+        /** Above this height-to-width ratio the card is laid out as a small player. */
+        private const val TALL_ASPECT = 0.75f
+        /** Chip, title and artist rows of the tall layout, reserved before sizing the artwork. */
+        private val TALL_TEXT_BLOCK = 96.dp
     }
 }

@@ -83,10 +83,10 @@ object WidgetBackdrop {
     // for a whole screen with text over the darkest band, and on a card two cells high
     // they left nothing of the image but a tint. Readability comes from the artwork being
     // blurred to a wash plus a moderate pull toward the surface colour.
-    private val DARK_SCRIM = Triple(0.18f, 0.42f, 0.66f)
-    private val LIGHT_SCRIM = Triple(0.35f, 0.58f, 0.78f)
-    private const val DARK_VIGNETTE = 0.38f
-    private const val LIGHT_VIGNETTE = 0.22f
+    private val DARK_SCRIM = Triple(0.25f, 0.50f, 0.75f)
+    private val LIGHT_SCRIM = Triple(0.40f, 0.62f, 0.82f)
+    private const val DARK_VIGNETTE = 0.45f
+    private const val LIGHT_VIGNETTE = 0.25f
     private const val VIGNETTE_CLEAR_STOP = 0.55f
     private const val VIGNETTE_RADIUS_SCALE = 0.78f
 }
