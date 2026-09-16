@@ -45,6 +45,27 @@ object ClockSeedPolicy {
         return ClockSeed(corrected, covariance)
     }
 
+    /**
+     * Whether the first samples after a seed contradict it so badly that the seed must go.
+     *
+     * The filter has no outlier recovery until its hundredth sample (a port detail that
+     * stays as it is), and even a WIDE seed only averages a wrong prior down: 870 s went
+     * to 17 s on the first sample and then halved per sample, minutes of silence either
+     * way. A seed that is off by more than [SEED_REJECT_US] on any of its first samples is
+     * not a slightly stale prior, it is a different clock (a server restart, a nap the
+     * pause measurement missed), so the filter restarts from that sample instead.
+     */
+    fun seedRejected(samplesSinceSeedIncluded: Int, residualUs: Long): Boolean =
+        samplesSinceSeedIncluded in FIRST_SEEDED_SAMPLE..LAST_CHECKED_SAMPLE &&
+            kotlin.math.abs(residualUs) > SEED_REJECT_US
+
+    /** Half a second: far beyond any drift a real prior can accumulate, well inside any nap. */
+    const val SEED_REJECT_US = 500_000L
+
     private const val MIN_CONVERGED_SAMPLES = 8
     private const val MAX_CONVERGED_ERROR_US = 2_000L
+
+    /** softReset seeds the count at 2, so the first real sample after a seed is the third. */
+    private const val FIRST_SEEDED_SAMPLE = 3
+    private const val LAST_CHECKED_SAMPLE = 8
 }
