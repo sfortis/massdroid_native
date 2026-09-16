@@ -14,7 +14,10 @@ import kotlin.math.sqrt
  * Drift compensation is gated on statistical significance to avoid
  * amplifying noise when drift is too small to measure reliably.
  */
-class ClockSynchronizer {
+class ClockSynchronizer(
+    /** CLOCK_BOOTTIME microseconds: keeps counting through suspend, unlike nanoTime. */
+    private val bootNowUs: () -> Long = { android.os.SystemClock.elapsedRealtimeNanos() / 1000 }
+) {
 
     companion object {
         private const val TAG = "ClockSync"
@@ -44,6 +47,10 @@ class ClockSynchronizer {
     private var count = 0
     // Most recent round-trip time (us), surfaced for the streaming-status view.
     @Volatile private var lastRttUs = 0L
+    // Boot clock and (boot minus monotonic) at the last accepted sample. Their movement
+    // since then tells a rejoin how old the prior is and how long the phone slept.
+    private var lastSampleBootUs = 0L
+    private var lastSampleBootMinusMonoUs = 0L
 
     // Drift significance gating (from JS reference)
     private var useDrift = false
@@ -90,6 +97,8 @@ class ClockSynchronizer {
         val measurementVariance = maxError * maxError
 
         if (clientReceivedUs == lastUpdateUs) return
+        lastSampleBootUs = bootNowUs()
+        lastSampleBootMinusMonoUs = lastSampleBootUs - nowMonotonicUs()
 
         // Any sample that makes it into the filter clears the rejection
         // streak; the next reject is treated as fresh and pays a small
@@ -248,6 +257,19 @@ class ClockSynchronizer {
     @Synchronized
     fun currentSampleCount(): Int = count
 
+    /** Boot-clock time since the last accepted sample, or 0 when there is none. */
+    @Synchronized
+    fun bootUsSinceLastSample(): Long = if (lastSampleBootUs == 0L) 0L else bootNowUs() - lastSampleBootUs
+
+    /**
+     * How long the monotonic clock stood still since the last sample: the phone's
+     * suspended time. Zero (within jitter) when it stayed awake. The offset this filter
+     * holds is stale by exactly this amount.
+     */
+    @Synchronized
+    fun monotonicPauseSinceLastSampleUs(): Long =
+        if (lastSampleBootUs == 0L) 0L else (bootNowUs() - nowMonotonicUs()) - lastSampleBootMinusMonoUs
+
     /** Raw filter offset (us) — exposed for parity tests against sendspin-js. */
     @VisibleForTesting
     internal fun rawOffsetUs(): Double = offset
@@ -305,6 +327,11 @@ class ClockSynchronizer {
             }
             offsetCovariance = initialCovariance
             count = 2  // skip initialization phase
+            // reset() zeroed lastUpdateUs, so the first sample after a seed would take
+            // dt as the whole monotonic clock and predict offset + drift * dt with a
+            // garbage dt, blowing the covariance up and discarding the seed on the spot.
+            // Dating the seed "now" keeps the prediction honest and the seed in force.
+            lastUpdateUs = nowMonotonicUs()
             publishState()
             Log.d(TAG, "Soft reset: seeded offset=${previousOffsetUs}us " +
                 "drift=${"%.6f".format(drift)} useDrift=$useDrift covariance=${"%.0f".format(initialCovariance)}")
