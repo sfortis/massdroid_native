@@ -10,4 +10,5 @@
     android:updatePeriodMillis="0"
     android:widgetCategory="home_screen"
     android:description="@string/widget_now_playing_description"
+    android:previewImage="@drawable/widget_now_playing_preview"
     android:initialLayout="@layout/glance_default_loading_layout" />

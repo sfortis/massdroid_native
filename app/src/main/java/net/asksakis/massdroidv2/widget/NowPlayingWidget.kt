@@ -25,6 +25,7 @@ import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
+import androidx.glance.appwidget.appWidgetBackground
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
@@ -114,8 +115,12 @@ class NowPlayingWidget : GlanceAppWidget() {
         Box(
             modifier = GlanceModifier
                 .fillMaxSize()
+                // appWidgetBackground marks the root the launcher clips and themes; on
+                // Android 12+ the corner radius is the system's, so the card matches every
+                // other widget on the same home screen instead of a value of our own.
+                .appWidgetBackground()
                 .background(GlanceTheme.colors.surface)
-                .cornerRadius(28.dp)
+                .cornerRadius(android.R.dimen.system_app_widget_background_radius)
                 .padding(CARD_PADDING)
                 .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING)),
             contentAlignment = Alignment.Center
@@ -144,7 +149,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 SubtitleLine(snapshot, 13.sp, centred = false)
             }
             Spacer(GlanceModifier.width(8.dp))
-            TransportButtons(snapshot, sideSize = play * 0.8f, playSize = play)
+            TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
         }
     }
 
@@ -174,7 +179,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 TitleLine(snapshot, 17.sp, centred = true)
                 SubtitleLine(snapshot, 14.sp, centred = true)
                 Spacer(GlanceModifier.height(10.dp))
-                TransportButtons(snapshot, sideSize = play * 0.8f, playSize = play)
+                TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
             }
         }
     }
@@ -334,5 +339,7 @@ class NowPlayingWidget : GlanceAppWidget() {
         private val COMPACT_MAX_HEIGHT = 84.dp
         private const val ARTWORK_PX = 320
         private val CARD_PADDING = 14.dp
+        /** Material's minimum touch target; the side buttons never shrink below it. */
+        private val MIN_TOUCH_TARGET = 48.dp
     }
 }
