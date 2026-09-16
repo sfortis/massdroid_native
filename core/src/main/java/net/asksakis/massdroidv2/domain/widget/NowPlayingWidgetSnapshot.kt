@@ -24,6 +24,22 @@ data class NowPlayingWidgetSnapshot(
     companion object {
         val Empty = NowPlayingWidgetSnapshot()
 
+        /**
+         * The snapshot to publish after a change, or null when nothing should be published.
+         *
+         * The process is often started just to draw the widget and has no connection, and
+         * right after connecting the selected player is still being restored. Publishing
+         * "nothing" in either window replaced a good snapshot with an empty card. So while
+         * disconnected the last known track is kept and only marked offline and stopped,
+         * and a connected process with no selection yet publishes nothing and waits.
+         */
+        fun next(previous: NowPlayingWidgetSnapshot, player: Player?, connected: Boolean): NowPlayingWidgetSnapshot? =
+            when {
+                !connected -> previous.copy(connected = false, isPlaying = false)
+                player == null -> null
+                else -> from(player, connected = true)
+            }
+
         fun from(player: Player?, connected: Boolean): NowPlayingWidgetSnapshot {
             if (player == null) return NowPlayingWidgetSnapshot(connected = connected)
             val media = player.currentMedia

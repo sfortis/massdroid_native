@@ -37,20 +37,20 @@ class NowPlayingWidgetPublisher @Inject constructor(
         if (job?.isActive == true) return
         job = scope.launch {
             combine(playerRepository.selectedPlayer, wsClient.connectionState) { player, state ->
-                NowPlayingWidgetSnapshot.from(player, state is ConnectionState.Connected)
+                player to (state is ConnectionState.Connected)
             }
                 .distinctUntilChanged()
-                .collect { snapshot -> publish(snapshot) }
+                .collect { (player, connected) -> publish(player, connected) }
         }
     }
 
     /** A widget was just placed: give it the current state instead of waiting for a change. */
     suspend fun publishCurrent() {
-        val state = wsClient.connectionState.value
-        publish(NowPlayingWidgetSnapshot.from(playerRepository.selectedPlayer.value, state is ConnectionState.Connected))
+        publish(playerRepository.selectedPlayer.value, wsClient.connectionState.value is ConnectionState.Connected)
     }
 
-    private suspend fun publish(snapshot: NowPlayingWidgetSnapshot) {
+    private suspend fun publish(player: net.asksakis.massdroidv2.domain.model.Player?, connected: Boolean) {
+        val snapshot = NowPlayingWidgetSnapshot.next(store.load(), player, connected) ?: return
         val placed = try {
             GlanceAppWidgetManager(context).getGlanceIds(NowPlayingWidget::class.java).isNotEmpty()
         } catch (e: Exception) {
@@ -58,6 +58,7 @@ class NowPlayingWidgetPublisher @Inject constructor(
             false
         }
         if (!placed) return
+        Log.d(TAG, "publish playing=${snapshot.isPlaying} connected=${snapshot.connected} player=${snapshot.playerName} title=${snapshot.title}")
         store.save(snapshot)
         try {
             NowPlayingWidget().updateAll(context)

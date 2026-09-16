@@ -38,4 +38,24 @@ class NowPlayingWidgetSnapshotTest {
         assertThat(s.hasTrack).isFalse()
         assertThat(s.playerName).isEqualTo("Kitchen")
     }
+
+    @Test
+    fun `losing the connection keeps the last track but marks it offline and stopped`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true)
+        val next = NowPlayingWidgetSnapshot.next(last, player = null, connected = false)
+        assertThat(next).isEqualTo(last.copy(connected = false, isPlaying = false))
+    }
+
+    @Test
+    fun `connected with the selection still being restored publishes nothing`() {
+        val last = NowPlayingWidgetSnapshot.from(player, connected = true)
+        assertThat(NowPlayingWidgetSnapshot.next(last, player = null, connected = true)).isNull()
+    }
+
+    @Test
+    fun `a selected player on a live connection replaces the snapshot`() {
+        val other = player.copy(playerId = "s25", displayName = "MassDroid S25")
+        val next = NowPlayingWidgetSnapshot.next(NowPlayingWidgetSnapshot.Empty, other, connected = true)
+        assertThat(next?.playerName).isEqualTo("MassDroid S25")
+    }
 }

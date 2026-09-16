@@ -5,6 +5,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,11 +72,20 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     override val sizeMode: SizeMode = SizeMode.Responsive(setOf(COMPACT, FULL))
 
+    /**
+     * The render session Glance keeps open re-composes on an update but does not call
+     * this method again, so a snapshot read here once went stale: the card kept showing
+     * the state from the first draw. The composition therefore observes the store, and
+     * every save re-draws the placed widgets through the live session.
+     */
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val store = EntryPointAccessors.fromApplication(context, Dependencies::class.java).nowPlayingWidgetStore()
-        val snapshot = store.load()
-        val artwork = snapshot.imageUrl?.let { loadArtwork(context, it) }
+        val initial = store.load()
         provideContent {
+            val snapshot by store.snapshots.collectAsState(initial)
+            val artwork by produceState<Bitmap?>(initialValue = null, key1 = snapshot.imageUrl) {
+                value = snapshot.imageUrl?.let { loadArtwork(context, it) }
+            }
             GlanceTheme {
                 Content(snapshot, artwork)
             }
@@ -97,7 +109,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 .fillMaxSize()
                 .background(GlanceTheme.colors.surface)
                 .cornerRadius(28.dp)
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(16.dp)
                 .clickable(openApp(LocalContext.current, MainActivity.ACTION_OPEN_NOW_PLAYING))
         ) {
             if (compact) CompactRow(snapshot, artwork) else FullCard(snapshot, artwork)
@@ -119,27 +131,29 @@ class NowPlayingWidget : GlanceAppWidget() {
         }
     }
 
-    /** Two cells high: artwork on the left, player chip and text on the right, buttons below. */
+    /**
+     * Two cells high, laid out like the Material 3 media notification: artwork fills the
+     * left edge, the player chip and the two text lines sit top right, and the buttons
+     * sit bottom right under the text, so the card has no dead band in the middle.
+     */
     @Composable
     private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?) {
-        Column(modifier = GlanceModifier.fillMaxSize()) {
-            Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
-                Artwork(artwork, 84.dp, 18.dp)
-                Spacer(GlanceModifier.width(16.dp))
-                Column(modifier = GlanceModifier.defaultWeight()) {
-                    PlayerChip(snapshot)
-                    Spacer(GlanceModifier.height(6.dp))
-                    TitleLine(snapshot, 17.sp)
-                    SubtitleLine(snapshot, 14.sp)
+        Row(modifier = GlanceModifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            Artwork(artwork, 124.dp, 22.dp)
+            Spacer(GlanceModifier.width(16.dp))
+            Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
+                PlayerChip(snapshot)
+                Spacer(GlanceModifier.height(6.dp))
+                TitleLine(snapshot, 17.sp)
+                SubtitleLine(snapshot, 14.sp)
+                Spacer(GlanceModifier.defaultWeight())
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TransportButtons(snapshot, sideSize = 48.dp, playSize = 56.dp)
                 }
-            }
-            Spacer(GlanceModifier.height(8.dp))
-            Row(
-                modifier = GlanceModifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TransportButtons(snapshot, sideSize = 52.dp, playSize = 64.dp)
             }
         }
     }
@@ -266,14 +280,14 @@ class NowPlayingWidget : GlanceAppWidget() {
             .cornerRadius(buttonSize / 2)
             .clickable(actionRunCallback<WidgetTransportAction>(actionParametersOf(WidgetTransportAction.COMMAND to command.name)))
         Box(
-            modifier = if (filled) base.background(GlanceTheme.colors.primaryContainer) else base,
+            modifier = if (filled) base.background(GlanceTheme.colors.primary) else base,
             contentAlignment = Alignment.Center
         ) {
             Image(
                 provider = ImageProvider(icon),
                 contentDescription = description,
                 colorFilter = ColorFilter.tint(
-                    if (filled) GlanceTheme.colors.onPrimaryContainer else GlanceTheme.colors.onSurface
+                    if (filled) GlanceTheme.colors.onPrimary else GlanceTheme.colors.onSurface
                 ),
                 modifier = GlanceModifier.size(buttonSize * 9 / 16)
             )
@@ -287,7 +301,7 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     companion object {
         private val COMPACT = DpSize(180.dp, 56.dp)
-        private val FULL = DpSize(180.dp, 130.dp)
+        private val FULL = DpSize(180.dp, 140.dp)
         private const val ARTWORK_PX = 256
     }
 }
