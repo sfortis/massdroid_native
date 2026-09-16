@@ -97,17 +97,42 @@ fun PlayersScreen(
         available.filter { it.type != PlayerType.GROUP }
             .sortedBy { it.displayName.lowercase() }
     }
-    val groupCards = remember(available) {
-        available.filter { it.type == PlayerType.GROUP }
+    // An ad-hoc sync group has no player of its own: MA marks the leader with
+    // group_childs (itself included) and each member with synced_to. It is still a
+    // group to the listener, so the leader gets a group card next to the virtual
+    // groups (#74), while leader and members keep their own cards under PLAYERS.
+    val syncLeaders = remember(available) {
+        val ids = available.map { it.playerId }.toSet()
+        available.filter { p ->
+            p.type != PlayerType.GROUP &&
+                p.activeGroup.isNullOrEmpty() &&
+                p.groupChilds.any { it != p.playerId && it in ids }
+        }
+    }
+    val groupCards = remember(available, syncLeaders) {
+        (available.filter { it.type == PlayerType.GROUP } + syncLeaders)
             .sortedBy { it.displayName.lowercase() }
     }
-    val groupMembers = remember(available) {
+    val groupMembers = remember(available, groupCards) {
         val playerById = available.associateBy { it.playerId }
-        available.filter { it.type == PlayerType.GROUP }.associate { group ->
+        groupCards.associate { group ->
+            // A virtual group is only a container, so it is not listed inside itself;
+            // a sync leader plays too, so it is.
+            val includeSelf = group.type != PlayerType.GROUP
             group.playerId to group.groupChilds
-                .filter { it != group.playerId }
+                .filter { includeSelf || it != group.playerId }
                 .mapNotNull { playerById[it] }
                 .sortedBy { it.displayName.lowercase() }
+        }
+    }
+    val syncedToName = remember(available, syncLeaders) {
+        val nameById = available.associate { it.playerId to it.displayName }
+        val leaderOf = syncLeaders.flatMap { leader ->
+            leader.groupChilds.filter { it != leader.playerId }.map { it to leader.playerId }
+        }.toMap()
+        available.associate { p ->
+            val leaderId = p.syncedTo?.takeIf { it != p.playerId } ?: leaderOf[p.playerId]
+            p.playerId to leaderId?.let(nameById::get)
         }
     }
     val activePlayerCount = remember(available) {
@@ -194,6 +219,7 @@ fun PlayersScreen(
                                         currentDetectedRoom?.playerId == player.playerId,
                                     hasSleepTimer = sleepTimerTargetPlayerId == player.playerId,
                                     roomNames = playerRoomMap[player.playerId] ?: emptyList(),
+                                    syncedToName = syncedToName[player.playerId],
                                     onClick = { viewModel.selectPlayer(player) },
                                     onIconLongPress = { iconPickerPlayer = player },
                                     onQueueMenuClick = { queueMenuPlayer = player },
@@ -206,10 +232,12 @@ fun PlayersScreen(
                             item(key = "header_groups") {
                                 PlayersSectionHeader("GROUPS")
                             }
-                            items(groupCards, key = { it.playerId }) { group ->
+                            items(groupCards, key = { "group_" + it.playerId }) { group ->
                                 PlayerListItem(
                                     player = group,
                                     isSelected = group.playerId == selectedPlayer?.playerId,
+                                    isLocalPlayer = sendspinClientId != null &&
+                                        group.playerId == sendspinClientId,
                                     isFollowMeSelected = proximityConfig.enabled &&
                                         currentDetectedRoom?.playerId == group.playerId,
                                     hasSleepTimer = sleepTimerTargetPlayerId == group.playerId,
@@ -467,6 +495,8 @@ private fun PlayerListItem(
     isFollowMeSelected: Boolean = false,
     hasSleepTimer: Boolean = false,
     roomNames: List<String> = emptyList(),
+    /** Name of the sync leader this player follows (or leads), shown on its own card. */
+    syncedToName: String? = null,
     isGroup: Boolean = false,
     members: List<Player> = emptyList(),
     onClick: () -> Unit,
@@ -568,6 +598,21 @@ private fun PlayerListItem(
                                 contentDescription = null,
                                 tint = groupAccentColor,
                                 modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        if (!isGroup && syncedToName != null) {
+                            Icon(
+                                Icons.Default.Link,
+                                contentDescription = "Synced",
+                                tint = groupAccentColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = syncedToName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = groupAccentColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         if (hasSleepTimer) {
