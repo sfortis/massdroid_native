@@ -9,7 +9,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -20,11 +19,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
-import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
-import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverContentLoader
@@ -73,6 +70,7 @@ data class DiscoverUiState(
 
 @HiltViewModel
 class DiscoverViewModel @Inject constructor(
+    private val savedCredentialsConnector: net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector,
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val settingsRepository: SettingsRepository,
@@ -173,16 +171,7 @@ class DiscoverViewModel @Inject constructor(
     }
 
     private fun autoConnect() {
-        viewModelScope.launch {
-            wsClient.startupReady.first { it }
-            if (wsClient.connectionState.value.needsConnect() && !wsClient.userDisconnected) {
-                val url = settingsRepository.serverUrl.first()
-                val token = settingsRepository.authToken.first()
-                if (url.isNotBlank() && token.isNotBlank() && url.contains("://")) {
-                    wsClient.connect(url, token)
-                }
-            }
-        }
+        viewModelScope.launch { savedCredentialsConnector.connectIfNeeded() }
     }
 
     private suspend fun loadFromCache() {

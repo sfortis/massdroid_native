@@ -52,6 +52,9 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+- Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
+- Now Playing opened from the Players screen keeps its title bar below the status bar.
+- The elapsed time no longer shows a huge number when the app opens while a track is playing.
 - Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
 - Now Playing: the album art now colours the whole player screen.
 - Now Playing: an idle speaker no longer shows another player's track, and Transfer Queue switches you to the target player.
@@ -120,6 +123,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Connection Diagnostics** : Live latency graph with roundtrip stats and server version info
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens
+- **Home Screen Widget** : Album art, track, selected player and transport buttons on the home screen, resizable from a 4x1 row to a 4x2 card. Buttons reconnect on their own when the app is closed.
 
 ## Exploration & Discovery
 

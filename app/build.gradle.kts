@@ -187,6 +187,10 @@ dependencies {
     // Custom Tabs for OAuth flows (Home Assistant SSO)
     implementation("androidx.browser:browser:1.8.0")
 
+    // Home screen widget (Compose-style RemoteViews)
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation("androidx.glance:glance-material3:1.1.1")
+
     // Palette for dynamic colors
     implementation("androidx.palette:palette-ktx:1.0.0")
 

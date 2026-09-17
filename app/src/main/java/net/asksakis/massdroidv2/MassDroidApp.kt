@@ -42,6 +42,8 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
+    @Inject
+    lateinit var nowPlayingWidgetPublisher: net.asksakis.massdroidv2.widget.NowPlayingWidgetPublisher
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -123,6 +125,8 @@ class MassDroidApp : Application(), ImageLoaderFactory {
         // Connect to PlaybackService for media notification (required for MIUI/vendor ROMs
         // that block late service binding)
         connectPlaybackService()
+        // The home screen widget follows the selected player for the life of the process.
+        nowPlayingWidgetPublisher.start(appScope)
 
         // Observe connection state: save token on connect, clear on auth failure
         appScope.launch {

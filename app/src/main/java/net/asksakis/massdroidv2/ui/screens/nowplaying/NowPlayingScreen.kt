@@ -127,6 +127,12 @@ fun NowPlayingScreen(
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit = { _, _, _ -> },
     isForeground: Boolean = true,
+    /**
+     * Insets the top bar keeps clear of. Zero inside the expanding player sheet, which
+     * starts below the status bar on its own; the status bar when this screen is a
+     * navigation destination (Players screen, a widget tap), where nothing else pads it.
+     */
+    topBarInsets: WindowInsets = WindowInsets(0, 0, 0, 0),
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
     var showQueueSheet by remember { mutableStateOf(false) }
@@ -305,7 +311,7 @@ fun NowPlayingScreen(
                     },
                     expandedHeight = 48.dp,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                    windowInsets = WindowInsets(0, 0, 0, 0)
+                    windowInsets = topBarInsets
                 )
             }
         },

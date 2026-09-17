@@ -357,7 +357,13 @@ class PlayerRepositoryImpl @Inject constructor(
                                     players.first { list -> list.any { it.playerId == id } }
                                 }
                                 if (appeared != null) {
-                                    if (_selectedPlayer.value?.playerId != id) selectPlayer(id)
+                                    // Always through selectPlayer: refreshPlayers() has usually
+                                    // filled _selectedPlayer by now, but the queue has not been
+                                    // fetched, and skipping here left the position unanchored
+                                    // until the next QUEUE_UPDATED (a cold open showed the wall
+                                    // clock as the elapsed time). selectPlayer() itself skips the
+                                    // work only when a queue snapshot is already present.
+                                    selectPlayer(id)
                                     Log.d(TAG, "Restored saved player: $id")
                                 } else {
                                     Log.d(TAG, "Restored player $id not present within ${PLAYER_RESTORE_WAIT_MS}ms")
@@ -1279,6 +1285,10 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.d("PosDbg", "ticker skip start (not playing)")
             return
         }
+        // A ticker started before any server anchor arrived (connect-time restore of a
+        // playing player) must count from now, not from 1970: with a zero base timestamp
+        // the interpolation returned the wall clock in seconds as the elapsed time.
+        if (positionBaseTimestamp == 0L) positionBaseTimestamp = System.currentTimeMillis()
         Log.d("PosDbg", "ticker start base=$positionBaseTime")
         positionTickJob = scope.launch {
             while (isActive) {

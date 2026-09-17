@@ -12,6 +12,8 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media3.session.MediaLibraryService
+import net.asksakis.massdroidv2.widget.WidgetTransportAction
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.media3.session.MediaSession
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -20,7 +22,6 @@ import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
-import net.asksakis.massdroidv2.data.websocket.needsConnect
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
@@ -36,6 +37,8 @@ import javax.inject.Inject
 class PlaybackService : MediaLibraryService() {
 
     companion object {
+        /** Restoring the saved player after a cold connect is one round trip; this bounds it. */
+        private const val SELECTED_PLAYER_RESTORE_MS = 3_000L
         private const val TAG = "PlaybackSvc"
         private const val CONN_CHANNEL_ID = "massdroid_connection"
         private const val CONN_NOTIFICATION_ID = 3
@@ -48,6 +51,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var sleepTimerBridge: SleepTimerBridge
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
+    @Inject lateinit var savedCredentialsConnector: net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -103,16 +107,35 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun autoConnectForCar() {
         if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
+        scope.launch { savedCredentialsConnector.connectIfNeeded() }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val result = super.onStartCommand(intent, flags, startId)
+        WidgetTransportAction.commandFrom(intent)?.let { handleWidgetTransport(it) }
+        return result
+    }
+
+    /**
+     * A widget button pressed with the app possibly dead: connect with the saved
+     * credentials, wait for the selected player to be restored, then route the
+     * command like any external controller's. Silent when the server is unreachable;
+     * the widget itself shows "not connected" from the last snapshot.
+     */
+    private fun handleWidgetTransport(command: net.asksakis.massdroidv2.domain.player.TransportCommand) {
         scope.launch {
-            wsClient.startupReady.first { it }
-            if (!wsClient.connectionState.value.needsConnect() || wsClient.userDisconnected) {
+            if (!savedCredentialsConnector.connectIfNeeded()) {
+                Log.w(TAG, "Widget $command dropped: not connected")
                 return@launch
             }
-            val url = settingsRepository.serverUrl.first()
-            val token = settingsRepository.authToken.first()
-            if (url.isNotBlank() && token.isNotBlank() && url.contains("://")) {
-                wsClient.connect(url, token)
+            val selected = withTimeoutOrNull(SELECTED_PLAYER_RESTORE_MS) {
+                playerRepository.selectedPlayer.first { it != null }
             }
+            if (selected == null) {
+                Log.w(TAG, "Widget $command dropped: no selected player after connect")
+                return@launch
+            }
+            androidAutoController.dispatchTransport(command)
         }
     }
 

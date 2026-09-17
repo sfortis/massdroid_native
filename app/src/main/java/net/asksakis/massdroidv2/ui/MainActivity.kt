@@ -224,7 +224,7 @@ class MainActivity : ComponentActivity() {
                 LocalProviderManifestCache provides providerManifestCache
             ) {
                 MassDroidTheme(darkTheme = darkTheme) {
-                    MassDroidApp()
+                    MassDroidApp(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
                     DevBuildBadge()
                     UpdatePrompt(appUpdateChecker)
                     // Top-level transient OSD for remote-player volume changes.
@@ -333,8 +333,21 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    private val requestedRoute = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
     private fun handleShortcutIntent(intent: Intent?) {
         val action = intent?.action ?: return
+        // Widget taps only ask for a screen; they carry no playback action.
+        val route = when (action) {
+            ACTION_OPEN_NOW_PLAYING -> Routes.NOW_PLAYING
+            ACTION_OPEN_PLAYERS -> Routes.PLAYERS
+            else -> null
+        }
+        if (route != null) {
+            requestedRoute.value = route
+            intent.action = null
+            return
+        }
         val shortcutAction = when (action) {
             ACTION_SMART_MIX -> ShortcutAction.SmartMix
             ACTION_PLAY_NOW -> ShortcutAction.PlayNow
@@ -348,6 +361,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val ACTION_SMART_MIX = "net.asksakis.massdroidv2.action.SMART_MIX"
         private const val ACTION_PLAY_NOW = "net.asksakis.massdroidv2.action.PLAY_NOW"
+        const val ACTION_OPEN_NOW_PLAYING = "net.asksakis.massdroidv2.action.OPEN_NOW_PLAYING"
+        const val ACTION_OPEN_PLAYERS = "net.asksakis.massdroidv2.action.OPEN_PLAYERS"
     }
 
     private fun requestNotificationPermission() {
@@ -449,10 +464,22 @@ private fun UpdatePrompt(checker: net.asksakis.massdroidv2.data.update.AppUpdate
 
 @Composable
 private fun MassDroidApp(
+    requestedRoute: kotlinx.coroutines.flow.StateFlow<String?>,
+    onRouteConsumed: () -> Unit,
     miniPlayerViewModel: MiniPlayerViewModel = hiltViewModel(),
     appNoticesViewModel: AppNoticesViewModel = hiltViewModel()
 ) {
     val navController = rememberNavController()
+
+    // A screen asked for from outside (a widget tap), consumed once it is shown.
+    LaunchedEffect(Unit) {
+        requestedRoute.collect { route ->
+            if (route != null) {
+                navController.navigate(route) { launchSingleTop = true }
+                onRouteConsumed()
+            }
+        }
+    }
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 

@@ -1,1 +1,4 @@
+- Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
+- Now Playing opened from the Players screen keeps its title bar below the status bar.
+- The elapsed time no longer shows a huge number when the app opens while a track is playing.
 - Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
