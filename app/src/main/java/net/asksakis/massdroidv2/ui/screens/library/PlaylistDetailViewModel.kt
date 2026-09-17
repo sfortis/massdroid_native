@@ -128,18 +128,22 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
+    private enum class ListingState { PENDING, LOADED, FAILED }
+
     /**
-     * Whether the listing has actually arrived, which is what tells an empty playlist
-     * apart from one that simply has not loaded yet. See [playWhole].
+     * How the last track listing ended, which is what tells an empty list apart: an empty
+     * playlist ([ListingState.LOADED]), a listing that failed ([ListingState.FAILED]), or
+     * one still on its way ([ListingState.PENDING]). See [playWhole].
      */
-    private var tracksLoaded = false
+    private var listingState = ListingState.PENDING
 
     private suspend fun loadTracks(forceRefresh: Boolean) {
         try {
             _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider, forceRefresh)
-            tracksLoaded = true
+            listingState = ListingState.LOADED
         } catch (e: Exception) {
             Log.w(TAG, "Load playlist tracks failed: ${e.message}")
+            listingState = ListingState.FAILED
         }
     }
 
@@ -272,11 +276,12 @@ class PlaylistDetailViewModel @Inject constructor(
         // The URI is a navigation argument and can be absent; without it there is no
         // container to hand over and the track list is all there is, rebuild or not.
         val useContainer = playlistUri.isNotBlank() && (isDynamic || listedInServerOrder)
-        // A playlist that has loaded and holds nothing has nothing to play, and must not
-        // replace what is already in the queue with emptiness. An empty list BEFORE the
-        // listing arrives means "not loaded yet", where the container is exactly the right
-        // thing to send; a dynamic playlist is drawn fresh by the server either way.
-        if (tracksLoaded && uris.isEmpty() && !isDynamic) return
+        // An empty list only goes over as the container while the listing is still on its
+        // way. Once it has arrived empty there is nothing to play, and once it has failed
+        // the screen shows nothing to play; either way the queue must not be replaced with
+        // a playlist the user cannot see. A dynamic playlist is drawn fresh by the server
+        // regardless, as it always was.
+        if (uris.isEmpty() && !isDynamic && listingState != ListingState.PENDING) return
         if (!useContainer && uris.isEmpty()) return
         viewModelScope.launch {
             try {
