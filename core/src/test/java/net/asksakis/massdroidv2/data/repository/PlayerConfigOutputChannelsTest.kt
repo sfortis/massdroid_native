@@ -159,7 +159,25 @@ class PlayerConfigOutputChannelsTest {
     }
 
     @Test
-    fun `the bare key wins over any wrapped copy`() {
+    fun `a protocol copy that only inherits leaves the native key in charge`() {
+        // The server fills a protocol entry the player has nothing stored for with the
+        // native value, so equal values mean no override and the native key is the one
+        // to write: writing it is what reaches every protocol.
+        val values = values(
+            """{
+              "output_channels": {"value": "mono"},
+              "sp_a||protocol||output_channels": {"value": "mono"}
+            }"""
+        )
+
+        assertEquals("output_channels", repository().resolveProtocolConfigKey(values, "output_channels"))
+    }
+
+    @Test
+    fun `a protocol copy that differs is an override and wins over the native key`() {
+        // MA applies the rendering player's own stored value over the parent's, so this
+        // speaker plays its left channel whatever the native entry says. Writing the
+        // native key here would leave the app showing a value nobody hears.
         val values = values(
             """{
               "output_channels": {"value": "mono"},
@@ -167,7 +185,28 @@ class PlayerConfigOutputChannelsTest {
             }"""
         )
 
-        assertEquals("output_channels", repository().resolveProtocolConfigKey(values, "output_channels"))
+        assertEquals(
+            "sp_a||protocol||output_channels",
+            repository().resolveProtocolConfigKey(values, "output_channels")
+        )
+    }
+
+    @Test
+    fun `among several overrides the preferred protocol still wins`() {
+        // The non-preferred override comes first, so a first-match lookup would pick it.
+        val values = values(
+            """{
+              "output_channels": {"value": "stereo"},
+              "preferred_output_protocol": {"value": "sp_b"},
+              "sp_a||protocol||output_channels": {"value": "mono"},
+              "sp_b||protocol||output_channels": {"value": "right"}
+            }"""
+        )
+
+        assertEquals(
+            "sp_b||protocol||output_channels",
+            repository().resolveProtocolConfigKey(values, "output_channels")
+        )
     }
 
     @Test

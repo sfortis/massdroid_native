@@ -1934,28 +1934,31 @@ class PlayerRepositoryImpl @Inject constructor(
     /**
      * Find the key of a per-protocol config entry among a player's config values.
      *
-     * A plain player has the entry under its bare [suffix]. A universal player has none of
-     * its own and instead one per output protocol, as `<protocol>||protocol||<suffix>`, so
-     * several can be present. The one that matters is the protocol the player outputs
-     * through: the protocol named by `preferred_output_protocol` when it is set to one, else
-     * the first protocol whose `||protocol||enabled` is true, else the first found at all.
-     * Returns null when no entry carries the suffix.
+     * A plain player has the entry under its bare [suffix]. A player that can output over
+     * several protocols also has one copy per protocol, as `<protocol>||protocol||<suffix>`.
+     * Music Assistant applies the rendering player's own stored value and falls back to the
+     * parent's, so a protocol copy that reads differently from the bare one is an override
+     * and is the value actually being applied; a copy that reads the same is only inheriting
+     * and the bare key stays the one to write. Among several overrides, or when there is no
+     * bare key at all, the protocol that matters is the one named by
+     * `preferred_output_protocol`, else the first whose `||protocol||enabled` is true, else
+     * the first found. Returns null when no entry carries the suffix.
      */
     internal fun resolveProtocolConfigKey(values: JsonObject, suffix: String): String? {
-        if (values.containsKey(suffix)) return suffix
         val wrappedSuffix = "$PROTOCOL_KEY_SEPARATOR$suffix"
         val wrapped = values.keys.filter { it.endsWith(wrappedSuffix) }
-        if (wrapped.isEmpty()) return null
-        fun protocolOf(key: String) = key.removeSuffix(wrappedSuffix)
-        val preferred = values["preferred_output_protocol"]?.let { entry ->
-            when (entry) {
-                is JsonPrimitive -> entry.contentOrNull
-                is JsonObject -> entry["value"]?.jsonPrimitive?.contentOrNull
-                else -> null
-            }
+        val bare = suffix.takeIf { values.containsKey(it) }
+        val candidates = if (bare == null) {
+            wrapped
+        } else {
+            val bareValue = values[bare].entryValue()
+            wrapped.filter { values[it].entryValue() != bareValue }
         }
-        wrapped.firstOrNull { protocolOf(it) == preferred }?.let { return it }
-        wrapped.firstOrNull { key ->
+        if (candidates.isEmpty()) return bare
+        fun protocolOf(key: String) = key.removeSuffix(wrappedSuffix)
+        val preferred = values["preferred_output_protocol"].entryValue()
+        candidates.firstOrNull { protocolOf(it) == preferred }?.let { return it }
+        candidates.firstOrNull { key ->
             val enabled = values["${protocolOf(key)}${PROTOCOL_KEY_SEPARATOR}enabled"]
             when (enabled) {
                 is JsonPrimitive -> enabled.booleanOrNull
@@ -1963,7 +1966,17 @@ class PlayerRepositoryImpl @Inject constructor(
                 else -> null
             } == true
         }?.let { return it }
-        return wrapped.first()
+        return candidates.first()
+    }
+
+    /**
+     * The value of a config entry, which the server sends either as the bare value or as an
+     * object carrying it under `value`.
+     */
+    private fun JsonElement?.entryValue(): String? = when (this) {
+        is JsonPrimitive -> contentOrNull
+        is JsonObject -> this["value"]?.jsonPrimitive?.contentOrNull
+        else -> null
     }
 
     override suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
