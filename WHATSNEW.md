@@ -1,4 +1,7 @@
 - Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
-- Now Playing opened from the Players screen keeps its title bar below the status bar.
-- The elapsed time no longer shows a huge number when the app opens while a track is playing.
-- Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
+- Stereo pairs: a speaker can now play only the left or only the right channel, so two speakers in a group cover a room properly. The player settings were tidied up around it.
+- The music no longer starts on its own, and a notification no longer leaves it paused for good.
+- A phone playing in a group is no longer silent after the screen has been off for a while.
+- Ad-hoc sync groups show up as a group again, with their members marked. (#74)
+- Follow Me comes back on its own after a reboot or an app update, and is lighter on the battery while you drive.
+- Now Playing opens cleanly: its title bar sits below the status bar and the elapsed time no longer starts from a huge number.
