@@ -44,9 +44,29 @@ data class PlayerConfig(
     val volumeNormalization: Boolean = false,
     val sendspinFormat: String? = null,
     val sendspinFormatOptions: List<FormatOption> = emptyList(),
+    /**
+     * Config KEY for the Sendspin format: plain `preferred_sendspin_format` on a Sendspin
+     * player, `<sub>||protocol||preferred_sendspin_format` on a universal player, so it is
+     * discovered at load and carried here for the save. Null when the player has no such entry.
+     */
+    val sendspinFormatKey: String? = null,
     /** Generic per-provider output codec (MA `output_codec`, e.g. Sonos flac/mp3/aac/wav). Null when the player has no such entry. */
     val outputCodec: String? = null,
     val outputCodecOptions: List<FormatOption> = emptyList(),
+    /**
+     * Which source channels this player renders (MA `output_channels`: stereo, left, right,
+     * mono). It is a setting of the player, not of a group: a speaker set to `left` plays the
+     * left channel whenever it plays, alone or grouped. Null when the player exposes no such
+     * entry (a sync group, or a player without play_media).
+     */
+    val outputChannels: String? = null,
+    val outputChannelsOptions: List<FormatOption> = emptyList(),
+    /**
+     * Config KEY for the output channels. Plain (`output_channels`) on a plain player,
+     * protocol-wrapped (`<sub>||protocol||output_channels`) on a universal player, so it is
+     * discovered at load and carried here for the save.
+     */
+    val outputChannelsKey: String? = null,
     /** Server-side static delay in ms for remote sendspin players. Null when not applicable. */
     val sendspinStaticDelayMs: Int? = null,
     /**

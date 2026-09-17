@@ -46,6 +46,8 @@ class PlayerRepositoryImpl @Inject constructor(
         // MA RPC error code for "no more tracks available" (queue exhausted).
         private const val NO_MORE_TRACKS_CODE = 11
         private const val LIBRARY_URI_PREFIX = "library://"
+        /** Joins a protocol sub-player id to an entry key in a universal player's config. */
+        private const val PROTOCOL_KEY_SEPARATOR = "||protocol||"
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
         // How long the one-time blocked-alias backfill waits for a queue to
         // appear before giving up on cleaning it; the next queue event does it.
@@ -1844,7 +1846,10 @@ class PlayerRepositoryImpl @Inject constructor(
             val configName = obj["name"]?.jsonPrimitive?.contentOrNull
                 ?: obj["default_name"]?.jsonPrimitive?.contentOrNull ?: ""
 
-            val formatEntry = values?.get("preferred_sendspin_format")
+            // Like output_channels below, a universal player carries the Sendspin format once
+            // per output protocol, so the key is resolved to the protocol in use.
+            val formatKey = values?.let { resolveProtocolConfigKey(it, "preferred_sendspin_format") }
+            val formatEntry = formatKey?.let { values[it] }
             val formatOptions = (formatEntry as? JsonObject)?.get("options")
                 ?.jsonArray
                 ?.mapNotNull { opt ->
@@ -1871,20 +1876,12 @@ class PlayerRepositoryImpl @Inject constructor(
 
             // Generic per-provider output codec (e.g. Sonos `output_codec`: flac/mp3/aac/wav).
             val outputCodecEntry = values?.get("output_codec")
-            val outputCodecOptions = (outputCodecEntry as? JsonObject)?.get("options")
-                ?.jsonArray
-                ?.mapNotNull { opt ->
-                    when (opt) {
-                        is JsonObject -> {
-                            val value = opt["value"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                            val title = opt["title"]?.jsonPrimitive?.contentOrNull ?: value.uppercase()
-                            FormatOption(title, value)
-                        }
-                        is JsonPrimitive -> opt.contentOrNull?.let { FormatOption(it.uppercase(), it) }
-                        else -> null
-                    }
-                }
-                ?: emptyList()
+            val outputCodecOptions = outputCodecEntry.choiceOptions()
+
+            // Output channel mix (stereo/left/right/mono). A universal player carries one
+            // entry per output protocol, so the key is resolved to the protocol in use.
+            val outputChannelsKey = values?.let { resolveProtocolConfigKey(it, "output_channels") }
+            val outputChannelsEntry = outputChannelsKey?.let { values[it] }
 
             PlayerConfig(
                 name = configName,
@@ -1894,8 +1891,12 @@ class PlayerRepositoryImpl @Inject constructor(
                 volumeNormalization = values?.get("volume_normalization")?.configBool() ?: false,
                 sendspinFormat = formatEntry?.configValue(),
                 sendspinFormatOptions = formatOptions,
+                sendspinFormatKey = formatKey,
                 outputCodec = outputCodecEntry?.configValue(),
                 outputCodecOptions = outputCodecOptions,
+                outputChannels = outputChannelsEntry?.configValue(),
+                outputChannelsOptions = outputChannelsEntry.choiceOptions(),
+                outputChannelsKey = outputChannelsKey,
                 sendspinStaticDelayMs = staticDelayEntry?.configInt(),
                 sendspinStaticDelayKey = staticDelayKey,
                 sendspinSyncDelayKey = syncDelayKey,
@@ -1907,6 +1908,62 @@ class PlayerRepositoryImpl @Inject constructor(
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")
             null
         }
+    }
+
+    /**
+     * The options of a choice entry as (title, value) pairs. MA sends them as objects with
+     * `value` and `title`, older entries as bare strings; a missing title falls back to the
+     * value in upper case, which is how the codec names read (flac -> FLAC).
+     */
+    private fun JsonElement?.choiceOptions(): List<FormatOption> =
+        (this as? JsonObject)?.get("options")
+            ?.jsonArray
+            ?.mapNotNull { opt ->
+                when (opt) {
+                    is JsonObject -> {
+                        val value = opt["value"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        val title = opt["title"]?.jsonPrimitive?.contentOrNull ?: value.uppercase()
+                        FormatOption(title, value)
+                    }
+                    is JsonPrimitive -> opt.contentOrNull?.let { FormatOption(it.uppercase(), it) }
+                    else -> null
+                }
+            }
+            ?: emptyList()
+
+    /**
+     * Find the key of a per-protocol config entry among a player's config values.
+     *
+     * A plain player has the entry under its bare [suffix]. A universal player has none of
+     * its own and instead one per output protocol, as `<protocol>||protocol||<suffix>`, so
+     * several can be present. The one that matters is the protocol the player outputs
+     * through: the protocol named by `preferred_output_protocol` when it is set to one, else
+     * the first protocol whose `||protocol||enabled` is true, else the first found at all.
+     * Returns null when no entry carries the suffix.
+     */
+    internal fun resolveProtocolConfigKey(values: JsonObject, suffix: String): String? {
+        if (values.containsKey(suffix)) return suffix
+        val wrappedSuffix = "$PROTOCOL_KEY_SEPARATOR$suffix"
+        val wrapped = values.keys.filter { it.endsWith(wrappedSuffix) }
+        if (wrapped.isEmpty()) return null
+        fun protocolOf(key: String) = key.removeSuffix(wrappedSuffix)
+        val preferred = values["preferred_output_protocol"]?.let { entry ->
+            when (entry) {
+                is JsonPrimitive -> entry.contentOrNull
+                is JsonObject -> entry["value"]?.jsonPrimitive?.contentOrNull
+                else -> null
+            }
+        }
+        wrapped.firstOrNull { protocolOf(it) == preferred }?.let { return it }
+        wrapped.firstOrNull { key ->
+            val enabled = values["${protocolOf(key)}${PROTOCOL_KEY_SEPARATOR}enabled"]
+            when (enabled) {
+                is JsonPrimitive -> enabled.booleanOrNull
+                is JsonObject -> enabled["value"]?.jsonPrimitive?.booleanOrNull
+                else -> null
+            } == true
+        }?.let { return it }
+        return wrapped.first()
     }
 
     override suspend fun savePlayerConfig(playerId: String, values: Map<String, Any>) {

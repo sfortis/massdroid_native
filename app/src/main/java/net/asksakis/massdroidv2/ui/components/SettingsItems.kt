@@ -3,7 +3,9 @@ package net.asksakis.massdroidv2.ui.components
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,12 +18,16 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDropUp
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -90,12 +96,7 @@ fun SettingCard(
     description: String? = null,
     content: @Composable (() -> Unit)? = null
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    ) {
+    SettingsCardContainer(modifier = modifier) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -126,6 +127,29 @@ fun SettingCard(
             }
         }
     }
+}
+
+/**
+ * The container every settings card sits in: a filled card one tonal step above the
+ * ground behind it.
+ *
+ * [SettingCard] builds on it, and so do the timing cards that carry their own layout
+ * instead of a title row. They were outlined while everything around them was filled,
+ * which read as two themes in one dialog and, once the sync sheet was a column of them,
+ * as two themes in one app.
+ */
+@Composable
+fun SettingsCardContainer(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        ),
+        content = content
+    )
 }
 
 /**
@@ -182,6 +206,93 @@ fun QueueChoiceCard(
             }
         }
     )
+}
+
+/**
+ * A single choice among values too many or too long for a chip row, as a dropdown: the
+ * card shows the current value on one line and the list opens over it.
+ *
+ * Used for the Sendspin audio format, whose seven server titles ("FLAC 48kHz/16bit
+ * stereo") stacked into a column of chips as tall as the rest of the dialog.
+ */
+@Composable
+fun SettingsDropdownCard(
+    title: String,
+    icon: ImageVector,
+    value: String,
+    options: List<QueueConfigOption>,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    description: String? = null
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = options.firstOrNull { it.value == value }
+    SettingCard(title = title, icon = icon, modifier = modifier, description = description) {
+        Box {
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = true },
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        selected?.title ?: value,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Icon(
+                        Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 320.dp)
+            ) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(option.title, style = MaterialTheme.typography.bodySmall)
+                                option.description?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        },
+                        enabled = !option.disabled,
+                        trailingIcon = {
+                            if (option.value == value) {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            if (option.value != value) onSelect(option.value)
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**
