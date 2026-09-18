@@ -50,6 +50,9 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+- Fixed a crash that killed the app whenever the home screen widget was updated, including the moment you place it.
+- Search now remembers your recent searches and offers them when the field is empty, and it says so when nothing matched. (#72)
+- Holding a volume key raises the volume smoothly on a group instead of in jumps.
 - Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
 - Stereo pairs: a speaker can now play only the left or only the right channel, so two speakers in a group cover a room properly. The player settings were tidied up around it.
 - Play All on a big playlist starts in seconds instead of minutes. (#71, thanks @thanninger)
