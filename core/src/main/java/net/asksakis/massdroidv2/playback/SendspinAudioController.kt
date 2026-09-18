@@ -1531,6 +1531,14 @@ class SendspinAudioController(
      * loss escalates to a pause, and whenever playback is asked to start again.
      */
     private fun clearDuck() {
+        // Only the watcher's own two endings log, so a duck ended from here left
+        // no trace at all: sixteen ducks in a field day, three of them accounted
+        // for in the log. A duck that stays quiet is a fault we have already had
+        // in the car, and it cannot be chased in a log that does not record the
+        // release.
+        if (duckWatchJob?.isActive == true) {
+            Log.i(TAG, "Duck: released before the interrupting sound ended")
+        }
         duckWatchJob?.cancel()
         duckWatchJob = null
         sendspinManager.restoreVolume()
