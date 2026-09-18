@@ -75,12 +75,27 @@ class SendspinClient(
 
     data class Credentials(val serverUrl: String, val token: String)
 
-    // @Volatile because send* methods (sendHello, sendClientState, sendTimeRequest,
-    // sendRequestFormat, sendGoodbye) read the field from coroutine dispatchers
-    // outside the @Synchronized lifecycle methods that write it. Without the
-    // visibility guarantee, a thread could observe a stale closed handle (or a
-    // stale null) after a reconnect, leading to dropped sends or NPE-like races.
+    // @Volatile because the connect and close paths write it from different
+    // threads than the ones that read it. Without the visibility guarantee, a
+    // thread could observe a stale closed handle (or a stale null) after a
+    // reconnect. The send helpers deliberately do NOT read this one: see
+    // [authedSocket].
     @Volatile private var webSocket: WebSocket? = null
+
+    /**
+     * The socket that has already had the auth frame written to it, and the only
+     * one the send helpers may use.
+     *
+     * OkHttp assigns the handle when `newWebSocket` returns, which is before the
+     * handshake completes, and it queues anything sent in that window to go out
+     * first. A periodic sender such as the clock's time request could therefore
+     * put its frame ahead of the auth frame, and the server closes the socket
+     * with 4001 "First message must be auth" when the first frame carries any
+     * other type. That happened on three consecutive reconnect attempts on
+     * 2026-09-17 at 17:39, costing thirteen seconds of silence before the fourth
+     * attempt won the race.
+     */
+    @Volatile private var authedSocket: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var reconnectJob: Job? = null
 
@@ -167,6 +182,10 @@ class SendspinClient(
             ws.close(1000, "Client disconnect")
         }
         webSocket = null
+        authedSocket = null
+        // Same reason as in closeSocket: a callback already on its way must not
+        // find its generation still current.
+        ++connectionGeneration
         _state.value = SendspinState.DISCONNECTED
         attempt.set(0)
         providerFailures.set(0)
@@ -184,9 +203,23 @@ class SendspinClient(
         reconnectJob = null
     }
 
+    /**
+     * Drop the current socket and everything that belongs to it.
+     *
+     * The generation is bumped here rather than only in [openWebSocket] because
+     * closing does not stop callbacks that are already in flight. An `onOpen`
+     * for the socket this call just abandoned would otherwise still pass the
+     * generation guard, send auth into a dead handle and publish it as the
+     * authenticated one, which is the invariant [authedSocket] exists to hold.
+     */
     private fun closeSocket(code: Int, reason: String?) {
-        val ws = webSocket
-        webSocket = null
+        val ws = synchronized(this) {
+            ++connectionGeneration
+            val current = webSocket
+            webSocket = null
+            authedSocket = null
+            current
+        }
         ws?.close(code, reason)
     }
 
@@ -258,14 +291,17 @@ class SendspinClient(
         // a stop() call that fired AFTER the coroutine's pre-launch
         // shouldRun guard but BEFORE this point would leave an orphaned
         // socket open.
-        val gen = synchronized(this) {
+        synchronized(this) {
             if (!shouldRun) {
                 Log.d(TAG, "openWebSocket aborted: lifecycle stopped while attempt was scheduled")
                 return
             }
-            ++connectionGeneration
         }
+        // Closing bumps the generation, so this attempt has to claim its own
+        // afterwards: taking it first would leave the new socket's callbacks
+        // looking stale against the generation the close moved on to.
         closeSocket(1000, null)
+        val gen = synchronized(this) { ++connectionGeneration }
 
         _state.value = SendspinState.CONNECTING
         errorMessage = null
@@ -283,6 +319,9 @@ class SendspinClient(
                 val msg = json.encodeToString(auth)
                 Log.d(TAG, "Sendspin WebSocket opened, sending auth")
                 webSocket.send(msg)
+                // Only now may anything else be written: the auth frame is first
+                // in the queue, so whatever follows arrives second.
+                authedSocket = webSocket
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -350,6 +389,7 @@ class SendspinClient(
     private fun onTransportLost(reason: String) {
         synchronized(this) {
             webSocket = null
+            authedSocket = null
             // Don't clobber a terminal ERROR pushed by the manager (auth_error).
             if (_state.value != SendspinState.ERROR) {
                 _state.value = SendspinState.DISCONNECTED
@@ -387,7 +427,7 @@ class SendspinClient(
             )
         )
         val msg = json.encodeToString(hello)
-        webSocket?.send(msg)
+        authedSocket?.send(msg)
     }
 
     fun sendClientState(volume: Int = 100, muted: Boolean = false, syncState: String = "synchronized", staticDelayMs: Int = 0) {
@@ -398,7 +438,7 @@ class SendspinClient(
             )
         )
         val msg = json.encodeToString(state)
-        webSocket?.send(msg)
+        authedSocket?.send(msg)
     }
 
     fun sendTimeRequest(clientTimeUs: Long) {
@@ -406,7 +446,7 @@ class SendspinClient(
             payload = ClientTimePayload(clientTransmitted = clientTimeUs)
         )
         val msg = json.encodeToString(timeReq)
-        webSocket?.send(msg)
+        authedSocket?.send(msg)
     }
 
     fun sendRequestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
@@ -416,13 +456,13 @@ class SendspinClient(
             )
         )
         val msg = json.encodeToString(req)
-        webSocket?.send(msg)
+        authedSocket?.send(msg)
     }
 
     fun sendGoodbye(reason: String = "user_request") {
         val goodbye = SendspinGoodbye(payload = GoodbyePayload(reason = reason))
         val msg = json.encodeToString(goodbye)
-        webSocket?.send(msg)
+        authedSocket?.send(msg)
     }
 
     /**
