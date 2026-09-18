@@ -9,6 +9,16 @@ Sendspin turns your phone into a Music Assistant player. Audio is streamed over 
 - Smart mode can switch audio format based on network conditions.
 - Streaming status shows sync graph, output latency, network mode, and static delay control.
 
+## Sync Groups
+
+Speakers in a sync group can be audibly out of step when they sit at different distances or
+have different internal delays. On the Players screen, open the player's 3-dot menu and choose
+**Sync speakers**. That gives one card per member of the group, each with a delay slider you
+set by ear. For a remote member the value is written to its own server-side delay setting, and
+for the phone's own player it is applied locally. Each card also carries the output channel
+selector, so setting one speaker to left and another to right makes the group play as a stereo
+pair.
+
 ## Acoustic Calibration
 
 When the phone is used as a player, output buffers, DAC, drivers, Bluetooth codecs, and speaker DSP add extra delay. MassDroid measures this delay directly using the phone microphone and corrects for it per route.
