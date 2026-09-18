@@ -26,19 +26,17 @@ class NowPlayingWidgetReceiver : GlanceAppWidgetReceiver() {
     /**
      * The first draw after placing the widget happens before the publisher has seen a
      * change, so the store would still be empty and the widget would say "Nothing
-     * playing" next to a playing speaker until the next event. Publish the current state
-     * first; the parent then redraws from the store.
+     * playing" next to a playing speaker until the next event. Publishing the current
+     * state writes the store and redraws every placed widget itself.
+     *
+     * The publish deliberately does not hold the broadcast open with goAsync. A
+     * broadcast hands out exactly one PendingResult, and the parent's onUpdate claims
+     * it for its own work; taking it here left the parent finishing a null result,
+     * which killed the process on every widget update.
      */
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
         val publisher = EntryPointAccessors.fromApplication(context, Dependencies::class.java).nowPlayingWidgetPublisher()
-        val pending = goAsync()
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            try {
-                publisher.publishCurrent()
-            } finally {
-                pending.finish()
-            }
-        }
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { publisher.publishCurrent() }
         super.onUpdate(context, appWidgetManager, appWidgetIds)
     }
 }
