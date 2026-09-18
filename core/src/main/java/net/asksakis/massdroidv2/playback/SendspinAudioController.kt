@@ -288,7 +288,7 @@ class SendspinAudioController(
      * audio-focus gain.
      *
      * Every stop except [pauseForTransientFocusLoss] is a decision to stay
-     * stopped, so it has to clear [resumeOnFocusGain] as well. Clearing only
+     * stopped, so it has to clear [owedResume] as well. Clearing only
      * `_userIntent` is not enough, because the focus-gain branch deliberately
      * overrides the intent gate when a start is owed: a headphone pulled out
      * during a transient interruption, or a pause pressed while it lasted, would
@@ -301,7 +301,7 @@ class SendspinAudioController(
      */
     private fun abandonPlaybackIntent() {
         _userIntent.value = false
-        resumeOnFocusGain = false
+        owedResume = null
     }
 
     private fun pauseForRouteLoss() {
@@ -368,7 +368,30 @@ class SendspinAudioController(
     // [abandonPlaybackIntent], or the gain would restart playback that the
     // listener, or a pulled headphone, had already stopped.
     @Volatile
-    private var resumeOnFocusGain = false
+    private var owedResume: OwedResume? = null
+
+    /**
+     * Why a start is owed to the next audio-focus gain.
+     *
+     * A boolean could not tell the two reasons apart, so the log described a
+     * play the listener had just asked for as a resume after an interruption.
+     * It matters beyond wording: the field check for phantom starts looks for a
+     * resume delivered while the intent is still false, and a delayed grant
+     * answered within a few tens of milliseconds lands in exactly that state
+     * legitimately. On 2026-09-17 at 23:05 that cost a false positive.
+     */
+    private enum class OwedResume {
+        /** An interruption paused us, and we promised to resume when it ends. */
+        INTERRUPTION,
+
+        /**
+         * A start was requested and the focus grant came back delayed. Either
+         * the listener pressed play, or the server opened a stream for this
+         * player, which is a start someone asked for elsewhere rather than one
+         * we owe an interruption.
+         */
+        DEFERRED_PLAY,
+    }
 
     // True from the moment a pause is issued locally until the server confirms the
     // player is no longer playing. While it is set, a server report of PLAYING is
@@ -844,7 +867,7 @@ class SendspinAudioController(
                     // Playback is starting, so nothing is owed to a later focus
                     // gain, any duck still in place is stale, and no pause is
                     // waiting to be confirmed any more.
-                    resumeOnFocusGain = false
+                    owedResume = null
                     pauseAwaitingConfirmation = false
                     clearDuck()
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
@@ -865,7 +888,7 @@ class SendspinAudioController(
                     // interruption was holding; the focus pause has to keep it.
                     // Now Playing calls the repository directly rather than
                     // handlePause(), so this is the only place that sees it.
-                    if (intent.cause == PlaybackIntentCause.LISTENER) resumeOnFocusGain = false
+                    if (intent.cause == PlaybackIntentCause.LISTENER) owedResume = null
                     if (!isReady) return@collect
                     _userIntent.value = false
                     sendspinManager.pauseAudio()
@@ -962,12 +985,12 @@ class SendspinAudioController(
                 .map { it?.playerId }
                 .distinctUntilChanged()
                 .collect { selectedId ->
-                    if (!resumeOnFocusGain) return@collect
+                    if (owedResume == null) return@collect
                     if (!AudioFocusPolicy.selectionCancelsOwedResume(selectedId, sendspinPlayerId)) {
                         return@collect
                     }
                     Log.i(TAG, "Another player was chosen: dropping the resume owed to this phone")
-                    resumeOnFocusGain = false
+                    owedResume = null
                 }
         }
 
@@ -1194,7 +1217,7 @@ class SendspinAudioController(
 
         playerRepository.selectPlayer(id)
         _userIntent.value = true
-        resumeOnFocusGain = false
+        owedResume = null
         clearDuck()
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
@@ -1287,7 +1310,7 @@ class SendspinAudioController(
         val wantPlay = !currentIsPlaying
         if (wantPlay) {
             _userIntent.value = true
-            resumeOnFocusGain = false
+            owedResume = null
             clearDuck()
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
@@ -1377,15 +1400,24 @@ class SendspinAudioController(
                         // below would refuse to resume; put the intent back and
                         // play, which is what the listener asked for before the
                         // interruption.
-                        if (resumeOnFocusGain) {
+                        val owed = owedResume
+                        if (owed != null) {
                             val resumeId = sendspinPlayerId
                             val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
                             if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
                                 Log.i(TAG, "Focus regained: nothing to resume")
                                 return@setOnAudioFocusChangeListener
                             }
-                            resumeOnFocusGain = false
-                            Log.i(TAG, "Focus regained: resuming the playback the interruption paused")
+                            owedResume = null
+                            Log.i(
+                                TAG,
+                                when (owed) {
+                                    OwedResume.INTERRUPTION ->
+                                        "Focus regained: resuming the playback the interruption paused"
+                                    OwedResume.DEFERRED_PLAY ->
+                                        "Focus granted: starting the play that was waiting for it"
+                                }
+                            )
                             _userIntent.value = true
                             sendspinManager.resumeAudio()
                             scope.launch {
@@ -1512,7 +1544,7 @@ class SendspinAudioController(
                 sendspinManager.resumeAudio()
             AudioFocusPolicy.StreamStart.WAIT_FOR_GAIN -> {
                 Log.i(TAG, "Stream started while the focus grant is delayed: silent until it arrives")
-                resumeOnFocusGain = true
+                owedResume = OwedResume.DEFERRED_PLAY
                 sendspinManager.pauseAudio()
             }
             AudioFocusPolicy.StreamStart.STAY_SILENT -> {
@@ -1561,7 +1593,7 @@ class SendspinAudioController(
      *
      * Pausing the MA player clears `_userIntent`, which is the flag the
      * AUDIOFOCUS_GAIN branch reads to decide whether the listener still wants
-     * music. [resumeOnFocusGain] carries the answer across that gap.
+     * music. [owedResume] carries the answer across that gap.
      *
      * There is deliberately no timer here. An app that takes focus and never
      * returns it leaves the music paused until the listener presses play, which is
@@ -1573,8 +1605,8 @@ class SendspinAudioController(
         // one arrived on top of. Drop it, or the gain stays at a tenth after the
         // resume.
         clearDuck()
-        if (resumeOnFocusGain) return
-        resumeOnFocusGain = true
+        if (owedResume != null) return
+        owedResume = OwedResume.INTERRUPTION
         sendspinManager.pauseAudio()
         val id = sendspinPlayerId ?: return
         scope.launch { playerRepository.pause(id, PlaybackIntentCause.AUDIO_FOCUS) }
@@ -1711,7 +1743,7 @@ class SendspinAudioController(
      * to act on all three the same way. A DELAYED grant is an accepted request
      * queued behind whatever currently owns the output, which Samsung returns
      * routinely while a Bluetooth route settles; the contract is to wait for the
-     * AUDIOFOCUS_GAIN that follows, so the intent is kept and [resumeOnFocusGain]
+     * AUDIOFOCUS_GAIN that follows, so the intent is kept and [owedResume]
      * carries the start across. A refusal means something else owns the output and
      * playing anyway would put our audio on top of it.
      */
@@ -1719,7 +1751,7 @@ class SendspinAudioController(
         FocusRequestResult.GRANTED -> true
         FocusRequestResult.DELAYED -> {
             Log.i(TAG, "Play deferred: focus grant delayed, starting when the gain arrives")
-            resumeOnFocusGain = true
+            owedResume = OwedResume.DEFERRED_PLAY
             false
         }
         FocusRequestResult.FAILED -> {
