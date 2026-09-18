@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.data.repository
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import java.util.concurrent.ConcurrentHashMap
@@ -49,6 +50,13 @@ class PlayerRepositoryImpl @Inject constructor(
         /** Joins a protocol sub-player id to an entry key in a universal player's config. */
         private const val PROTOCOL_KEY_SEPARATOR = "||protocol||"
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
+        /**
+         * How long after a pause command a second one counts as the same
+         * interruption rather than a new decision. Long enough to cover the
+         * handlers a single event wakes (42 ms apart in the field), short enough
+         * that a listener pressing pause again is never swallowed.
+         */
+        private const val PAUSE_BURST_WINDOW_MS = 500L
         // How long the one-time blocked-alias backfill waits for a queue to
         // appear before giving up on cleaning it; the next queue event does it.
         private const val BLOCKED_BACKFILL_QUEUE_WAIT_MS = 15_000L
@@ -1521,19 +1529,74 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * When a pause command for a player last reached the server.
+     *
+     * One interruption arrives at several handlers. A phone call takes audio
+     * focus, the output route disappears and the media session gets its own
+     * callback, and each of those paths pauses on its own. Four identical
+     * commands went out in 42 ms for a single incoming call on 2026-09-17, and
+     * twelve of the day's thirty-nine player commands were repeats like that.
+     * The first command is the one that pauses the queue, so the repeats behind
+     * it are dropped.
+     */
+    private val lastPauseSentAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * Monotonic milliseconds for the burst window above.
+     *
+     * Not the wall clock: an NTP correction after a long doze steps it backwards,
+     * and a negative age would read as "just sent" and wedge pause off for that
+     * player until the next play. Replaceable so a test can move time, because
+     * the real SystemClock answers 0 forever under
+     * `unitTests.isReturnDefaultValues` and a frozen clock would let the window
+     * pass a test while measuring nothing.
+     */
+    @VisibleForTesting
+    internal var elapsedMs: () -> Long = SystemClock::elapsedRealtime
+
     override suspend fun play(playerId: String) {
         if (!allowedToPlay(playerId)) return
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = true))
+        // Playing again ends the burst: the next pause is a new decision, however
+        // soon it follows.
+        lastPauseSentAt.remove(playerId)
         playerCmd("play", playerId)
     }
 
     override suspend fun pause(playerId: String, cause: PlaybackIntentCause) {
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = false, cause = cause))
+        // The handlers a single interruption wakes each pause from their own
+        // coroutine on the IO pool, so the decision and the stamp have to be one
+        // atomic step. Reading first and stamping after the command would let
+        // every one of them pass the gate while the first is still waiting on a
+        // socket that is reconnecting, which is the burst this exists to stop.
+        val at = elapsedMs()
+        var droppedAfterMs: Long? = null
+        lastPauseSentAt.compute(playerId) { _, previous ->
+            val age = previous?.let { at - it }
+            if (age != null && age < PAUSE_BURST_WINDOW_MS) {
+                droppedAfterMs = age
+                previous
+            } else {
+                at
+            }
+        }
+        val dropped = droppedAfterMs
+        if (dropped != null) {
+            Log.d(TAG, "pause($cause) dropped for $playerId: one was sent ${dropped}ms ago")
+            return
+        }
         playerCmd("pause", playerId)
     }
 
+    /**
+     * Re-assert a pause and wait for the answer. Never dropped as a repeat:
+     * insisting is the point, and the caller is waiting for the acknowledgement.
+     */
     override suspend fun pauseConfirmed(playerId: String) {
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = false))
+        lastPauseSentAt[playerId] = elapsedMs()
         playerCmd("pause", playerId, awaitAck = true)
     }
 
@@ -1541,6 +1604,7 @@ class PlayerRepositoryImpl @Inject constructor(
         val willPlay = _selectedPlayer.value?.state != PlaybackState.PLAYING
         if (willPlay && !allowedToPlay(playerId)) return
         _playbackIntent.tryEmit(PlaybackIntent(willPlay = willPlay))
+        if (willPlay) lastPauseSentAt.remove(playerId) else lastPauseSentAt[playerId] = elapsedMs()
         playerCmd("play_pause", playerId)
     }
 

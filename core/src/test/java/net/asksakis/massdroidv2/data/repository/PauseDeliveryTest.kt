@@ -91,4 +91,99 @@ class PauseDeliveryTest {
             wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
         }
     }
+
+    @Test
+    fun `a pause after the burst window is a new interruption`() = runBlocking {
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+        var clock = 0L
+        repository.elapsedMs = { clock }
+
+        repository.pause("player-1")
+        clock = 600
+        repository.pause("player-1")
+
+        coVerify(exactly = 2) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
+        }
+    }
+
+    @Test
+    fun `the window is measured from the command that went out, not from the last attempt`() = runBlocking {
+        // Otherwise a handler firing every 200 ms would keep pushing the window
+        // forward and the pause would never be sent at all.
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+        var clock = 0L
+        repository.elapsedMs = { clock }
+
+        repository.pause("player-1")
+        clock = 200
+        repository.pause("player-1")
+        clock = 400
+        repository.pause("player-1")
+        clock = 600
+        repository.pause("player-1")
+
+        coVerify(exactly = 2) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
+        }
+    }
+
+    @Test
+    fun `one interruption sends one pause, however many handlers act on it`() = runBlocking {
+        // A phone call takes audio focus, the route disappears and the media
+        // session gets its own callback. Each of those pauses, and on 2026-09-17
+        // that put four identical commands on the wire in 42 ms.
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+
+        repeat(4) { repository.pause("player-1") }
+
+        coVerify(exactly = 1) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
+        }
+    }
+
+    @Test
+    fun `pausing again after a play is a new decision, not a repeat`() = runBlocking {
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+
+        repository.pause("player-1")
+        repository.play("player-1")
+        repository.pause("player-1")
+
+        coVerify(exactly = 2) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
+        }
+    }
+
+    @Test
+    fun `a re-assert is sent even right behind another pause`() = runBlocking {
+        // Re-asserting exists precisely because the first pause may have been
+        // written into a socket whose peer was already gone.
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+
+        repository.pause("player-1")
+        repository.pauseConfirmed("player-1")
+
+        coVerify(exactly = 1) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), true, any())
+        }
+    }
+
+    @Test
+    fun `each player keeps its own burst window`() = runBlocking {
+        coEvery { wsClient.sendCommand(any(), any<JsonObject>(), any(), any()) } returns null
+        val repository = repository()
+
+        repository.pause("player-1")
+        repository.pause("player-2")
+
+        coVerify(exactly = 2) {
+            wsClient.sendCommand("players/cmd/pause", any<JsonObject>(), false, any())
+        }
+    }
 }

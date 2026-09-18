@@ -1270,6 +1270,10 @@ class SendspinAudioController(
     fun handlePause() {
         val id = sendspinPlayerId ?: return
 
+        // Logged because a pause reaches the server from five places and the log
+        // could not say which: an interruption that produced several commands
+        // was indistinguishable from one handler firing repeatedly.
+        Log.i(TAG, "Pause from an external control (session, car or watch)")
         abandonPlaybackIntent()
         sendspinManager.pauseAudio()
         scope.launch { playerRepository.pause(id) }
