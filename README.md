@@ -54,7 +54,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 - Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
 - Stereo pairs: a speaker can now play only the left or only the right channel, so two speakers in a group cover a room properly. The player settings were tidied up around it.
-- Play All on a big playlist starts in seconds instead of minutes. (#71)
+- Play All on a big playlist starts in seconds instead of minutes. (#71, thanks @thanninger)
 - The music no longer starts on its own, and a notification no longer leaves it paused for good.
 - A phone playing in a group is no longer silent after the screen has been off for a while.
 - Ad-hoc sync groups show up as a group again, with their members marked. (#74)
