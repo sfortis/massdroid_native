@@ -89,24 +89,43 @@ class VolumeKeyControllerTest {
     // --- pacing ---
 
     @Test
-    fun `a held key moves the level on every repeat but does not send every one`() = runTest {
+    fun `a held key advances one step per command, so the sound tracks the number`() = runTest {
         val repository = repo(phone)
         var clock = 0L
         val controller = controller(repository) { clock }
 
         // 10 repeats, 50 ms apart, exactly as Android delivers them.
-        var last = 0
+        val levels = mutableListOf<Int>()
         repeat(10) {
             clock = it * 50L
-            last = controller.step(up = true)!!
+            controller.step(up = true, repeat = it > 0)?.let(levels::add)
         }
         advanceUntilIdle()
 
-        // Every repeat moved the level, one step each.
-        assertThat(last).isEqualTo(40 + 10 * ROCKER_VOLUME_STEP)
-        // But only the ones a throttle window apart reached the server.
-        coVerify(atMost = 5) { repository.setVolume("phone", any()) }
-        coVerify(atLeast = 2) { repository.setVolume("phone", any()) }
+        // Repeats inside a throttle window are dropped rather than piling three
+        // steps into one command: what the speaker does and what the screen
+        // shows move together, one step at a time.
+        assertThat(levels).containsExactly(
+            40 + ROCKER_VOLUME_STEP,
+            40 + 2 * ROCKER_VOLUME_STEP,
+            40 + 3 * ROCKER_VOLUME_STEP,
+            40 + 4 * ROCKER_VOLUME_STEP,
+        ).inOrder()
+        for (level in levels) coVerify { repository.setVolume("phone", level) }
+    }
+
+    @Test
+    fun `presses of their own are never dropped, however fast they follow`() = runTest {
+        val repository = repo(phone)
+        val controller = controller(repository) { 0L }
+
+        // Two deliberate presses inside one throttle window, clock frozen.
+        controller.step(up = true)
+        val second = controller.step(up = true)
+        advanceUntilIdle()
+
+        assertThat(second).isEqualTo(40 + 2 * ROCKER_VOLUME_STEP)
+        coVerify { repository.setVolume("phone", 40 + 2 * ROCKER_VOLUME_STEP) }
     }
 
     @Test

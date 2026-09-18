@@ -324,7 +324,12 @@ class MainActivity : ComponentActivity() {
                 // the MediaSession path issues the very same steps and the two must
                 // not drift apart again.
                 VolumeKeyAction.STEP -> volumeKeyController.step(
-                    up = keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                    up = keyCode == KeyEvent.KEYCODE_VOLUME_UP,
+                    // Android repeats a held key far faster than a player can
+                    // follow, so the controller paces the repeats. It must be
+                    // told which events are repeats: a press of its own always
+                    // counts.
+                    repeat = event.repeatCount > 0
                 )
                 VolumeKeyAction.FLUSH -> volumeKeyController.flush()
             }

@@ -68,10 +68,22 @@ class VolumeKeyController internal constructor(
 
     /**
      * One rocker step on the selected player. Returns the resulting level, or
-     * null when there is no player to control.
+     * null when there is no player to control, or when a repeat was dropped.
+     *
+     * [repeat] marks an auto-repeat of a key that is being held, as opposed to
+     * a press of its own. Android repeats about every 50 ms while one command
+     * costs the server around 120 ms on a group (measured 2026-09-18: 107 to
+     * 126 ms for `group_volume` against 5 to 15 ms for a single player), so
+     * every command used to carry three steps at once and the speakers climbed
+     * in jumps of six while the number on screen moved in twos. A repeat now
+     * advances the level only when a command can actually go out, which puts
+     * the sound back on the same ramp as the number. A deliberate press is
+     * never dropped, however fast it follows the last one.
      */
-    fun step(up: Boolean): Int? {
+    fun step(up: Boolean, repeat: Boolean = false): Int? {
         val player = playerRepository.selectedPlayer.value ?: return null
+        val sendNow = pacer.tryAcquire(now())
+        if (repeat && !sendNow) return null
         val isGroup = isGroupPlayer(player)
         val delta = if (up) ROCKER_VOLUME_STEP else -ROCKER_VOLUME_STEP
         // Turning the volume up on something silent has to make it audible.
@@ -80,7 +92,7 @@ class VolumeKeyController internal constructor(
         // is exactly what a listener reported, on a group whose one member sat
         // muted at 0.
         if (up) unmuteSilentMembers(player, isGroup)
-        return apply(player, isGroup, remoteVolumeStep(player, isGroup, delta))
+        return apply(player, isGroup, remoteVolumeStep(player, isGroup, delta), sendNow)
     }
 
     /** An absolute level, from the Android Auto slider or a MediaSession client. */
@@ -88,7 +100,9 @@ class VolumeKeyController internal constructor(
         val player = playerRepository.selectedPlayer.value ?: return null
         val isGroup = isGroupPlayer(player)
         if (level > 0) unmuteSilentMembers(player, isGroup)
-        return apply(player, isGroup, level.coerceIn(0, MAX_PLAYER_VOLUME))
+        // A slider carries the whole level rather than a step, so none of them
+        // may be dropped: a throttled one is held and lands on the flush.
+        return apply(player, isGroup, level.coerceIn(0, MAX_PLAYER_VOLUME), pacer.tryAcquire(now()))
     }
 
     /**
@@ -107,7 +121,7 @@ class VolumeKeyController internal constructor(
         send(held.playerId, held.isGroup, held.level)
     }
 
-    private fun apply(player: Player, isGroup: Boolean, level: Int): Int {
+    private fun apply(player: Player, isGroup: Boolean, level: Int, sendNow: Boolean): Int {
         // The optimistic write is what makes the next press compute from the
         // level we just chose rather than from a server value that has not
         // caught up yet, so a held key ramps smoothly instead of stuttering.
@@ -124,7 +138,7 @@ class VolumeKeyController internal constructor(
         pending?.takeIf { it.playerId != player.playerId }?.let { send(it.playerId, it.isGroup, it.level) }
         pending = PendingVolume(player.playerId, level, isGroup)
 
-        if (pacer.tryAcquire(now())) {
+        if (sendNow) {
             send(player.playerId, isGroup, level)
         }
         scheduleTrailingFlush()
