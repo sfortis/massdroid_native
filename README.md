@@ -18,6 +18,10 @@
 <a href="https://apps.obtainium.imranr.dev/redirect.html?r=obtainium://add/https://github.com/sfortis/massdroid_native">
   <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="58" />
 </a>
+&nbsp;&nbsp;
+<a href="https://www.buymeacoffee.com/sfortis" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="58" />
+</a>
 
 _This app is an unofficial third-party client and is not affiliated with the Music Assistant project._
 
