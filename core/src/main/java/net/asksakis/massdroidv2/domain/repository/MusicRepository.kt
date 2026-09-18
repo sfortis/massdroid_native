@@ -146,4 +146,9 @@ data class SearchResult(
     val tracks: List<Track> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
     val radios: List<Radio> = emptyList()
-)
+) {
+    /** True when the server matched nothing at all, in any category. */
+    val isEmpty: Boolean
+        get() = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty() &&
+            playlists.isEmpty() && radios.isEmpty()
+}

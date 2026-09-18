@@ -15,7 +15,17 @@ import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
 
 private const val DEEP_SEARCH_LIMIT = 100
+/**
+ * How long the typing has to stop before a query goes to the server.
+ *
+ * Long enough that a pause between words does not spend a request, short enough
+ * that the results feel like they answer the last letter typed.
+ */
+private const val SEARCH_DEBOUNCE_MS = 600L
 private const val TAG = "SearchVM"
+
+/** Below this the query is treated as unfinished: nothing is searched, the history stays up. */
+const val MIN_SEARCH_QUERY_LENGTH = 2
 
 @HiltViewModel
 class SearchViewModel @Inject constructor(
@@ -31,7 +41,9 @@ class SearchViewModel @Inject constructor(
                 searchJob?.cancel()
                 _query.value = ""
                 _results.value = SearchResult()
+                _resultsQuery.value = ""
                 _isSearching.value = false
+                recordedThisRun = null
             }
         }
     }
@@ -41,6 +53,17 @@ class SearchViewModel @Inject constructor(
 
     private val _results = MutableStateFlow(SearchResult())
     val results: StateFlow<SearchResult> = _results.asStateFlow()
+
+    /**
+     * The query [results] answer, or empty while nothing has been answered yet.
+     *
+     * Empty results only mean "nothing matched" once the server has replied to
+     * this exact query. During the debounce and the request they are simply the
+     * results that do not exist yet, and the screen must not report them as an
+     * answer.
+     */
+    private val _resultsQuery = MutableStateFlow("")
+    val resultsQuery: StateFlow<String> = _resultsQuery.asStateFlow()
 
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
@@ -69,20 +92,70 @@ class SearchViewModel @Inject constructor(
     /** (query, type) pairs already deepened, so re-tapping a chip costs nothing. */
     private val deepened = mutableSetOf<Pair<String, MediaType>>()
 
-    fun updateQuery(newQuery: String) {
+    /**
+     * The searches worth offering again, newest first. Only queries the server
+     * actually matched get in, so a half-typed word never becomes an entry.
+     */
+    val recentSearches: StateFlow<List<String>> = settingsRepository.recentSearches
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun updateQuery(newQuery: String) = search(newQuery, SEARCH_DEBOUNCE_MS)
+
+    /** Re-run a remembered search. The text is final, so there is nothing to debounce. */
+    fun searchAgain(query: String) {
+        // Picked from the history rather than typed, so nothing it grows into
+        // may replace it later.
+        recordedThisRun = null
+        search(query, debounceMs = 0)
+    }
+
+    fun removeRecentSearch(query: String) {
+        viewModelScope.launch { settingsRepository.removeRecentSearch(query) }
+    }
+
+    fun clearRecentSearches() {
+        viewModelScope.launch { settingsRepository.clearRecentSearches() }
+    }
+
+    /**
+     * The entry this typing run has already stored, if any.
+     *
+     * A search fires while the listener is still typing, so "pink floyd" can be
+     * preceded by a stored "pink". Remembering what this run stored lets the
+     * longer query replace it, while an identical-looking search made earlier,
+     * which this run knows nothing about, stays in the history.
+     */
+    private var recordedThisRun: String? = null
+
+    private fun search(newQuery: String, debounceMs: Long) {
         _query.value = newQuery
         searchJob?.cancel()
         deepenJob?.cancel()
         deepened.clear()
-        if (newQuery.length < 2) {
+        if (newQuery.length < MIN_SEARCH_QUERY_LENGTH) {
             _results.value = SearchResult()
+            _resultsQuery.value = ""
+            // The field was emptied, so the next query starts a new run.
+            recordedThisRun = null
             return
         }
         searchJob = viewModelScope.launch {
-            delay(300) // debounce
+            if (debounceMs > 0) delay(debounceMs)
             _isSearching.value = true
             try {
-                _results.value = musicRepository.search(newQuery)
+                val result = musicRepository.search(newQuery)
+                _results.value = result
+                _resultsQuery.value = newQuery
+                if (!result.isEmpty) {
+                    val superseded = recordedThisRun
+                        ?.takeIf { newQuery.startsWith(it, ignoreCase = true) }
+                    settingsRepository.addRecentSearch(newQuery, superseded)
+                    recordedThisRun = newQuery
+                }
+            } catch (e: CancellationException) {
+                // The next keystroke already owns the state. Falling through here
+                // would clear its spinner and leave the stale results on screen.
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "search failed: ${e.message}")
             }

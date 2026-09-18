@@ -42,6 +42,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_BLOCKED_ALIAS_PROVIDERS = stringPreferencesKey("blocked_artist_alias_providers")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
         private val KEY_SEARCH_GRID_MODE = booleanPreferencesKey("search_grid_mode")
+        private val KEY_RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         private val KEY_MB_IDENTITY_REVISION = intPreferencesKey("mb_identity_revision")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
@@ -165,6 +166,38 @@ class SettingsRepositoryImpl @Inject constructor(
     override suspend fun setSearchGridMode(grid: Boolean) {
         context.dataStore.edit { it[KEY_SEARCH_GRID_MODE] = grid }
     }
+
+    override val recentSearches: Flow<List<String>> = safeData.map { prefs ->
+        prefs[KEY_RECENT_SEARCHES].toRecentSearches()
+    }
+
+    override suspend fun addRecentSearch(query: String, replacing: String?) {
+        if (normalizeSearchQuery(query).isBlank()) return
+        context.dataStore.edit { prefs ->
+            val merged = mergeRecentSearch(
+                prefs[KEY_RECENT_SEARCHES].toRecentSearches(), query, replacing
+            )
+            prefs[KEY_RECENT_SEARCHES] = merged.joinToString("\n")
+        }
+    }
+
+    override suspend fun removeRecentSearch(query: String) {
+        val entry = normalizeSearchQuery(query)
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_RECENT_SEARCHES].toRecentSearches()
+            val remaining = current.filterNot { it.equals(entry, ignoreCase = true) }
+            if (remaining.size != current.size) {
+                prefs[KEY_RECENT_SEARCHES] = remaining.joinToString("\n")
+            }
+        }
+    }
+
+    override suspend fun clearRecentSearches() {
+        context.dataStore.edit { it.remove(KEY_RECENT_SEARCHES) }
+    }
+
+    private fun String?.toRecentSearches(): List<String> =
+        this?.split("\n")?.filter { it.isNotBlank() }.orEmpty()
 
     override val blockedArtistAliasProviders: Flow<String> = safeData.map { prefs ->
         prefs[KEY_BLOCKED_ALIAS_PROVIDERS].orEmpty()
@@ -585,4 +618,39 @@ class SettingsRepositoryImpl @Inject constructor(
 
     private fun encodeNamedStringMap(map: Map<String, String>): String =
         map.entries.joinToString(",") { "${it.key}:${it.value}" }
+}
+
+internal const val MAX_RECENT_SEARCHES = 10
+
+/**
+ * The stored form of a search query: trimmed, with runs of whitespace collapsed.
+ *
+ * The history is stored newline separated, so an entry must not carry a newline
+ * of its own, and collapsing the rest of the whitespace also makes "pink  floyd"
+ * and "pink floyd" the same entry.
+ */
+internal fun normalizeSearchQuery(query: String): String = query.trim().replace(Regex("\\s+"), " ")
+
+/**
+ * [query] folded into [current] as the newest entry, capped at [MAX_RECENT_SEARCHES].
+ *
+ * Searching the same thing again moves it to the top rather than storing it
+ * twice. [replacing] is an entry the caller knows this query grew out of, from
+ * the same typing run, and it is dropped so that typing "pink floyd" leaves one
+ * entry instead of "pink" and "pink floyd". Anything else in [current] is left
+ * alone, however similar it looks: a shorter search made earlier was a search
+ * of its own.
+ */
+internal fun mergeRecentSearch(
+    current: List<String>,
+    query: String,
+    replacing: String? = null
+): List<String> {
+    val entry = normalizeSearchQuery(query)
+    if (entry.isBlank()) return current
+    val superseded = replacing?.let { normalizeSearchQuery(it) }?.takeIf { it.isNotBlank() }
+    val kept = current.filterNot {
+        it.equals(entry, ignoreCase = true) || it.equals(superseded, ignoreCase = true)
+    }
+    return (listOf(entry) + kept).take(MAX_RECENT_SEARCHES)
 }

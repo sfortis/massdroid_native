@@ -39,6 +39,29 @@ interface SettingsRepository {
     val searchGridMode: Flow<Boolean>
     suspend fun setSearchGridMode(grid: Boolean)
 
+    /**
+     * The searches that returned something, most recent first and capped at ten.
+     *
+     * The list is the search screen's history: the query text is all it needs,
+     * because re-running the search is cheaper than storing results that the
+     * server may have changed in the meantime.
+     */
+    val recentSearches: Flow<List<String>>
+
+    /**
+     * Remember [query] as the newest entry, dropping [replacing] if it is given.
+     *
+     * Searching runs while the listener is still typing, so one search for
+     * "pink floyd" can also store "pink" on the way to it. The caller passes
+     * that earlier entry as [replacing] when it came from the same typing run,
+     * which leaves "pink floyd" alone in the history. Only the caller can tell
+     * the two apart: "adele" searched yesterday and "adele 30" searched today
+     * are two searches worth keeping, and they look identical to this layer.
+     */
+    suspend fun addRecentSearch(query: String, replacing: String? = null)
+    suspend fun removeRecentSearch(query: String)
+    suspend fun clearRecentSearches()
+
     /** Smart Mix variety 0f..1f: higher = wider per-artist track pool + jitter so repeated mixes diverge. */
     val smartMixVariety: Flow<Float>
     /** Smart Mix discovery 0f..1f: higher = more exploration / adjacent artists and genres, less comfort. */

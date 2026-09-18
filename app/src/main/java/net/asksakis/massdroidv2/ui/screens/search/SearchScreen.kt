@@ -6,6 +6,7 @@ import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
 import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
+import net.asksakis.massdroidv2.ui.components.hapticClickable
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -43,6 +45,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.res.Configuration
@@ -75,6 +79,8 @@ fun SearchScreen(
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     var selectedProviders by remember { mutableStateOf(emptySet<String>()) }
     val gridMode by viewModel.gridMode.collectAsStateWithLifecycle()
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
+    val resultsQuery by viewModel.resultsQuery.collectAsStateWithLifecycle()
     val players by viewModel.players.collectAsStateWithLifecycle()
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
@@ -91,7 +97,16 @@ fun SearchScreen(
 
     val providerCache = LocalProviderManifestCache.current
 
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    // Focus once, when the screen is first opened. Coming back from an artist or
+    // an album re-enters composition, and asking for focus again there popped the
+    // keyboard back up over the results the listener had just returned to.
+    var autoFocused by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!autoFocused) {
+            autoFocused = true
+            focusRequester.requestFocus()
+        }
+    }
 
     // Reset filter when results change
     LaunchedEffect(results) {
@@ -103,8 +118,7 @@ fun SearchScreen(
     }
 
     val providerCounts = remember(results) { collectProviderCounts(results) }
-    val hasResults = results.artists.isNotEmpty() || results.albums.isNotEmpty() ||
-        results.tracks.isNotEmpty() || results.playlists.isNotEmpty() || results.radios.isNotEmpty()
+    val hasResults = !results.isEmpty
     val totalCount = providerCounts.values.sum()
 
     val filtered = if (selectedProviders.isEmpty()) results else filterByProviders(results, selectedProviders)
@@ -354,20 +368,50 @@ fun SearchScreen(
             }
         }
 
+        // A search takes about a second on a query the server has not answered
+        // before, so it needs to show progress. The line keeps the results that
+        // are already on screen instead of replacing them with a spinner.
+        if (isSearching) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+        } else {
+            Spacer(Modifier.height(2.dp))
+        }
+
         // Content
         Box(modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll)) {
-            if (isSearching) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+            val showHistory = query.length < MIN_SEARCH_QUERY_LENGTH && recentSearches.isNotEmpty()
+            when {
+                // Nothing has been searched yet, so the screen offers the last
+                // searches instead of an empty page.
+                showHistory -> RecentSearches(
+                    queries = recentSearches,
+                    onSelect = {
+                        viewModel.searchAgain(it)
+                        focusManager.clearFocus()
+                    },
+                    onRemove = { viewModel.removeRecentSearch(it) },
+                    onClearAll = { viewModel.clearRecentSearches() }
+                )
+                // Only once the server has answered this exact query: an empty
+                // field and a query still settling both have no results either.
+                !hasResults && query.length >= MIN_SEARCH_QUERY_LENGTH &&
+                    resultsQuery == query -> Box(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No results for \"$query\"",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
                 }
-            } else if (gridMode) {
-                SearchResultsGrid(
+                gridMode -> SearchResultsGrid(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onLongPress = { actionSheetItem = it }
                 )
-            } else {
-                SearchResultsList(
+                else -> SearchResultsList(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onLongPress = { actionSheetItem = it }
@@ -415,6 +459,71 @@ fun SearchScreen(
             },
             onDismiss = { pendingLibraryRemove = null }
         )
+    }
+}
+
+/**
+ * The remembered searches, newest first, each one tappable to run it again.
+ *
+ * It takes the place of the results while the field is still too short to
+ * search, which is exactly when the screen would otherwise be blank.
+ */
+@Composable
+private fun RecentSearches(
+    queries: List<String>,
+    onSelect: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClearAll: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().fadingEdges(),
+        contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Recent searches",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                MdTextButton(onClick = onClearAll) { Text("Clear all") }
+            }
+        }
+        items(queries, key = { it }) { recent ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .hapticClickable { onSelect(recent) }
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    recent,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 16.dp, top = 14.dp, bottom = 14.dp)
+                )
+                MdIconButton(onClick = { onRemove(recent) }) {
+                    Icon(
+                        Icons.Default.Clear,
+                        contentDescription = "Remove \"$recent\" from recent searches",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
     }
 }
 
