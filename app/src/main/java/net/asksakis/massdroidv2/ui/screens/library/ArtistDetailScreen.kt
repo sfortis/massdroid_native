@@ -577,6 +577,7 @@ private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
     if (showPlaySheet) {
         ModalBottomSheet(
             onDismissRequest = { showPlaySheet = false },
+            sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
         ) {
             Column(modifier = Modifier.padding(bottom = 32.dp)) {

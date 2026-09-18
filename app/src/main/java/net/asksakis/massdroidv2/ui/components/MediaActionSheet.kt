@@ -68,7 +68,7 @@ fun MediaActionSheet(
     onDelete: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     var showSpeakers by remember { mutableStateOf(false) }
 
     ModalBottomSheet(

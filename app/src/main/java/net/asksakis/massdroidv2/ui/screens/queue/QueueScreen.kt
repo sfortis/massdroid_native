@@ -62,7 +62,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -115,7 +114,7 @@ fun QueueSheet(
     onDismiss: () -> Unit,
     viewModel: QueueViewModel = hiltViewModel()
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     val items by viewModel.queueItems.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
@@ -391,6 +390,7 @@ fun QueueSheet(
     actionSheetItem?.let { item ->
         ModalBottomSheet(
             onDismissRequest = { actionSheetItem = null },
+            sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
         ) {
             Column(modifier = Modifier.padding(bottom = 24.dp)) {
@@ -509,6 +509,7 @@ fun QueueSheet(
 
         ModalBottomSheet(
             onDismissRequest = { showQueueMenu = false },
+            sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
         ) {
             Column(modifier = Modifier.padding(bottom = 24.dp)) {

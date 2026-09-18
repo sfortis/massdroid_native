@@ -467,6 +467,7 @@ fun NowPlayingScreen(
             .sortedBy { it.displayName.lowercase() }
         ModalBottomSheet(
             onDismissRequest = { showTransferSheet = false },
+            sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
         ) {
             Column(modifier = Modifier.padding(bottom = 24.dp)) {

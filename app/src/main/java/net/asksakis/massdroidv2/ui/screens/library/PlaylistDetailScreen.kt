@@ -153,6 +153,7 @@ fun PlaylistDetailScreen(
                 if (showPlaySheet) {
                     ModalBottomSheet(
                         onDismissRequest = { showPlaySheet = false },
+                        sheetState = SheetDefaults.sheetState(),
                         containerColor = SheetDefaults.containerColor()
                     ) {
                         Column(modifier = Modifier.padding(bottom = 32.dp)) {
@@ -349,7 +350,7 @@ private fun PlaylistSortSheet(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = isLandscape),
+        sheetState = SheetDefaults.sheetState(),
         sheetMaxWidth = if (isLandscape) 480.dp else Dp.Unspecified
     ) {
         Column(

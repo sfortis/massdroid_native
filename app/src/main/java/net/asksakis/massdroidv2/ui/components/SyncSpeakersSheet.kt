@@ -16,7 +16,6 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,7 +60,7 @@ internal fun SyncSpeakersSheet(
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     // Keyed on the ids, not the list: the caller rebuilds the list on every player
     // state event (volume, position), and that must not reload the configs.
     val memberIds = members.map { it.playerId }

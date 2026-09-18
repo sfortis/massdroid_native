@@ -862,7 +862,7 @@ private fun PlayerQueueSheet(
     onDismiss: () -> Unit
 ) {
     var showTransferList by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     val otherPlayers = remember(allPlayers, player.playerId) {
         allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }
     }

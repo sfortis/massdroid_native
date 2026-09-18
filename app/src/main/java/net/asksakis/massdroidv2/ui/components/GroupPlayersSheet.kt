@@ -54,7 +54,7 @@ fun GroupPlayersSheet(
     val initialSelected = remember(targetPlayer) { targetPlayer.groupChilds.toSet() }
     var selected by remember { mutableStateOf(initialSelected) }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,

@@ -25,6 +25,7 @@ fun PlayerSelector(
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = SheetDefaults.sheetState(),
         containerColor = SheetDefaults.containerColor()
     ) {
         Column {

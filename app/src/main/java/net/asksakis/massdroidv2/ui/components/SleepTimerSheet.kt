@@ -26,7 +26,7 @@ fun SleepTimerSheet(
     onCancel: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetState = SheetDefaults.sheetState()
     var showTimePicker by remember { mutableStateOf(false) }
 
     ModalBottomSheet(

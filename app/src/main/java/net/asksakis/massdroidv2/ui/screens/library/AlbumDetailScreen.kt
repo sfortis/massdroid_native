@@ -436,7 +436,7 @@ private fun AlbumPlayActions(
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Center
 ) {
     var showPlaySheet by remember { mutableStateOf(false) }
-    val playSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val playSheetState = SheetDefaults.sheetState()
 
     Row(
         modifier = modifier,

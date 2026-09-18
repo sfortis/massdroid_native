@@ -69,6 +69,7 @@ import net.asksakis.massdroidv2.ui.components.fadingEdges
 import net.asksakis.massdroidv2.ui.components.MediaItemGrid
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
+import net.asksakis.massdroidv2.ui.components.SheetDefaults
 
 private const val TAB_ARTISTS = 0
 private const val TAB_ALBUMS = 1
@@ -959,7 +960,7 @@ private fun LibraryControlsSheet(
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = isLandscape),
+        sheetState = SheetDefaults.sheetState(),
         sheetMaxWidth = if (isLandscape) 480.dp else Dp.Unspecified
     ) {
         Column(
