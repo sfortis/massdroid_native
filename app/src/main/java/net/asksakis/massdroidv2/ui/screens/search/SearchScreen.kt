@@ -165,7 +165,10 @@ fun SearchScreen(
                         imeAction = androidx.compose.ui.text.input.ImeAction.Search
                     ),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                        onSearch = { focusManager.clearFocus() }
+                        onSearch = {
+                            viewModel.submitQuery()
+                            focusManager.clearFocus()
+                        }
                     ),
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     trailingIcon = {
@@ -261,7 +264,10 @@ fun SearchScreen(
                     imeAction = androidx.compose.ui.text.input.ImeAction.Search
                 ),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onSearch = { focusManager.clearFocus() }
+                    onSearch = {
+                        viewModel.submitQuery()
+                        focusManager.clearFocus()
+                    }
                 ),
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                 trailingIcon = {
@@ -379,8 +385,26 @@ fun SearchScreen(
 
         // Content
         Box(modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll)) {
-            val showHistory = query.length < MIN_SEARCH_QUERY_LENGTH && recentSearches.isNotEmpty()
+            // The history is what the screen falls back to while the query is too
+            // short to search. A query the search key submitted is short and
+            // searched, so its results, or the answer that it matched nothing,
+            // come first.
+            val showHistory = query.length < MIN_SEARCH_QUERY_LENGTH && !hasResults &&
+                recentSearches.isNotEmpty()
             when {
+                // Only once the server has answered this exact query: an empty
+                // field and a query still settling both have no results either.
+                !hasResults && query.isNotEmpty() && resultsQuery == query -> Box(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No results for \"$query\"",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
                 // Nothing has been searched yet, so the screen offers the last
                 // searches instead of an empty page.
                 showHistory -> RecentSearches(
@@ -392,20 +416,6 @@ fun SearchScreen(
                     onRemove = { viewModel.removeRecentSearch(it) },
                     onClearAll = { viewModel.clearRecentSearches() }
                 )
-                // Only once the server has answered this exact query: an empty
-                // field and a query still settling both have no results either.
-                !hasResults && query.length >= MIN_SEARCH_QUERY_LENGTH &&
-                    resultsQuery == query -> Box(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "No results for \"$query\"",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
                 gridMode -> SearchResultsGrid(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },

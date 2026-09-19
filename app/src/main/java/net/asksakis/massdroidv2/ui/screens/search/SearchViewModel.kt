@@ -27,6 +27,18 @@ private const val TAG = "SearchVM"
 /** Below this the query is treated as unfinished: nothing is searched, the history stays up. */
 const val MIN_SEARCH_QUERY_LENGTH = 2
 
+/**
+ * The two ways a search starts, which differ in how finished the text is.
+ *
+ * Typing is unfinished, so it waits out the debounce and ignores a query too
+ * short to be worth a request. A submit is the listener saying the text is
+ * final, so it goes to the server immediately and however short it is.
+ */
+private enum class SearchTrigger(val debounceMs: Long, val minLength: Int) {
+    TYPING(SEARCH_DEBOUNCE_MS, MIN_SEARCH_QUERY_LENGTH),
+    SUBMIT(debounceMs = 0L, minLength = 1)
+}
+
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
@@ -99,14 +111,23 @@ class SearchViewModel @Inject constructor(
     val recentSearches: StateFlow<List<String>> = settingsRepository.recentSearches
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun updateQuery(newQuery: String) = search(newQuery, SEARCH_DEBOUNCE_MS)
+    fun updateQuery(newQuery: String) = search(newQuery, SearchTrigger.TYPING)
+
+    /**
+     * The search key on the keyboard: search what is in the field now.
+     *
+     * The listener has said the text is final, so it goes to the server at once
+     * and a query that has already been answered is asked again, which makes the
+     * key a retry when a search failed.
+     */
+    fun submitQuery() = search(_query.value, SearchTrigger.SUBMIT)
 
     /** Re-run a remembered search. The text is final, so there is nothing to debounce. */
     fun searchAgain(query: String) {
         // Picked from the history rather than typed, so nothing it grows into
         // may replace it later.
         recordedThisRun = null
-        search(query, debounceMs = 0)
+        search(query, SearchTrigger.SUBMIT)
     }
 
     fun removeRecentSearch(query: String) {
@@ -127,12 +148,12 @@ class SearchViewModel @Inject constructor(
      */
     private var recordedThisRun: String? = null
 
-    private fun search(newQuery: String, debounceMs: Long) {
+    private fun search(newQuery: String, trigger: SearchTrigger) {
         _query.value = newQuery
         searchJob?.cancel()
         deepenJob?.cancel()
         deepened.clear()
-        if (newQuery.length < MIN_SEARCH_QUERY_LENGTH) {
+        if (newQuery.isBlank() || newQuery.length < trigger.minLength) {
             _results.value = SearchResult()
             _resultsQuery.value = ""
             // The field was emptied, so the next query starts a new run.
@@ -140,7 +161,7 @@ class SearchViewModel @Inject constructor(
             return
         }
         searchJob = viewModelScope.launch {
-            if (debounceMs > 0) delay(debounceMs)
+            if (trigger.debounceMs > 0) delay(trigger.debounceMs)
             _isSearching.value = true
             try {
                 val result = musicRepository.search(newQuery)
@@ -175,7 +196,7 @@ class SearchViewModel @Inject constructor(
      */
     fun deepenSearch(mediaType: MediaType) {
         val q = _query.value
-        if (q.length < 2 || !deepened.add(q to mediaType)) return
+        if (q.isBlank() || !deepened.add(q to mediaType)) return
         deepenJob = viewModelScope.launch {
             try {
                 val more = musicRepository.search(q, listOf(mediaType), DEEP_SEARCH_LIMIT)
