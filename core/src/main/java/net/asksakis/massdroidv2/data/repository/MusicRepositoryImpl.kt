@@ -16,6 +16,7 @@ import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SEARCHABLE_MEDIA_TYPES
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -261,7 +262,11 @@ class MusicRepositoryImpl @Inject constructor(
     override suspend fun search(query: String, mediaTypes: List<MediaType>?, limit: Int): SearchResult {
         val result = wsClient.sendCommand(
             MaCommands.Music.SEARCH,
-            SearchArgs(query = query, limit = limit, mediaTypes = mediaTypes?.map { it.apiValue })
+            SearchArgs(
+                query = query,
+                limit = limit,
+                mediaTypes = (mediaTypes ?: SEARCHABLE_MEDIA_TYPES).map { it.apiValue }
+            )
         )
 
         val obj = result?.jsonObject ?: return SearchResult()

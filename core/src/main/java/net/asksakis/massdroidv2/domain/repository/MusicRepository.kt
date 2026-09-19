@@ -140,6 +140,24 @@ interface MusicRepository {
     suspend fun browse(path: String? = null): List<BrowseItem>
 }
 
+/**
+ * The media types a [SearchResult] can hold, and therefore the only ones worth asking for.
+ *
+ * A search that names no types is not a search for everything. Music Assistant asks each
+ * provider for whatever it considers the default, and Deezer then labels the same records
+ * as audiobooks: "gruselkabinett folge 12:" returned 25 audiobooks and no albums, while the
+ * same query with these types named returned those 25 as albums. Naming them also skips the
+ * genres, audiobooks, podcasts and sound effects a [SearchResult] would drop anyway, which
+ * measured about a quarter faster on the same query.
+ */
+val SEARCHABLE_MEDIA_TYPES = listOf(
+    MediaType.ARTIST,
+    MediaType.ALBUM,
+    MediaType.TRACK,
+    MediaType.PLAYLIST,
+    MediaType.RADIO
+)
+
 data class SearchResult(
     val artists: List<Artist> = emptyList(),
     val albums: List<Album> = emptyList(),
