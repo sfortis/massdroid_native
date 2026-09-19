@@ -39,6 +39,29 @@ class MotionGate @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+    private val significantMotionSensor by lazy {
+        sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+    }
+
+    /**
+     * Prefer the wake-up variant so a few steps to the next room wake the CPU even
+     * when the significant-motion detector, which Android allows to miss short
+     * movements, does not fire. Falls back to the default where none exists.
+     */
+    private val stepSensor by lazy {
+        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR, true)
+            ?: sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+    }
+
+    /**
+     * Whether this device can report movement at all, meaning the permission is granted
+     * and at least one of the two sensors exists. A caller that stops its own work and
+     * waits for [isMoving] to turn true would otherwise wait for ever: tablets and some
+     * low-end phones ship with neither sensor, and there the gate starts, logs
+     * "motion=false, steps=false" and never emits.
+     */
+    val canReportMotion: Boolean
+        get() = hasMotionPermission() && (significantMotionSensor != null || stepSensor != null)
     private var windowJob: Job? = null
     private var triggerListener: TriggerEventListener? = null
     private var stepListener: SensorEventListener? = null
@@ -57,7 +80,7 @@ class MotionGate @Inject constructor(
         movementGeneration++
 
         try {
-            val motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+            val motionSensor = significantMotionSensor
             if (motionSensor != null) {
                 triggerListener = object : TriggerEventListener() {
                     override fun onTrigger(event: TriggerEvent?) {
@@ -71,12 +94,8 @@ class MotionGate @Inject constructor(
                 sensorManager.requestTriggerSensor(triggerListener, motionSensor)
             }
 
-            // Prefer the wake-up variant so a few steps to the next room wake the CPU even
-            // when the significant-motion detector, which Android allows to miss short
-            // movements, does not fire. Falls back to the default where none exists.
-            val stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR, true)
-                ?: sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
-            if (stepSensor != null) {
+            val steps = stepSensor
+            if (steps != null) {
                 stepListener = object : SensorEventListener {
                     override fun onSensorChanged(event: SensorEvent?) {
                         if (!started) return
@@ -85,10 +104,10 @@ class MotionGate @Inject constructor(
                     }
                     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
                 }
-                sensorManager.registerListener(stepListener, stepSensor, SensorManager.SENSOR_DELAY_NORMAL)
+                sensorManager.registerListener(stepListener, steps, SensorManager.SENSOR_DELAY_NORMAL)
             }
 
-            Log.d(TAG, "Started (motion=${motionSensor != null}, steps=${stepSensor != null})")
+            Log.d(TAG, "Started (motion=${motionSensor != null}, steps=${steps != null})")
         } catch (e: SecurityException) {
             cleanupRegisteredSensors()
             started = false
@@ -104,7 +123,7 @@ class MotionGate @Inject constructor(
         if (!started) return
         started = false
         movementGeneration++
-        val motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+        val motionSensor = significantMotionSensor
         if (motionSensor != null && triggerListener != null) {
             sensorManager?.cancelTriggerSensor(triggerListener, motionSensor)
         }
@@ -119,7 +138,7 @@ class MotionGate @Inject constructor(
     }
 
     private fun cleanupRegisteredSensors() {
-        val motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+        val motionSensor = significantMotionSensor
         if (motionSensor != null && triggerListener != null) {
             sensorManager?.cancelTriggerSensor(triggerListener, motionSensor)
         }

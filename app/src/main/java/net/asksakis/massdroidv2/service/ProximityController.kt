@@ -51,7 +51,12 @@ class ProximityController(
         private const val HIGH_ACCURACY_WINDOW_MS = 30_000L
         private const val AWAY_MODE_TIMEOUT_MS = 5 * 60 * 1000L
         private const val AWAY_MODE_SCAN_INTERVAL_MS = 60_000L
-        private const val SCREEN_OFF_IDLE_SCAN_INTERVAL_MS = 2 * 60 * 1000L
+        /**
+         * Safety net poll while every scan is off and the loop waits for motion.
+         * It applies with the screen on as well, because a still phone learns
+         * nothing new whatever the display is doing.
+         */
+        private const val IDLE_SCAN_INTERVAL_MS = 2 * 60 * 1000L
 
         /**
          * How long after the last step the scan keeps running while the detector has not
@@ -408,20 +413,22 @@ class ProximityController(
             /*
              * Main detection loop.
              *
-             * Three operating modes based on device state:
-             *   SCREEN_ON  – persistent BLE scan + periodic burst reads
-             *   SCREEN_OFF + MOTION – wake-lock fast-path burst reads
-             *   SCREEN_OFF + IDLE  - no scan at all, waiting on the sensor hub
+             * Four operating modes, and stillness now outranks the screen:
+             *   STILL + ROOM HELD  : no scan at all, waiting on the sensor hub
+             *   SCREEN_ON + ACTIVE : persistent BLE scan + periodic burst reads
+             *   SCREEN_OFF + MOVING: wake-lock fast-path burst reads
+             *   SCREEN_OFF + IDLE  : no scan at all, waiting on the sensor hub
              *
              * Within SCREEN_ON:
-             *   Motion active → LOW_LATENCY scan, burst every 2 s
-             *   No motion     → LOW_POWER scan, burst every 12 s
-             *   Away mode     → no room for 5 min → burst every 60 s
+             *   Motion active : LOW_LATENCY scan, burst every 2 s
+             *   No motion     : LOW_POWER scan, burst every 12 s
+             *   Away mode     : no room for 5 min, burst every 60 s
              *
-             * Room changes require motion, so it is safe to scan less
-             * aggressively when idle. The scanner always runs (even idle)
-             * to keep the device buffer warm for instant detection on the
-             * next motion event.
+             * Room changes require motion, so a phone that is still and already
+             * knows its room is not scanned at all. The screen used to override
+             * that, which made a phone lying on a table scan for as long as
+             * anything kept the display on: of 8876 scan starts in a 17 hour log,
+             * 8820 were the screen's and 56 were motion's.
              */
             val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
             Log.d(TAG, "Proximity main loop starting, enabled=${proximityConfigStore.config.value.enabled}")
@@ -480,7 +487,32 @@ class ProximityController(
                     lastMotionSeenMs > 0L &&
                     nowMs - lastMotionSeenMs < SETTLE_AFTER_MOTION_MAX_MS
 
+                // Still, holding a room the last read agrees with, and nothing asking for
+                // live readings. isDetectionSettled() is asked directly rather than reusing
+                // !settling: that one also goes false 90 s after the last step even when the
+                // room was never found or was lost, and treating a lost room as settled would
+                // stop the scans exactly when they are needed to find it again.
+                // canReportMotion is asked first: a device with no motion sensor, or without
+                // the permission to read one, can never deliver the movement that ends this
+                // state, so it keeps the screen-on cadence rather than a scan that would
+                // never start again.
+                val stillAndSettled = motionGate.canReportMotion && !isMoving &&
+                    !highAccuracy && isDetectionSettled()
+
                 when {
+                    // Screen ON but the phone is still and the detector holds a room the
+                    // last read agrees with. Follow Me follows the PHONE, so there is
+                    // nothing to learn here either and both scans stop until motion, the
+                    // same rule the screen-off idle path has always used. Without a room
+                    // this branch does not apply and the screen-on branch below keeps the
+                    // away-mode recovery poll running.
+                    screenOn && stillAndSettled && cooledDown -> {
+                        suspendScanning()
+                        withTimeoutOrNull(IDLE_SCAN_INTERVAL_MS) {
+                            motionGate.isMoving.first { it }
+                        }
+                    }
+
                     // ── Screen ON ──
                     screenOn && cooledDown -> {
                         resumeScanning()
@@ -517,7 +549,7 @@ class ProximityController(
                         awaitBufferQuiet(MOTION_SCAN_INTERVAL_MS)
                     }
 
-                    // ── Screen OFF + idle (or transient cooldown) ──
+                    // Screen OFF idle, or a transient cooldown state.
                     // Detection while idle is handled by the PendingIntent bg-receiver and the
                     // dedicated motion collectors, so the loop need not spin. When truly idle
                     // (screen off, no motion) wait for motion (instant wake, preserves the fast
@@ -525,19 +557,8 @@ class ProximityController(
                     // Transient cooldown states keep the short poll so normal cadence resumes fast.
                     else -> {
                         if (!screenOn && !isMoving && !settling) {
-                            // Follow Me follows the PHONE. Once it is still AND the detector has
-                            // settled on a room, nothing new can be learned until it moves, so
-                            // BOTH scans stop and no room decision is taken until motion.
-                            //
-                            // The first version of this stopped only the persistent scan and
-                            // left the MAC-only batch scan feeding the detector. That scan
-                            // cannot hear NAME anchors, the scorer read their silence as
-                            // "definitely not in that room", and a still phone in the living
-                            // room was moved to the bathroom speaker four minutes after it had
-                            // correctly found the living room. Stopping the data source is what
-                            // makes the decision safe, not filtering the decision.
                             suspendScanning()
-                            withTimeoutOrNull(SCREEN_OFF_IDLE_SCAN_INTERVAL_MS) {
+                            withTimeoutOrNull(IDLE_SCAN_INTERVAL_MS) {
                                 motionGate.isMoving.first { it }
                             }
                         } else {
