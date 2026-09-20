@@ -83,6 +83,16 @@ fun SearchScreen(
     val resultsQuery by viewModel.resultsQuery.collectAsStateWithLifecycle()
     val players by viewModel.players.collectAsStateWithLifecycle()
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Failures reach the listener here or nowhere. The flow existed and carried the
+    // "Not connected to server" of every play and queue action on this screen, but
+    // nothing collected it, so those were lost too.
+    LaunchedEffect(Unit) {
+        viewModel.error.collect { message ->
+            snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        }
+    }
     var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
 
     // Dismiss the soft keyboard once the user starts scrolling the results.
@@ -427,6 +437,12 @@ fun SearchScreen(
                     onLongPress = { actionSheetItem = it }
                 )
             }
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = LocalMiniPlayerPadding.current)
+            )
         }
     }
 

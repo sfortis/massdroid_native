@@ -178,7 +178,10 @@ class SearchViewModel @Inject constructor(
                 // would clear its spinner and leave the stale results on screen.
                 throw e
             } catch (e: Exception) {
+                // The screen keeps whatever it was showing, which is the right thing for a
+                // stale answer but indistinguishable from nothing happening, so say it.
                 Log.w(TAG, "search failed: ${e.message}")
+                _error.tryEmit("Search failed, try again")
             }
             _isSearching.value = false
         }
