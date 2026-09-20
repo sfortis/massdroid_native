@@ -199,23 +199,40 @@ class AndroidAutoController(
      * phone's own output while Sendspin is the active output, otherwise to the selected
      * player. The widget comes in here so it can never pick a different target.
      */
+    /**
+     * Run one transport command for an external controller.
+     *
+     * These are the only calls the car head unit, the watch and the widget make,
+     * and they reach a repository that throws when the socket is down. The scope
+     * they run in belongs to [PlaybackService] and carries no exception handler,
+     * so an uncaught failure here takes the whole service with it. There is also
+     * nothing useful to do about one: the controller has already drawn its own
+     * button state and the next server echo corrects it.
+     */
+    private fun transport(what: String, block: suspend () -> Unit) {
+        scope.launch {
+            runCatching { block() }
+                .onFailure { Log.w(TAG, "$what failed: ${it.message}") }
+        }
+    }
+
     fun dispatchTransport(command: TransportCommand) {
         val sendspin = if (shouldRouteToSendspin()) sendspinController() else null
         when (command) {
             TransportCommand.PLAY_PAUSE -> {
                 if (sendspin != null) return sendspin.handlePlay()
                 val id = activePlayerId() ?: return
-                scope.launch { playerRepository.playPause(id) }
+                transport("playPause") { playerRepository.playPause(id) }
             }
             TransportCommand.NEXT -> {
                 if (sendspin != null) return sendspin.handleNext()
                 val id = activePlayerId() ?: return
-                scope.launch { playerRepository.next(id) }
+                transport("next") { playerRepository.next(id) }
             }
             TransportCommand.PREVIOUS -> {
                 if (sendspin != null) return sendspin.handlePrev()
                 val id = activePlayerId() ?: return
-                scope.launch { playerRepository.previous(id) }
+                transport("previous") { playerRepository.previous(id) }
             }
         }
     }
@@ -228,7 +245,7 @@ class AndroidAutoController(
                     sendspinController()?.handlePlay()
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
-                    scope.launch { playerRepository.play(id) }
+                    transport("play") { playerRepository.play(id) }
                 }
             },
             onPause = {
@@ -236,7 +253,7 @@ class AndroidAutoController(
                     sendspinController()?.handlePause()
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
-                    scope.launch { playerRepository.pause(id) }
+                    transport("pause") { playerRepository.pause(id) }
                 }
             },
             onNext = { dispatchTransport(TransportCommand.NEXT) },
@@ -248,7 +265,7 @@ class AndroidAutoController(
                 remotePlayer?.publishPosition(positionMs)
                 val id = if (shouldRouteToSendspin()) sendspinPlayerId() else activePlayerId()
                 id ?: return@RemoteControlPlayer
-                scope.launch { playerRepository.seek(id, positionMs / 1000.0) }
+                transport("seek") { playerRepository.seek(id, positionMs / 1000.0) }
             },
             // An active REMOTE-volume session captures the hardware rocker
             // system-wide, so these fire whenever the app is not in front - the

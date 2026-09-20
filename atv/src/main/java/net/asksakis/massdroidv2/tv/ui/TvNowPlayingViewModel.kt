@@ -83,9 +83,13 @@ class TvNowPlayingViewModel @Inject constructor(
         viewModelScope.launch { runCatching { musicRepository.repeatQueue(queue.queueId, next) } }
     }
 
-    fun playPause() = viewModelScope.launch { playerRepository.playPause(playerId) }
-    fun next() = viewModelScope.launch { playerRepository.next(playerId) }
-    fun previous() = viewModelScope.launch { playerRepository.previous(playerId) }
+    // runCatching for the same reason repeatQueue above uses it: these reach a
+    // repository that throws when the socket is down, and viewModelScope has no
+    // exception handler, so an uncaught one crashes the app. A failed transport
+    // command needs no recovery here; the next server echo restores the real state.
+    fun playPause() = viewModelScope.launch { runCatching { playerRepository.playPause(playerId) } }
+    fun next() = viewModelScope.launch { runCatching { playerRepository.next(playerId) } }
+    fun previous() = viewModelScope.launch { runCatching { playerRepository.previous(playerId) } }
 
     /** Seek by a relative delta (seconds), clamped to the track. */
     fun seekBy(deltaSec: Double) {
@@ -112,7 +116,7 @@ class TvNowPlayingViewModel @Inject constructor(
     private fun changeVolume(delta: Int) {
         val current = player.value?.volumeLevel ?: return
         viewModelScope.launch {
-            playerRepository.setVolume(playerId, (current + delta).coerceIn(0, 100))
+            runCatching { playerRepository.setVolume(playerId, (current + delta).coerceIn(0, 100)) }
         }
     }
 

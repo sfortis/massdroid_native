@@ -98,7 +98,8 @@ class MaWebSocketClient(
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
 
-    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<JsonElement?>>()
+    @VisibleForTesting
+    internal val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<JsonElement?>>()
     private val partialResults = ConcurrentHashMap<String, MutableList<JsonElement>>()
 
     /**
@@ -785,7 +786,13 @@ class MaWebSocketClient(
         timeoutMs: Long = 30_000,
     ): JsonElement? {
         waitUntilReadyForCommand(command = command, awaitResponse = awaitResponse, timeoutMs = timeoutMs)
-        if (_connectionState.value !is ConnectionState.Connected && !isAuthCommand(command)) return null
+        // Not connected after the wait above gave the reconnect its chance. This
+        // throws rather than returning `null` for the same reason [failAllPending]
+        // does: `null` is the server saying "nothing", and a command that was never
+        // sent must not be reported as one the server answered.
+        if (_connectionState.value !is ConnectionState.Connected && !isAuthCommand(command)) {
+            throw MaApiException("WebSocket not connected", MaApiException.CONNECTION_LOST_CODE)
+        }
         // Two distinct retries live below, and they are safe in different cases.
         // A failed SEND never reached the server, so repeating it is safe for every
         // command, transport included. A TIMEOUT did reach it and may already have
@@ -827,7 +834,7 @@ class MaWebSocketClient(
                     attempt++
                     continue
                 }
-                throw MaApiException("WebSocket not connected", -1)
+                throw MaApiException("WebSocket not connected", MaApiException.CONNECTION_LOST_CODE)
             }
             if (!awaitResponse) return null
 
@@ -907,9 +914,26 @@ class MaWebSocketClient(
 
     private fun shouldRetryCommand(command: String): Boolean = isRetryableCommand(command)
 
-    private fun failAllPending(reason: String) {
+    /**
+     * Abandon every command still waiting for an answer, because the socket is gone.
+     *
+     * These complete exceptionally rather than with `null`. A `null` result is a
+     * legitimate answer from the server, meaning "done, nothing to return", and
+     * callers read it that way: [MusicRepositoryImpl.search] turns it into an empty
+     * [SearchResult], `getQueueItems` into an empty list. Completing a dropped
+     * command with `null` therefore told the screen that the server had answered
+     * and had nothing, when in truth it was never asked. Measured on 2026-09-20:
+     * with both radios off, a search sat for 27 s and then displayed no results.
+     *
+     * [reason] is carried into the message because [PlayerRepositoryImpl] matches on
+     * it to decide whether a transport command may be retried after the reconnect.
+     */
+    @VisibleForTesting
+    internal fun failAllPending(reason: String) {
         pendingRequests.keys.toList().forEach { id ->
-            pendingRequests.remove(id)?.complete(null)
+            pendingRequests.remove(id)?.completeExceptionally(
+                MaApiException(reason, MaApiException.CONNECTION_LOST_CODE)
+            )
         }
         partialResults.clear()
     }
@@ -984,8 +1008,31 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
      */
     val isTimeout: Boolean get() = code == TIMEOUT_CODE
 
+    /**
+     * True when the socket went away before an answer arrived, or before the
+     * command could be sent at all.
+     *
+     * Distinct from [isTimeout] in what it licenses the caller to do. A timeout
+     * means the command may have run and been answered late, so repeating it is
+     * only safe for an idempotent one. A lost connection means the transport is
+     * down: whether the server saw the command depends on which side of the send
+     * the socket died, so the caller still may not assume it took effect, but it
+     * does know that waiting longer will not help and that a reconnect is coming.
+     */
+    val isConnectionLost: Boolean get() = code == CONNECTION_LOST_CODE
+
     companion object {
         /** Marks "no response", as opposed to any error code the server itself returns. */
         const val TIMEOUT_CODE = -2
+
+        /**
+         * Marks "the socket was not there".
+         *
+         * This used to be reported as a successful command whose result was
+         * `null`, which every caller then read as "the server answered with
+         * nothing": a search showed no results, a queue opened empty. See
+         * [MaWebSocketClient.failAllPending].
+         */
+        const val CONNECTION_LOST_CODE = -3
     }
 }

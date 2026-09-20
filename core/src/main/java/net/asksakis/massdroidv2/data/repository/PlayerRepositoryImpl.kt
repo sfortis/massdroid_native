@@ -2226,7 +2226,18 @@ class PlayerRepositoryImpl @Inject constructor(
         throw lastError ?: MaApiException("WebSocket command failed", -1)
     }
 
+    /**
+     * Whether the command failed because the transport was down, so the reconnect
+     * that is already under way makes it worth sending again.
+     *
+     * The code is authoritative. The message check below is kept because it costs
+     * nothing and still catches an error raised somewhere that does not set the
+     * code, but it must not be the only test: these strings are the `reason` text
+     * passed to `failAllPending`, and matching on prose breaks the moment someone
+     * rewords a log line.
+     */
     private fun isTransientWsCommandError(e: MaApiException): Boolean {
+        if (e.isConnectionLost) return true
         val msg = e.message?.lowercase() ?: return false
         return "websocket not connected" in msg ||
                 "connection lost" in msg ||

@@ -36,6 +36,23 @@ class MusicRepositoryImpl @Inject constructor(
         private const val FAVORITE_RETRY_DELAY_MS = 180L
         private const val LIBRARY_SYNC_COOLDOWN_MS = 45_000L
         private const val LIBRARY_SYNC_TIMEOUT_MS = 1_500L
+
+        /**
+         * How long one search attempt waits before it gives up.
+         *
+         * Shorter than the 30 s default because someone is watching a spinner while
+         * it runs. A measured MA search takes about a second cold and 0.15 s once
+         * the provider has cached it, so five seconds is well clear of a slow answer.
+         *
+         * This is the budget per attempt, not per search. A search is a read, so
+         * [isRetryableCommand] lets it be sent a second time after a timeout, and
+         * the listener waits for both attempts before the failure reaches the
+         * screen. Measured on 2026-09-20 with both radios off: at 10 s per attempt
+         * the error arrived 20 s after the send, by which time the user had given
+         * up and left the screen. Five seconds keeps that total at about ten while
+         * the second attempt still covers a server that was briefly slow.
+         */
+        private const val SEARCH_TIMEOUT_MS = 5_000L
     }
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
@@ -266,7 +283,8 @@ class MusicRepositoryImpl @Inject constructor(
                 query = query,
                 limit = limit,
                 mediaTypes = (mediaTypes ?: SEARCHABLE_MEDIA_TYPES).map { it.apiValue }
-            )
+            ),
+            timeoutMs = SEARCH_TIMEOUT_MS
         )
 
         val obj = result?.jsonObject ?: return SearchResult()
