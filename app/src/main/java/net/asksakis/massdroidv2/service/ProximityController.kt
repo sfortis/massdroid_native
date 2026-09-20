@@ -483,6 +483,17 @@ class ProximityController(
                 if (isMoving) lastMotionSeenMs = nowMs
                 // Keep listening after the walk ends until the detector agrees with itself,
                 // bounded so an ambiguous spot cannot hold the radio open for ever.
+                //
+                // Away from every anchor the detector can never agree with itself, because
+                // there is nothing to hear, so this tail re-arms on every step for as long
+                // as a walk lasts. That is deliberate, and away mode makes it cheap by
+                // setting the cadence in the branches below. Gating the tail on away mode
+                // instead would starve arrival: the away read runs on a scan it has just
+                // restarted, finds it still cold, and sleeps AWAY_MODE_SCAN_INTERVAL_MS,
+                // which outlasts MotionGate's 30 s window. The next pass would then find no
+                // motion and no tail, suspend both scans, and throw away the buffer that had
+                // meanwhile filled. A room whose anchors are names only would be unreachable,
+                // because the batch scan's offloaded filters match addresses and not names.
                 val settling = !isDetectionSettled() &&
                     lastMotionSeenMs > 0L &&
                     nowMs - lastMotionSeenMs < SETTLE_AFTER_MOTION_MAX_MS
@@ -518,9 +529,7 @@ class ProximityController(
                         resumeScanning()
                         // Away mode: no room matched for 5 min, conserve battery
                         if (isInAwayMode()) {
-                            ensureScans(lowPower = true)
-                            burstScan("away")
-                            kotlinx.coroutines.delay(AWAY_MODE_SCAN_INTERVAL_MS)
+                            awayModeScanCycle()
                             continue
                         }
                         // Normal: scan aggressiveness follows motion state, and a buffer that is
@@ -545,8 +554,17 @@ class ProximityController(
                     // the radio on for nothing.
                     !screenOn && (isMoving || settling) && cooledDown -> {
                         resumeScanning()
-                        screenOffMotionBurst()
-                        awaitBufferQuiet(MOTION_SCAN_INTERVAL_MS)
+                        // Away mode reaches this branch too, and used to run the full fast
+                        // path here: a wake lock and two reads of an empty buffer every five
+                        // seconds, for as long as the walk lasted. The screen state says
+                        // nothing about what there is to hear, so away from every anchor this
+                        // takes the same cadence the screen-on branch takes.
+                        if (isInAwayMode()) {
+                            awayModeScanCycle()
+                        } else {
+                            screenOffMotionBurst()
+                            awaitBufferQuiet(MOTION_SCAN_INTERVAL_MS)
+                        }
                     }
 
                     // Screen OFF idle, or a transient cooldown state.
@@ -979,6 +997,18 @@ class ProximityController(
         } catch (e: Exception) {
             Log.w(TAG, "Motion detection failed ($detailPrefix): ${e.message}")
         }
+    }
+
+    /**
+     * Away cadence: one low-power read a minute instead of the active branches' seconds.
+     * Away from every anchor the scan legitimately hears nothing, so a faster read only
+     * costs radio and wake locks. The room returns through this read or through the batch
+     * scan's receiver, and either one confirms a room and so ends away mode.
+     */
+    private suspend fun awayModeScanCycle() {
+        ensureScans(lowPower = true)
+        burstScan("away")
+        kotlinx.coroutines.delay(AWAY_MODE_SCAN_INTERVAL_MS)
     }
 
     /** Read BLE snapshot from persistent scan and detect room */
