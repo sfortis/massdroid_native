@@ -50,6 +50,12 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+- You can now put a player in a Follow Me room straight from the player settings, without opening the Follow Me setup.
+- Global search enhancements and bug fixes. (#76)
+- A command lost together with the connection now fails visibly, instead of reaching the screen as an empty answer from the server.
+- Follow Me is lighter on the battery: a phone that is still and already knows its room stops scanning, and a walk outside keeps the slow cadence.
+- The phone as a speaker is no longer dropped by the server right after it connects.
+- An interruption such as a call now pauses the music once instead of several times.
 - Fixed a crash that killed the app whenever the home screen widget was updated, including the moment you place it.
 - Search now remembers your recent searches and offers them when the field is empty, and it says so when nothing matched. (#72)
 - Holding a volume key raises the volume smoothly on a group instead of in jumps.

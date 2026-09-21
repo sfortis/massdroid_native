@@ -6,6 +6,7 @@ Walk between rooms and your music follows you. MassDroid uses BLE fingerprinting
 
 - **Room Detection**: scans nearby Bluetooth devices and compares the live BLE anchor snapshot against calibrated room fingerprints using vector k-NN room-fit scoring. For distinct locations, Wi-Fi BSSID or SSID matching can be used as an alternative to BLE.
 - **Per-Room Configuration**: assign a Music Assistant player to each room, set a preferred playlist for auto-play, configure volume level, and toggle shuffle.
+- **Assign a Room from the Player Settings**: the player settings dialog lists the rooms you have set up and lets you point one of them at that player, which moves the room onto another speaker without going through the Follow Me setup. Creating a room and calibrating it stay in the Follow Me settings.
 - **Calibration Wizard**: walk through each room while the app collects BLE sampling windows, builds anchor fingerprints, and computes beacon profiles with quality assessment.
 - **Time Schedule**: set active days and times so proximity detection only runs when you want it.
 - **Auto-Transfer**: optionally transfer the queue automatically without notification when you change rooms.
