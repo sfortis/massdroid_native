@@ -29,6 +29,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
+import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
 
 private const val TAG = "HomeVM"
 
@@ -284,6 +285,20 @@ class HomeViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "savePlayerConfig failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Point a Follow Me room at this player. Written to the proximity config immediately, the
+     * way the room setup screen writes it, so the Save button of the player settings dialog has
+     * nothing to do with it. The room keeps its calibration and the rooms this player already
+     * served are left alone (see withRoomPlayer).
+     */
+    fun assignPlayerToRoom(roomId: String, player: net.asksakis.massdroidv2.domain.model.Player) {
+        viewModelScope.launch {
+            proximityConfigStore.update {
+                it.withRoomPlayer(roomId, player.playerId, player.displayName)
             }
         }
     }

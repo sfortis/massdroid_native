@@ -518,6 +518,7 @@ fun NowPlayingScreen(
             val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
             val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
             val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
+            val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle()
 
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
@@ -552,6 +553,10 @@ fun NowPlayingScreen(
                 btRouteName = viewModel.acoustic.getBtRouteName(),
                 onResetBtCalibration = { viewModel.acoustic.resetCalibration() },
                 onResetMicPath = { viewModel.acoustic.resetMicPath() },
+                rooms = proximityConfig.rooms,
+                onAssignRoom = { roomId ->
+                    viewModel.assignPlayerToRoom(roomId, currentPlayer)
+                },
                 onDismiss = { showPlayerSettingsDialog = false }
             )
         }

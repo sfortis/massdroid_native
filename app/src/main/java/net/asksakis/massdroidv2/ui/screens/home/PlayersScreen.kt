@@ -386,6 +386,10 @@ fun PlayersScreen(
                             onResetBtCalibration = { viewModel.acoustic.resetCalibration() },
                             onResetMicPath = { viewModel.acoustic.resetMicPath() },
                             syncHistory = syncHistory,
+                            rooms = proximityConfig.rooms,
+                            onAssignRoom = { roomId ->
+                                viewModel.assignPlayerToRoom(roomId, player)
+                            },
                             onDismiss = { settingsPlayer = null }
                         )
                     }

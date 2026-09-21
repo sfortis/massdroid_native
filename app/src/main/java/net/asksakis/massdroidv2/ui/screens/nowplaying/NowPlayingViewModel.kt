@@ -44,6 +44,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
+import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
@@ -148,7 +149,8 @@ class NowPlayingViewModel @Inject constructor(
     private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
     val acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator,
     val sleepTimerBridge: SleepTimerBridge,
-    private val queueTogglesCache: net.asksakis.massdroidv2.data.repository.QueueTogglesCache
+    private val queueTogglesCache: net.asksakis.massdroidv2.data.repository.QueueTogglesCache,
+    private val proximityConfigStore: net.asksakis.massdroidv2.data.proximity.ProximityConfigStore
 ) : ViewModel() {
 
     val selectedPlayer = playerRepository.selectedPlayer
@@ -163,6 +165,23 @@ class NowPlayingViewModel @Inject constructor(
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
     val sendspinSyncDelayMs = settingsRepository.sendspinSyncDelayMs
     val sendspinSyncHistory = sendspinManager.syncHistory
+
+    /** Follow Me rooms, so the player settings dialog can show which room this player serves. */
+    val proximityConfig = proximityConfigStore.config
+
+    /**
+     * Point a Follow Me room at this player. Written to the proximity config immediately, the
+     * way the room setup screen writes it. The room keeps its calibration and the rooms this
+     * player already served are left alone (see withRoomPlayer).
+     */
+    fun assignPlayerToRoom(roomId: String, player: net.asksakis.massdroidv2.domain.model.Player) {
+        viewModelScope.launch {
+            proximityConfigStore.update {
+                it.withRoomPlayer(roomId, player.playerId, player.displayName)
+            }
+        }
+    }
+
     private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
     val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
     private val playlistMembership = PlaylistMembershipController(musicRepository, viewModelScope)

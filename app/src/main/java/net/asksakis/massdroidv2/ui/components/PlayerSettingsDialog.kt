@@ -85,6 +85,8 @@ import net.asksakis.massdroidv2.domain.model.QueueSettings
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import androidx.compose.material.icons.filled.Sensors
+import net.asksakis.massdroidv2.data.proximity.RoomConfig
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -133,6 +135,16 @@ fun PlayerSettingsDialog(
     onResetBtCalibration: (() -> Unit)? = null,
     onResetMicPath: (() -> Unit)? = null,
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
+    /**
+     * Follow Me rooms as they are configured now. While it is empty, which is the case until
+     * the first room has been set up, the room control is left out of the dialog.
+     */
+    rooms: List<RoomConfig> = emptyList(),
+    /**
+     * Point one of [rooms] at this player. The assignment is written when it is picked, not on
+     * Save, because it is app state rather than player config.
+     */
+    onAssignRoom: ((roomId: String) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     // Key all remembered state on player.playerId so swapping the dialog
@@ -195,6 +207,8 @@ fun PlayerSettingsDialog(
     var syncDelayDefault by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
     var queueSettings by remember(player.playerId) { mutableStateOf<QueueSettings?>(null) }
+    // The room a pick would take away from another player, held until that is confirmed.
+    var roomToReassign by remember(player.playerId) { mutableStateOf<RoomConfig?>(null) }
     val scope = rememberCoroutineScope()
 
     // Loaded separately from the player config: from MA 2.10 these are queue
@@ -807,6 +821,75 @@ fun PlayerSettingsDialog(
                                     }
                                 }
                             }
+                    }
+
+                    // Which Follow Me room this player serves. It is app state rather than
+                    // player or queue config, so it gets a group of its own: the pick is
+                    // written the moment it is made and the Save button does not cover it.
+                    // Setting a room up and calibrating it stays in Settings > Follow Me;
+                    // this only moves an existing room onto another speaker.
+                    if (rooms.isNotEmpty() && onAssignRoom != null) {
+                        SettingsSectionLabel("Follow Me", caption = "Applies immediately")
+
+                        val assignedRooms = rooms.filter { it.playerId == player.playerId }
+                        // The card shows the option whose value matches, so a single room is
+                        // passed by id and also gets the checkmark in the list. Two rooms can
+                        // name the same player, and no single id describes that, so the names
+                        // are shown instead. A player in no room shows plain text as well.
+                        val roomValue = when (assignedRooms.size) {
+                            0 -> "Not assigned"
+                            1 -> assignedRooms.first().id
+                            else -> assignedRooms.joinToString(", ") { it.name }
+                        }
+                        SettingsDropdownCard(
+                            title = "Room",
+                            icon = Icons.Default.Sensors,
+                            value = roomValue,
+                            options = rooms.map { room ->
+                                QueueConfigOption(
+                                    value = room.id,
+                                    title = room.name,
+                                    description = room.playerName
+                                        .takeIf { room.playerId != player.playerId }
+                                        ?.let { "Now on $it" }
+                                )
+                            },
+                            onSelect = { roomId ->
+                                val target = rooms.firstOrNull { it.id == roomId }
+                                when {
+                                    target == null || target.playerId == player.playerId -> Unit
+                                    // Every room has a player, so picking one always takes it
+                                    // from whoever has it now. Ask before that happens.
+                                    else -> roomToReassign = target
+                                }
+                            }
+                        )
+
+                        roomToReassign?.let { target ->
+                            AlertDialog(
+                                onDismissRequest = { roomToReassign = null },
+                                title = { Text("Move room") },
+                                text = {
+                                    Text(
+                                        "\"${target.name}\" plays on ${target.playerName}. " +
+                                            "Use ${player.displayName} for it instead?"
+                                    )
+                                },
+                                confirmButton = {
+                                    MdTextButton(
+                                        onClick = {
+                                            onAssignRoom(target.id)
+                                            roomToReassign = null
+                                        }
+                                    ) { Text("Move") }
+                                },
+                                dismissButton = {
+                                    MdTextButton(onClick = { roomToReassign = null }) {
+                                        Text("Cancel")
+                                    }
+                                }
+                            )
+                        }
                     }
                     }
                 }
