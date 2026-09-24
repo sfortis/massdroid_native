@@ -30,7 +30,31 @@ data class Track(
     val mediaType: MediaType = MediaType.TRACK,
     val chapters: List<Chapter> = emptyList(),
     val authors: List<String> = emptyList(),
-    val narrators: List<String> = emptyList()
+    val narrators: List<String> = emptyList(),
+    /**
+     * What Music Assistant sorts this track by, already resolved: the server's own
+     * `sort_name` where it has one and the plain name otherwise. The server drops a leading
+     * article and strips diacritics when it builds one, so this is "mole, the" for "The
+     * Mole". Sorting a listing by these values rather than by [name] is what keeps the
+     * queue in the same order as the screen. See [sortedForListing].
+     */
+    val sortName: String = "",
+    /**
+     * The sort name of the FIRST artist alone, which is the one the server sorts by. Sorting
+     * by [artistNames] instead put a track under a different artist than the server did
+     * whenever a track credits more than one.
+     */
+    val primaryArtistSortName: String = "",
+    /** The album's sort name, resolved the same way as [sortName]. */
+    val albumSortName: String = "",
+    /**
+     * Whether any provider can actually serve this track.
+     *
+     * Music Assistant still lists an unplayable track, but leaves it out of a queue it builds
+     * from a container. Anything that picks a track ON the server's behalf, such as the start
+     * item of a playlist, has to agree with it or the server finds nothing.
+     */
+    val available: Boolean = true
 )
 
 /**

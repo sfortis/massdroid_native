@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SEARCHABLE_MEDIA_TYPES
@@ -36,6 +37,16 @@ class MusicRepositoryImpl @Inject constructor(
         private const val FAVORITE_RETRY_DELAY_MS = 180L
         private const val LIBRARY_SYNC_COOLDOWN_MS = 45_000L
         private const val LIBRARY_SYNC_TIMEOUT_MS = 1_500L
+
+        /**
+         * The first schema that understands `sort_by` on `player_queues/play_media`, which
+         * arrived with MA 2.10.0.
+         *
+         * An older server does not reject the argument, it drops it: `parse_arguments`
+         * defaults to `strict = False`. So the gate has to be here rather than left to the
+         * server to enforce, or an old server would silently play its own order.
+         */
+        private const val SORT_BY_MIN_SCHEMA = 63
 
         /**
          * How long one search attempt waits before it gives up.
@@ -306,26 +317,52 @@ class MusicRepositoryImpl @Inject constructor(
         return items.map { it.toDomain() }
     }
 
+    /**
+     * Whether this server can be asked for [key].
+     *
+     * The playlist's own order asks for nothing, so it works on every server and must not be
+     * gated: gating it sent the whole track list on Music Assistant 2.9 for the default sort,
+     * which is the one case that used to take the container path on any version.
+     *
+     * The rest need the argument, which arrived in schema 63. An older server does not refuse
+     * it, it drops it (`parse_arguments` defaults to `strict = False`), and would then play
+     * its own order while the screen showed another.
+     */
+    override fun supportsServerSideSort(key: PlaylistSortKey): Boolean =
+        key.serverKey == null || (wsClient.serverSchemaVersion() ?: 0) >= SORT_BY_MIN_SCHEMA
+
     override suspend fun playMedia(
         queueId: String,
         uri: String,
         option: String?,
         radioMode: Boolean,
-        awaitResponse: Boolean
+        awaitResponse: Boolean,
+        sortKey: PlaylistSortKey?
     ) {
-        // Pre-filter blocked artists: resolve container URIs (album/artist/playlist)
-        // to track list, remove blocked, then play the filtered list.
         Log.d(TAG, "playMedia uri=$uri hasBlocked=${playerRepository.get().hasBlockedArtists()}")
-        val filteredUris = preFilterBlocked(uri)
-        if (filteredUris != null) {
-            if (filteredUris.isEmpty()) {
+        var startItem: String? = null
+        when (val plan = blockedPlanFor(uri, sortKey)) {
+            BlockedPlan.PlayWhole -> Unit
+            BlockedPlan.PlayNothing -> {
                 Log.d(TAG, "All tracks blocked, skipping play: $uri")
+                throw EverythingBlockedException(uri)
+            }
+            is BlockedPlan.StartAt -> {
+                Log.d(TAG, "Blocked head on $uri; starting the container at ${plan.trackUri}")
+                startItem = plan.trackUri
+            }
+            is BlockedPlan.PlayTracks -> {
+                // The list is already in the order the caller asked for, so the sort order is
+                // spent here: it only ever told the server how to order a container.
+                Log.d(TAG, "Dropped blocked artists: ${plan.uris.size} tracks from $uri")
+                playMedia(queueId, plan.uris, option, radioMode, awaitResponse)
                 return
             }
-            Log.d(TAG, "Pre-filtered blocked artists: ${filteredUris.size} tracks from $uri")
-            playMedia(queueId, filteredUris, option, radioMode, awaitResponse)
-            return
         }
+        // Dropped rather than sent to a server that would silently ignore it. The caller asks
+        // supportsServerSideSort first and sends a track list in that case, so this only
+        // guards against a caller that did not.
+        val sortBy = sortKey?.takeIf { supportsServerSideSort(it) }?.serverKey
 
         val shouldNotifyReplacement = option == "replace"
         val shouldNotifyPlayback = option == "play" || option == "replace"
@@ -339,7 +376,14 @@ class MusicRepositoryImpl @Inject constructor(
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
-            PlayMediaArgs(queueId = queueId, mediaUris = listOf(uri), option = option, radioMode = radioMode),
+            PlayMediaArgs(
+                queueId = queueId,
+                mediaUris = listOf(uri),
+                option = option,
+                radioMode = radioMode,
+                sortBy = sortBy,
+                startItem = startItem
+            ),
             awaitResponse = awaitResponse
         )
         if (awaitResponse) {
@@ -377,48 +421,105 @@ class MusicRepositoryImpl @Inject constructor(
         true
     }
 
-    private suspend fun preFilterBlocked(uri: String): List<String>? {
+    /**
+     * How a container has to be played so that no blocked artist is heard.
+     *
+     * Blocking is the app's own idea: Music Assistant has no notion of a blocked artist, so
+     * nothing the server builds on its own will leave those tracks out.
+     */
+    private sealed interface BlockedPlan {
+        /** Nothing is blocked, or the block cannot be applied here. Play the container. */
+        data object PlayWhole : BlockedPlan
+
+        /**
+         * Play the container, but tell the server to begin at this track.
+         *
+         * Used when only the head of a playlist is blocked. The server drops what precedes
+         * the start item, and the blocked tracks further down are removed from the queue by
+         * `PlayerRepository`'s own cleanup long before playback reaches them.
+         */
+        data class StartAt(val trackUri: String) : BlockedPlan
+
+        /** Play exactly these tracks. Used for an album, where the list is short. */
+        data class PlayTracks(val uris: List<String>) : BlockedPlan
+
+        /** Everything here is blocked. */
+        data object PlayNothing : BlockedPlan
+    }
+
+    private fun Track.hasBlockedArtist(repo: PlayerRepository): Boolean {
+        val primaryUri = artistUri ?: return false
+        val primaryName = artistNames.split(",").firstOrNull()?.trim().orEmpty()
+        return repo.isArtistBlocked(primaryName, primaryUri)
+    }
+
+    /**
+     * Decide how [uri] must be played, given the artists the listener has blocked.
+     *
+     * A playlist is deliberately NOT expanded into its tracks any more. Expanding it meant
+     * the server resolved every track URI one by one, which for a 260-track Deezer playlist
+     * measured 100 seconds before the first track played, and the cost fell on the largest
+     * playlists for the sake of four or five blocked tracks buried in them. Handing over the
+     * container and starting past any blocked head keeps the resolve to a single paged pass
+     * while still never playing a blocked artist.
+     */
+    private suspend fun blockedPlanFor(uri: String, sortKey: PlaylistSortKey?): BlockedPlan {
         val repo = playerRepository.get()
-        // Fast path: no blocked artists at all
-        if (!repo.hasBlockedArtists()) return null
+        if (!repo.hasBlockedArtists()) return BlockedPlan.PlayWhole
 
         // Parse URI: {provider}://{type}/{id}
         val schemeEnd = uri.indexOf("://")
-        if (schemeEnd < 0) return null
+        if (schemeEnd < 0) return BlockedPlan.PlayWhole
         val provider = uri.substring(0, schemeEnd)
-        val path = uri.substring(schemeEnd + 3)
-        val parts = path.split("/", limit = 2)
-        if (parts.size != 2) return null
-        val type = parts[0]
-        val itemId = parts[1]
+        val parts = uri.substring(schemeEnd + 3).split("/", limit = 2)
+        if (parts.size != 2) return BlockedPlan.PlayWhole
+        val (type, itemId) = parts
 
-        val tracks = when (type) {
-            "artist" -> {
-                // If the artist itself is blocked, return empty list
-                if (repo.isArtistUriBlocked(uri)) return emptyList()
-                return null // Don't pre-fetch all artist tracks, let server handle
+        return when (type) {
+            "artist" ->
+                if (repo.isArtistUriBlocked(uri)) BlockedPlan.PlayNothing else BlockedPlan.PlayWhole
+            "album" -> {
+                val tracks = try {
+                    getAlbumTracks(itemId, provider)
+                } catch (_: Exception) {
+                    return BlockedPlan.PlayWhole
+                }
+                val kept = tracks.filterNot { it.hasBlockedArtist(repo) }
+                when {
+                    kept.size == tracks.size -> BlockedPlan.PlayWhole
+                    kept.isEmpty() -> BlockedPlan.PlayNothing
+                    else -> BlockedPlan.PlayTracks(kept.map { it.uri })
+                }
             }
-            "album" -> try { getAlbumTracks(itemId, provider) } catch (_: Exception) { return null }
             "playlist" -> {
-                // A playlist the server rebuilds when it is played has to reach it whole:
-                // expanding it into tracks here, to drop the blocked ones, would hand the
-                // server a snapshot with nothing left to rebuild. That is issue #67, and
-                // it is answered here rather than per screen so the phone, the TV, Android
-                // Auto and the car all get it right.
-                if (isRebuiltOnPlay(uri)) return null
-                try { getPlaylistTracks(itemId, provider) } catch (_: Exception) { return null }
+                // A playlist the server rebuilds on play draws a fresh set of tracks, so the
+                // list read here says nothing about what will play and no start item can be
+                // chosen from it. That is issue #67.
+                if (isRebuiltOnPlay(uri)) return BlockedPlan.PlayWhole
+                val tracks = try {
+                    getPlaylistTracks(itemId, provider)
+                } catch (_: Exception) {
+                    return BlockedPlan.PlayWhole
+                }
+                // Read in the order the server will play it, so that "the first track" means
+                // the same thing here and there. Tracks no provider can serve are dropped
+                // first, because the server drops them too while it resolves the container:
+                // naming one as the start item finds nothing and returns an EMPTY queue
+                // (`get_playlist_tracks` in media_resolver.py returns [] when the start item
+                // is not found), which would be worse than the blocked track it avoids.
+                val ordered = (sortKey?.let { tracks.sortedForListing(it) } ?: tracks)
+                    .filter { it.available }
+                val firstPlayable = ordered.indexOfFirst { !it.hasBlockedArtist(repo) }
+                when (firstPlayable) {
+                    // The head is clean. Anything blocked further down is out of earshot by
+                    // the time the queue cleanup runs.
+                    0 -> BlockedPlan.PlayWhole
+                    -1 -> BlockedPlan.PlayNothing
+                    else -> BlockedPlan.StartAt(ordered[firstPlayable].uri)
+                }
             }
-            else -> return null
+            else -> BlockedPlan.PlayWhole
         }
-
-        val filtered = tracks.filter { track ->
-            val primaryName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty()
-            val primaryUri = track.artistUri ?: return@filter true
-            !repo.isArtistBlocked(primaryName, primaryUri)
-        }
-
-        // If nothing was filtered, return null to use the original URI (more efficient)
-        return if (filtered.size == tracks.size) null else filtered.map { it.uri }
     }
 
     override suspend fun playMedia(
@@ -949,7 +1050,17 @@ class MusicRepositoryImpl @Inject constructor(
             mediaType = MediaType.fromApi(mediaType) ?: MediaType.TRACK,
             chapters = toChapters(),
             authors = authors ?: emptyList(),
-            narrators = narrators ?: emptyList()
+            narrators = narrators ?: emptyList(),
+            // Resolved here, not at the call site, so nothing downstream has to remember
+            // that the server falls back to the plain name when it has no sort name.
+            // No provider can serve it. The server leaves these out of a queue it builds
+            // itself, so anything choosing a track for the server has to leave them out too.
+            available = providerMappings.isEmpty() || providerMappings.any { it.available },
+            sortName = sort_name.orEmpty().ifBlank { name },
+            primaryArtistSortName = artists?.firstOrNull()
+                ?.let { it.sort_name.orEmpty().ifBlank { it.name } }
+                .orEmpty(),
+            albumSortName = album?.let { it.sort_name.orEmpty().ifBlank { it.name } }.orEmpty()
         )
     }
 

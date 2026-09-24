@@ -3,6 +3,17 @@ package net.asksakis.massdroidv2.domain.repository
 import kotlinx.coroutines.flow.Flow
 import net.asksakis.massdroidv2.domain.model.*
 
+/**
+ * Nothing in the requested album or playlist can be played, because every track belongs to an
+ * artist the listener has blocked.
+ *
+ * Thrown rather than returned quietly: the request was understood and refused on the listener's
+ * own instruction, which is worth saying. A silent return read as a dead button, and on this
+ * library twelve albums are credited to a blocked artist in full.
+ */
+class EverythingBlockedException(val uri: String) :
+    Exception("Every track in $uri is by a blocked artist")
+
 interface MusicRepository {
     /**
      * Server `media_item_updated` events mapped to domain items, for in-place patching of
@@ -72,8 +83,28 @@ interface MusicRepository {
         uri: String,
         option: String? = null,
         radioMode: Boolean = false,
-        awaitResponse: Boolean = false
+        awaitResponse: Boolean = false,
+        /**
+         * The order a container should play in, when the caller is showing that container
+         * sorted. The server resolves the container in one pass and orders it itself, which
+         * is what a playlist of any size needs: handing over the expanded track list instead
+         * makes the server resolve every URI one by one.
+         *
+         * Pass it only when [supportsServerSideSort] agrees, otherwise the caller has to send
+         * the track list so that what plays matches what is on screen.
+         */
+        sortKey: PlaylistSortKey? = null
     )
+
+    /**
+     * Whether this server can sort a container for us, so that it may be handed over whole
+     * instead of being expanded into a track list.
+     *
+     * Every [PlaylistSortKey] is an order Music Assistant has a key for, so this only answers
+     * whether the server is new enough to know the argument. The protocol knowledge sits here
+     * rather than in a ViewModel, which only knows what it is showing.
+     */
+    fun supportsServerSideSort(key: PlaylistSortKey): Boolean
     suspend fun playMedia(
         queueId: String,
         uris: List<String>,

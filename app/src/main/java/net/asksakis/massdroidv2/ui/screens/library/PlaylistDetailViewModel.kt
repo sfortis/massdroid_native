@@ -6,9 +6,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -17,14 +20,14 @@ import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
 
-enum class PlaylistSortKey(val label: String) {
-    POSITION("Position"),
-    NAME("Name"),
-    ARTIST("Artist"),
-    ALBUM("Album"),
-    DURATION("Duration"),
-    RECENTLY_ADDED("Recently Added")
-}
+/**
+ * How long Play All stays busy when the queue never moves at all.
+ *
+ * Generous on purpose. It is not a deadline for the server, only the point at which the
+ * button stops claiming to be working: a queue that arrives later still plays. The measured
+ * worst case, a 260-track Deezer playlist sent as an expanded track list, took 100 seconds.
+ */
+private const val QUEUE_CHANGE_TIMEOUT_MS = 120_000L
 
 @HiltViewModel
 class PlaylistDetailViewModel @Inject constructor(
@@ -58,32 +61,33 @@ class PlaylistDetailViewModel @Inject constructor(
     val isDynamicPlaylist: Boolean get() = isDynamic
 
     private val _rawTracks = MutableStateFlow<List<Track>>(emptyList())
-    // Sort is a single global preference (persisted), applied to every playlist and surviving
-    // navigation/restart — not per-playlist. Backed by DataStore via [SettingsRepository].
-    val sortKey: StateFlow<PlaylistSortKey> = settingsRepository.playlistSortKey
-        .map { stored -> runCatching { PlaylistSortKey.valueOf(stored) }.getOrDefault(PlaylistSortKey.POSITION) }
+
+    /**
+     * The order every playlist is listed in.
+     *
+     * One global preference, persisted, rather than one per playlist. Music Assistant's own
+     * web UI keeps it per playlist; this does not.
+     *
+     * The stored form still has the separate descending flag the app used before the orders
+     * were aligned with the server's, so a preference written by an older build is folded back
+     * into a single key here. See [playlistSortKeyOf].
+     */
+    val sortKey: StateFlow<PlaylistSortKey> = combine(
+        settingsRepository.playlistSortKey,
+        settingsRepository.playlistSortDescending
+    ) { stored, descending -> playlistSortKeyOf(stored, descending) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlaylistSortKey.POSITION)
-    val sortDescending: StateFlow<Boolean> = settingsRepository.playlistSortDescending
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     private val _favoritesOnly = MutableStateFlow(false)
     val favoritesOnly: StateFlow<Boolean> = _favoritesOnly.asStateFlow()
 
     val tracks: StateFlow<List<Track>> = combine(
-        _rawTracks, sortKey, sortDescending, _favoritesOnly
-    ) { raw, key, desc, favsOnly ->
+        _rawTracks, sortKey, _favoritesOnly
+    ) { raw, key, favsOnly ->
         val filtered = if (favsOnly) raw.filter { it.favorite } else raw
-        val sorted = when (key) {
-            // Default (ascending) is the playlist's own order as the server returns it (matches
-            // MA web and other players); descending reverses it. This was inverted, so every
-            // playlist showed bottom-to-top until the user manually toggled descending.
-            PlaylistSortKey.POSITION -> if (desc) filtered.reversed() else filtered
-            PlaylistSortKey.NAME -> filtered.sortedBy { it.name.lowercase() }
-            PlaylistSortKey.ARTIST -> filtered.sortedBy { it.artistNames.lowercase() }
-            PlaylistSortKey.ALBUM -> filtered.sortedBy { it.albumName.lowercase() }
-            PlaylistSortKey.DURATION -> filtered.sortedBy { it.duration ?: 0.0 }
-            PlaylistSortKey.RECENTLY_ADDED -> filtered.sortedByDescending { it.dateAdded ?: "" }
-        }
-        if (desc && key != PlaylistSortKey.POSITION && key != PlaylistSortKey.RECENTLY_ADDED) sorted.reversed() else sorted
+        // Ordered exactly as Music Assistant would order it, so that what plays matches what
+        // is listed even when the server does the sorting. See [sortedForListing].
+        filtered.sortedForListing(key)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val currentTrackUri: StateFlow<String?> = playerRepository.queueState
@@ -96,12 +100,10 @@ class PlaylistDetailViewModel @Inject constructor(
 
     fun setSortKey(key: PlaylistSortKey) {
         viewModelScope.launch {
-            if (sortKey.value == key) {
-                settingsRepository.setPlaylistSortDescending(!sortDescending.value)
-            } else {
-                settingsRepository.setPlaylistSortKey(key.name)
-                settingsRepository.setPlaylistSortDescending(false)
-            }
+            settingsRepository.setPlaylistSortKey(key.name)
+            // Reversal is part of the key now. Clearing the old flag stops a preference
+            // written by an older build from reversing the new key on the next read.
+            settingsRepository.setPlaylistSortDescending(false)
         }
     }
 
@@ -157,10 +159,26 @@ class PlaylistDetailViewModel @Inject constructor(
     private val _busyTrackUri = MutableStateFlow<String?>(null)
     val busyTrackUri: StateFlow<String?> = _busyTrackUri.asStateFlow()
 
+    /**
+     * Whether a whole-playlist action has been sent and the queue has not moved yet.
+     *
+     * The screen shows it on the Play All button, which otherwise looks like it did nothing
+     * for as long as the server takes. See [awaitQueueChange].
+     */
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
-    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
-    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+    /**
+     * The artists the listener has blocked, served straight from the repository.
+     *
+     * Blocked items are shown faded rather than hidden, so that they can still be found and
+     * unblocked. Ask [blocksArtist] rather than testing the set directly: the keys here are
+     * canonical and a provider URI has to be normalised first.
+     */
+    val blockedArtistUris: StateFlow<Set<String>> = smartListeningRepository.blockedArtistUris
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val players = playerRepository.players
 
@@ -176,9 +194,6 @@ class PlaylistDetailViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "Load playlists failed: ${e.message}")
             }
-        }
-        viewModelScope.launch {
-            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
     }
 
@@ -257,26 +272,27 @@ class PlaylistDetailViewModel @Inject constructor(
     /**
      * Send the whole playlist to the queue.
      *
-     * The playlist goes as its own container URI whenever the list on screen is the
-     * server's own order (default sort, no favourites filter): the server then resolves
-     * the playlist in one paged pass and starts playback almost at once, the way playing
-     * it from the library list does. A dynamic playlist always goes this way so the
+     * The playlist goes as its own container URI whenever the server can produce the order
+     * on screen, which it can for every ascending order plus descending position and
+     * duration. The server then resolves the playlist in one paged pass and sorts it itself,
+     * and playback starts almost at once. A dynamic playlist always goes this way so the
      * server rebuilds it.
      *
-     * Only once the user has re-sorted or filtered does it fall back to sending the
-     * explicit track list, so that what plays matches what is being looked at. That path
-     * makes the server resolve every track URI one by one, which for a large streaming
-     * playlist (Apple Music, ...) can take minutes before the first track starts.
+     * The remaining orders, a favourites-filtered listing and a server too old for `sort_by`
+     * fall back to sending the explicit track list, so that what plays still matches what is
+     * on screen. That path makes the server resolve every track URI one by one: a 260-track
+     * Deezer playlist measured 100 seconds before the first track played.
      */
     private fun playWhole(option: String, what: String) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         val uris = tracks.value.map { it.uri }
-        val listedInServerOrder = sortKey.value == PlaylistSortKey.POSITION &&
-            !sortDescending.value &&
-            !_favoritesOnly.value
+        val order = sortKey.value
+        // A favourites-filtered listing is a subset, which no sort order can express, so it
+        // can only be played as the list of what is actually shown.
+        val serverCanSort = !_favoritesOnly.value && musicRepository.supportsServerSideSort(order)
         // The URI is a navigation argument and can be absent; without it there is no
         // container to hand over and the track list is all there is, rebuild or not.
-        val useContainer = playlistUri.isNotBlank() && (isDynamic || listedInServerOrder)
+        val useContainer = playlistUri.isNotBlank() && (isDynamic || serverCanSort)
         // An empty list only goes over as the container while the listing is still on its
         // way. Once it has arrived empty there is nothing to play, and once it has failed
         // the screen shows nothing to play; either way the queue must not be replaced with
@@ -284,16 +300,89 @@ class PlaylistDetailViewModel @Inject constructor(
         // regardless, as it always was.
         if (uris.isEmpty() && !isDynamic && listingState != ListingState.PENDING) return
         if (!useContainer && uris.isEmpty()) return
+        if (_sending.value) {
+            Log.d(TAG, "$what ignored: a previous one is still being applied")
+            return
+        }
+        // Read before the command goes out. Taking it afterwards would race a queue that
+        // arrives quickly: the new queue would be recorded as the old one, and the button
+        // would then sit busy waiting for a second change that never comes.
+        val queueBefore = queueSignature()
         viewModelScope.launch {
+            _sending.value = true
             try {
                 if (useContainer) {
-                    musicRepository.playMedia(queueId, playlistUri, option = option)
+                    Log.d(TAG, "$what: container $playlistUri sorted by $order")
+                    // The sort order is what stops the container from playing in a different
+                    // order than the screen shows; a dynamic playlist is drawn fresh by the
+                    // server and has no order of ours to keep.
+                    musicRepository.playMedia(
+                        queueId,
+                        playlistUri,
+                        option = option,
+                        sortKey = if (isDynamic) null else order
+                    )
                 } else {
+                    Log.d(TAG, "$what: ${uris.size} track URIs, $order is not a server order")
                     musicRepository.playMedia(queueId, uris, option = option)
                 }
+                awaitQueueChange(queueBefore)
+            } catch (e: CancellationException) {
+                // The screen was left. Nothing failed, and there is no one to tell.
+                throw e
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "$what failed: ${e.message}")
+                _error.tryEmit("Could not play this playlist")
+            } finally {
+                _sending.value = false
             }
+        }
+    }
+
+    /**
+     * What the queue looks like, to the detail that tells a replacement from no change.
+     *
+     * The queue item id rather than the track URI, because a replace builds fresh queue items
+     * even when the same track ends up playing first. Keying on the URI meant that replaying a
+     * playlist already sitting on its first track produced an identical reading, and the
+     * button then stayed busy for the full timeout over a server that had answered at once.
+     */
+    private fun QueueState?.signature(): Pair<String?, Int>? =
+        this?.let { it.currentItem?.queueItemId to it.totalItems }
+
+    private fun queueSignature(): Pair<String?, Int>? = playerRepository.queueState.value.signature()
+
+    /**
+     * Wait until the server has actually acted on the queue.
+     *
+     * Nothing on screen changes while Music Assistant resolves a playlist, and resolving an
+     * expanded track list is slow enough that Play All reads as a dead button: the measured
+     * case sat silent for 100 seconds, and the natural response, pressing again, sent the
+     * server another copy of the same work and made it slower still. So the button stays
+     * busy until the queue moves.
+     *
+     * The queue is watched rather than the command's own answer, because `play_media` is
+     * sent without waiting for one. Its answer would also arrive on a 30 s timeout, well
+     * inside the time a large playlist legitimately takes, and reporting a failure there
+     * would be wrong.
+     *
+     * [QUEUE_CHANGE_TIMEOUT_MS] only releases the button if the queue never moves at all. It
+     * is not a deadline for the server: playback is unaffected either way, and a queue that
+     * arrives later still plays.
+     */
+    private suspend fun awaitQueueChange(before: Pair<String?, Int>?) {
+        val changed = withTimeoutOrNull(QUEUE_CHANGE_TIMEOUT_MS) {
+            playerRepository.queueState.first { state -> state != null && state.signature() != before }
+        }
+        if (changed == null) {
+            // Say so rather than just releasing the button. The command is sent without
+            // waiting for an answer, so a refusal by the server (the 2026-09-23 incident
+            // answered "There is nothing to play here") never reaches the catch below and
+            // this silence is the only thing the listener would otherwise see.
+            Log.w(TAG, "queue did not change within ${QUEUE_CHANGE_TIMEOUT_MS}ms of play")
+            _error.tryEmit("The server did not start this playlist")
         }
     }
 
@@ -382,7 +471,7 @@ class PlaylistDetailViewModel @Inject constructor(
     fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
         val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         viewModelScope.launch {
-            val blocked = _blockedArtistUris.value.contains(uri)
+            val blocked = blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }

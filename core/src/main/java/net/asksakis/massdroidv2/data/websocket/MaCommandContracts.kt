@@ -282,13 +282,35 @@ data class PlayMediaArgs(
     val queueId: String,
     val mediaUris: List<String>,
     val option: String? = null,
-    val radioMode: Boolean = false
+    val radioMode: Boolean = false,
+    /**
+     * How the server should order a container it resolves itself, as `sort_tracks` names
+     * the orders. Only ever set for a single container URI: it has no meaning for a list of
+     * tracks, which is already in the order it will play.
+     *
+     * A server older than schema 63 does not know the argument and DROPS it silently
+     * (`parse_arguments` defaults to `strict = False`), so it would play its own order while
+     * the screen showed another. The caller gates on the schema rather than relying on the
+     * server to refuse it.
+     */
+    val sortBy: String? = null,
+    /**
+     * The track a container should begin at, by URI. The server drops whatever precedes it,
+     * after applying [sortBy].
+     *
+     * Used to keep a blocked artist at the head of a playlist from being heard, without
+     * expanding the playlist into a track list. Like [sortBy], it means nothing for a list of
+     * tracks, which the caller has already trimmed.
+     */
+    val startItem: String? = null
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("queue_id", queueId)
         put("media", JsonArray(mediaUris.map { JsonPrimitive(it) }))
         option?.let { put("option", it) }
         if (radioMode) put("radio_mode", true)
+        sortBy?.let { put("sort_by", it) }
+        startItem?.let { put("start_item", it) }
     }
 }
 

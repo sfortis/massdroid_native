@@ -46,12 +46,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collectLatest
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Playlist
+import net.asksakis.massdroidv2.domain.model.PlaylistSortKey
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.blocksArtist
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
+import net.asksakis.massdroidv2.ui.util.formatPlaybackTime
 import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 
@@ -69,10 +71,10 @@ fun PlaylistDetailScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val busyTrackUri by viewModel.busyTrackUri.collectAsStateWithLifecycle()
     val sortKey by viewModel.sortKey.collectAsStateWithLifecycle()
-    val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     val favoritesOnly by viewModel.favoritesOnly.collectAsStateWithLifecycle()
     val currentTrackUri by viewModel.currentTrackUri.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
+    val sending by viewModel.sending.collectAsStateWithLifecycle()
 
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
@@ -90,27 +92,35 @@ fun PlaylistDetailScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            TopAppBar(
-                title = { Text(playlistName) },
-                navigationIcon = {
-                    MdIconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            Column {
+                TopAppBar(
+                    title = { Text(playlistName) },
+                    navigationIcon = {
+                        MdIconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        MdIconButton(onClick = { showSortSheet = true }) {
+                            Icon(Icons.Default.Tune, contentDescription = "Sort options")
+                        }
+                        MdIconButton(onClick = { viewModel.togglePlaylistFavorite() }) {
+                            Icon(
+                                if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Toggle favorite",
+                                tint = if (isFavorite) MaterialTheme.colorScheme.error
+                                       else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
-                },
-                actions = {
-                    MdIconButton(onClick = { showSortSheet = true }) {
-                        Icon(Icons.Default.Tune, contentDescription = "Sort options")
-                    }
-                    MdIconButton(onClick = { viewModel.togglePlaylistFavorite() }) {
-                        Icon(
-                            if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Toggle favorite",
-                            tint = if (isFavorite) MaterialTheme.colorScheme.error
-                                   else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                )
+                // Shown while Music Assistant builds the queue, which can take a while for a
+                // large playlist and changes nothing else on screen. It sits under the bar
+                // rather than on the Play All button alone, because that button scrolls away.
+                if (sending) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-            )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
@@ -136,14 +146,27 @@ fun PlaylistDetailScreen(
                 ) {
                     MdTextButton(
                         onClick = { viewModel.playAll() },
+                        // Held while the server builds the queue. Nothing else on screen
+                        // moves in the meantime, and pressing again only sends the server
+                        // the same work a second time.
+                        enabled = !sending,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        if (sending) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = LocalContentColor.current
+                            )
+                        } else {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        }
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Play All")
                     }
                     MdTextButton(
                         onClick = { showPlaySheet = true },
+                        enabled = !sending,
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
@@ -217,9 +240,17 @@ fun PlaylistDetailScreen(
             items(items = tracks, key = { track -> "${track.uri}:${track.position ?: -1}" }) { track ->
                 val fallbackPosition = tracks.indexOf(track)
                 val isCurrent = currentTrackUri == track.uri
+                // Artist and album truncate; the length does not. It sits on this line rather
+                // than at the trailing end, where it crowded the favourite mark and the menu,
+                // and a listing that can be ordered by length should show it somewhere.
+                val subtitle = listOfNotNull(
+                    track.artistNames.ifBlank { null },
+                    track.albumName.ifBlank { null }
+                ).joinToString(" · ")
                 MediaItemRow(
                     title = track.name,
-                    subtitle = "${track.artistNames} - ${track.albumName}".trimEnd(' ', '-'),
+                    subtitle = subtitle,
+                    subtitleTail = track.duration?.let { formatPlaybackTime(it) },
                     imageUrl = track.imageUrl,
                     titleColor = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified,
                     onClick = { viewModel.playTrack(track) },
@@ -249,10 +280,8 @@ fun PlaylistDetailScreen(
     if (showSortSheet) {
         PlaylistSortSheet(
             sortKey = sortKey,
-            sortDescending = sortDescending,
             favoritesOnly = favoritesOnly,
             onSortSelect = { viewModel.setSortKey(it) },
-            onToggleDirection = { viewModel.setSortKey(sortKey) },
             onToggleFavorites = { viewModel.toggleFavoritesOnly() },
             onDismiss = { showSortSheet = false }
         )
@@ -267,10 +296,7 @@ fun PlaylistDetailScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
-            artistBlocked = target.primaryArtistUri?.let { uri ->
-                val key = MediaIdentity.canonicalArtistKey(uri = uri)
-                key != null && key in blockedArtistUris
-            } ?: false,
+            artistBlocked = blockedArtistUris.blocksArtist(target.primaryArtistUri),
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
             },
@@ -340,10 +366,8 @@ fun PlaylistDetailScreen(
 @Composable
 private fun PlaylistSortSheet(
     sortKey: PlaylistSortKey,
-    sortDescending: Boolean,
     favoritesOnly: Boolean,
     onSortSelect: (PlaylistSortKey) -> Unit,
-    onToggleDirection: () -> Unit,
     onToggleFavorites: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -371,21 +395,14 @@ private fun PlaylistSortSheet(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SortDropdown(
-                        selected = sortKey,
-                        onSelect = onSortSelect
-                    )
-                    FilterChip(
-                        selected = sortDescending,
-                        onClick = onToggleDirection,
-                        label = { Text("Descending") }
-                    )
-                }
+                // Reversal is part of the order now rather than a separate switch, because
+                // Music Assistant can only reverse position and duration. Offering it on name,
+                // artist or album would produce an order the server cannot play, and the whole
+                // playlist would have to be sent track by track to honour it.
+                SortDropdown(
+                    selected = sortKey,
+                    onSelect = onSortSelect
+                )
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(

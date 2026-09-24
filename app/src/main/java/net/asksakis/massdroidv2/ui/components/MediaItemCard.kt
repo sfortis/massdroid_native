@@ -74,7 +74,15 @@ fun MediaItemRow(
      * end of the row is left to state and actions (in library, favourite, play).
      */
     typeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
-    typeIconDescription: String? = null
+    typeIconDescription: String? = null,
+    /**
+     * A short fact pinned to the end of the information line, such as a track length.
+     *
+     * It sits outside [subtitle] so that a long album title is what gets truncated and this
+     * stays readable. The trailing end of the row is left to state and actions, so a listing
+     * that can be ordered by this value has somewhere to show it without crowding them.
+     */
+    subtitleTail: String? = null
 ) {
     val context = LocalContext.current
     val showProviderBadges = providerCache != null && providerDomains.distinct().size > 1
@@ -99,7 +107,7 @@ fun MediaItemRow(
             )
         },
         supportingContent = {
-            if (subtitle.isNotBlank() || showProviderBadges || typeIcon != null) {
+            if (subtitle.isNotBlank() || !subtitleTail.isNullOrBlank() || showProviderBadges || typeIcon != null) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -126,6 +134,13 @@ fun MediaItemRow(
                             overflow = TextOverflow.Ellipsis,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                    if (!subtitleTail.isNullOrBlank()) {
+                        Text(
+                            text = subtitleTail,
+                            maxLines = 1,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
