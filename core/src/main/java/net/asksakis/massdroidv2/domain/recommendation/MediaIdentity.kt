@@ -10,6 +10,19 @@ fun Artist.canonicalKey(): String? = MediaIdentity.canonicalArtistKey(itemId = i
 fun Album.canonicalKey(): String? = MediaIdentity.canonicalAlbumKey(itemId = itemId, uri = uri)
 fun Track.canonicalKey(): String? = MediaIdentity.canonicalTrackKey(itemId = itemId, uri = uri)
 
+/**
+ * Whether this set of blocked artist keys covers [artistUri].
+ *
+ * The set holds canonical keys, so a provider URI has to be normalised before it can be
+ * looked up. Five screens each wrote that normalisation out by hand, which is how the library
+ * list and the repository ended up answering the same question two different ways.
+ */
+fun Set<String>.blocksArtist(artistUri: String?): Boolean {
+    if (isEmpty() || artistUri == null) return false
+    val key = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return false
+    return key in this
+}
+
 @JvmName("artistScoresToMap")
 fun List<ArtistScore>.toScoreMap(): Map<String, Double> = associate { it.artistUri to it.score }
 

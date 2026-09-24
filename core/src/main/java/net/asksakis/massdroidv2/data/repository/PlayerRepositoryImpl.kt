@@ -1044,11 +1044,14 @@ class PlayerRepositoryImpl @Inject constructor(
             // or stale (different queueId), force a refresh through the
             // coordinator so we still get a single RPC per attempt and
             // the result is shared with future readers.
-            val snapshot = queueItemsCoordinator.queueItems.value
-                ?.takeIf { it.queueId == queueId }
-                ?: queueItemsCoordinator.refresh(queueId)
-                ?: return
-            val queueItems = snapshot.items
+            // The whole queue, not the page the screens read. A blocked track sitting past
+            // the first page used to survive the cleanup and play, which only became
+            // reachable once a playlist started going to the server as a container with the
+            // blocked tracks still in it.
+            val queueItems = queueItemsCoordinator.allItems(
+                queueId,
+                total = _queueState.value?.takeIf { it.queueId == queueId }?.totalItems
+            )
             if (queueItems.isEmpty()) return
 
             val currentTrackUri = queueTracking[queueId]?.track?.uri
@@ -1634,11 +1637,21 @@ class PlayerRepositoryImpl @Inject constructor(
     override fun isArtistUriBlocked(artistUri: String): Boolean =
         artistUri in blockedArtistUrisSnapshot
 
+    /**
+     * Whether this artist is blocked, under the uri given OR under the library uri their name
+     * resolves to.
+     *
+     * The name-resolved uri is an ADDITION, never a replacement. Replacing threw away the very
+     * uri the block was stored under: on this library "Various Artists" is blocked as
+     * `deezer://artist/5080` and `library://artist/177`, while the name cache resolves the name
+     * to `library://artist/189`, so every check answered no and the first three tracks of a
+     * compilation played before the queue cleanup caught them. That cleanup already keeps both
+     * keys, which is why it kept working and hid this.
+     */
     override fun isArtistBlocked(artistName: String, artistUri: String): Boolean {
-        val resolved = if (!artistUri.startsWith("library://")) {
-            resolveLibraryArtistUri(artistName, artistUri)
-        } else artistUri
-        return resolved in blockedArtistUrisSnapshot
+        if (artistUri in blockedArtistUrisSnapshot) return true
+        if (artistUri.startsWith(LIBRARY_URI_PREFIX)) return false
+        return resolveLibraryArtistUri(artistName, artistUri) in blockedArtistUrisSnapshot
     }
 
     override fun hasBlockedArtists(): Boolean =

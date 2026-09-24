@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.model.QueueState
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -51,10 +52,10 @@ import javax.inject.Singleton
  * fetch). The [fetchMutex] guarantees that even if two collectors
  * race past the debounce, only one RPC is in flight at a time.
  *
- * Consumers that need more bytes than [FETCH_LIMIT] should fall back
- * to direct `MusicRepository.getQueueItems()` calls; for current use
- * cases (AA list, NowPlaying adjacent, blocked-artist cleanup) 500
- * items is well above what we render.
+ * The shared snapshot holds one page of [FETCH_LIMIT] items, which is
+ * well above what any screen renders. A consumer that must look at the
+ * WHOLE queue rather than at what is on screen calls [allItems], which
+ * pages without disturbing the snapshot.
  */
 @Singleton
 class QueueItemsCoordinator @Inject constructor(
@@ -123,6 +124,47 @@ class QueueItemsCoordinator @Inject constructor(
         return _queueItems.value?.takeIf { it.queueId == queueId }
     }
 
+    /**
+     * Every item in the queue, paged, for a caller that has to see all of them.
+     *
+     * The shared snapshot is one page, which is all a screen ever shows, and the
+     * blocked-artist cleanup used to read it alone. That silently left a blocked track
+     * beyond the first page in the queue, where it would eventually play. It only started
+     * to matter once a playlist was handed to the server whole instead of being expanded
+     * with the blocked tracks already removed.
+     *
+     * [queueItems] is left untouched, so screens keep reading the single page they want.
+     *
+     * [total], when the caller knows it, stops the loop without a round trip that comes back
+     * empty. A queue of exactly one page is common here, since several playlists hold the 500
+     * tracks the server caps a listing at.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun allItems(queueId: String, total: Int? = null): List<QueueItem> {
+        val firstPage = (
+            _queueItems.value?.takeIf { it.queueId == queueId } ?: refresh(queueId)
+            )?.items ?: return emptyList()
+        if (firstPage.size < FETCH_LIMIT) return firstPage
+        if (total != null && firstPage.size >= total) return firstPage
+        val all = firstPage.toMutableList()
+        try {
+            while (all.size < MAX_PAGED_ITEMS) {
+                if (total != null && all.size >= total) break
+                val page = musicRepository.get()
+                    .getQueueItems(queueId, limit = FETCH_LIMIT, offset = all.size)
+                if (page.isEmpty()) break
+                all += page
+                if (page.size < FETCH_LIMIT) break
+            }
+        } catch (e: Exception) {
+            // Whatever arrived is still worth acting on, and the caller only ever removes
+            // items, so a short read costs a later pass rather than a wrong one.
+            Log.w(TAG, "Paged read of $queueId stopped at ${all.size}: ${e.message}")
+        }
+        Log.d(TAG, "Paged read: $queueId (${all.size} items)")
+        return all
+    }
+
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fetchSnapshot(queueId: String, reason: String) {
         fetchMutex.withLock {
@@ -162,6 +204,12 @@ class QueueItemsCoordinator @Inject constructor(
         private const val TAG = "QueueItemsCoord"
         private const val DEBOUNCE_MS = 200L
         private const val FETCH_LIMIT = 500
+
+        /**
+         * A stop for [allItems], so a server that keeps answering with full pages cannot
+         * hold the cleanup in a loop. Far above any real queue.
+         */
+        private const val MAX_PAGED_ITEMS = 10_000
         /**
          * Two trigger paths can land on the same `queueId` within
          * milliseconds of each other (forced refresh from
