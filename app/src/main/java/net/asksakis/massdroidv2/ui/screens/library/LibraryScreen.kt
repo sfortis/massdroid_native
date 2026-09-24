@@ -54,7 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.*
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.blocksArtist
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
@@ -374,8 +374,8 @@ fun LibraryScreen(
                                     primaryArtistName = artist.name
                                 )
                             },
-                            onPlayClick = { if (it.uri !in blockedArtistUris) viewModel.quickPlay(it.uri) },
-                            isBlocked = { it.uri in blockedArtistUris },
+                            onPlayClick = { if (!blockedArtistUris.blocksArtist(it.uri)) viewModel.quickPlay(it.uri) },
+                            isBlocked = { blockedArtistUris.blocksArtist(it.uri) },
                             providerDomains = { it.providerDomains }
                         )
                         TAB_ALBUMS -> MediaList(
@@ -406,7 +406,7 @@ fun LibraryScreen(
                             },
                             onPlayClick = { album ->
                                 val artistUri = album.artists.firstOrNull()?.uri
-                                if (artistUri == null || artistUri !in blockedArtistUris) viewModel.quickPlay(album.uri)
+                                if (!blockedArtistUris.blocksArtist(artistUri)) viewModel.quickPlay(album.uri)
                             },
                             providerDomains = { it.providerDomains }
                         )
@@ -650,10 +650,7 @@ fun LibraryScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
-            artistBlocked = target.primaryArtistUri?.let { uri ->
-                val key = MediaIdentity.canonicalArtistKey(uri = uri)
-                key != null && key in blockedArtistUris
-            } ?: false,
+            artistBlocked = blockedArtistUris.blocksArtist(target.primaryArtistUri),
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
             },

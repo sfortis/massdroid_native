@@ -22,6 +22,7 @@ import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -106,8 +107,15 @@ class LibraryViewModel @Inject constructor(
 
     private val _settingsLoaded = MutableStateFlow(false)
     val settingsLoaded: StateFlow<Boolean> = _settingsLoaded.asStateFlow()
-    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
-    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+    /**
+     * The artists the listener has blocked, served straight from the repository.
+     *
+     * Blocked items are shown faded rather than hidden, so that they can still be found and
+     * unblocked. Ask [blocksArtist] rather than testing the set directly: the keys here are
+     * canonical and a provider URI has to be normalised first.
+     */
+    val blockedArtistUris: StateFlow<Set<String>> = smartListeningRepository.blockedArtistUris
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     private var searchJob: Job? = null
     private var pendingReload = false
@@ -490,9 +498,6 @@ class LibraryViewModel @Inject constructor(
             settingsRepository.libraryFavoritesOnly.collect { _favoritesOnlyMap.value = it }
         }
         viewModelScope.launch {
-            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
-        }
-        viewModelScope.launch {
             wsClient.connectionState
                 .collect { state ->
                     if (state is ConnectionState.Connected && _settingsLoaded.value) {
@@ -860,6 +865,8 @@ class LibraryViewModel @Inject constructor(
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri, option = "replace")
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "quickPlay failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -873,6 +880,8 @@ class LibraryViewModel @Inject constructor(
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uri)
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -885,6 +894,8 @@ class LibraryViewModel @Inject constructor(
             try {
                 playerRepository.setQueueFilterMode(playerId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(playerId, uri)
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
                 _error.tryEmit("Not connected to server")
@@ -1052,7 +1063,7 @@ class LibraryViewModel @Inject constructor(
     fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
         val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         viewModelScope.launch {
-            val blocked = _blockedArtistUris.value.contains(uri)
+            val blocked = blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }

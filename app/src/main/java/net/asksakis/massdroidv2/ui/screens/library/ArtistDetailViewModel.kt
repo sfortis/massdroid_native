@@ -76,8 +76,15 @@ class ArtistDetailViewModel @Inject constructor(
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
-    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
-    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+    /**
+     * The artists the listener has blocked, served straight from the repository.
+     *
+     * Blocked items are shown faded rather than hidden, so that they can still be found and
+     * unblocked. Ask [blocksArtist] rather than testing the set directly: the keys here are
+     * canonical and a provider URI has to be normalised first.
+     */
+    val blockedArtistUris: StateFlow<Set<String>> = smartListeningRepository.blockedArtistUris
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     private val _similarArtists = MutableStateFlow<List<Artist>>(emptyList())
     val similarArtists: StateFlow<List<Artist>> = _similarArtists.asStateFlow()
@@ -86,9 +93,6 @@ class ArtistDetailViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { loadData(lazy = true) }
-        viewModelScope.launch {
-            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
-        }
     }
 
     fun refresh() {
@@ -389,7 +393,7 @@ class ArtistDetailViewModel @Inject constructor(
     fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
         val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         viewModelScope.launch {
-            val blocked = _blockedArtistUris.value.contains(uri)
+            val blocked = blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }

@@ -51,7 +51,7 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.blocksArtist
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
@@ -235,10 +235,7 @@ fun AlbumDetailScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
-            artistBlocked = target.primaryArtistUri?.let { uri ->
-                val key = MediaIdentity.canonicalArtistKey(uri = uri)
-                key != null && key in blockedArtistUris
-            } ?: false,
+            artistBlocked = blockedArtistUris.blocksArtist(target.primaryArtistUri),
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
             },
@@ -437,6 +434,7 @@ private fun AlbumPlayActions(
 ) {
     var showPlaySheet by remember { mutableStateOf(false) }
     val playSheetState = SheetDefaults.sheetState()
+    val sending by viewModel.sending.collectAsStateWithLifecycle()
 
     Row(
         modifier = modifier,
@@ -445,9 +443,19 @@ private fun AlbumPlayActions(
     ) {
         MdTextButton(
             onClick = { viewModel.playAll() },
+            // Held while the server builds the queue, as on the playlist screen.
+            enabled = !sending,
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null)
+            if (sending) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp,
+                    color = LocalContentColor.current
+                )
+            } else {
+                Icon(Icons.Default.PlayArrow, contentDescription = null)
+            }
             Spacer(modifier = Modifier.width(8.dp))
             Text("Play All")
         }

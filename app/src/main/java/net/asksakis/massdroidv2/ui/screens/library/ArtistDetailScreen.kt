@@ -49,7 +49,7 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.blocksArtist
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
@@ -74,10 +74,7 @@ fun ArtistDetailScreen(
     val artistName by viewModel.artistName.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
-    val artistBlocked = artist?.uri?.let { uri ->
-        val key = MediaIdentity.canonicalArtistKey(uri = uri)
-        key != null && key in blockedArtistUris
-    } ?: false
+    val artistBlocked = blockedArtistUris.blocksArtist(artist?.uri)
 
     val artistInLibrary by viewModel.artistInLibrary.collectAsStateWithLifecycle()
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
@@ -245,10 +242,7 @@ fun ArtistDetailScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
-            artistBlocked = target.primaryArtistUri?.let { uri ->
-                val key = MediaIdentity.canonicalArtistKey(uri = uri)
-                key != null && key in blockedArtistUris
-            } ?: false,
+            artistBlocked = blockedArtistUris.blocksArtist(target.primaryArtistUri),
             onToggleFavorite = {
                 viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
             },

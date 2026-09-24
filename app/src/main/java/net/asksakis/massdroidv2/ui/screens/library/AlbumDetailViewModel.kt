@@ -6,7 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -16,6 +18,9 @@ import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
+
+/** How long Play All stays busy when the queue never moves. See the playlist screen. */
+private const val QUEUE_CHANGE_TIMEOUT_MS = 120_000L
 
 @HiltViewModel
 class AlbumDetailViewModel @Inject constructor(
@@ -41,13 +46,27 @@ class AlbumDetailViewModel @Inject constructor(
     private val _albumName = MutableStateFlow(savedStateHandle.get<String>("name") ?: "Album")
     val albumName: StateFlow<String> = _albumName.asStateFlow()
 
+    /**
+     * Whether a whole-album action has been sent and the queue has not moved yet. Mirrors the
+     * playlist screen, where the server can take long enough for Play All to read as dead.
+     */
+    private val _sending = MutableStateFlow(false)
+    val sending: StateFlow<Boolean> = _sending.asStateFlow()
+
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
-    private val _blockedArtistUris = MutableStateFlow<Set<String>>(emptySet())
-    val blockedArtistUris: StateFlow<Set<String>> = _blockedArtistUris.asStateFlow()
+    /**
+     * The artists the listener has blocked, served straight from the repository.
+     *
+     * Blocked items are shown faded rather than hidden, so that they can still be found and
+     * unblocked. Ask [blocksArtist] rather than testing the set directly: the keys here are
+     * canonical and a provider URI has to be normalised first.
+     */
+    val blockedArtistUris: StateFlow<Set<String>> = smartListeningRepository.blockedArtistUris
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val currentTrackUri: StateFlow<String?> = playerRepository.queueState
         .map { it?.currentItem?.track?.uri }
@@ -72,9 +91,6 @@ class AlbumDetailViewModel @Inject constructor(
         viewModelScope.launch { loadData(lazy = true) }
         viewModelScope.launch {
             playlistMembership.errors.collect { _error.tryEmit(it) }
-        }
-        viewModelScope.launch {
-            smartListeningRepository.blockedArtistUris.collect { _blockedArtistUris.value = it }
         }
     }
 
@@ -265,15 +281,52 @@ class AlbumDetailViewModel @Inject constructor(
                 !playerRepository.isArtistBlocked(name, uri)
             }
             .map { it.uri }
-        if (uris.isEmpty()) return
+        if (uris.isEmpty()) {
+            // Every track was filtered out, which for a compilation credited to a blocked
+            // artist means the whole album. Returning quietly read as a dead button.
+            if (_tracks.value.isNotEmpty()) {
+                _error.tryEmit("Everything here is by an artist you blocked")
+            }
+            return
+        }
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        if (_sending.value) return
+        val before = queueSignature()
         viewModelScope.launch {
+            _sending.value = true
             try {
                 playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
                 musicRepository.playMedia(queueId, uris, option = "replace")
+                awaitQueueChange(before)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "playAll failed: ${e.message}")
+                _error.tryEmit("Could not play this album")
+            } finally {
+                _sending.value = false
             }
+        }
+    }
+
+    /** What the queue looks like, to the detail that tells a replacement from no change. */
+    private fun queueSignature(): Pair<String?, Int>? =
+        playerRepository.queueState.value?.let { it.currentItem?.queueItemId to it.totalItems }
+
+    /**
+     * Wait until the server has acted on the queue, so the button can stay busy meanwhile.
+     *
+     * Same reasoning as the playlist screen: the command is sent without waiting for an answer,
+     * and an album that the server is still resolving looks exactly like a button that did
+     * nothing. The timeout only releases the button if the queue never moves at all.
+     */
+    private suspend fun awaitQueueChange(before: Pair<String?, Int>?) {
+        val changed = withTimeoutOrNull(QUEUE_CHANGE_TIMEOUT_MS) {
+            playerRepository.queueState.first { it != null && queueSignature() != before }
+        }
+        if (changed == null) {
+            Log.w(TAG, "queue did not change within ${QUEUE_CHANGE_TIMEOUT_MS}ms of play")
+            _error.tryEmit("The server did not start this album")
         }
     }
 
@@ -340,7 +393,7 @@ class AlbumDetailViewModel @Inject constructor(
     fun toggleArtistBlocked(artistUri: String?, artistName: String?) {
         val uri = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         viewModelScope.launch {
-            val blocked = _blockedArtistUris.value.contains(uri)
+            val blocked = blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
         }
     }
