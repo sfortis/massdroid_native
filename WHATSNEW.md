@@ -1,3 +1,6 @@
+- Play All on a playlist starts right away, however long the playlist is, and the button now shows that it is working.
+- The order you see in a playlist is the order that plays, and tracks show their length so you can sort by it.
+- Artists you have blocked are no longer played when you start a whole playlist or album.
 - You can now put a player in a Follow Me room straight from the player settings, without opening the Follow Me setup.
 - Global search enhancements and bug fixes. (#76)
 - A command lost together with the connection now fails visibly, instead of reaching the screen as an empty answer from the server.
