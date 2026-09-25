@@ -1,3 +1,4 @@
+- The library can now sort albums by album artist, tracks by artist or length, and playlists by when they were last changed.
 - Play All on a playlist starts right away, however long the playlist is, and the button now shows that it is working.
 - The order you see in a playlist is the order that plays, and tracks show their length so you can sort by it.
 - Artists you have blocked are no longer played when you start a whole playlist or album.

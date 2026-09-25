@@ -46,6 +46,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.domain.model.SortOption
+import net.asksakis.massdroidv2.domain.model.sortOptionsFor
 
 /** Full server library browse: category chips + a paginated grid of everything. */
 @Composable
@@ -132,12 +133,11 @@ fun TvBrowseScreen(
 }
 
 /**
- * Sort options offered per category. Year is albums-only: the MA `year` sort key
- * backs a column that exists only on the albums table, so it is hidden elsewhere.
+ * Sort options offered per category. Which ones a category can ask the server for is a property
+ * of the media type rather than of this screen, so the list comes from the domain model.
  */
 private fun availableSortOptions(category: BrowseCategory): List<SortOption> =
-    if (category == BrowseCategory.ALBUMS) SortOption.entries
-    else SortOption.entries.filter { it != SortOption.YEAR }
+    sortOptionsFor(category.libraryTab)
 
 /** Per-category sort picker; the choice is persisted by the view model. */
 @Composable
@@ -181,12 +181,15 @@ private fun SortDialog(
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                Spacer(Modifier.height(8.dp))
-                Text("Direction", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DirectionChip("Ascending", selected = !descending) { onSetDescending(false) }
-                    DirectionChip("Descending", selected = descending) { onSetDescending(true) }
+                // Random has no reverse on the server, so a direction would mean nothing.
+                if (current.reversible) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Direction", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DirectionChip("Ascending", selected = !descending) { onSetDescending(false) }
+                        DirectionChip("Descending", selected = descending) { onSetDescending(true) }
+                    }
                 }
             }
         }

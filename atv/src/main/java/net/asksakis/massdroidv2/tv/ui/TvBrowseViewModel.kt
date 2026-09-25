@@ -20,19 +20,21 @@ import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Radio
+import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SortOption
+import net.asksakis.massdroidv2.domain.model.sortOptionFor
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import javax.inject.Inject
 
-enum class BrowseCategory(val label: String) {
-    ARTISTS("Artists"),
-    ALBUMS("Albums"),
-    TRACKS("Tracks"),
-    PLAYLISTS("Playlists"),
-    RADIOS("Radios"),
-    AUDIOBOOKS("Audiobooks"),
+enum class BrowseCategory(val label: String, val libraryTab: LibraryTabKey) {
+    ARTISTS("Artists", LibraryTabKey.ARTISTS),
+    ALBUMS("Albums", LibraryTabKey.ALBUMS),
+    TRACKS("Tracks", LibraryTabKey.TRACKS),
+    PLAYLISTS("Playlists", LibraryTabKey.PLAYLISTS),
+    RADIOS("Radios", LibraryTabKey.RADIOS),
+    AUDIOBOOKS("Audiobooks", LibraryTabKey.AUDIOBOOKS),
 }
 
 /** A library item rendered in the Browse grid, plus how a click should act. */
@@ -147,7 +149,7 @@ class TvBrowseViewModel @Inject constructor(
      */
     fun setSort(option: SortOption) {
         val cat = _category.value
-        val defaultDesc = option != SortOption.NAME && option != SortOption.RANDOM
+        val defaultDesc = option.defaultDescending
         if ((_sortOptions.value[cat] ?: SortOption.NAME) == option &&
             (_sortDescending.value[cat] ?: false) == defaultDesc
         ) {
@@ -191,16 +193,16 @@ class TvBrowseViewModel @Inject constructor(
 
     private fun loadSortOptions(): Map<BrowseCategory, SortOption> =
         BrowseCategory.entries.associateWith { cat ->
-            sortPrefs.getString(sortKey(cat), null)
-                ?.let { stored -> SortOption.entries.firstOrNull { it.name == stored } }
-                ?: SortOption.NAME
+            val stored = sortPrefs.getString(sortKey(cat), null)
+                ?.let { name -> SortOption.entries.firstOrNull { it.name == name } }
+            sortOptionFor(cat.libraryTab, stored)
         }
 
     private fun loadSortDescending(): Map<BrowseCategory, Boolean> =
         BrowseCategory.entries.associateWith { cat ->
             sortPrefs.getBoolean(
                 descKey(cat),
-                (loadSortOptions()[cat] ?: SortOption.NAME).let { it != SortOption.NAME && it != SortOption.RANDOM }
+                (loadSortOptions()[cat] ?: SortOption.NAME).defaultDescending
             )
         }
 
@@ -208,9 +210,8 @@ class TvBrowseViewModel @Inject constructor(
     private fun descKey(cat: BrowseCategory) = "browse_sort_desc_" + cat.name.lowercase()
 
     private fun orderByFor(cat: BrowseCategory): String {
-        val option = _sortOptions.value[cat] ?: SortOption.NAME
-        val descending = _sortDescending.value[cat] ?: false
-        return if (descending && option != SortOption.RANDOM) "${option.apiValue}_desc" else option.apiValue
+        val option = sortOptionFor(cat.libraryTab, _sortOptions.value[cat])
+        return option.orderBy(descending = _sortDescending.value[cat] ?: false)
     }
 
     private companion object {

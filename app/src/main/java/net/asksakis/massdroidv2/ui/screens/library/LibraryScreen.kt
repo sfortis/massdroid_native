@@ -81,15 +81,11 @@ private const val TAB_PODCASTS = 6
 private const val TAB_BROWSE = 7
 
 /**
- * Sort options offered per tab. Browse only supports name; Albums additionally
- * exposes Year (the MA `year` sort key backs an albums-only column, so it is
- * hidden elsewhere to avoid ordering by a non-existent column server-side).
+ * Sort options offered per tab. Which ones a tab can ask the server for is a property of the
+ * media type rather than of this screen, so the list comes from the domain model.
  */
-private fun availableSortOptions(tab: Int): List<SortOption> = when (tab) {
-    TAB_BROWSE -> listOf(SortOption.NAME)
-    TAB_ALBUMS -> SortOption.entries
-    else -> SortOption.entries.filter { it != SortOption.YEAR }
-}
+private fun availableSortOptions(tab: Int): List<SortOption> =
+    sortOptionsFor(LibraryTabKey.fromIndex(tab) ?: LibraryTabKey.ARTISTS)
 
 @Composable
 fun LibraryScreen(
@@ -989,11 +985,14 @@ private fun LibraryControlsSheet(
                         onSelect = onSortSelect,
                         options = sortOptions
                     )
-                    FilterChip(
-                        selected = sortDescending,
-                        onClick = onToggleSortDirection,
-                        label = { Text("Descending") }
-                    )
+                    // Random has no reverse on the server, so a direction would mean nothing.
+                    if (sortOption.reversible) {
+                        FilterChip(
+                            selected = sortDescending,
+                            onClick = onToggleSortDirection,
+                            label = { Text("Descending") }
+                        )
+                    }
                 }
             }
 

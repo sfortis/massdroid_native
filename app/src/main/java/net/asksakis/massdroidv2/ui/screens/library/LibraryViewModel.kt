@@ -70,7 +70,7 @@ class LibraryViewModel @Inject constructor(
 
     private val _sortOptions = MutableStateFlow<Map<Int, SortOption>>(emptyMap())
     val sortOption: StateFlow<SortOption> = combine(_sortOptions, _currentTab) { opts, tab ->
-        opts[tab] ?: SortOption.NAME
+        sortOptionForTab(tab, opts[tab])
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SortOption.NAME)
 
     private val _sortDescendings = MutableStateFlow<Map<Int, Boolean>>(emptyMap())
@@ -128,10 +128,13 @@ class LibraryViewModel @Inject constructor(
     private fun searchFor(tab: LibraryTabKey): String? =
         if (_currentTab.value == tab.index) currentSearch else null
 
-    private fun orderByForTab(tab: Int): String {
-        val base = (_sortOptions.value[tab] ?: SortOption.NAME).apiValue
-        return if (_sortDescendings.value[tab] == true) "${base}_desc" else base
-    }
+    /** The order for a tab, dropping a stored one the tab cannot ask the server for. */
+    private fun sortOptionForTab(tab: Int, stored: SortOption?): SortOption =
+        sortOptionFor(LibraryTabKey.fromIndex(tab) ?: LibraryTabKey.ARTISTS, stored)
+
+    private fun orderByForTab(tab: Int): String =
+        sortOptionForTab(tab, _sortOptions.value[tab])
+            .orderBy(descending = _sortDescendings.value[tab] == true)
 
     private fun favoriteOnlyForTab(tab: Int): Boolean = _favoritesOnlyMap.value[tab] ?: false
 
@@ -618,7 +621,7 @@ class LibraryViewModel @Inject constructor(
     fun updateSort(option: SortOption) {
         val tab = _currentTab.value
         _sortOptions.value = _sortOptions.value + (tab to option)
-        val defaultDesc = option != SortOption.NAME
+        val defaultDesc = option.defaultDescending
         _sortDescendings.value = _sortDescendings.value + (tab to defaultDesc)
         viewModelScope.launch {
             settingsRepository.setLibrarySortOption(tab, option)

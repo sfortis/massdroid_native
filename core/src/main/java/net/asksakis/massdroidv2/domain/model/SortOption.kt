@@ -1,16 +1,84 @@
 package net.asksakis.massdroidv2.domain.model
 
-enum class SortOption(val apiValue: String, val label: String) {
+/**
+ * An order a library listing can be asked for.
+ *
+ * [apiValue] is the Music Assistant `order_by` key. [defaultDescending] is the direction the
+ * field is normally read in, applied when the listener picks it: names and durations run
+ * upwards, times and counts start from the most recent or the highest.
+ *
+ * Not every option fits every tab, because `order_by` becomes an SQL ORDER BY over the media
+ * type's own table. Ask [sortOptionsFor] rather than offering the whole enum.
+ */
+enum class SortOption(
+    val apiValue: String,
+    val label: String,
+    val defaultDescending: Boolean = false,
+    /**
+     * Whether the server has a reverse of this key. `random` has none: `random_desc` is not in
+     * the server's SORT_KEYS, and an unknown key leaves the query with no ORDER BY at all.
+     */
+    val reversible: Boolean = true
+) {
     NAME("name", "Name"),
-    RECENTLY_ADDED("timestamp_added", "Recently Added"),
-    LAST_PLAYED("last_played", "Last Played"),
-    MOST_PLAYED("play_count", "Most Played"),
-    // Albums-only: the MA server exposes a `year` sort key, but only the albums
-    // table carries a `year` column. Offering it on other tabs would order by a
-    // non-existent column server-side, so callers must gate YEAR to albums.
-    YEAR("year", "Year"),
-    RANDOM("random", "Random")
+    ALBUM_ARTIST("album_artist_name", "Album Artist"),
+    TRACK_ARTIST("track_artist_name", "Artist"),
+    DURATION("duration", "Duration"),
+    YEAR("year", "Year", defaultDescending = true),
+    RECENTLY_ADDED("timestamp_added", "Recently Added", defaultDescending = true),
+    RECENTLY_MODIFIED("timestamp_modified", "Recently Modified", defaultDescending = true),
+    LAST_PLAYED("last_played", "Last Played", defaultDescending = true),
+    MOST_PLAYED("play_count", "Most Played", defaultDescending = true),
+    RANDOM("random", "Random", reversible = false);
+
+    /** The `order_by` to send, reversed only where the server has a key for the reverse. */
+    fun orderBy(descending: Boolean): String =
+        if (descending && reversible) "${apiValue}_desc" else apiValue
 }
+
+/**
+ * The orders this tab can be asked for.
+ *
+ * Music Assistant turns `order_by` into an SQL ORDER BY over the media type's own table, so a
+ * key naming a column that table does not have fails the whole request with error 999, "no such
+ * column", and the tab comes back empty. Checked against 2.10.4: only albums carry `year`,
+ * radios and podcasts carry no `duration`, and the two artist orders read `artists.search_name`
+ * through a join that only albums and tracks make. Browse is a folder listing the app orders
+ * itself, so it offers the name alone.
+ */
+fun sortOptionsFor(tab: LibraryTabKey): List<SortOption> = when (tab) {
+    LibraryTabKey.BROWSE -> listOf(SortOption.NAME)
+    LibraryTabKey.ALBUMS -> listOf(
+        SortOption.NAME, SortOption.ALBUM_ARTIST, SortOption.YEAR, SortOption.RECENTLY_ADDED,
+        SortOption.LAST_PLAYED, SortOption.MOST_PLAYED, SortOption.RANDOM
+    )
+    LibraryTabKey.TRACKS -> listOf(
+        SortOption.NAME, SortOption.TRACK_ARTIST, SortOption.DURATION, SortOption.RECENTLY_ADDED,
+        SortOption.LAST_PLAYED, SortOption.MOST_PLAYED, SortOption.RANDOM
+    )
+    LibraryTabKey.PLAYLISTS -> listOf(
+        SortOption.NAME, SortOption.RECENTLY_ADDED, SortOption.RECENTLY_MODIFIED,
+        SortOption.LAST_PLAYED, SortOption.MOST_PLAYED, SortOption.RANDOM
+    )
+    LibraryTabKey.AUDIOBOOKS -> listOf(
+        SortOption.NAME, SortOption.DURATION, SortOption.RECENTLY_ADDED,
+        SortOption.LAST_PLAYED, SortOption.MOST_PLAYED, SortOption.RANDOM
+    )
+    LibraryTabKey.ARTISTS, LibraryTabKey.RADIOS, LibraryTabKey.PODCASTS -> listOf(
+        SortOption.NAME, SortOption.RECENTLY_ADDED, SortOption.LAST_PLAYED,
+        SortOption.MOST_PLAYED, SortOption.RANDOM
+    )
+}
+
+/**
+ * The order to use for [tab], given what was [stored] for it.
+ *
+ * A build that offered an option on more tabs than this one does can leave a stored order the
+ * server would refuse, and the tab would then show nothing at all. Falling back to the name
+ * costs the listener their choice on that one tab and keeps the listing readable.
+ */
+fun sortOptionFor(tab: LibraryTabKey, stored: SortOption?): SortOption =
+    if (stored != null && stored in sortOptionsFor(tab)) stored else SortOption.NAME
 
 enum class LibraryDisplayMode {
     LIST, GRID
