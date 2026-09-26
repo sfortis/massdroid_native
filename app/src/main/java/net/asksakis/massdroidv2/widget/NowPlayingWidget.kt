@@ -126,6 +126,7 @@ class NowPlayingWidget : GlanceAppWidget() {
         val size = LocalSize.current
         val innerHeight = size.height - CARD_PADDING * 2
         val innerWidth = size.width - CARD_PADDING * 2
+        val fontScale = LocalContext.current.resources.configuration.fontScale
         Box(
             modifier = GlanceModifier
                 .fillMaxSize()
@@ -147,14 +148,78 @@ class NowPlayingWidget : GlanceAppWidget() {
                 )
             }
             Box(modifier = GlanceModifier.fillMaxSize().padding(CARD_PADDING), contentAlignment = Alignment.Center) {
+                // Ordered by what the card can hold, widest layout first. The wide and
+                // tall cards claim a height only when their own rows fit in it, so a
+                // host between one and two cells lands on the compact family instead of
+                // a layout that would overflow its bottom edge.
                 when {
-                    innerHeight < COMPACT_MAX_HEIGHT -> CompactRow(snapshot, artwork, innerHeight)
-                    innerHeight > innerWidth * TALL_ASPECT -> TallCard(snapshot, artwork, innerWidth, innerHeight)
-                    else -> FullCard(snapshot, artwork, innerWidth, innerHeight)
+                    innerHeight > innerWidth * TALL_ASPECT ->
+                        TallCard(snapshot, artwork, innerWidth, innerHeight, fontScale)
+                    innerHeight >= fullCardMinHeight(fontScale) ->
+                        FullCard(snapshot, artwork, innerWidth, innerHeight, fontScale)
+                    compactTextWidth(innerWidth, innerHeight) >= COMPACT_MIN_TEXT_WIDTH ->
+                        CompactRow(snapshot, artwork, innerHeight)
+                    innerHeight >= stackMinHeight(fontScale) ->
+                        CompactStack(snapshot, artwork, innerHeight, fontScale)
+                    else -> MinimalRow(snapshot, artwork, innerHeight)
                 }
             }
         }
     }
+
+    /**
+     * What is left for the title and artist once the single-row layout has taken its
+     * artwork, its gaps and its three buttons. Narrow hosts leave nothing: a widget
+     * three cells wide is 222dp inside, and the row wants 56 for the artwork, 20 for
+     * the gaps and 152 for the buttons, so the text was squeezed to a few characters
+     * and read "Nothing pl...".
+     */
+    private fun compactTextWidth(innerWidth: Dp, innerHeight: Dp): Dp {
+        val play = innerHeight.coerceIn(COMPACT_PLAY_MIN, COMPACT_PLAY_MAX)
+        val transport = MIN_TOUCH_TARGET * 2 + play + TRANSPORT_GAPS
+        return innerWidth - innerHeight - COMPACT_ROW_GAPS - transport
+    }
+
+    /**
+     * The height one line of text at [sizeSp] takes on the card. A widget lays its
+     * children out in dp while text is measured in sp, so the viewer's font scale is
+     * what decides how tall a line really is: at a scale of 1.15 the 13sp title needs
+     * about 19dp, not the 16 a fixed constant assumed. Every budget below is built from
+     * this rather than from a constant, because the ones that were not came up short by
+     * that difference and clipped whatever sat under the text.
+     */
+    private fun textLineHeight(sizeSp: Float, fontScale: Float): Dp =
+        (sizeSp * fontScale * LINE_HEIGHT_RATIO).dp
+
+    /**
+     * The title, the gap and the smallest buttons. A card shorter than this cannot be
+     * laid out as a column at all and falls back to the minimal row.
+     */
+    private fun stackMinHeight(fontScale: Float): Dp =
+        textLineHeight(STACK_TITLE_SP, fontScale) + STACK_TEXT_GAP + STACK_PLAY_MIN
+
+    /**
+     * The chip, the two text rows and the spacers between them in the wide layout,
+     * at the viewer's font scale. What is left of the card's height goes to the
+     * buttons.
+     */
+    private fun fullTextBlock(fontScale: Float): Dp =
+        textLineHeight(CHIP_SP, fontScale) + CHIP_VERTICAL_PADDING + FULL_CHIP_GAP +
+            textLineHeight(FULL_TITLE_SP, fontScale) +
+            textLineHeight(FULL_ARTIST_SP, fontScale) + FULL_TEXT_GAP
+
+    /**
+     * The height the wide layout needs for its rows plus buttons at a usable size.
+     * A card shorter than this is laid out by the compact family instead, which was
+     * the gap a one-and-a-half cell host used to fall into.
+     */
+    private fun fullCardMinHeight(fontScale: Float): Dp = fullTextBlock(fontScale) + FULL_PLAY_MIN
+
+    /** The chip, title and artist rows of the tall layout, at the viewer's font scale. */
+    private fun tallTextBlock(fontScale: Float): Dp =
+        textLineHeight(CHIP_SP, fontScale) + CHIP_VERTICAL_PADDING +
+            textLineHeight(TALL_TITLE_SP, fontScale) +
+            textLineHeight(TALL_ARTIST_SP, fontScale)
 
     /** One cell high: artwork, two text lines and the buttons in a single centred row. */
     @Composable
@@ -177,14 +242,94 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     /**
+     * One cell high but too narrow for a single row: the artwork keeps the left, and
+     * the rest is a column with the title above the buttons. Stacking them gives the
+     * title the whole width instead of the sliver left beside three buttons.
+     *
+     * The artist is not shown at this size. A card one cell high fits one line of text
+     * and a row of buttons, and a second line took its height out of the buttons until
+     * they were clipped by the bottom edge. The title and the transport are what this
+     * size is for; the artist returns on the taller cards.
+     *
+     * The buttons take whatever height the title leaves, within bounds, so the column
+     * cannot outgrow the card however short the host makes it. They end up below
+     * Material's 48dp target, which a row this size cannot honour and still show a
+     * readable title; the system's own media widgets make the same trade here.
+     */
+    @Composable
+    private fun CompactStack(
+        snapshot: NowPlayingWidgetSnapshot,
+        artwork: Bitmap?,
+        innerHeight: Dp,
+        fontScale: Float
+    ) {
+        val play = (innerHeight - textLineHeight(STACK_TITLE_SP, fontScale) - STACK_TEXT_GAP)
+            .coerceIn(STACK_PLAY_MIN, STACK_PLAY_MAX)
+        Row(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Artwork(artwork, innerHeight, 12.dp)
+            Spacer(GlanceModifier.width(10.dp))
+            Column(
+                modifier = GlanceModifier.defaultWeight().fillMaxHeight(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                TitleLine(snapshot, STACK_TITLE_SP.sp, centred = true)
+                Spacer(GlanceModifier.height(STACK_TEXT_GAP))
+                TransportButtons(snapshot, sideSize = play * STACK_SIDE_RATIO, playSize = play)
+            }
+        }
+    }
+
+    /**
+     * Too narrow for a row and too short for a stack, which the host allows: the widget
+     * may be resized down to 56dp, leaving 28dp inside. Only the title and play fit,
+     * and showing those two properly beats showing five things clipped.
+     */
+    @Composable
+    private fun MinimalRow(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerHeight: Dp) {
+        Row(
+            modifier = GlanceModifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Artwork(artwork, innerHeight, 10.dp)
+            Spacer(GlanceModifier.width(10.dp))
+            Column(modifier = GlanceModifier.defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
+                TitleLine(snapshot, 13.sp, centred = false)
+            }
+            Spacer(GlanceModifier.width(8.dp))
+            IconButton(
+                if (snapshot.isPlaying) R.drawable.ic_widget_pause else R.drawable.ic_widget_play,
+                if (snapshot.isPlaying) "Pause" else "Play",
+                TransportCommand.PLAY_PAUSE,
+                innerHeight.coerceAtMost(STACK_PLAY_MAX),
+                filled = true
+            )
+        }
+    }
+
+    /**
      * Two or more cells high: the artwork takes the card's full height on the left (capped
      * so text keeps room on narrow hosts); the rest is one column centred both ways with
      * the player chip, title, artist and the buttons, all centred on the same axis.
      */
     @Composable
-    private fun FullCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerWidth: Dp, innerHeight: Dp) {
+    private fun FullCard(
+        snapshot: NowPlayingWidgetSnapshot,
+        artwork: Bitmap?,
+        innerWidth: Dp,
+        innerHeight: Dp,
+        fontScale: Float
+    ) {
         val art = minOf(innerHeight, innerWidth * 0.42f)
-        val play = (innerHeight * 0.3f).coerceIn(48.dp, 72.dp)
+        // A share of the height, but never more than the text rows leave. The share
+        // alone used to win on a short card and on a large font scale, and the buttons
+        // were the row that fell off the bottom.
+        val play = (innerHeight * FULL_PLAY_RATIO)
+            .coerceAtMost(innerHeight - fullTextBlock(fontScale))
+            .coerceIn(FULL_PLAY_MIN, FULL_PLAY_MAX)
         Row(
             modifier = GlanceModifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically,
@@ -198,10 +343,10 @@ class NowPlayingWidget : GlanceAppWidget() {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 PlayerChip(snapshot)
-                Spacer(GlanceModifier.height(8.dp))
-                TitleLine(snapshot, 17.sp, centred = true)
-                SubtitleLine(snapshot, 14.sp, centred = true)
-                Spacer(GlanceModifier.height(10.dp))
+                Spacer(GlanceModifier.height(FULL_CHIP_GAP))
+                TitleLine(snapshot, FULL_TITLE_SP.sp, centred = true)
+                SubtitleLine(snapshot, FULL_ARTIST_SP.sp, centred = true)
+                Spacer(GlanceModifier.height(FULL_TEXT_GAP))
                 TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
             }
         }
@@ -213,12 +358,19 @@ class NowPlayingWidget : GlanceAppWidget() {
      * rows), then the chip, the two text lines and the buttons, all centred.
      */
     @Composable
-    private fun TallCard(snapshot: NowPlayingWidgetSnapshot, artwork: Bitmap?, innerWidth: Dp, innerHeight: Dp) {
+    private fun TallCard(
+        snapshot: NowPlayingWidgetSnapshot,
+        artwork: Bitmap?,
+        innerWidth: Dp,
+        innerHeight: Dp,
+        fontScale: Float
+    ) {
         // Everything under the artwork is a fixed stack; the artwork gets what is left.
-        // Measured, not guessed: chip ~32, title ~26, artist ~20, three spacers 32, the
-        // play button, plus a margin, or the buttons fall off the bottom of the card.
+        // The chip, title and artist rows are measured at the viewer's font scale rather
+        // than assumed, so a larger scale takes its extra height out of the artwork
+        // instead of pushing the buttons off the bottom of the card.
         val play = TALL_PLAY_SIZE
-        val reserved = TALL_TEXT_BLOCK + TALL_SPACERS + play + TALL_SAFETY
+        val reserved = tallTextBlock(fontScale) + TALL_SPACERS + play + TALL_SAFETY
         val art = minOf(innerWidth, innerHeight - reserved).coerceAtLeast(96.dp)
         Column(
             modifier = GlanceModifier.fillMaxSize(),
@@ -229,8 +381,8 @@ class NowPlayingWidget : GlanceAppWidget() {
             Spacer(GlanceModifier.height(12.dp))
             PlayerChip(snapshot)
             Spacer(GlanceModifier.height(8.dp))
-            TitleLine(snapshot, 18.sp, centred = true)
-            SubtitleLine(snapshot, 14.sp, centred = true)
+            TitleLine(snapshot, TALL_TITLE_SP.sp, centred = true)
+            SubtitleLine(snapshot, TALL_ARTIST_SP.sp, centred = true)
             Spacer(GlanceModifier.height(12.dp))
             TransportButtons(snapshot, sideSize = (play * 0.8f).coerceAtLeast(MIN_TOUCH_TARGET), playSize = play)
         }
@@ -289,7 +441,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 maxLines = 1,
                 style = TextStyle(
                     color = GlanceTheme.colors.onSecondaryContainer,
-                    fontSize = 12.sp,
+                    fontSize = CHIP_SP.sp,
                     fontWeight = FontWeight.Medium
                 )
             )
@@ -387,8 +539,6 @@ class NowPlayingWidget : GlanceAppWidget() {
     )
 
     companion object {
-        /** Below this inner height the card is one cell high and uses the single-row layout. */
-        private val COMPACT_MAX_HEIGHT = 84.dp
         private const val ARTWORK_PX = 320
         private val CARD_PADDING = 14.dp
         /** Material's minimum touch target; the side buttons never shrink below it. */
@@ -396,10 +546,64 @@ class NowPlayingWidget : GlanceAppWidget() {
         /** The baked backdrop never exceeds this width; RemoteViews bitmaps count against a small budget. */
         private const val BACKDROP_MAX_PX = 640
         private const val HALF_LUMINANCE = 0.5
+        /** The single-row layout needs at least this much width for the title to be worth showing. */
+        private val COMPACT_MIN_TEXT_WIDTH = 96.dp
+
+        /** Play button bounds of the single-row layout, and the gaps either layout spends. */
+        private val COMPACT_PLAY_MIN = 40.dp
+        private val COMPACT_PLAY_MAX = 56.dp
+        private val COMPACT_ROW_GAPS = 20.dp
+        private val TRANSPORT_GAPS = 16.dp
+
+        /**
+         * How much taller than its font size a line of text sits, covering the ascent,
+         * the descent and the leading the platform adds. Roboto needs about 1.2; the
+         * margin above that carries the taller metrics of a device font or of a script
+         * with accents, which a widget cannot measure before it lays itself out.
+         */
+        private const val LINE_HEIGHT_RATIO = 1.3f
+
+        /** Text sizes the layouts reserve height for, in sp, so the budget and the Text agree. */
+        private const val STACK_TITLE_SP = 13f
+        private const val CHIP_SP = 12f
+        private const val FULL_TITLE_SP = 17f
+        private const val FULL_ARTIST_SP = 14f
+        private const val TALL_TITLE_SP = 18f
+        private const val TALL_ARTIST_SP = 14f
+
+        /** The chip's own padding, above and below its label. */
+        private val CHIP_VERTICAL_PADDING = 10.dp
+
+        /** Clear air between the text and the buttons, which is what was missing. */
+        private val STACK_TEXT_GAP = 6.dp
+        private val STACK_PLAY_MIN = 26.dp
+
+        /**
+         * The buttons take whatever the title leaves, so this cap is what stops them
+         * filling a card that has room to spare once the artist is gone.
+         */
+        private val STACK_PLAY_MAX = 44.dp
+
+        /** Side buttons against the play button, kept close so the row reads as one control. */
+        private const val STACK_SIDE_RATIO = 0.9f
+
+        /** Gaps of the wide layout, above and below its two text rows. */
+        private val FULL_CHIP_GAP = 8.dp
+        private val FULL_TEXT_GAP = 10.dp
+
+        /**
+         * Play button bounds of the wide layout. The minimum is Material's touch target,
+         * which this size of card can honour, and it is also what decides the height the
+         * layout asks for before it will take a card at all.
+         */
+        private val FULL_PLAY_MIN = 48.dp
+        private val FULL_PLAY_MAX = 72.dp
+
+        /** The share of the card height the play button takes when there is room for it. */
+        private const val FULL_PLAY_RATIO = 0.3f
+
         /** Above this height-to-width ratio the card is laid out as a small player. */
         private const val TALL_ASPECT = 0.75f
-        /** Chip (~32), title (~26) and artist (~20) rows of the tall layout, reserved before sizing the artwork. */
-        private val TALL_TEXT_BLOCK = 78.dp
         private val TALL_SPACERS = 32.dp
         private val TALL_PLAY_SIZE = 64.dp
         private val TALL_SAFETY = 16.dp
