@@ -263,10 +263,23 @@ fun NowPlayingScreen(
 
     val isDark = isSystemInDarkTheme()
     val surfaceColor = MaterialTheme.colorScheme.surface
-    val dominantColor by extractDominantColor(imageUrl, isDark)
+    // Follows the track the server has confirmed, and only once it has stayed on
+    // it. Skipping through tracks would otherwise repaint the whole screen for
+    // each one on the way, and a colour that is about to be replaced is not
+    // worth showing. Colouring from the cover the swipe was carrying had the
+    // same fault: it started the change with the gesture, so every step of a
+    // burst turned the background over.
+    var settledArtwork by remember { mutableStateOf(imageUrl) }
+    LaunchedEffect(imageUrl) {
+        delay(BACKGROUND_SETTLE_DELAY_MS)
+        settledArtwork = imageUrl
+    }
+    val dominantColor by extractDominantColor(settledArtwork, isDark)
     val animatedColor by animateColorAsState(
         targetValue = dominantColor,
-        animationSpec = tween(durationMillis = 320),
+        // Slow enough to read as the background settling rather than switching.
+        // A whole screen changing colour needs longer than a control does.
+        animationSpec = tween(durationMillis = BACKGROUND_COLOR_DURATION_MS, easing = FastOutSlowInEasing),
         label = "bg_color"
     )
     val gradientAlpha = if (isDark) 0.35f else 0.25f
@@ -656,6 +669,7 @@ private fun NowPlayingPortrait(
             onNext = { if (controlsEnabled) viewModel.next() },
             onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
             canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
+            canSwipeNext = controlsEnabled,
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
         )
 
@@ -848,6 +862,7 @@ private fun NowPlayingLandscape(
                     onNext = { if (controlsEnabled) viewModel.next() },
                     onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
                     canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
+                    canSwipeNext = controlsEnabled,
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
                     fillMaxWidth = false
                 )
@@ -1100,3 +1115,18 @@ private fun extractColor(bitmap: Bitmap, isDark: Boolean): Color {
     return Color(clamped)
 }
 
+/**
+ * How long the background takes to settle on a new track's colour. The whole
+ * screen is changing, so it needs longer than a control would; at 320 ms the
+ * change read as a switch rather than as a fade.
+ */
+private const val BACKGROUND_COLOR_DURATION_MS = 900
+
+/**
+ * How long a confirmed track has to stay current before its colour is taken up.
+ * Tracks passed through on the way to the one the user wants are confirmed by
+ * the server too, and repainting the screen for each of them is noise. Measured
+ * gaps between confirmations while skipping were 763 to 3591 ms, so this folds
+ * the closest of them without holding back an ordinary track change.
+ */
+private const val BACKGROUND_SETTLE_DELAY_MS = 800L
