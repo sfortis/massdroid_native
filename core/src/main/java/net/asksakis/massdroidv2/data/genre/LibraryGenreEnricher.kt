@@ -67,8 +67,6 @@ class LibraryGenreEnricher @Inject constructor(
     // requests, so running both costs no extra traffic.
     private var discoveryJob: Job? = null
     private val enrichedNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    /** Library uris the server has confirmed since this process started; see [verifyUnlistedLibraryArtists]. */
-    private val verifiedUnlistedUris: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val pendingQueue = ConcurrentLinkedQueue<Artist>()
     private val _progress = MutableStateFlow(EnrichmentProgress())
     val progress: StateFlow<EnrichmentProgress> = _progress.asStateFlow()
@@ -410,14 +408,12 @@ class LibraryGenreEnricher @Inject constructor(
             var offset = 0
             var inserted = 0
             var repointed = 0
-            val listed = mutableSetOf<String>()
             while (true) {
                 val batch = musicRepository.getArtists(limit = PAGE_SIZE, offset = offset, orderBy = "name")
                 if (batch.isEmpty()) break
                 val known = dao.getArtistsByUris(batch.map { it.uri }).associateBy { it.uri }
                 for (artist in batch) {
                     if (artist.name.isBlank()) continue
-                    listed += artist.uri
                     val local = known[artist.uri]
                     when {
                         local == null -> {
@@ -455,7 +451,14 @@ class LibraryGenreEnricher @Inject constructor(
                 offset += batch.size
                 if (batch.size < PAGE_SIZE) break
             }
-            repointed += verifyUnlistedLibraryArtists(listed)
+            // Only the artists the listing returns are checked for a recycled id. The local
+            // table holds many more library uris than the listing mentions (728 against 168
+            // on this server), but that gap is not staleness: `library_items` answers with
+            // the in-library artists, 166 of those 168 flagged favorite, while we store
+            // every artist playback has ever resolved. Confirming the rest cost 60
+            // `get_artist` calls on every launch, because the set of already-confirmed uris
+            // only lived as long as the process, and across 93k log lines it never once
+            // found a reused id.
             if (inserted > 0 || repointed > 0) {
                 Log.d(TAG, "Library sync: $inserted new, $repointed uris repointed to a new artist")
             }
@@ -464,55 +467,9 @@ class LibraryGenreEnricher @Inject constructor(
         }
     }
 
-    /**
-     * Check the library uris the artist listing never returns.
-     *
-     * `music/artists/library_items` does not list every artist reachable under a
-     * `library://artist/<id>` uri: measured against a real server it answered
-     * with 166 artists while `get_artist` happily resolved ids outside that set.
-     * Those ids are exactly the ones that go stale unnoticed, because the paging
-     * loop above can never reach them - on that server `library://artist/190`
-     * was stored locally as one artist while the server had another there.
-     *
-     * So anything we hold locally but the listing did not mention is confirmed
-     * one id at a time, and a uri confirmed once is not asked again for the life
-     * of the process. Without that memory every sync re-asked the same first
-     * [UNLISTED_VERIFY_LIMIT] rows: 60 identical `get_artist` calls after each of
-     * the day's seven reconnects on 2026-09-10, and the rows beyond the first 60
-     * were never reached at all. Now each pass takes the next unconfirmed batch.
-     */
-    private suspend fun verifyUnlistedLibraryArtists(listed: Set<String>): Int {
-        val unlisted = dao.getLibraryArtistUris().filter { it.uri !in listed && it.uri !in verifiedUnlistedUris }
-        if (unlisted.isEmpty()) return 0
-        var repointed = 0
-        for (row in unlisted.take(UNLISTED_VERIFY_LIMIT)) {
-            val itemId = row.uri.substringAfterLast('/').takeIf { it.isNotBlank() } ?: continue
-            val server = try {
-                musicRepository.getArtist(itemId, "library", lazy = true)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not verify ${row.uri}: ${e.message}")
-                null
-            } ?: continue
-            if (server.name.isBlank() || server.name.equals(row.name, ignoreCase = true)) {
-                verifiedUnlistedUris += row.uri
-                continue
-            }
-            Log.d(TAG, "Unlisted library id reused: ${row.uri} was '${row.name}', now '${server.name}'")
-            dao.replaceArtistIdentity(row.uri, server.name, server.mbid)
-            dao.deleteArtistGenres(row.uri)
-            // Marked only once the repoint is written: a failed write must be retried next pass.
-            verifiedUnlistedUris += row.uri
-            repointed++
-        }
-        return repointed
-    }
-
     companion object {
         private const val TAG = "GenreEnricher"
         private const val PAGE_SIZE = 500
-        // Bounded so a large library cannot turn one sync into hundreds of
-        // round-trips; the rest are picked up by later syncs.
-        private const val UNLISTED_VERIFY_LIMIT = 60
 
         /**
          * Bump when a change makes previously cached MusicBrainz identities worth
