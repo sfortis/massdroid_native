@@ -7,6 +7,12 @@ data class QueueState(
     val elapsedTime: Double = 0.0,
     val currentItem: QueueItem? = null,
     val currentIndex: Int = 0,
+    /**
+     * Highest index the player already holds. Items at or below it cannot be removed or
+     * reordered server side, so anything that wants to change the queue has to leave them
+     * alone. Null when the server did not report one.
+     */
+    val indexInBuffer: Int? = null,
     /** Total item count of the whole queue (server-side), not just the fetched page. */
     val totalItems: Int = 0,
     val autoplayEnabled: Boolean = false,

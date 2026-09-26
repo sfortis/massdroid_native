@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import net.asksakis.massdroidv2.domain.model.GroupProviderOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.model.QueueState
 
@@ -98,6 +99,15 @@ interface PlayerRepository {
     val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand>
 
     /**
+     * Announce a transport discontinuity for a command this repository did not send.
+     * A queue jump (play_index) moves the timeline exactly as next/previous does, but
+     * it is a queue command and goes out through [MusicRepository], so the caller that
+     * orchestrates the two announces it here. Local buffered playback needs this to
+     * drop what it has already decoded ahead.
+     */
+    fun signalDiscontinuity(playerId: String, kind: PlayerDiscontinuityCommand.Kind)
+
+    /**
      * Transient on-screen volume display. The phone's system volume bar covers
      * STREAM_MUSIC adjustments for local playback, but remote MA players have
      * no system surface — when the user adjusts their volume via hardware keys
@@ -174,6 +184,13 @@ interface PlayerRepository {
      * starts feeding it.
      */
     fun registerLocalPlaybackGate(gate: LocalPlaybackGate?)
+    /**
+     * Whether this queue item is filtered out of the active queue, because its artist is
+     * blocked or suppressed. MA cannot remove items the player already holds, so screens
+     * that walk the queue skip them with this instead of assuming they are gone.
+     */
+    fun isQueueItemFiltered(item: QueueItem): Boolean
+
     fun isArtistUriBlocked(artistUri: String): Boolean
     fun isArtistBlocked(artistName: String, artistUri: String): Boolean
     fun hasBlockedArtists(): Boolean

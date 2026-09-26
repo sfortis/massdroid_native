@@ -70,15 +70,6 @@ class PlayerRepositoryImpl @Inject constructor(
         // PLAYER_ADDED/REMOVED events (e.g. an MA server restart re-registering
         // players one by one). Long enough to collapse the burst into one refresh.
         private const val PLAYER_RESYNC_DEBOUNCE_MS = 2_500L
-        // Max wall-clock gap we forward-project a server-captured elapsed_time
-        // across. During live playback (now - elapsed_time_last_updated) is just
-        // WS latency (well under a second on LAN), so projecting it yields the
-        // true current position. But the MA server FREEZES last_updated while
-        // paused, so a QUEUE_UPDATED that lands right after a long pause/background
-        // carries a capture stale by the whole pause duration — projecting that
-        // forward jumps the position ahead by the paused seconds (and can shoot
-        // past the track end, e.g. 4:04 on a 3:31 track). Beyond this cap the
-        // capture is treated as stale and the elapsed value is anchored as-is.
         // Bounded wait for the saved player to (re)appear after a reconnect/reboot
         // before selecting it. players/all can return empty/partial while the
         // server is still registering players, which then arrive later (via a
@@ -169,6 +160,12 @@ class PlayerRepositoryImpl @Inject constructor(
 
     private val _discontinuityCommands = MutableSharedFlow<PlayerDiscontinuityCommand>(extraBufferCapacity = 4)
     override val discontinuityCommands: SharedFlow<PlayerDiscontinuityCommand> = _discontinuityCommands.asSharedFlow()
+
+    override fun signalDiscontinuity(playerId: String, kind: PlayerDiscontinuityCommand.Kind) {
+        Log.d("sendspindbg", "WS>>> discontinuity ${kind.name.lowercase()}($playerId)")
+        markManualTransition(playerId)
+        _discontinuityCommands.tryEmit(PlayerDiscontinuityCommand(playerId, kind))
+    }
 
     override fun requireSelectedPlayerId(): String? {
         val id = selectedPlayer.value?.playerId
@@ -605,7 +602,15 @@ class PlayerRepositoryImpl @Inject constructor(
                         if (currentItemChanged) publishPosition(0.0)
                         _queueState.value = domainState
                         trackDuration = serverQueue.currentItem?.duration ?: 0.0
-                        val resolved = if (currentItemChanged) 0.0 else serverQueue.elapsedTime
+                        // The server's elapsed is authoritative on a track change too.
+                        // A new item does NOT reach us at 0: on a Sendspin group the
+                        // QUEUE_UPDATED lands once the stream is already running, and
+                        // the server reports several seconds in (5.8 s measured here,
+                        // captured 86 ms before the event arrived). Anchoring to 0
+                        // regardless started the ticker behind the real position, and
+                        // the first QUEUE_TIME_UPDATED a second later jumped the seek
+                        // bar forward by that gap.
+                        val resolved = serverQueue.elapsedTime
                         // Translate the server-side capture timestamp into a
                         // local-monotonic value via the WS round-trip clock.
                         // Falls back to "now" when the server omits the field.
@@ -620,15 +625,14 @@ class PlayerRepositoryImpl @Inject constructor(
                         )
                         updatePosition(
                             serverElapsed = resolved,
-                            serverElapsedAtMs = if (currentItemChanged) System.currentTimeMillis() else capturedAtMs,
+                            serverElapsedAtMs = capturedAtMs,
                             // Always (re)start the local ticker — startPositionTicker
                             // no-ops when not playing. MA 2.9 emits position updates
                             // very sparsely (no frequent queue_time_updated; verified
                             // none in 12 s of playback), so the ticker is the primary
-                            // position driver. On a track change the new item starts at
-                            // 0, so ticking from the reset 0 is correct; leaving it
-                            // stopped (the old behaviour) froze the position until the
-                            // next sparse QUEUE_UPDATED, which can be a minute away.
+                            // position driver. Leaving it stopped (the old behaviour)
+                            // froze the position until the next sparse QUEUE_UPDATED,
+                            // which can be a minute away.
                             startTicker = true
                         )
                     }
@@ -1056,35 +1060,23 @@ class PlayerRepositoryImpl @Inject constructor(
 
             val currentTrackUri = queueTracking[queueId]?.track?.uri
                 ?: _queueState.value?.currentItem?.track?.uri
-            val removeQueueItemIds = queueItems.mapNotNull { item ->
-                val track = item.track ?: return@mapNotNull null
+            // MA refuses to delete anything the player already holds, and answers with a
+            // warning we never see because these go out without awaiting a response. Asking
+            // anyway meant re-sending the same doomed deletes on every queue event: five of
+            // them, forever, for blocked tracks sitting behind the playhead of a 477 item
+            // queue. The boundary is the server's own (helpers.committed_index).
+            val queueForBoundary = _queueState.value?.takeIf { it.queueId == queueId }
+            val committedIndex = queueForBoundary?.let { qs ->
+                qs.indexInBuffer?.let { maxOf(qs.currentIndex, it) } ?: qs.currentIndex
+            }
+            val removeQueueItemIds = queueItems.mapIndexedNotNull { index, item ->
+                if (committedIndex != null && index <= committedIndex) return@mapIndexedNotNull null
+                val track = item.track ?: return@mapIndexedNotNull null
                 val trackUri = track.uri.takeIf { it.isNotBlank() }
                 if (!currentTrackUri.isNullOrBlank() && trackUri == currentTrackUri) {
-                    return@mapNotNull null
+                    return@mapIndexedNotNull null
                 }
-                val rawArtistKeys = buildList {
-                    track.artistUri?.let { add(it) }
-                    addAll(track.artistUris)
-                    track.artistItemId?.let { id ->
-                        MediaIdentity.canonicalArtistKey(itemId = id, uri = track.artistUri)
-                            ?.let { add(it) }
-                    }
-                }
-                // The name-resolved library uri is an ADDITION, never a
-                // replacement. It used to substitute for the provider uri, so a
-                // stale name -> library mapping (the cache is filled once per
-                // connect, and library ids get reused) threw away the very uri
-                // the block was stored under: a blocked artist kept a track in
-                // the queue because their provider uri was resolved to a library
-                // id that now belongs to somebody else.
-                val candidateKeys = rawArtistKeys + rawArtistKeys.mapNotNull { rawKey ->
-                    if (rawKey.startsWith(LIBRARY_URI_PREFIX)) {
-                        null
-                    } else {
-                        resolveLibraryArtistUri(track.artistNames, rawKey).takeIf { it != rawKey }
-                    }
-                }
-                if (candidateKeys.any { it in filteredArtists }) item.queueItemId else null
+                if (artistFilterKeys(track).any { it in filteredArtists }) item.queueItemId else null
             }
             if (removeQueueItemIds.isEmpty()) return
 
@@ -1632,6 +1624,47 @@ class PlayerRepositoryImpl @Inject constructor(
 
     override fun registerLocalPlaybackGate(gate: LocalPlaybackGate?) {
         localPlaybackGate = gate
+    }
+
+    /**
+     * Every artist key a track can be filtered under.
+     *
+     * The name-resolved library uri is an ADDITION, never a replacement. It used to
+     * substitute for the provider uri, so a stale name to library mapping (the cache is
+     * filled once per connect, and library ids get reused) threw away the very uri the
+     * block was stored under: a blocked artist kept a track in the queue because their
+     * provider uri resolved to a library id that now belongs to somebody else.
+     */
+    private fun artistFilterKeys(track: Track): List<String> {
+        val raw = buildList {
+            track.artistUri?.let { add(it) }
+            addAll(track.artistUris)
+            track.artistItemId?.let { id ->
+                MediaIdentity.canonicalArtistKey(itemId = id, uri = track.artistUri)?.let { add(it) }
+            }
+        }
+        return raw + raw.mapNotNull { rawKey ->
+            if (rawKey.startsWith(LIBRARY_URI_PREFIX)) {
+                null
+            } else {
+                resolveLibraryArtistUri(track.artistNames, rawKey).takeIf { it != rawKey }
+            }
+        }
+    }
+
+    /**
+     * Whether this queue item is filtered out of the active queue.
+     *
+     * Callers need this because filtering cannot be left to the server. MA will not delete
+     * an item the player already holds, so a blocked track behind the playhead stays in the
+     * queue for good, and anything that walks the queue has to step over it itself.
+     */
+    override fun isQueueItemFiltered(item: QueueItem): Boolean {
+        val track = item.track ?: return false
+        val queueId = effectiveQueueId() ?: return false
+        val filtered = currentFilteredArtists(queueId)
+        if (filtered.isEmpty()) return false
+        return artistFilterKeys(track).any { it in filtered }
     }
 
     override fun isArtistUriBlocked(artistUri: String): Boolean =
@@ -2335,6 +2368,7 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     repeatMode = RepeatMode.fromApi(repeatMode),
     elapsedTime = elapsedTime,
     currentIndex = currentIndex,
+    indexInBuffer = indexInBuffer,
     totalItems = items,
     autoplayEnabled = autoplayEnabled,
     crossfadeEnabled = crossfadeEnabled == true,

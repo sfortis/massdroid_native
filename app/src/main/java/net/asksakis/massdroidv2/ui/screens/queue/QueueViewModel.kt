@@ -23,6 +23,7 @@ import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 
 private const val TAG = "QueueVM"
@@ -32,11 +33,27 @@ private const val PAGE_SIZE = 500
 class QueueViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    smartListeningRepository: SmartListeningRepository
 ) : ViewModel() {
 
     private val _queueItems = MutableStateFlow<List<QueueItem>>(emptyList())
-    val queueItems: StateFlow<List<QueueItem>> = _queueItems.asStateFlow()
+
+    /**
+     * The queue as the listener should see it, with the filtered tracks left out.
+     *
+     * They are normally deleted from the queue outright, but MA refuses to delete an item
+     * the player already holds, so the blocked ones behind the playhead stay on the server
+     * for good. Hiding them here is what keeps a blocked artist off the screen as well as
+     * out of the speakers.
+     *
+     * The raw list stays whole behind this, because pagination compares it against the
+     * server's own pages and would lose its place against a filtered copy.
+     */
+    val queueItems: StateFlow<List<QueueItem>> =
+        combine(_queueItems, smartListeningRepository.blockedArtistUris) { items, _ ->
+            items.filterNot { playerRepository.isQueueItemFiltered(it) }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()

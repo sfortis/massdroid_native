@@ -41,6 +41,7 @@ import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerDiscontinuityCommand
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
@@ -307,10 +308,43 @@ class NowPlayingViewModel @Inject constructor(
     private val _adjacentArtwork = MutableStateFlow(AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null))
     val adjacentArtwork: StateFlow<AdjacentArtworkUi> = _adjacentArtwork.asStateFlow()
 
+    /**
+     * A queue position the user has asked for and the server has not confirmed
+     * yet. Consecutive steps count from it, and the artwork either side is
+     * resolved against it, so the second swipe of a burst reveals the track
+     * after the one the first asked for instead of the same one again.
+     *
+     * Declared above init, which collects it. Properties initialise in source
+     * order, so a declaration below init leaves it null while the collectors
+     * are already running, which crashed the screen on open.
+     */
+    private data class PendingQueueJump(val index: Int, val queueItemId: String?, val atMs: Long)
+
+    private val pendingQueueJump = MutableStateFlow<PendingQueueJump?>(null)
+
     // Optimistic elapsed time: continues ticking during MA disconnect while sendspin plays
     private var optimisticBaseTime = 0.0
     private var optimisticBaseTimestamp = 0L
     private var optimisticDuration = 0.0
+
+    /**
+     * The queue item the optimistic base was captured from. A position only means
+     * something for the track it was read on, so the projection is offered only
+     * while that track is still the one playing.
+     *
+     * This is what separates the two reasons elapsed can read 0. A dropped MA
+     * connection leaves the same item in place and is what the projection is for.
+     * A track change also publishes 0 (the repository resets before it publishes
+     * the new queue state), and projecting across that one put the PREVIOUS
+     * track's position on screen until the ticker climbed past 0 again, which is
+     * the jump the seek bar made on every skip.
+     */
+    private var optimisticBaseItemId: String? = null
+
+    /** Whether the optimistic base still belongs to the track on screen. */
+    private fun optimisticBaseIsCurrent(): Boolean =
+        optimisticBaseTimestamp > 0L &&
+            optimisticBaseItemId == queueState.value?.currentItem?.queueItemId
     private val _optimisticElapsed = MutableStateFlow<Double?>(null)
     val optimisticElapsed: StateFlow<Double?> = _optimisticElapsed.asStateFlow()
 
@@ -325,6 +359,25 @@ class NowPlayingViewModel @Inject constructor(
         viewModelScope.launch {
             currentChapterIndex.collect { if (it == pendingChapterTarget) pendingChapterTarget = -1 }
         }
+        // Clear the optimistic queue jump once the server reports the position
+        // it asked for. Matching on the item id where we have it, because the
+        // numeric index shifts when the queue is reordered under us.
+        viewModelScope.launch {
+            queueState.collect { qs ->
+                val pending = pendingQueueJump.value ?: return@collect
+                if (qs == null) {
+                    pendingQueueJump.value = null
+                    return@collect
+                }
+                skipInFlight?.let { inFlight ->
+                    if (qs.currentItem?.queueItemId != inFlight.fromItemId) onSkipSettled()
+                }
+                val arrived = pending.queueItemId
+                    ?.let { it == qs.currentItem?.queueItemId }
+                    ?: (qs.currentIndex == pending.index)
+                if (arrived) pendingQueueJump.value = null
+            }
+        }
         viewModelScope.launch {
             sendspinClientId.collect { cachedSendspinClientId = it }
         }
@@ -334,26 +387,32 @@ class NowPlayingViewModel @Inject constructor(
                 if (time > 0.0) {
                     optimisticBaseTime = time
                     optimisticBaseTimestamp = System.currentTimeMillis()
+                    optimisticBaseItemId = queueState.value?.currentItem?.queueItemId
                     optimisticDuration = queueState.value?.currentItem?.duration
                         ?: selectedPlayer.value?.currentMedia?.duration ?: 0.0
                     _optimisticElapsed.value = null // live data available, no need for optimistic
-                } else if (optimisticBaseTimestamp > 0L && sendspinManager.enabled.value) {
-                    // Live elapsed reset to 0 (MA disconnect), start optimistic immediately
+                } else if (sendspinManager.enabled.value && optimisticBaseIsCurrent()) {
+                    // Live elapsed reset to 0 on the SAME track: an MA disconnect,
+                    // which is what this projection exists for. A track change also
+                    // publishes 0 and is excluded above, because the base belongs to
+                    // the track that just ended.
                     val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
                     _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
+                } else {
+                    _optimisticElapsed.value = null
                 }
             }
         }
         // Optimistic elapsed tick: only runs while live elapsed is 0 and sendspin is playing
         viewModelScope.launch {
             combine(elapsedTime, sendspinManager.enabled, sendspinManager.syncState) { live, enabled, sync ->
-                live <= 0.0 && enabled && optimisticBaseTimestamp > 0L &&
+                live <= 0.0 && enabled && optimisticBaseIsCurrent() &&
                     (sync == SyncState.SYNCHRONIZED || sync == SyncState.HOLDOVER_PLAYING_FROM_BUFFER)
             }.distinctUntilChanged().collect { shouldTick ->
                 if (shouldTick) {
                     while (true) {
                         delay(500)
-                        if (elapsedTime.value > 0.0) break
+                        if (elapsedTime.value > 0.0 || !optimisticBaseIsCurrent()) break
                         val elapsed = optimisticBaseTime + (System.currentTimeMillis() - optimisticBaseTimestamp) / 1000.0
                         _optimisticElapsed.value = if (optimisticDuration > 0) elapsed.coerceAtMost(optimisticDuration) else elapsed
                     }
@@ -402,9 +461,9 @@ class NowPlayingViewModel @Inject constructor(
                     )
                 }
                 .distinctUntilChanged()
-            combine(positionFlow, playerRepository.queueItems) { position, snapshot ->
-                position to snapshot
-            }.collectLatest { (position, snapshot) ->
+            combine(positionFlow, playerRepository.queueItems, pendingQueueJump) { position, snapshot, pending ->
+                Triple(position, snapshot, pending)
+            }.collectLatest { (position, snapshot, pending) ->
                 if (position.queueId == null ||
                     position.currentItemId == null ||
                     snapshot == null ||
@@ -413,17 +472,28 @@ class NowPlayingViewModel @Inject constructor(
                     _adjacentArtwork.value = AdjacentArtworkUi(previousImageUrl = null, nextImageUrl = null)
                     return@collectLatest
                 }
-                val idx = (position.currentIndex ?: 0).coerceAtLeast(0)
-                val window = listOfNotNull(
-                    snapshot.items.getOrNull(idx - 1),
-                    snapshot.items.getOrNull(idx),
-                    snapshot.items.getOrNull(idx + 1),
-                )
-                val safeOffset = (idx - 1).coerceAtLeast(0)
+                // Resolved against the position the user has stepped to, so the
+                // next swipe of a burst reveals the track after the one the last
+                // swipe asked for. The server is several steps behind during a
+                // burst and resolving against it handed every swipe the same
+                // neighbouring cover again.
+                //
+                // This pair moves as soon as a swipe commits, so the art the
+                // swipe is carrying must not read from it any more. The gesture
+                // takes its copy at commit time, see SwipeableAlbumArt.
+                val idx = (pending?.index ?: position.currentIndex ?: 0).coerceAtLeast(0)
+                // The covers either side are the tracks a swipe would REACH, which is not
+                // idx - 1 and idx + 1 when something in between is filtered out. A blocked
+                // track one step back cannot be deleted server side, and taking the
+                // neighbour at face value put its cover under the gesture even though the
+                // swipe correctly played the track beyond it.
                 _adjacentArtwork.value = resolveAdjacentArtwork(
-                    items = window,
-                    safeOffset = safeOffset,
-                    currentIndex = idx,
+                    previous = snapshot.items.getOrNull(
+                        firstAllowedIndex(snapshot.items, idx, SKIP_BACKWARD)
+                    ),
+                    next = snapshot.items.getOrNull(
+                        firstAllowedIndex(snapshot.items, idx, SKIP_FORWARD)
+                    )
                 )
             }
         }
@@ -541,20 +611,17 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
-    private fun resolveAdjacentArtwork(
-        items: List<QueueItem>,
-        safeOffset: Int,
-        currentIndex: Int
-    ): AdjacentArtworkUi {
-        fun imageAt(absoluteIndex: Int): String? {
-            val localIndex = absoluteIndex - safeOffset
-            return items.getOrNull(localIndex)?.track?.imageUrl ?: items.getOrNull(localIndex)?.imageUrl
-        }
-        return AdjacentArtworkUi(
-            previousImageUrl = if (currentIndex > 0) imageAt(currentIndex - 1) else null,
-            nextImageUrl = imageAt(currentIndex + 1)
+    /**
+     * The covers either side, taken from the items themselves rather than from offsets into
+     * a window. The window arithmetic it replaced assumed the three tracks were adjacent,
+     * which stopped being true once the neighbours became the ones a swipe can actually
+     * reach.
+     */
+    private fun resolveAdjacentArtwork(previous: QueueItem?, next: QueueItem?): AdjacentArtworkUi =
+        AdjacentArtworkUi(
+            previousImageUrl = previous?.let { it.track?.imageUrl ?: it.imageUrl },
+            nextImageUrl = next?.let { it.track?.imageUrl ?: it.imageUrl }
         )
-    }
 
     /**
      * Pull fresh active-queue state from the server. Called when the full player
@@ -571,7 +638,15 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Skip forward one track. Coalesced with any other steps the user makes in
+     * quick succession, see [requestSkip]. Falls back to the server's own
+     * "next" when the target position cannot be resolved, which is also what
+     * happens at the end of the queue so the server stays in charge of what
+     * plays next.
+     */
     fun next() {
+        if (requestSkip(SKIP_FORWARD)) return
         val player = selectedPlayer.value ?: return
         viewModelScope.launch {
             try {
@@ -595,60 +670,211 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
-    private var previousTrackInFlight = false
-    private var lastPreviousTrackAtMs = 0L
+    /**
+     * The first index in [delta]'s direction whose track is not filtered out, or an index
+     * past either end when there is none.
+     *
+     * Blocked tracks are normally deleted from the queue, but MA refuses to delete what the
+     * player already holds, so the ones behind the playhead stay there for good. Stepping
+     * blindly landed on them: the blocked track started, and the repository's auto-skip moved
+     * on a moment later, which is the blocked artist briefly playing on a swipe back.
+     */
+    private fun firstAllowedIndex(items: List<QueueItem>, from: Int, delta: Int): Int {
+        var idx = from + delta
+        while (idx in items.indices && playerRepository.isQueueItemFiltered(items[idx])) {
+            idx += delta
+        }
+        return idx
+    }
+
+    private fun pendingQueueJumpIfFresh(now: Long): PendingQueueJump? =
+        pendingQueueJump.value?.takeIf { now - it.atMs < PENDING_QUEUE_JUMP_TTL_MS }
 
     /**
      * Always go to previous track via play_index (skip the "restart current"
-     * behavior of cmd/previous). Resolves the previous item against the
-     * canonical queue snapshot, not [QueueState.currentIndex], because the
-     * latter goes stale when the user moves a track above the current one:
-     * the server shifts the current track's numeric position to N+1, but
-     * the cached index is still N, so naive `currentIndex - 1` would land
-     * on the wrong slot. Falls back to local index math only if the
-     * snapshot is missing.
-     *
-     * Guarded against rapid double-fire (button press storms) with a short
-     * in-flight + cooldown gate so a held tap doesn't queue ten identical
-     * play_index commands to the server.
+     * behavior of cmd/previous). Coalesced with any other steps the user makes
+     * in quick succession, see [requestSkip]. Falls back to the server's own
+     * "previous" only when no position can be resolved at all.
      */
     fun previousTrack() {
-        val now = System.currentTimeMillis()
-        if (previousTrackInFlight) return
-        if (now - lastPreviousTrackAtMs < PREVIOUS_TRACK_COOLDOWN_MS) return
-        val qs = queueState.value ?: return
-        val currentItemId = qs.currentItem?.queueItemId
-        val snapshot = playerRepository.queueItems.value
-            ?.takeIf { it.queueId == qs.queueId }
-        val resolvedIndex = if (snapshot != null && currentItemId != null) {
-            val currentIdx = snapshot.items.indexOfFirst { it.queueItemId == currentItemId }
-            if (currentIdx > 0) currentIdx - 1 else -1
-        } else {
-            // No fresh snapshot: fall back to the cached index. Stale-window
-            // risk remains (the issue this method exists to fix), but at
-            // least preserves working behavior when canonical data is
-            // unavailable.
-            (qs.currentIndex - 1).coerceAtLeast(-1)
-        }
-        if (resolvedIndex < 0) return
-        lastPreviousTrackAtMs = now
-        previousTrackInFlight = true
+        if (requestSkip(SKIP_BACKWARD)) return
+        val player = selectedPlayer.value ?: return
         viewModelScope.launch {
             try {
-                musicRepository.playQueueIndex(qs.queueId, resolvedIndex)
+                playerRepository.previous(player.playerId)
             } catch (e: Exception) {
                 Log.w(TAG, "previousTrack failed: ${e.message}")
-            } finally {
-                previousTrackInFlight = false
             }
         }
     }
 
+    /**
+     * A command sent to the server that we are waiting to see it act on.
+     *
+     * [fromItemId] is what was playing when it was sent, and the command counts
+     * as acted on once something else is. Waiting instead for the exact item it
+     * asked for meant waiting out the timeout nearly every time: the server does
+     * not always land where it was sent, because a stream it aborts ends early
+     * and it walks on to the next by itself.
+     */
+    private data class SkipInFlight(
+        val queueId: String,
+        val index: Int,
+        val fromItemId: String?,
+        val backwards: Boolean
+    )
+
+    private var skipInFlight: SkipInFlight? = null
+    private var skipAckJob: Job? = null
+
+    /**
+     * Move one step through the queue and tell the server about it, holding back
+     * the steps the server has no room for.
+     *
+     * The optimistic position moves on every step, so the screen and the step
+     * after it both count from where the user thinks they are rather than from
+     * a queue state that only catches up when the server's QUEUE_UPDATED
+     * arrives.
+     *
+     * The server gets one command at a time. While a command is unanswered the
+     * steps that follow only move the target, and the final position is sent as
+     * a single command once the server has caught up. This paces itself against
+     * whatever the server can manage instead of guessing: when it answers in
+     * milliseconds every step goes out on its own, and when it is struggling a
+     * burst costs two commands.
+     *
+     * Pacing matters because MA opens a fresh queue-flow stream per command and
+     * the music provider caps concurrent streams. Measured on this server, even
+     * one skip per 1.2 seconds made MA abort the stream it had just opened
+     * ("Aborting the source of X to free a Deezer stream slot"), treat the
+     * aborted stream as a finished track and walk forward on its own, so the
+     * next step counted from somewhere the user never asked for.
+     *
+     * Returns false when the target position cannot be resolved, leaving the
+     * caller to send the server's own relative command instead. The end of the
+     * queue resolves to nothing on purpose, because what follows the last item
+     * is the server's decision (Don't Stop the Music, repeat).
+     */
+    private fun requestSkip(delta: Int): Boolean {
+        val qs = queueState.value ?: return false
+        val now = System.currentTimeMillis()
+        val snapshot = playerRepository.queueItems.value?.takeIf { it.queueId == qs.queueId }
+        val pending = pendingQueueJumpIfFresh(now)
+        val resolvedCurrent = when {
+            pending != null -> pending.index
+            // The snapshot is canonical. QueueState.currentIndex goes stale when
+            // the user moves a track above the current one: the server shifts the
+            // current track's position to N+1 while the cached index is still N.
+            snapshot != null && qs.currentItem?.queueItemId != null ->
+                snapshot.items.indexOfFirst { it.queueItemId == qs.currentItem?.queueItemId }
+            else -> -1
+        }
+        val currentIndex = if (resolvedCurrent >= 0) resolvedCurrent else qs.currentIndex
+        if (currentIndex < 0) return false
+        val items = snapshot?.items ?: return false
+        val targetIndex = firstAllowedIndex(items, currentIndex, delta)
+        // Already at the first item: there is nothing before it, and saying so
+        // here keeps the caller from falling back to the server's "previous",
+        // which would restart the track the user is on.
+        if (targetIndex < 0) return true
+        if (targetIndex > items.lastIndex) return false
+
+        pendingQueueJump.value = PendingQueueJump(
+            targetIndex,
+            items.getOrNull(targetIndex)?.queueItemId,
+            now
+        )
+        if (skipInFlight == null) {
+            dispatchSkip(
+                SkipInFlight(qs.queueId, targetIndex, qs.currentItem?.queueItemId, delta < 0)
+            )
+        }
+        return true
+    }
+
+    private fun dispatchSkip(skip: SkipInFlight) {
+        skipInFlight = skip
+        skipAckJob?.cancel()
+        skipAckJob = viewModelScope.launch {
+            // The server does not always land on the position it was given: a
+            // stream it aborts ends early and it walks on by itself. Waiting for
+            // an arrival that will never come would wedge every later step, so
+            // give up after a bounded wait and carry on from wherever it is.
+            delay(SKIP_ACK_TIMEOUT_MS)
+            onSkipSettled()
+        }
+        viewModelScope.launch {
+            try {
+                // Local playback buffers ahead, so it has to be told the timeline
+                // is about to jump. players/cmd/next and cmd/previous do this from
+                // inside the repository; a queue jump is sent from here, so it
+                // announces it here too. Without it the phone kept playing the old
+                // track out of its buffer while the server had already moved on.
+                selectedPlayer.value?.playerId?.let {
+                    playerRepository.signalDiscontinuity(
+                        it,
+                        if (skip.backwards) {
+                            PlayerDiscontinuityCommand.Kind.PREVIOUS
+                        } else {
+                            PlayerDiscontinuityCommand.Kind.NEXT
+                        }
+                    )
+                }
+                musicRepository.playQueueIndex(skip.queueId, skip.index)
+            } catch (e: Exception) {
+                Log.w(TAG, "skip to ${skip.index} failed: ${e.message}")
+                pendingQueueJump.value = null
+                onSkipSettled()
+            }
+        }
+    }
+
+    /**
+     * The server has caught up with the command in flight, or has taken long
+     * enough that we stop waiting. If the user has stepped further in the
+     * meantime, that position goes out now as a single command.
+     */
+    private fun onSkipSettled() {
+        val settled = skipInFlight ?: return
+        skipAckJob?.cancel()
+        skipAckJob = null
+        skipInFlight = null
+        val target = pendingQueueJump.value ?: return
+        if (target.index == settled.index) return
+        Log.d("sendspindbg", "skip coalesced: ${settled.index} -> ${target.index}")
+        dispatchSkip(
+            SkipInFlight(
+                settled.queueId,
+                target.index,
+                queueState.value?.currentItem?.queueItemId,
+                settled.backwards
+            )
+        )
+    }
+
     companion object {
-        // Match the typical server round-trip for play_index + new track
-        // metadata so a user that taps twice quickly doesn't fire two
-        // play_index commands back-to-back.
-        private const val PREVIOUS_TRACK_COOLDOWN_MS = 400L
+        /**
+         * How long a queue jump may stay unconfirmed before the next press stops
+         * counting from it. Measured server round-trips for a track change are
+         * 55 to 285 ms, so a jump still unconfirmed here was dropped.
+         */
+        private const val PENDING_QUEUE_JUMP_TTL_MS = 3000L
+
+        private const val SKIP_FORWARD = 1
+        private const val SKIP_BACKWARD = -1
+
+        /**
+         * How long to wait for the server to reach a position before deciding it
+         * is not going to and moving on. Measured round trips are 55 to 285 ms
+         * when it is idle and up to four seconds when it is working through a
+         * queue of commands, so this sits past the worst of that.
+         *
+         * Pacing used to be a fixed quiet time between steps instead, which was
+         * the wrong measure twice over: at 250 ms it folded nothing because real
+         * swipes are 274 to 639 ms apart, and at one second it still let through
+         * a step every 1.2 seconds, which was more than this server could take.
+         */
+        private const val SKIP_ACK_TIMEOUT_MS = 5000L
 
         // Seconds into a chapter past which "previous" restarts it instead of
         // jumping to the prior chapter.

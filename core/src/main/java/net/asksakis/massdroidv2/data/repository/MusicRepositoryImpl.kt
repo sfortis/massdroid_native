@@ -785,6 +785,7 @@ class MusicRepositoryImpl @Inject constructor(
     }
 
     override suspend fun playQueueIndex(queueId: String, index: Int) {
+        Log.d("sendspindbg", "WS>>> play_index($queueId, $index)")
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_INDEX,
             PlayIndexArgs(queueId = queueId, index = index),
