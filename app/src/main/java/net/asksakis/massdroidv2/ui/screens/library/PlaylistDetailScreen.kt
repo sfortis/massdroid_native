@@ -1,10 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.content.res.Configuration
@@ -31,6 +27,7 @@ import androidx.compose.material.icons.filled.PlaylistRemove
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,6 +53,8 @@ import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.util.formatPlaybackTime
 import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,7 +80,20 @@ fun PlaylistDetailScreen(
     var moveTrack by remember { mutableStateOf<Track?>(null) }
     var moveFallbackPosition by remember { mutableStateOf(0) }
     var showSortSheet by remember { mutableStateOf(false) }
+    var showNfcWrite by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+    // Offered only where there is a chip to write with.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasNfc = remember(context) {
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
+    }
+
+    if (showNfcWrite && viewModel.playlistUri.isNotBlank()) {
+        NfcWriteSheet(
+            choices = listOf(NfcWriteChoice(viewModel.playlistUri, playlistName, "Playlist")),
+            onDismiss = { showNfcWrite = false }
+        )
+    }
 
     LaunchedEffect(Unit) {
         viewModel.error.collectLatest { message ->
@@ -111,6 +123,17 @@ fun PlaylistDetailScreen(
                                 tint = if (isFavorite) MaterialTheme.colorScheme.error
                                        else MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                        // Gated on the uri too, so the button is absent rather than a
+                        // silent no-op while the playlist has none.
+                        if (hasNfc && viewModel.playlistUri.isNotBlank()) {
+                            MdIconButton(onClick = { showNfcWrite = true }) {
+                                Icon(
+                                    Icons.Default.Nfc,
+                                    contentDescription = "Write NFC tag",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 )

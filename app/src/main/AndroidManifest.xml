@@ -22,6 +22,11 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.NFC" />
+
+    <!-- Not required, so the app still installs on phones without an NFC chip. Everything
+         NFC checks for an adapter at runtime and stays out of the way when there is none. -->
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
     <application
         android:name=".MassDroidApp"
@@ -71,6 +76,35 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity-alias>
+
+        <!-- Where a scanned MassDroid tag arrives. Its own task and kept out of recents,
+             so a tap starts music without leaving anything behind on the main screen.
+
+             It finishes itself once the music has been asked for. It must NOT be
+             noHistory: that finishes the activity the moment it stops being visible,
+             which on a screen timeout destroys it mid-connect and cancels the very work
+             the tap asked for.
+
+             The scheme is ours rather than https on purpose: from Android 16 a tag holding
+             an http or https uri raises ACTION_VIEW instead, which would open a browser.
+
+             Android 17 will additionally want android:permission="android.permission
+             .DISPATCH_NFC_MESSAGE" here. It is left out until targetSdk reaches it, because
+             an activity guarded by a permission the running system does not define is one
+             nothing at all can start. -->
+        <activity
+            android:name=".ui.nfc.NfcTapActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.MassDroidV2.NfcTap">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="massdroid" android:host="play" />
+            </intent-filter>
+        </activity>
 
         <service
             android:name=".service.PlaybackService"

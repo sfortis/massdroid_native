@@ -1,10 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.content.res.Configuration
@@ -30,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -60,6 +57,8 @@ import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.ProviderBadges
@@ -168,12 +167,20 @@ fun LibraryScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     // Action sheet state
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var deletePlaylistTarget by remember { mutableStateOf<ActionSheetItem?>(null) }
     var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
+    var nfcWriteTarget by remember { mutableStateOf<ActionSheetItem?>(null) }
+    // Offered only where there is a chip to write with, so the action does not appear on a
+    // phone that can never carry it out.
+    val hasNfc = remember(context) {
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
+    }
 
     val initConnectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     LaunchedEffect(selectedTab, settingsLoaded, initConnectionState) {
@@ -639,6 +646,22 @@ fun LibraryScreen(
         val isRadio = target.mediaType == MediaType.RADIO
             val isPlaylist = target.mediaType == MediaType.PLAYLIST
         val players by viewModel.players.collectAsStateWithLifecycle()
+        // Only whole containers are worth a tag. A single track played from one would be a
+        // queue of one, and a radio or an artist is not what a tap is meant to start.
+        val nfcActions = if (hasNfc && (target.mediaType == MediaType.ALBUM || isPlaylist)) {
+            listOf(
+                MediaActionSheetExtraAction(
+                    title = "Write NFC tag",
+                    icon = { Icon(Icons.Default.Nfc, contentDescription = null) },
+                    onClick = {
+                        nfcWriteTarget = target
+                        actionSheetItem = null
+                    }
+                )
+            )
+        } else {
+            emptyList()
+        }
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
@@ -745,7 +768,7 @@ fun LibraryScreen(
                     )
                 }
                 else -> emptyList()
-            },
+            } + nfcActions,
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onPlayNext = { viewModel.enqueueNext(target.uri) },
@@ -760,6 +783,15 @@ fun LibraryScreen(
                 }
             } else null,
             onDismiss = { actionSheetItem = null }
+        )
+    }
+
+    nfcWriteTarget?.let { target ->
+        NfcWriteSheet(
+            choices = listOf(
+                NfcWriteChoice(target.uri, target.title, nfcKindOf(target.mediaType))
+            ),
+            onDismiss = { nfcWriteTarget = null }
         )
     }
 
@@ -1459,3 +1491,7 @@ private fun BrowseList(
         }
     }
 }
+
+/** How a long pressed library item is described on the NFC write sheet. */
+private fun nfcKindOf(mediaType: MediaType): String =
+    if (mediaType == MediaType.PLAYLIST) "Playlist" else "Album"

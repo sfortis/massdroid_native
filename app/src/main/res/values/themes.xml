@@ -3,6 +3,17 @@
     <style name="Theme.MassDroidV2" parent="android:Theme.Material.Light.NoActionBar" />
     <style name="Theme.MassDroidV2.Dark" parent="android:Theme.Material.NoActionBar" />
 
+    <!-- The activity a scanned NFC tag lands on. It carries no layout and finishes as
+         soon as playback has been asked for, so it is translucent and unanimated and the
+         screen behind it stays where it was. It is not windowNoDisplay, because that
+         requires finishing before onResume returns and the work here is asynchronous. -->
+    <style name="Theme.MassDroidV2.NfcTap" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+
     <!-- Splash theme for the launcher activity. Lives here so pre-Android-12
          devices also pick it up (the API 31+ override is in values-v31/).
          Uses the AndroidX SplashScreen library attributes which work on all

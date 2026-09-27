@@ -1,11 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
 import net.asksakis.massdroidv2.ui.util.formatPlaybackTime
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.animation.animateContentSize
@@ -26,6 +22,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistPlay
@@ -61,6 +58,8 @@ import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
 import net.asksakis.massdroidv2.ui.components.icons.Bookshelf
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -82,6 +81,21 @@ fun AlbumDetailScreen(
     var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
     var showRemoveAlbumConfirm by remember { mutableStateOf(false) }
     var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
+    var showNfcWrite by remember { mutableStateOf(false) }
+    // Offered only where there is a chip to write with.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasNfc = remember(context) {
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
+    }
+
+    if (showNfcWrite) {
+        album?.let { target ->
+            NfcWriteSheet(
+                choices = listOf(NfcWriteChoice(target.uri, target.name, "Album")),
+                onDismiss = { showNfcWrite = false }
+            )
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -119,6 +133,18 @@ fun AlbumDetailScreen(
                             tint = if (album?.favorite == true) MaterialTheme.colorScheme.error
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    // Gated on the album as well as the chip: tapping before the detail
+                    // had arrived did nothing visible and then opened the sheet by itself
+                    // the moment it did.
+                    if (hasNfc && album != null) {
+                        MdIconButton(onClick = { showNfcWrite = true }) {
+                            Icon(
+                                Icons.Default.Nfc,
+                                contentDescription = "Write NFC tag",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 },
                 expandedHeight = 48.dp

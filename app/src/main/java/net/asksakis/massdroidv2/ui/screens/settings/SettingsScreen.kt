@@ -8,7 +8,6 @@ import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
 import net.asksakis.massdroidv2.ui.components.MdSwitch
-import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.app.Activity
 import android.security.KeyChain
@@ -33,7 +32,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
@@ -48,6 +46,7 @@ import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speaker
@@ -55,14 +54,12 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -70,7 +67,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -111,7 +107,7 @@ import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
-enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, ABOUT }
+enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, ABOUT }
 
 /**
  * Matches text the user could plausibly be typing as a leading "http" / "https"
@@ -193,6 +189,7 @@ fun SettingsScreen(
                             SettingsCategory.PHONE_AS_SPEAKER -> "Phone as Speaker"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
+                            SettingsCategory.NFC_TAGS -> "NFC Tags"
                             SettingsCategory.ABOUT -> "About"
                             null -> "Settings"
                         }
@@ -235,6 +232,9 @@ fun SettingsScreen(
                     viewModel = viewModel,
                     modifier = Modifier.padding(paddingValues),
                     onOpenInsights = onOpenRecommendationInsights
+                )
+                SettingsCategory.NFC_TAGS -> NfcTagsScreen(
+                    modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.ABOUT -> AboutScreen(
                     viewModel = viewModel,
@@ -294,6 +294,19 @@ private fun CategoryList(
             modifier = Modifier.clickable { onSelect(SettingsCategory.PROXIMITY) }
         )
         HorizontalDivider()
+        // Offered only where there is a chip, because everything behind it is about
+        // writing and reading tags.
+        if (LocalContext.current.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC)) {
+            ListItem(
+                headlineContent = { Text("NFC Tags") },
+                supportingContent = { Text("Tap a tag to start an album or playlist on a speaker") },
+                leadingContent = {
+                    Icon(Icons.Default.Nfc, contentDescription = null)
+                },
+                modifier = Modifier.clickable { onSelect(SettingsCategory.NFC_TAGS) }
+            )
+            HorizontalDivider()
+        }
         ThemeSelector(viewModel)
         HorizontalDivider()
         ListItem(

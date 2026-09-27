@@ -40,7 +40,7 @@ class PlaylistDetailViewModel @Inject constructor(
 
     val itemId: String = savedStateHandle["itemId"] ?: ""
     val provider: String = savedStateHandle["provider"] ?: ""
-    private val playlistUri: String = savedStateHandle["uri"] ?: ""
+    val playlistUri: String = savedStateHandle["uri"] ?: ""
 
     /**
      * Whether the server rebuilds this playlist every time it is played, which the
