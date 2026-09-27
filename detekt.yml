@@ -4,6 +4,11 @@ build:
 style:
   WildcardImport:
     active: false
+  # An import left behind after a rewrite compiles and says nothing, so it is the
+  # kind of thing only a rule catches. Turned on after one survived a backdrop
+  # rewrite in NowPlayingScreen and was found by eye instead.
+  UnusedImports:
+    active: true
   MagicNumber:
     active: false
   MaxLineLength:

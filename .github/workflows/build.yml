@@ -13,6 +13,34 @@ permissions:
   contents: write
 
 jobs:
+  # Its own job so the APK, which is what anyone pushing is waiting for, is not held up
+  # behind it. Lint takes several minutes on its own and the two have nothing to say to
+  # each other.
+  ANDROID_LINT:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: 'gradle'
+
+      - name: Run Android Lint
+        # Every module, because the app's own report says nothing about :core, where an
+        # API 33 call sat unnoticed under a minSdk of 26. Lint fails the build on any
+        # error by default, which is the point of running it here.
+        run: ./gradlew :app:lintGithubDebug :core:lintDebug :atv:lintDebug :auto:lintDebug :automotive:lintDebug -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+
+      - name: Upload lint reports
+        # Kept on failure too, since the report is where the detail is.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-reports
+          path: build-output/*/reports/lint-results-*.html
+
   ANDROID_BUILD_APK:
     name: Build APK
     runs-on: ubuntu-latest
