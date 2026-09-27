@@ -3,21 +3,15 @@ package net.asksakis.massdroidv2.ui
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import net.asksakis.massdroidv2.service.FollowMeService
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
-import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
-import android.os.SystemClock
-import android.provider.Settings
 import android.media.AudioManager
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -287,6 +281,10 @@ class MainActivity : ComponentActivity() {
         oauthCallbackBus.publish(code)
     }
 
+    // ComponentActivity.dispatchKeyEvent carries a library-group restriction, so lint reads
+    // an override calling super as reaching into AndroidX. Overriding it and delegating is
+    // exactly what the method is for.
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
         if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {

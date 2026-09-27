@@ -17,6 +17,7 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -42,6 +43,12 @@ import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 
+/**
+ * Opted in for the whole class. Nearly everything Media3 offers a media library session is
+ * marked unstable, from the connection result's command set to the error a sign-in prompt
+ * is sent as, and annotating each use separately said the same thing twenty-six times.
+ */
+@OptIn(UnstableApi::class)
 class AndroidAutoBrowseController(
     private val context: Context,
     private val scope: CoroutineScope,
@@ -137,7 +144,9 @@ class AndroidAutoBrowseController(
                 args: Bundle
             ): ListenableFuture<SessionResult> {
                 val handled = onCustomCommand(customCommand.customAction)
-                val result = if (handled) SessionResult.RESULT_SUCCESS else SessionResult.RESULT_ERROR_NOT_SUPPORTED
+                // SessionError, not the deprecated SessionResult.RESULT_ERROR_*: the values
+                // are the same but only these are in the set the API accepts.
+                val result = if (handled) SessionResult.RESULT_SUCCESS else SessionError.ERROR_NOT_SUPPORTED
                 return Futures.immediateFuture(SessionResult(result))
             }
 
@@ -216,7 +225,7 @@ class AndroidAutoBrowseController(
                         // music/search) while the WS is still connected would leave
                         // the tab permanently blank. An error lets the host retry.
                         Log.e(TAG, "onGetChildren($parentId) failed", e)
-                        LibraryResult.ofError(LibraryResult.RESULT_ERROR_IO)
+                        LibraryResult.ofError(SessionError.ERROR_IO)
                     }
                 }
             }

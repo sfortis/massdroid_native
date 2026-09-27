@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.widget
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -40,7 +41,6 @@ import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
-import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
@@ -126,6 +126,9 @@ class NowPlayingWidget : GlanceAppWidget() {
         val size = LocalSize.current
         val innerHeight = size.height - CARD_PADDING * 2
         val innerWidth = size.width - CARD_PADDING * 2
+        // Read from the context because this is Glance, which has no LocalConfiguration of
+        // its own; the check that asks for one is written for Compose UI.
+        @SuppressLint("LocalContextConfigurationRead")
         val fontScale = LocalContext.current.resources.configuration.fontScale
         Box(
             modifier = GlanceModifier

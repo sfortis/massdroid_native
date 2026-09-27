@@ -1,1 +1,9 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Declared here because this module is what calls ConnectivityManager: the websocket
+         client watches the default network, and Sendspin asks whether it is on mobile data.
+         A library that uses a permission declares it, and the merger folds it together with
+         whatever the app module asks for. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+</manifest>

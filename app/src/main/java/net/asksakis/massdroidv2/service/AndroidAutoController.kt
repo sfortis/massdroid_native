@@ -9,9 +9,9 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Looper
 import android.util.Log
-import androidx.media3.common.MediaItem
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaLibraryService
-import androidx.media3.session.MediaSession
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +23,6 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.auto.AaMetrics
 import net.asksakis.massdroidv2.auto.AaProjectionObserver
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
@@ -33,7 +32,6 @@ import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
-import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
@@ -43,6 +41,12 @@ import net.asksakis.massdroidv2.ui.MainActivity
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
+/**
+ * Opted in for the whole class, for the same reason as the browse controller beside it:
+ * a Media3 player and session are built almost entirely from APIs the library marks
+ * unstable.
+ */
+@OptIn(UnstableApi::class)
 class AndroidAutoController(
     private val service: MediaLibraryService,
     private val scope: CoroutineScope,

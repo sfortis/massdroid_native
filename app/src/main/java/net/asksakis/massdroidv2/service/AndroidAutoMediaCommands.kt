@@ -3,9 +3,15 @@ package net.asksakis.massdroidv2.service
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.SessionCommand
 
+/**
+ * Opted in as a whole. Command buttons and their icons are unstable Media3 API throughout.
+ */
+@OptIn(UnstableApi::class)
 object AndroidAutoMediaCommands {
     const val ACTION_TOGGLE_FAVORITE = "net.asksakis.massdroidv2.AA_TOGGLE_FAVORITE"
     const val ACTION_TOGGLE_SHUFFLE = "net.asksakis.massdroidv2.AA_TOGGLE_SHUFFLE"

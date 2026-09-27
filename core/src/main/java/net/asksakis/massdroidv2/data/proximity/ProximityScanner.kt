@@ -2,8 +2,8 @@ package net.asksakis.massdroidv2.data.proximity
 
 import android.annotation.SuppressLint
 import android.app.PendingIntent
+import android.Manifest
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -14,6 +14,8 @@ import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
 import android.os.ParcelUuid
+import androidx.annotation.RequiresApi
+import androidx.annotation.RequiresPermission
 import android.util.Log
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -27,7 +29,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
-import net.asksakis.massdroidv2.data.proximity.AnchorType
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -295,6 +296,9 @@ class ProximityScanner @Inject constructor(
     @Volatile private var wifiCallbackRegistered = false
     private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
+    // Only ever reached from callbacks registered under an API 31 check, but the check is
+    // at the registration and lint cannot follow it here.
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun wifiCallbackOnCapabilities(network: android.net.Network, caps: NetworkCapabilities) {
         val wi = caps.transportInfo as? WifiInfo ?: return
         val bssid = wi.bssid
@@ -451,6 +455,9 @@ class ProximityScanner @Inject constructor(
      * refused. Callers re-ask on their next cycle rather than waiting here, because this
      * runs on the main loop.
      */
+    // The permission belongs to the app module that turns Follow Me on; naming it here is
+    // what lets lint check the callers instead of guessing about this module's manifest.
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun startPersistentScan(
         lowPower: Boolean = true,
         anchorAddresses: Set<String> = emptySet(),

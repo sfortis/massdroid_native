@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- The playback notification. A foreground service shows its own notification without
+         this, but the service also posts updates, and from Android 13 those need it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- TV does not have a touchscreen; declare leanback and make touch optional
          so the app is installable on Android TV / Shield. -->
@@ -41,11 +44,17 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground service: the Shield as a synced Sendspin player. -->
+        <!-- Foreground service: the Shield as a synced Sendspin player.
+
+             mediaPlayback alone, because that is the only type the service ever starts
+             itself with. Declaring connectedDevice as well asked for a type that needs
+             FOREGROUND_SERVICE_CONNECTED_DEVICE plus one of a list of device permissions,
+             none of which this module holds, and from Android 14 that is a SecurityException
+             rather than a warning. -->
         <service
             android:name=".TvPlaybackService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|connectedDevice" />
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 
 </manifest>
