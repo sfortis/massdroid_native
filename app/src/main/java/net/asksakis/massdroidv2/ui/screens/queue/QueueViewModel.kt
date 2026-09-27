@@ -15,6 +15,7 @@ import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.QueueItem
+import net.asksakis.massdroidv2.domain.model.QueueSource
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.model.acceptsManualTracks
 import net.asksakis.massdroidv2.domain.player.QueueTransfer
@@ -87,6 +88,16 @@ class QueueViewModel @Inject constructor(
         .map { it?.totalItems ?: 0 }
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    /**
+     * What the queue was filled from, when the server names one thing. This is the only
+     * place that knows it: an item only knows its own album, so a playlist of many albums
+     * is invisible from the items alone.
+     */
+    val source: StateFlow<QueueSource?> = playerRepository.queueState
+        .map { it?.source }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val players: StateFlow<List<Player>> = playerRepository.players
     val sendspinClientId = settingsRepository.sendspinClientId

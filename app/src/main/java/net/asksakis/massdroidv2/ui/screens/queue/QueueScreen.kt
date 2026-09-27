@@ -1,18 +1,11 @@
 package net.asksakis.massdroidv2.ui.screens.queue
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
-import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +15,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -30,30 +22,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Cast
-import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Headphones
-import androidx.compose.material.icons.filled.Laptop
-import androidx.compose.material.icons.filled.Monitor
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.Speaker
-import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -76,7 +56,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -86,10 +65,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
-import net.asksakis.massdroidv2.domain.model.Player
-import net.asksakis.massdroidv2.domain.model.PlayerType
 import net.asksakis.massdroidv2.domain.model.displayName
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
@@ -120,6 +98,7 @@ fun QueueSheet(
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val hasMore by viewModel.hasMore.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalCount.collectAsStateWithLifecycle()
+    val source by viewModel.source.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val currentQueueItemId by viewModel.currentQueueItemId.collectAsStateWithLifecycle()
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
@@ -206,7 +185,14 @@ fun QueueSheet(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (chapterMode) audiobookTitle ?: "Chapters" else "Queue",
+                        // Named after what it is playing from, the same way chapter mode
+                        // is named after its audiobook. "Queue" says nothing a listener
+                        // does not already know, while the playlist they started is the
+                        // one thing the items on screen cannot tell them.
+                        text = when {
+                            chapterMode -> audiobookTitle ?: "Chapters"
+                            else -> source?.name ?: "Queue"
+                        },
                         style = MaterialTheme.typography.titleLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -221,11 +207,14 @@ fun QueueSheet(
                             // Whole-queue total from the server, not just the
                             // fetched page; fall back to the loaded size until it
                             // arrives (with a "+" if more pages are pending).
-                            when {
+                            val count = when {
                                 totalCount > 0 -> "$totalCount tracks"
                                 hasMore -> "${items.size}+ tracks"
                                 else -> "${items.size} tracks"
                             }
+                            // The kind of thing leads, so the line reads as a description
+                            // of the title above it rather than as a second title.
+                            source?.let { "${sourceLabel(it.mediaType)} · $count" } ?: count
                         },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -688,3 +677,14 @@ private fun QueueInfiniteScrollHandler(
 
 private fun chapterDisplayName(chapter: net.asksakis.massdroidv2.domain.model.Chapter, index: Int): String =
     chapter.displayName(index)
+
+/** How a queue's source is described under its name. */
+private fun sourceLabel(mediaType: MediaType): String = when (mediaType) {
+    MediaType.PLAYLIST -> "Playlist"
+    MediaType.ALBUM -> "Album"
+    MediaType.ARTIST -> "Artist"
+    MediaType.RADIO -> "Radio"
+    MediaType.PODCAST -> "Podcast"
+    MediaType.AUDIOBOOK -> "Audiobook"
+    else -> "Queue"
+}

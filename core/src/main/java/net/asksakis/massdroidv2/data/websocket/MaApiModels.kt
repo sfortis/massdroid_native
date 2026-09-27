@@ -87,6 +87,12 @@ data class ServerQueue(
      * player plays what it was given whatever the queue says.
      */
     @SerialName("index_in_buffer") val indexInBuffer: Int? = null,
+    /**
+     * What was handed to the player to fill this queue, as media items. A queue started
+     * from a playlist or an album carries that container here; one filled from a list of
+     * track uris, which is how Smart Mix and Genre Radio load, carries nothing.
+     */
+    val sources: List<ServerMediaItem> = emptyList(),
     // Total number of items in the queue (server-side count of the whole queue,
     // not just the page we have fetched). Used for the "N tracks" header.
     @SerialName("items") val items: Int = 0,

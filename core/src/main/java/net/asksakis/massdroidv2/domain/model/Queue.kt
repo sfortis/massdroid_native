@@ -13,6 +13,13 @@ data class QueueState(
      * alone. Null when the server did not report one.
      */
     val indexInBuffer: Int? = null,
+    /**
+     * What this queue was filled from, when it was filled from one thing. It answers
+     * "where is this playing from", which nothing else in the queue state does: the items
+     * only know their own album. Null when the server reports no source, which is what a
+     * queue built from a list of tracks looks like.
+     */
+    val source: QueueSource? = null,
     /** Total item count of the whole queue (server-side), not just the fetched page. */
     val totalItems: Int = 0,
     val autoplayEnabled: Boolean = false,
@@ -46,3 +53,15 @@ enum class RepeatMode(val apiValue: String) {
         fun fromApi(value: String): RepeatMode = entries.find { it.apiValue == value } ?: OFF
     }
 }
+
+/**
+ * The playlist, album or other container a queue was started from.
+ *
+ * Kept small on purpose. Callers want to name it, and to play it again, and neither needs
+ * the rest of a media item.
+ */
+data class QueueSource(
+    val uri: String,
+    val name: String,
+    val mediaType: MediaType
+)

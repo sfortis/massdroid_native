@@ -2369,6 +2369,14 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     elapsedTime = elapsedTime,
     currentIndex = currentIndex,
     indexInBuffer = indexInBuffer,
+    // The first source only. The server models this as a list because several things can
+    // be handed over at once, but a queue loaded that way has no single place it came
+    // from, and naming one of them would be picking arbitrarily.
+    source = sources.singleOrNull()?.let { item ->
+        MediaType.fromApi(item.mediaType)?.let { type ->
+            QueueSource(uri = item.uri, name = item.name, mediaType = type)
+        }
+    },
     totalItems = items,
     autoplayEnabled = autoplayEnabled,
     crossfadeEnabled = crossfadeEnabled == true,
