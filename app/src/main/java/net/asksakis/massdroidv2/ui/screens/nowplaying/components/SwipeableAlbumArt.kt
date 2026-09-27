@@ -150,16 +150,16 @@ internal fun SwipeableAlbumArt(
 
     Box(
         modifier = outerModifier
-            // Symmetric on every side. Android draws two shadows, an ambient one that
-            // surrounds the shape evenly and a spot one cast from above, and the spot
-            // is what makes an ordinary elevated card heavier along its bottom edge.
-            // Only the ambient one is wanted here, so the spot is turned off outright
-            // rather than balanced against.
+            // Both of Android's shadows are used. The ambient one surrounds the shape
+            // evenly and the spot one is cast from above, and it is the spot that
+            // carries most of the darkness: with it turned off, measured under the
+            // cover, the surface went from 85 to 81 over fifty pixels, which is the
+            // backdrop's own gradient and no shadow at all.
             .shadow(
                 elevation = ALBUM_ART_SHADOW_ELEVATION,
                 shape = shape,
-                spotColor = Color.Transparent,
-                ambientColor = ALBUM_ART_SHADOW_COLOR
+                spotColor = ALBUM_ART_SHADOW_SPOT,
+                ambientColor = ALBUM_ART_SHADOW_AMBIENT
             )
             .clip(shape)
             .clipToBounds()
@@ -448,16 +448,21 @@ private const val NO_COMMIT = -1f
 private const val CARRIED_ARTWORK_TTL_MS = 5000L
 
 /**
- * Wide on purpose. The elevation sets the blur radius as well as the depth, so a small
- * value gives a short, dense falloff that reads as a dark outline around the cover
- * rather than as shade. A large radius spreads the same darkness over a long distance,
- * which is what lets it arrive at nothing.
+ * The lift under the cover.
+ *
+ * Elevation sets the blur radius as well as the depth, so this is really a choice of how
+ * far the shade reaches. Twenty-eight spread it so thin that nothing was left to see. This
+ * is scaled from the Music Assistant web client, whose cards use an eight pixel blur on
+ * artwork about a third of this size.
  */
-private val ALBUM_ART_SHADOW_ELEVATION = 28.dp
+private val ALBUM_ART_SHADOW_ELEVATION = 12.dp
 
 /**
- * Held well below opaque so the widened shadow stays shade rather than becoming a grey
- * field. Honoured from API 28; below that the platform uses its own black and the
- * shadow is correspondingly stronger.
+ * The cast shadow, which is what the eye actually reads, and the even one around the rest
+ * of the shape. The spot is the stronger of the two on purpose: it falls below the cover
+ * and gives it somewhere to sit, which is the same thing the web client's `0 2px` offset
+ * does. Both are honoured from API 28; below that the platform uses its own black and the
+ * shadow comes out heavier.
  */
-private val ALBUM_ART_SHADOW_COLOR = Color.Black.copy(alpha = 0.55f)
+private val ALBUM_ART_SHADOW_SPOT = Color.Black.copy(alpha = 0.45f)
+private val ALBUM_ART_SHADOW_AMBIENT = Color.Black.copy(alpha = 0.30f)

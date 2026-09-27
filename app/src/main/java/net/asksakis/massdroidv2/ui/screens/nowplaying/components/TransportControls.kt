@@ -18,6 +18,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
@@ -75,9 +76,7 @@ internal fun TransportControls(
                 Icon(
                     Icons.Default.Shuffle,
                     contentDescription = "Shuffle",
-                    tint = if (queueState?.shuffleEnabled == true)
-                        MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = toggleTint(queueState?.shuffleEnabled == true)
                 )
             }
         }
@@ -137,9 +136,7 @@ internal fun TransportControls(
                         else -> Icons.Default.Repeat
                     },
                     contentDescription = "Repeat",
-                    tint = if (queueState?.repeatMode != RepeatMode.OFF)
-                        MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = toggleTint(queueState?.repeatMode != RepeatMode.OFF)
                 )
             }
         }
@@ -148,3 +145,27 @@ internal fun TransportControls(
 
 /** Audiobook quick-skip step; matches the Replay30/Forward30 icons. */
 private const val SKIP_SECONDS = 30
+
+/**
+ * The colour of a transport toggle, on or off.
+ *
+ * The palette is deliberately colourless, so on and off used to be two greys a step apart:
+ * #CCCCCC against #AAAAAA in the dark theme and #333333 against #444444 in the light one.
+ * Seventeen levels of brightness is not a difference anyone reads, least of all over a
+ * blurred album cover. Rather than give the app a colour it does not have, the one that is
+ * off is faded well back, so what carries the state is how present the icon is rather than
+ * which grey it happens to be.
+ */
+@Composable
+private fun toggleTint(on: Boolean): Color =
+    if (on) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = TOGGLE_OFF_ALPHA)
+    }
+
+/**
+ * How present an unset toggle is. Above the 0.38 the platform gives a disabled control,
+ * because these are switched off rather than unavailable and they still take a tap.
+ */
+private const val TOGGLE_OFF_ALPHA = 0.45f

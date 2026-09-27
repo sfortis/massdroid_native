@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tune
@@ -49,6 +50,11 @@ internal fun PlayerOptionsSheet(
     onTransferQueue: () -> Unit,
     onSleepTimer: () -> Unit,
     onStartSongRadio: (() -> Unit)?,
+    /**
+     * Write the album this track belongs to onto an NFC tag. Null when there is no album
+     * to write, which a track without one and a phone without a chip both mean.
+     */
+    onWriteNfcTag: (() -> Unit)?,
     onClick: () -> Unit
 ) {
     val sheetState = SheetDefaults.sheetState()
@@ -131,6 +137,29 @@ internal fun PlayerOptionsSheet(
                         )
                     },
                     modifier = Modifier.clickable(onClick = onTransferQueue)
+                )
+            }
+            if (onWriteNfcTag != null) {
+                ListItem(
+                    colors = SheetDefaults.listItemColors(),
+                    headlineContent = { Text("Write NFC tag") },
+                    supportingContent = {
+                        Text(
+                            "Tap the tag later to play this album here",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Default.Nfc,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        onWriteNfcTag()
+                        onDismiss()
+                    }
                 )
             }
             if (onStartSongRadio != null) {

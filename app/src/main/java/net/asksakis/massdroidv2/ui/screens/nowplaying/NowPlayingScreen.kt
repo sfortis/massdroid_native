@@ -1,44 +1,24 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
-import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.util.Log
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material.icons.automirrored.filled.Subject
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,19 +29,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.isSystemInDarkTheme
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.blue
@@ -75,21 +51,14 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
+import androidx.compose.foundation.Image
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
-import net.asksakis.massdroidv2.ui.screens.nowplaying.components.AudioQualityBadges
-import net.asksakis.massdroidv2.ui.screens.nowplaying.components.HoldRepeatIconButton
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.PlayerOptionsSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.QualityActionRow
@@ -97,27 +66,23 @@ import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SeekBar
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SendspinStatusSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.TrackInfoSection
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.TransportControls
-import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.ui.components.SleepTimerSheet
 import androidx.compose.material.icons.filled.Bedtime
-import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.model.QueueSource
+import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.model.PlaybackState
-import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
-import net.asksakis.massdroidv2.domain.model.RepeatMode
-import net.asksakis.massdroidv2.domain.model.CrossfadeMode
-import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
-import net.asksakis.massdroidv2.ui.components.MediaArtwork
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
-import net.asksakis.massdroidv2.ui.components.VolumeSlider
-import net.asksakis.massdroidv2.ui.screens.nowplaying.LyricsAvailability
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.LyricsSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.SwipeableAlbumArt
-import kotlin.math.max
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import net.asksakis.massdroidv2.ui.util.BlurTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -157,6 +122,15 @@ fun NowPlayingScreen(
     val canToggleArtistBlock = currentArtistUri != null
     val allPlayers by viewModel.allPlayers.collectAsStateWithLifecycle()
     var showPlayerMenu by remember { mutableStateOf(false) }
+    // What the tag could be written with, captured when the action is tapped. Reading it
+    // live let the track advance underneath an open sheet, which silently retargeted the
+    // tag, and left the sheet to reopen by itself on the next track that had one.
+    var nfcWriteChoices by remember { mutableStateOf<List<NfcWriteChoice>>(emptyList()) }
+    // Offered only where there is a chip to write with.
+    val nfcContext = androidx.compose.ui.platform.LocalContext.current
+    val hasNfc = remember(nfcContext) {
+        nfcContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
+    }
     var showTransferSheet by remember { mutableStateOf(false) }
     var showLyricsSheet by remember { mutableStateOf(false) }
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
@@ -286,7 +260,10 @@ fun NowPlayingScreen(
     val gradient = Brush.verticalGradient(
         colors = listOf(animatedColor.copy(alpha = gradientAlpha), surfaceColor)
     )
-    val hasArtwork = !imageUrl.isNullOrBlank()
+    // Read from the settled cover, which is what the backdrop draws. Taking it from the
+    // live url instead said there was artwork while the backdrop still had none, and the
+    // screen sat on a bare scrim for the whole settle delay.
+    val hasArtwork = !settledArtwork.isNullOrBlank()
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -337,7 +314,10 @@ fun NowPlayingScreen(
                 .background(surfaceColor)
         ) {
             if (hasArtwork) {
-                AlbumArtBackdrop(imageUrl = imageUrl, isDark = isDark)
+                // The settled cover, not the live one, for the same reason the colour
+                // uses it: skipping through tracks would turn the whole background over
+                // for each one passed on the way.
+                AlbumArtBackdrop(imageUrl = settledArtwork, isDark = isDark)
             } else {
                 // No artwork to take the colour from, so fall back to the tint the
                 // screen has always had rather than leaving a flat surface.
@@ -468,10 +448,26 @@ fun NowPlayingScreen(
             onStartSongRadio = currentTrack?.uri?.let { uri ->
                 { viewModel.startSongRadio(uri) }
             },
+            // The album, not the track: a tag is worth a sitting's worth of music, and a
+            // single track would be a queue of one. A track whose album the server did not
+            // name leaves nothing to write, so the option is not offered at all.
+            // Two things can be meant here and neither is obviously the one: the playlist
+            // or album the queue is playing from, which the server names in the queue's
+            // source, and the album of the track itself. Both are offered when they differ.
+            onWriteNfcTag = nfcWriteChoicesFor(queueState?.source, currentTrack, album)
+                .takeIf { it.isNotEmpty() && hasNfc }
+                ?.let { choices -> { nfcWriteChoices = choices } },
             onClick = {
                 showPlayerMenu = false
                 viewModel.toggleCurrentArtistBlocked()
             }
+        )
+    }
+
+    if (nfcWriteChoices.isNotEmpty()) {
+        NfcWriteSheet(
+            choices = nfcWriteChoices,
+            onDismiss = { nfcWriteChoices = emptyList() }
         )
     }
 
@@ -984,6 +980,7 @@ private fun NowPlayingLandscape(
  */
 @Composable
 private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
+    val context = LocalContext.current
     val surfaceColor = MaterialTheme.colorScheme.surface
     // Lighter in the light theme: the same ring that frames a dark screen reads as
     // dirt on a bright one.
@@ -995,20 +992,67 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
             surfaceColor.copy(alpha = if (isDark) 0.88f else 0.92f)
         )
     )
+    // Two layers that both stay laid out, with only the hidden one ever given a new url.
+    // One AsyncImage handed a new url drops the picture it is showing and loads the new
+    // one from nothing, so its own crossfade fades in over the bare surface: the
+    // background went out and came back instead of turning over. Here the picture
+    // leaving is still on screen underneath while the one arriving fades in above it.
+    val slotUrls = remember { mutableStateListOf(imageUrl, null) }
+    var frontSlot by remember { mutableIntStateOf(0) }
+    // The upper layer's opacity, and the whole of the crossfade: the lower layer is
+    // always opaque, so fading the upper one to 1 reveals it and fading it to 0 gives
+    // the lower one back. One value drives both directions.
+    val upperAlpha = remember { Animatable(0f) }
+
+    val lowerPainter = rememberAsyncImagePainter(
+        model = remember(slotUrls[0]) { backdropRequest(context, slotUrls[0]) }
+    )
+    val upperPainter = rememberAsyncImagePainter(
+        model = remember(slotUrls[1]) { backdropRequest(context, slotUrls[1]) }
+    )
+
+    LaunchedEffect(imageUrl) {
+        if (imageUrl == slotUrls[frontSlot]) return@LaunchedEffect
+        val target = 1 - frontSlot
+        slotUrls[target] = imageUrl
+        // Wait for the arriving picture before fading to it, because fading to a layer
+        // that has not decoded yet dissolves the old one into the bare surface and then
+        // pops. Bounded, so a picture that never arrives still hands the background over
+        // rather than leaving it on the album before last.
+        //
+        // The wait has to name the picture. A slot that already carries one still reports
+        // success for it until the new request replaces it, so a bare check for success
+        // returned at once from the second album onward and the fade ran a full second
+        // back towards the album before last.
+        val arriving = if (target == 1) upperPainter else lowerPainter
+        withTimeoutOrNull(BACKDROP_LOAD_WAIT_MS) {
+            snapshotFlow { arriving.state }.first { state ->
+                state is AsyncImagePainter.State.Success &&
+                    state.result.request.data == imageUrl
+            }
+        }
+        upperAlpha.animateTo(
+            targetValue = if (target == 1) 1f else 0f,
+            animationSpec = tween(BACKDROP_FADE_MS, easing = FastOutSlowInEasing)
+        )
+        frontSlot = target
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(imageUrl)
-                .size(BACKDROP_SOURCE_PX)
-                .crossfade(BACKDROP_CROSSFADE_MS)
-                .memoryCacheKey("backdrop_$imageUrl")
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .transformations(BlurTransformation(BACKDROP_BLUR_PASSES))
-                .build(),
+        Image(
+            painter = lowerPainter,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
+        )
+        Image(
+            painter = upperPainter,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            // Read in the graphics phase, so the fade costs no recomposition.
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = upperAlpha.value }
         )
         Box(modifier = Modifier.fillMaxSize().background(scrim))
         Box(modifier = Modifier.fillMaxSize().drawWithCache {
@@ -1052,7 +1096,32 @@ private const val VIGNETTE_CLEAR_STOP = 0.55f
 private const val VIGNETTE_RADIUS_SCALE = 0.78f
 
 /** Long enough to read as the artwork changing, short enough not to lag the track. */
-private const val BACKDROP_CROSSFADE_MS = 400
+/**
+ * How long the background takes to turn from one album to the next. It matches the colour
+ * fade above it, so the picture and the tint it carries move together.
+ */
+private const val BACKDROP_FADE_MS = 900
+
+/**
+ * How long to wait for the arriving picture before fading to it anyway. The artwork itself
+ * has already been fetched for the cover by the time this runs, so this only covers the
+ * decode of the small blurred copy.
+ */
+private const val BACKDROP_LOAD_WAIT_MS = 1500L
+
+/**
+ * The backdrop's picture request. Built here rather than inline so both layers ask for
+ * exactly the same thing and share one cache entry per album.
+ */
+private fun backdropRequest(context: android.content.Context, url: String?): ImageRequest =
+    ImageRequest.Builder(context)
+        .data(url)
+        .size(BACKDROP_SOURCE_PX)
+        .memoryCacheKey("backdrop_$url")
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .transformations(BlurTransformation(BACKDROP_BLUR_PASSES))
+        .build()
 
 @Composable
 private fun extractDominantColor(imageUrl: String?, isDark: Boolean): State<Color> {
@@ -1130,3 +1199,40 @@ private const val BACKGROUND_COLOR_DURATION_MS = 900
  * the closest of them without holding back an ordinary track change.
  */
 private const val BACKGROUND_SETTLE_DELAY_MS = 800L
+
+/**
+ * What a tag written from the player could start.
+ *
+ * The queue's source comes first when there is one, because it is what the listener put on
+ * and the one thing the tracks on screen cannot tell them. The current track's album
+ * follows, and is left out when it is the same container.
+ */
+private fun nfcWriteChoicesFor(
+    source: QueueSource?,
+    currentTrack: Track?,
+    albumName: String
+): List<NfcWriteChoice> {
+    val fromSource = source
+        ?.takeIf { it.uri.isNotBlank() && it.name.isNotBlank() }
+        ?.let { NfcWriteChoice(it.uri, it.name, sourceKindLabel(it.mediaType)) }
+    val fromTrack = currentTrack?.albumUri
+        ?.takeIf { it.isNotBlank() && it != fromSource?.uri }
+        ?.let {
+            NfcWriteChoice(
+                uri = it,
+                label = currentTrack.albumName.takeIf { name -> name.isNotBlank() } ?: albumName,
+                kind = "Album of the current track"
+            )
+        }
+    return listOfNotNull(fromSource, fromTrack)
+}
+
+private fun sourceKindLabel(mediaType: MediaType): String = when (mediaType) {
+    MediaType.PLAYLIST -> "Playlist, what is playing now"
+    MediaType.ALBUM -> "Album, what is playing now"
+    MediaType.ARTIST -> "Artist, what is playing now"
+    MediaType.RADIO -> "Radio, what is playing now"
+    MediaType.PODCAST -> "Podcast, what is playing now"
+    MediaType.AUDIOBOOK -> "Audiobook, what is playing now"
+    else -> "What is playing now"
+}
