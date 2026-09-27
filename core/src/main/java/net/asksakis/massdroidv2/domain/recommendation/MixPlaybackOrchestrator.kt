@@ -23,7 +23,6 @@ import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.Artist
-import net.asksakis.massdroidv2.domain.model.MediaType
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver

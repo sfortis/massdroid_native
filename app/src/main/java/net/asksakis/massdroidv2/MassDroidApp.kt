@@ -14,7 +14,6 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
-import net.asksakis.massdroidv2.BuildConfig
 
 @HiltAndroidApp
 class MassDroidApp : Application(), ImageLoaderFactory {

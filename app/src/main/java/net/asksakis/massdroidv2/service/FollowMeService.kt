@@ -7,8 +7,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -30,7 +28,6 @@ import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.RoomDetector
 import net.asksakis.massdroidv2.data.sendspin.CarAudioPresence
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
-import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs

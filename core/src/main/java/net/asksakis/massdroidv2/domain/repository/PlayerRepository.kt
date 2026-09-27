@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.domain.repository
 
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import net.asksakis.massdroidv2.domain.model.GroupProviderOption

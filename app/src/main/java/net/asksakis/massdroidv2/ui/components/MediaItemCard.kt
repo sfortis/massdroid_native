@@ -1,21 +1,13 @@
 package net.asksakis.massdroidv2.ui.components
 
 import net.asksakis.massdroidv2.ui.components.icons.Bookshelf
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
-import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
-import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -30,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp

@@ -13,7 +13,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,10 +23,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
-import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
-import net.asksakis.massdroidv2.data.websocket.VolumeSetArgs
-import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository

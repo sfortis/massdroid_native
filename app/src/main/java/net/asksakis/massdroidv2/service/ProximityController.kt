@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.proximity.DetectResult
 import net.asksakis.massdroidv2.data.proximity.DetectedRoom
 import net.asksakis.massdroidv2.data.proximity.MotionGate

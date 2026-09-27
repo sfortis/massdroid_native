@@ -1,10 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import net.asksakis.massdroidv2.data.proximity.WifiMatchMode
@@ -56,18 +53,15 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import net.asksakis.massdroidv2.ui.components.LabeledSlider
 import net.asksakis.massdroidv2.ui.components.MdSlider
 import androidx.compose.material3.Switch
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text

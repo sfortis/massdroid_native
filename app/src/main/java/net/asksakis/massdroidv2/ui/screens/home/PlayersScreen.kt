@@ -1,10 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
 import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.animation.core.*
@@ -32,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -44,7 +40,6 @@ import net.asksakis.massdroidv2.ui.components.PlayerNameWithBadge
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.fadingEdges
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
-import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerType

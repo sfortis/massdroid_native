@@ -18,7 +18,6 @@ import net.asksakis.massdroidv2.ui.screens.library.PlaylistDetailScreen
 import net.asksakis.massdroidv2.ui.screens.library.PodcastDetailScreen
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingScreen
 import net.asksakis.massdroidv2.ui.screens.search.SearchScreen
-import net.asksakis.massdroidv2.ui.screens.settings.ProximitySettingsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RecommendationInsightsScreen
 import net.asksakis.massdroidv2.ui.screens.settings.RoomSetupScreen
 import net.asksakis.massdroidv2.ui.screens.settings.SettingsCategory

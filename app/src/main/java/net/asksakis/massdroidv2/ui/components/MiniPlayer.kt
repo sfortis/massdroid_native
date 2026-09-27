@@ -1,11 +1,5 @@
 package net.asksakis.massdroidv2.ui.components
 
-import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
-import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
-import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
@@ -18,7 +12,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,7 +29,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.domain.model.PlaybackState
 
 @Composable
 fun MiniPlayer(

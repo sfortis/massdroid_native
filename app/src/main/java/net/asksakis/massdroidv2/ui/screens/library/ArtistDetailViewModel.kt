@@ -8,13 +8,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
-import net.asksakis.massdroidv2.data.util.mapMaBounded
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository

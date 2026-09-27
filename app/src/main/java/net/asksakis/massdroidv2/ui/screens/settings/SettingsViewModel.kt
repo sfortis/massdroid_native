@@ -11,7 +11,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
-import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore

@@ -4,7 +4,6 @@ import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.domain.repository.DecadeScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import javax.inject.Inject
 import javax.inject.Singleton
 
