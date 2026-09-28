@@ -84,6 +84,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.CompositionLocalProvider
 import net.asksakis.massdroidv2.ui.components.ExpandingPlayerSheet
@@ -221,6 +222,7 @@ class MainActivity : ComponentActivity() {
                     MassDroidApp(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
                     DevBuildBadge()
                     UpdatePrompt(appUpdateChecker)
+                    WhatsNewPrompt(settingsRepository)
                     // Top-level transient OSD for remote-player volume changes.
                     // The system already overlays its own bar for STREAM_MUSIC
                     // (local Sendspin path), but remote players have no OS
@@ -844,6 +846,34 @@ private fun DevBuildBadge() {
             modifier = Modifier
                 .padding(end = 6.dp, top = 2.dp)
                 .size(18.dp)
+        )
+    }
+}
+
+/**
+ * Shows the current release's news once, to somebody who has used the app before.
+ *
+ * "Before" is read from whether a server was ever configured rather than from a flag of
+ * its own. Somebody on their first run is not catching up on what changed, and the record
+ * of what they have seen is written for them anyway so the next release finds it.
+ */
+@Composable
+private fun WhatsNewPrompt(
+    settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
+) {
+    var release by remember { mutableStateOf<net.asksakis.massdroidv2.ui.components.WhatsNewRelease?>(null) }
+    LaunchedEffect(Unit) {
+        val news = net.asksakis.massdroidv2.ui.components.currentWhatsNew
+        val seen = settingsRepository.lastSeenWhatsNewVersion.first()
+        if (seen >= news.sinceVersionCode) return@LaunchedEffect
+        val usedBefore = settingsRepository.serverUrl.first().isNotBlank()
+        settingsRepository.setLastSeenWhatsNewVersion(news.sinceVersionCode)
+        if (usedBefore) release = news
+    }
+    release?.let { news ->
+        net.asksakis.massdroidv2.ui.components.WhatsNewSheet(
+            release = news,
+            onDismiss = { release = null }
         )
     }
 }

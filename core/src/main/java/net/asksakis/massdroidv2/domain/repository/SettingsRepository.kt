@@ -35,6 +35,14 @@ interface SettingsRepository {
      */
     val musicBrainzIdentityRevision: Flow<Int>
     suspend fun setMusicBrainzIdentityRevision(revision: Int)
+
+    /**
+     * The highest version code whose new features have already been shown. Zero on a fresh
+     * install, which is also why a first run shows nothing: somebody who has never used
+     * the app is not catching up on what changed.
+     */
+    val lastSeenWhatsNewVersion: Flow<Int>
+    suspend fun setLastSeenWhatsNewVersion(versionCode: Int)
     /** Search results layout: true = grid (the default), false = list. Persisted. */
     val searchGridMode: Flow<Boolean>
     suspend fun setSearchGridMode(grid: Boolean)

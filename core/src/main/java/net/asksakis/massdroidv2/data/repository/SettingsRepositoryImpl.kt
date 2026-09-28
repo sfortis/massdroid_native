@@ -44,6 +44,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SEARCH_GRID_MODE = booleanPreferencesKey("search_grid_mode")
         private val KEY_RECENT_SEARCHES = stringPreferencesKey("recent_searches")
         private val KEY_MB_IDENTITY_REVISION = intPreferencesKey("mb_identity_revision")
+        private val KEY_LAST_SEEN_WHATS_NEW = intPreferencesKey("last_seen_whats_new")
         private val KEY_SMART_MIX_VARIETY = floatPreferencesKey("smart_mix_variety")
         private val KEY_SMART_MIX_DISCOVERY = floatPreferencesKey("smart_mix_discovery")
         private val KEY_SMART_MIX_LENGTH = floatPreferencesKey("smart_mix_length")
@@ -213,6 +214,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setMusicBrainzIdentityRevision(revision: Int) {
         context.dataStore.edit { it[KEY_MB_IDENTITY_REVISION] = revision }
+    }
+
+    override val lastSeenWhatsNewVersion: Flow<Int> = safeData.map { prefs ->
+        prefs[KEY_LAST_SEEN_WHATS_NEW] ?: 0
+    }
+
+    override suspend fun setLastSeenWhatsNewVersion(versionCode: Int) {
+        context.dataStore.edit { it[KEY_LAST_SEEN_WHATS_NEW] = versionCode }
     }
 
     override val smartMixVariety: Flow<Float> = safeData.map { prefs ->
