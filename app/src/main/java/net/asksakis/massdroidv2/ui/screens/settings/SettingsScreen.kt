@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Coffee
@@ -45,6 +46,10 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.SystemUpdate
+import net.asksakis.massdroidv2.ui.components.WhatsNewItems
+import net.asksakis.massdroidv2.ui.components.currentWhatsNew
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Person
@@ -54,6 +59,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -97,6 +103,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import net.asksakis.massdroidv2.R
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -105,9 +115,10 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
-import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
-enum class SettingsCategory { CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, ABOUT }
+enum class SettingsCategory {
+    CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, DIAGNOSTICS, ABOUT
+}
 
 /**
  * Matches text the user could plausibly be typing as a leading "http" / "https"
@@ -190,6 +201,7 @@ fun SettingsScreen(
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
                             SettingsCategory.NFC_TAGS -> "NFC Tags"
+                            SettingsCategory.DIAGNOSTICS -> "Diagnostics"
                             SettingsCategory.ABOUT -> "About"
                             null -> "Settings"
                         }
@@ -234,6 +246,10 @@ fun SettingsScreen(
                     onOpenInsights = onOpenRecommendationInsights
                 )
                 SettingsCategory.NFC_TAGS -> NfcTagsScreen(
+                    modifier = Modifier.padding(paddingValues)
+                )
+                SettingsCategory.DIAGNOSTICS -> DiagnosticsScreen(
+                    viewModel = viewModel,
                     modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.ABOUT -> AboutScreen(
@@ -310,8 +326,17 @@ private fun CategoryList(
         ThemeSelector(viewModel)
         HorizontalDivider()
         ListItem(
+            headlineContent = { Text("Diagnostics") },
+            supportingContent = { Text("Versions, logs, and battery optimization") },
+            leadingContent = {
+                Icon(Icons.Default.BugReport, contentDescription = null)
+            },
+            modifier = Modifier.clickable { onSelect(SettingsCategory.DIAGNOSTICS) }
+        )
+        HorizontalDivider()
+        ListItem(
             headlineContent = { Text("About") },
-            supportingContent = { Text("App version and update management") },
+            supportingContent = { Text("Version, updates, and what's new") },
             leadingContent = {
                 Icon(Icons.Default.Info, contentDescription = null)
             },
@@ -439,185 +464,150 @@ private fun RecommendationsScreen(
 
 // region About Screen
 
+/**
+ * Which app this is, which version, and the two things that change the version.
+ *
+ * Rows and dividers rather than cards, the same shape the settings category list has.
+ * Everything here used to sit in its own grey card, and on a palette with no colour in it
+ * those cards read as one grey block instead of as separate groups. Logs, versions and
+ * battery optimization moved out to Diagnostics.
+ */
 @Composable
 private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
-    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 24.dp)
     ) {
+        AboutHero()
         // The in-app updater is github-flavor only; F-Droid handles updates itself.
         if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
-            UpdatesCard(
+            // No row for beta updates: the setting is honoured by the checker, but the
+            // only prerelease on the repo is dev-latest, whose tag is not a version the
+            // comparison can read, so the switch had nothing to offer.
+            UpdateCheckItem(
                 state = updateUiState,
-                onCheck = { viewModel.checkForUpdates(force = true) },
-                onToggleIncludeBeta = viewModel::toggleIncludeBetaUpdates
+                onCheck = { viewModel.checkForUpdates(force = true) }
             )
+            HorizontalDivider()
         }
-        DiagnosticsCard(
-            serverVersion = (connectionState as? ConnectionState.Connected)?.serverInfo?.serverVersion
+        // The entries in place rather than behind a row. The sheet still interrupts once
+        // after an update, and this is the same list, so there is nothing to tap to read
+        // it again.
+        Text(
+            text = "New in ${currentWhatsNew.versionName}",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp)
         )
-        SupportCard()
+        WhatsNewItems(
+            release = currentWhatsNew,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+    }
+}
+
+/**
+ * The mark, the name, the version and the one ask, centred at the top of About.
+ *
+ * The same shape the Phylax about screen uses, and for the same reason: the first thing
+ * on the screen should say which app this is and what version, and the support button is
+ * the only thing here anybody is being asked for. It is also the only place the support
+ * link appears, so it carries the Buy Me a Coffee orange rather than a theme colour.
+ */
+@Composable
+private fun AboutHero() {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(top = 24.dp, bottom = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Image(
+            painter = painterResource(R.drawable.logo_md),
+            contentDescription = null,
+            modifier = Modifier.size(ABOUT_LOGO_SIZE)
+        )
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold)
+        )
+        Text(
+            text = "${net.asksakis.massdroidv2.BuildConfig.VERSION_NAME} " +
+                "(${net.asksakis.massdroidv2.BuildConfig.VERSION_CODE})",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        MdButton(
+            onClick = { launchCustomTab(context, SUPPORT_URL) },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = SUPPORT_ORANGE,
+                contentColor = SUPPORT_ON_ORANGE
+            )
+        ) {
+            Icon(Icons.Filled.Coffee, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Buy me a coffee")
+        }
     }
 }
 
 @Composable
-private fun SupportCard() {
-    val context = LocalContext.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Support", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "MassDroid is free and open-source. If it is useful to you, you can support its development.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            MdFilledTonalButton(
-                onClick = { launchCustomTab(context, "https://www.buymeacoffee.com/sfortis") },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    Icons.Filled.Coffee,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Buy me a coffee")
-            }
-        }
+private fun UpdateCheckItem(state: UpdateUiState, onCheck: () -> Unit) {
+    val busy = state.isChecking || state.isDownloading
+    val spinner: (@Composable () -> Unit)? = if (state.isChecking) {
+        { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
+    } else {
+        null
     }
-}
-
-@Composable
-private fun DiagnosticsCard(serverVersion: String?) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var status by remember { mutableStateOf<String?>(null) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                "Diagnostics",
-                style = MaterialTheme.typography.titleMedium
-            )
-            Text(
-                "Share the stored log files as a zip through any share target. " +
-                    "Attach it to a bug report: it covers up to a day, so it does not " +
-                    "matter how long after the problem you send it. It is a technical " +
-                    "record of that day, including what you played, the players and " +
-                    "rooms you use and your server address, so send it only to someone " +
-                    "you want to have it.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            status?.let {
+    Column {
+        ListItem(
+            headlineContent = {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    when {
+                        state.isDownloading -> "Downloading ${state.downloadProgress ?: 0}%"
+                        state.isChecking -> "Checking for updates"
+                        else -> "Check for updates"
+                    }
                 )
-            }
-            // Disabled while a build runs: each tap used to start its own
-            // coroutine, and two within the same second wrote the same
-            // second-stamped zip at once.
-            var building by remember { mutableStateOf(false) }
-            MdFilledTonalButton(
-                enabled = !building,
-                onClick = {
-                    building = true
-                    scope.launch {
-                        val intent = try {
-                            PersistentLogcatWriter.buildShareIntent(context, serverVersion)
-                        } finally {
-                            building = false
-                        }
-                        if (intent == null) {
-                            status = "Could not read any logs. Android does not always let " +
-                                "an app read its own logcat, and then there is nothing to send."
-                            return@launch
-                        }
-                        status = null
-                        runCatching {
-                            context.startActivity(
-                                android.content.Intent.createChooser(intent, "Share MassDroid logs")
-                            )
-                        }.onFailure { status = "Share failed: ${it.message}" }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (building) "Collecting logs…" else "Share logs")
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            Text("Battery optimization", style = MaterialTheme.typography.titleMedium)
-            val powerManager = remember {
-                context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-            }
-            var batteryExcluded by remember {
-                mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName))
-            }
-            // Re-read on resume: the user grants it in the system screen and returns here.
-            val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-            androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-                val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
-                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                        batteryExcluded = powerManager.isIgnoringBatteryOptimizations(context.packageName)
-                    }
-                }
-                lifecycleOwner.lifecycle.addObserver(obs)
-                onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
-            }
-            Text(
-                "Optional. Playback keeps running with the screen off (the audio service is doze-exempt " +
-                    "while active) and room detection works too (moving between rooms wakes the device out " +
-                    "of doze). Excluding MassDroid only helps background reconnects during long deep-doze. " +
-                    "Currently: " + if (batteryExcluded) "excluded." else "not excluded.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            supportingContent = { Text(state.message ?: "Current version ${state.appVersion}") },
+            leadingContent = { Icon(Icons.Default.SystemUpdate, contentDescription = null) },
+            trailingContent = spinner,
+            modifier = Modifier.clickable(enabled = !busy, onClick = onCheck)
+        )
+        if (state.isDownloading) {
+            LinearProgressIndicator(
+                progress = { (state.downloadProgress ?: 0) / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
             )
-            if (!batteryExcluded) {
-                MdFilledTonalButton(
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                    android.net.Uri.parse("package:${context.packageName}")
-                                )
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Exclude from battery optimization")
-                }
-            }
         }
     }
 }
+
+/** Matches the mark size the Phylax about screen uses. */
+private val ABOUT_LOGO_SIZE = 96.dp
+
+/** One address, used by the single support button in the hero. */
+private const val SUPPORT_URL = "https://www.buymeacoffee.com/sfortis"
+
+/**
+ * The Buy Me a Coffee brand orange, and a dark ink that reads on it.
+ *
+ * Fixed rather than taken from the theme, in both light and dark: the palette in Theme.kt
+ * is grayscale from end to end, so a theme colour would make this button look like every
+ * other control on the screen.
+ */
+private val SUPPORT_ORANGE = Color(0xFFFF813F)
+private val SUPPORT_ON_ORANGE = Color(0xFF1F1F1F)
 
 // endregion
 
@@ -1438,78 +1428,6 @@ private fun DspEffectsCard(viewModel: SettingsViewModel) {
                 MdSwitch(checked = dither, onCheckedChange = { viewModel.setSendspinDither(it) })
             }
         )
-    }
-}
-
-@Composable
-private fun UpdatesCard(
-    state: UpdateUiState,
-    onCheck: () -> Unit,
-    onToggleIncludeBeta: (Boolean) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("App Updates", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Current version: ${state.appVersion}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            MdButton(
-                onClick = onCheck,
-                enabled = !state.isChecking && !state.isDownloading,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                when {
-                    state.isChecking -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Checking...")
-                    }
-                    state.isDownloading -> {
-                        Text("Downloading... ${state.downloadProgress ?: 0}%")
-                    }
-                    else -> {
-                        Text("Check for Updates")
-                    }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Include beta updates", style = MaterialTheme.typography.bodyMedium)
-                MdSwitch(checked = state.includeBetaUpdates, onCheckedChange = onToggleIncludeBeta)
-            }
-            state.downloadProgress?.let { progress ->
-                if (state.isDownloading) {
-                    LinearProgressIndicator(
-                        progress = { progress / 100f },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-            state.message?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
     }
 }
 
