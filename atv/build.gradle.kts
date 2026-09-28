@@ -23,8 +23,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // Versioned in lockstep with the phone app so the TV APK in a release matches the tag.
-        versionCode = 38
-        versionName = "2.35.2"
+        versionCode = 39
+        versionName = "2.36.0"
     }
 
     signingConfigs {

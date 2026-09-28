@@ -1,5 +1,10 @@
+- NFC tags: tap your phone on a tag to start an album or a playlist on a speaker, or to move what is already playing into that room, at the volume you chose.
+- The full player has a new look: the cover casts a real shadow, a swipe brings the next cover in from the edge of the screen, and the background changes over smoothly.
+- The queue is named after the playlist or album playing, instead of the word Queue.
+- After an update the app shows what is new, and the same list stays in Settings.
+- A new Diagnostics screen gathers the versions, the logs and the background setting you need when reporting a problem.
 - The library can now sort albums by album artist, tracks by artist or length, and playlists by when they were last changed.
-- Play All on a playlist starts right away, however long the playlist is, and the button now shows that it is working.
+- Play All on a playlist or an album starts right away, however long it is, and the button now shows that it is working.
 - The order you see in a playlist is the order that plays, and tracks show their length so you can sort by it.
 - Artists you have blocked are no longer played when you start a whole playlist or album.
 - You can now put a player in a Follow Me room straight from the player settings, without opening the Follow Me setup.

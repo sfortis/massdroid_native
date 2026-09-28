@@ -50,6 +50,15 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+- NFC tags: tap your phone on a tag to start an album or a playlist on a speaker, or to move what is already playing into that room, at the volume you chose.
+- The full player has a new look: the cover casts a real shadow, a swipe brings the next cover in from the edge of the screen, and the background changes over smoothly.
+- The queue is named after the playlist or album playing, instead of the word Queue.
+- After an update the app shows what is new, and the same list stays in Settings.
+- A new Diagnostics screen gathers the versions, the logs and the background setting you need when reporting a problem.
+- The library can now sort albums by album artist, tracks by artist or length, and playlists by when they were last changed.
+- Play All on a playlist or an album starts right away, however long it is, and the button now shows that it is working.
+- The order you see in a playlist is the order that plays, and tracks show their length so you can sort by it.
+- Artists you have blocked are no longer played when you start a whole playlist or album.
 - You can now put a player in a Follow Me room straight from the player settings, without opening the Follow Me setup.
 - Global search enhancements and bug fixes. (#76)
 - A command lost together with the connection now fails visibly, instead of reaching the screen as an empty answer from the server.
@@ -125,9 +134,10 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade, volume normalization, streaming codec, and the output channels a speaker plays. Setting one speaker to left and another to right turns a group into a stereo pair, and a sync sheet lines every member of a group up by ear.
 - **Android TV** : Full client for Shield and Google TV: browse the library, control any player, and use the TV as a synced speaker
-- **Connection Diagnostics** : Live latency graph with roundtrip stats and server version info
+- **Diagnostics** : A settings screen with the app and server versions, the logs the app keeps on disk, and the battery setting that decides whether it may work in the background, which is what a problem report needs. A separate connection view shows a live latency graph with roundtrip stats.
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens
+- **NFC Tags** : Write an album, a playlist or a speaker onto an NFC tag and leave it where you listen. Tapping the phone on it starts that music on that speaker, moves what is already playing into that room, or resumes what the speaker holds, and can set the volume first. The whole instruction lives on the tag, so a tag written on one phone works on any other phone that has the app.
 - **Home Screen Widget** : Album art, track, selected player and transport buttons on the home screen, resizable from a 4x1 row to a 4x2 card. Buttons reconnect on their own when the app is closed.
 
 ## Exploration & Discovery
