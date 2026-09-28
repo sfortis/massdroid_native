@@ -351,13 +351,6 @@ class MusicRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Blocked head on $uri; starting the container at ${plan.trackUri}")
                 startItem = plan.trackUri
             }
-            is BlockedPlan.PlayTracks -> {
-                // The list is already in the order the caller asked for, so the sort order is
-                // spent here: it only ever told the server how to order a container.
-                Log.d(TAG, "Dropped blocked artists: ${plan.uris.size} tracks from $uri")
-                playMedia(queueId, plan.uris, option, radioMode, awaitResponse)
-                return
-            }
         }
         // Dropped rather than sent to a server that would silently ignore it. The caller asks
         // supportsServerSideSort first and sends a track list in that case, so this only
@@ -434,14 +427,11 @@ class MusicRepositoryImpl @Inject constructor(
         /**
          * Play the container, but tell the server to begin at this track.
          *
-         * Used when only the head of a playlist is blocked. The server drops what precedes
+         * Used when only the head of a container is blocked. The server drops what precedes
          * the start item, and the blocked tracks further down are removed from the queue by
          * `PlayerRepository`'s own cleanup long before playback reaches them.
          */
         data class StartAt(val trackUri: String) : BlockedPlan
-
-        /** Play exactly these tracks. Used for an album, where the list is short. */
-        data class PlayTracks(val uris: List<String>) : BlockedPlan
 
         /** Everything here is blocked. */
         data object PlayNothing : BlockedPlan
@@ -484,12 +474,11 @@ class MusicRepositoryImpl @Inject constructor(
                 } catch (_: Exception) {
                     return BlockedPlan.PlayWhole
                 }
-                val kept = tracks.filterNot { it.hasBlockedArtist(repo) }
-                when {
-                    kept.size == tracks.size -> BlockedPlan.PlayWhole
-                    kept.isEmpty() -> BlockedPlan.PlayNothing
-                    else -> BlockedPlan.PlayTracks(kept.map { it.uri })
-                }
+                // Handed over as a container, the same way a playlist is. Dropping the
+                // blocked tracks and sending what is left would work too, but the server
+                // then has no container to record as what filled the queue, and the queue
+                // screen has nothing to name itself after.
+                startPlanFor(tracks, repo)
             }
             "playlist" -> {
                 // A playlist the server rebuilds on play draws a fresh set of tracks, so the
@@ -507,18 +496,35 @@ class MusicRepositoryImpl @Inject constructor(
                 // naming one as the start item finds nothing and returns an EMPTY queue
                 // (`get_playlist_tracks` in media_resolver.py returns [] when the start item
                 // is not found), which would be worse than the blocked track it avoids.
-                val ordered = (sortKey?.let { tracks.sortedForListing(it) } ?: tracks)
-                    .filter { it.available }
-                val firstPlayable = ordered.indexOfFirst { !it.hasBlockedArtist(repo) }
-                when (firstPlayable) {
-                    // The head is clean. Anything blocked further down is out of earshot by
-                    // the time the queue cleanup runs.
-                    0 -> BlockedPlan.PlayWhole
-                    -1 -> BlockedPlan.PlayNothing
-                    else -> BlockedPlan.StartAt(ordered[firstPlayable].uri)
-                }
+                startPlanFor(sortKey?.let { tracks.sortedForListing(it) } ?: tracks, repo)
             }
             else -> BlockedPlan.PlayWhole
+        }
+    }
+
+    /**
+     * Where a container should start, given what is blocked inside it.
+     *
+     * The container is played whole whenever its first track is clean, because anything
+     * blocked further down is out of earshot by the time the queue cleanup runs. A blocked
+     * head is stepped over with a start item instead, which keeps the container intact.
+     *
+     * [ordered] must be in the order the server will play, so that "the first track" means
+     * the same thing here and there. Tracks no provider can serve are dropped first,
+     * because the server drops them too while it resolves the container: naming one as the
+     * start item finds nothing and returns an EMPTY queue (`get_playlist_tracks` in
+     * media_resolver.py returns [] when the start item is not found), which would be worse
+     * than the blocked track it avoids.
+     */
+    private fun startPlanFor(ordered: List<Track>, repo: PlayerRepository): BlockedPlan {
+        val playable = ordered.filter { it.available }
+        // Nothing playable is not the same as everything blocked, and saying so would put
+        // the wrong message on screen. Hand it over and let the server answer.
+        if (playable.isEmpty()) return BlockedPlan.PlayWhole
+        return when (val first = playable.indexOfFirst { !it.hasBlockedArtist(repo) }) {
+            0 -> BlockedPlan.PlayWhole
+            -1 -> BlockedPlan.PlayNothing
+            else -> BlockedPlan.StartAt(playable[first].uri)
         }
     }
 

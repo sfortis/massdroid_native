@@ -12,6 +12,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
@@ -273,35 +274,47 @@ class AlbumDetailViewModel @Inject constructor(
         }
     }
 
-    fun playAll() {
-        val uris = _tracks.value
-            .filter { t ->
-                val uri = t.artistUri ?: return@filter true
-                val name = t.artistNames.split(",").firstOrNull()?.trim().orEmpty()
-                !playerRepository.isArtistBlocked(name, uri)
-            }
-            .map { it.uri }
-        if (uris.isEmpty()) {
-            // Every track was filtered out, which for a compilation credited to a blocked
-            // artist means the whole album. Returning quietly read as a dead button.
-            if (_tracks.value.isNotEmpty()) {
-                _error.tryEmit("Everything here is by an artist you blocked")
-            }
+    fun playAll() = playWhole(option = "replace", what = "playAll")
+
+    /**
+     * Send the whole album to the queue.
+     *
+     * The album goes as its own container URI and not as the list of its tracks. The server
+     * then records it as what filled the queue, which is the only way the queue screen can
+     * name what is playing, and it resolves the album in one pass rather than one track URI
+     * at a time.
+     *
+     * What is blocked inside it is settled in the repository, which starts the container
+     * past a blocked head and leaves the rest to the queue cleanup, exactly as it does for
+     * a playlist. Filtering the tracks here instead is what used to cost the queue its name.
+     */
+    private fun playWhole(option: String, what: String) {
+        // The URI comes from the album the screen loaded; until that arrives there is no
+        // container to hand over and nothing to play.
+        val albumUri = _album.value?.uri
+        if (albumUri.isNullOrBlank()) return
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        if (_sending.value) {
+            Log.d(TAG, "$what ignored: a previous one is still being applied")
             return
         }
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        if (_sending.value) return
+        // Read before the command goes out, so a queue that arrives quickly is not recorded
+        // as the old one and the button left waiting for a second change.
         val before = queueSignature()
         viewModelScope.launch {
             _sending.value = true
             try {
-                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
-                musicRepository.playMedia(queueId, uris, option = "replace")
+                if (option == "replace") {
+                    playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                }
+                musicRepository.playMedia(queueId, albumUri, option = option)
                 awaitQueueChange(before)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
-                Log.w(TAG, "playAll failed: ${e.message}")
+                Log.w(TAG, "$what failed: ${e.message}")
                 _error.tryEmit("Could not play this album")
             } finally {
                 _sending.value = false
@@ -330,45 +343,11 @@ class AlbumDetailViewModel @Inject constructor(
         }
     }
 
-    fun addAllToQueue() {
-        val uris = _tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                musicRepository.playMedia(queueId, uris, option = "add")
-            } catch (e: Exception) {
-                Log.w(TAG, "addAllToQueue failed: ${e.message}")
-            }
-        }
-    }
+    fun addAllToQueue() = playWhole(option = "add", what = "addAllToQueue")
 
-    fun playAllNext() {
-        val uris = _tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                musicRepository.playMedia(queueId, uris, option = "next")
-            } catch (e: Exception) {
-                Log.w(TAG, "playAllNext failed: ${e.message}")
-            }
-        }
-    }
+    fun playAllNext() = playWhole(option = "next", what = "playAllNext")
 
-    fun replaceQueue() {
-        val uris = _tracks.value.map { it.uri }
-        if (uris.isEmpty()) return
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
-                musicRepository.playMedia(queueId, uris, option = "replace")
-            } catch (e: Exception) {
-                Log.w(TAG, "replaceQueue failed: ${e.message}")
-            }
-        }
-    }
+    fun replaceQueue() = playWhole(option = "replace", what = "replaceQueue")
 
     fun startRadioAll() {
         val first = _tracks.value.firstOrNull()?.uri ?: return
