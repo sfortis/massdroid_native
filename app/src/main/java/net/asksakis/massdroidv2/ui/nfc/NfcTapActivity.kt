@@ -34,7 +34,10 @@ class NfcTapActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        handle(intent)
+        // Only on a genuine start. A recreation, which a rotation causes and this activity
+        // can be up for several seconds waiting on the server, re-delivers the same intent
+        // and would replay the whole tap, queue replacement and all.
+        if (savedInstanceState == null) handle(intent)
     }
 
     override fun onNewIntent(intent: Intent) {

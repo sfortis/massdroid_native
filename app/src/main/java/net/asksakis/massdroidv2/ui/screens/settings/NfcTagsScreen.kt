@@ -91,5 +91,7 @@ private fun EmptyTagList(modifier: Modifier) {
 
 private fun describe(tag: NfcTagRecord): String {
     val written = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(tag.writtenAtMs))
-    return tag.playerName?.let { "$it, written $written" } ?: "Wherever you are, written $written"
+    val where = tag.playerName ?: "Wherever you are"
+    val level = tag.volume?.let { " at $it%" }.orEmpty()
+    return "$where$level, written $written"
 }

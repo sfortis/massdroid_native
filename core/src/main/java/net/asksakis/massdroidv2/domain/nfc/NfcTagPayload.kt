@@ -3,22 +3,48 @@ package net.asksakis.massdroidv2.domain.nfc
 import java.io.ByteArrayOutputStream
 
 /**
- * What a MassDroid NFC tag says: play this media, on this player.
+ * What a tag asks for when it is tapped.
+ *
+ * A tag can name the music, or it can name only a speaker and let whatever is already
+ * happening decide. The second kind is what makes a tag by the door useful: it moves the
+ * listening into the room rather than starting something new.
+ */
+sealed interface NfcTagAction {
+    /** Replace the player's queue with this container and start it. */
+    data class PlayMedia(val uri: String) : NfcTagAction
+
+    /** Bring whatever is playing elsewhere onto this player, from where it had got to. */
+    data object TransferQueue : NfcTagAction
+
+    /** Start whatever this player already holds in its queue. */
+    data object Resume : NfcTagAction
+}
+
+/**
+ * What a MassDroid NFC tag says: do this, on this player.
  *
  * The tag carries the whole instruction rather than a key into a local table, so a tag
  * written on one phone still works on another that has the app. The app keeps its own
  * record of the tags it wrote, but only to name them on screen, never to resolve them.
  *
- * @param mediaUri the Music Assistant uri to play, for example `library://playlist/12`.
- * @param playerId the player to play it on, or null to use whichever player is selected.
+ * @param action what the tap should do.
+ * @param playerId the player to do it on, or null to use whichever player is selected.
+ * A transfer or a resume without a player names nothing at all and is rejected on reading.
  * @param label what to call this on screen while the tag is being acted on. It is written
  * so that a phone without a record of the tag can still say what it started.
+ * @param volume what to set the player's volume to first, or null to leave it alone. A tag
+ * by a bed and a tag in a kitchen want very different levels from the same speaker, which
+ * is the whole reason this is on the tag rather than a setting.
  */
 data class NfcTagPayload(
-    val mediaUri: String,
+    val action: NfcTagAction,
     val playerId: String?,
-    val label: String?
+    val label: String?,
+    val volume: Int? = null
 ) {
+
+    /** The media uri when this tag names one, for the callers that only care about that. */
+    val mediaUri: String? get() = (action as? NfcTagAction.PlayMedia)?.uri
 
     /**
      * The uri to write into the tag's NDEF record.
@@ -30,12 +56,22 @@ data class NfcTagPayload(
      */
     fun toTagUri(): String = buildString {
         append(SCHEME).append("://").append(HOST).append('?')
-        append(PARAM_MEDIA).append('=').append(encode(mediaUri))
+        // A media tag keeps writing `media`, exactly as the first tags did, so nothing
+        // written before this existed has to be written again. The other two name an
+        // action instead, and a reader that finds `media` never looks at it.
+        when (val current = action) {
+            is NfcTagAction.PlayMedia -> append(PARAM_MEDIA).append('=').append(encode(current.uri))
+            NfcTagAction.TransferQueue -> append(PARAM_ACTION).append('=').append(ACTION_TRANSFER)
+            NfcTagAction.Resume -> append(PARAM_ACTION).append('=').append(ACTION_RESUME)
+        }
         if (!playerId.isNullOrBlank()) {
             append('&').append(PARAM_PLAYER).append('=').append(encode(playerId))
         }
         if (!label.isNullOrBlank()) {
             append('&').append(PARAM_LABEL).append('=').append(encode(label.take(MAX_LABEL_LENGTH)))
+        }
+        volume?.coerceIn(MIN_VOLUME, MAX_VOLUME)?.let {
+            append('&').append(PARAM_VOLUME).append('=').append(it)
         }
     }
 
@@ -44,6 +80,13 @@ data class NfcTagPayload(
         const val HOST = "play"
 
         private const val PARAM_MEDIA = "media"
+        private const val PARAM_ACTION = "action"
+        private const val PARAM_VOLUME = "vol"
+
+        const val MIN_VOLUME = 0
+        const val MAX_VOLUME = 100
+        private const val ACTION_TRANSFER = "transfer"
+        private const val ACTION_RESUME = "resume"
         private const val PARAM_PLAYER = "player"
         private const val PARAM_LABEL = "label"
 
@@ -67,11 +110,27 @@ data class NfcTagPayload(
             if (split < 0) return null
 
             val params = parseQuery(rest.substring(split + 1))
-            val media = params[PARAM_MEDIA]?.takeIf { it.isNotBlank() } ?: return null
+            val player = params[PARAM_PLAYER]?.takeIf { it.isNotBlank() }
+            val media = params[PARAM_MEDIA]?.takeIf { it.isNotBlank() }
+            // Media first, so a tag written before actions existed reads the same as it
+            // always did and an action alongside it is ignored rather than fought over.
+            val action = when {
+                media != null -> NfcTagAction.PlayMedia(media)
+                // Both of these are about a speaker, so without one there is nothing to
+                // act on and the tag is not ours to use.
+                player == null -> return null
+                params[PARAM_ACTION] == ACTION_TRANSFER -> NfcTagAction.TransferQueue
+                params[PARAM_ACTION] == ACTION_RESUME -> NfcTagAction.Resume
+                else -> return null
+            }
             return NfcTagPayload(
-                mediaUri = media,
-                playerId = params[PARAM_PLAYER]?.takeIf { it.isNotBlank() },
-                label = params[PARAM_LABEL]?.takeIf { it.isNotBlank() }
+                action = action,
+                playerId = player,
+                label = params[PARAM_LABEL]?.takeIf { it.isNotBlank() },
+                // A level outside the scale, or one that is not a number at all, is read as
+                // no instruction rather than clamped: a tag saying something impossible
+                // should leave the volume where the listener left it.
+                volume = params[PARAM_VOLUME]?.toIntOrNull()?.takeIf { it in MIN_VOLUME..MAX_VOLUME }
             )
         }
 

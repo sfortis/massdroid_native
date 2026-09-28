@@ -6,18 +6,21 @@ import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -25,6 +28,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -44,9 +49,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.data.nfc.NfcTagRecord
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.Player
+import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.domain.nfc.NfcTagPayload
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
@@ -74,7 +81,44 @@ private sealed interface WriteStage {
  * the server reports, and the album of the track itself. They are genuinely different
  * requests and neither is obviously the one meant, so the choice is the user's.
  */
-data class NfcWriteChoice(val uri: String, val label: String, val kind: String)
+data class NfcWriteChoice(
+    val action: NfcTagAction,
+    /** What the row says, which is the thing itself for media and the deed for a speaker. */
+    val title: String,
+    /** The line under it, which says what tapping will actually do. */
+    val detail: String,
+    /**
+     * What goes on the tag and is read back out on a tap. Separate from [title] because a
+     * speaker row is named after the action, and a toast saying "Playing Move what is
+     * playing here" would be nonsense.
+     */
+    val tagLabel: String
+)
+
+/**
+ * The two things a tag written for a speaker can do.
+ *
+ * Both are about the speaker rather than about any particular music, which is what makes a
+ * tag by the door worth having: it moves the listening into the room instead of starting
+ * something new. Lives here rather than in either screen that offers it, because both do.
+ */
+fun speakerTagChoices(player: Player): List<NfcWriteChoice> = listOf(
+    NfcWriteChoice(
+        action = NfcTagAction.TransferQueue,
+        title = "Move what is playing here",
+        detail = "Takes over from wherever the music is, at the same point",
+        // Distinct from the other row's, because this is what the toast reads back and
+        // what names the tag in settings. Two tags for one speaker that both said just
+        // the speaker's name were indistinguishable in both places.
+        tagLabel = "${player.displayName}, moved here"
+    ),
+    NfcWriteChoice(
+        action = NfcTagAction.Resume,
+        title = "Just send play",
+        detail = "Starts whatever is already in its queue",
+        tagLabel = "${player.displayName}, play"
+    )
+)
 
 /**
  * Writes an album or a playlist onto a tag, bound to the speaker the user picks.
@@ -91,6 +135,12 @@ data class NfcWriteChoice(val uri: String, val label: String, val kind: String)
 fun NfcWriteSheet(
     choices: List<NfcWriteChoice>,
     onDismiss: () -> Unit,
+    /**
+     * The speaker this tag is for, when the caller already knows it. Passing one skips the
+     * speaker step: a tag written from a speaker's own settings is about that speaker, and
+     * asking again which speaker it is would be asking the same question twice.
+     */
+    fixedPlayer: Player? = null,
     viewModel: NfcWriteViewModel = hiltViewModel()
 ) {
     if (choices.isEmpty()) return
@@ -100,13 +150,13 @@ fun NfcWriteSheet(
     val view = LocalView.current
     val activity = context as? Activity
     val writer = remember(activity) { activity?.let { NfcTagWriter(it) } }
-    var stage by remember(choices) {
-        mutableStateOf<WriteStage>(
-            choices.singleOrNull()
-                ?.let { WriteStage.ChoosingPlayer(it) }
-                ?: WriteStage.ChoosingMedia(choices)
-        )
+    var stage by remember(choices, fixedPlayer) {
+        mutableStateOf(startingStage(choices, fixedPlayer))
     }
+    // Null means the tag says nothing about volume and leaves it where the listener had
+    // it. Offered on the last screen rather than as a step of its own, so a tag that does
+    // not care about volume costs no extra tap.
+    var tagVolume by remember(choices, fixedPlayer) { mutableStateOf<Int?>(null) }
 
     // Re-read on every resume. The adapter's own state is a plain getter, so reading it
     // once during composition left the sheet stuck on "NFC is off" after the user took
@@ -130,10 +180,13 @@ fun NfcWriteSheet(
     // one arrives. Read through rememberUpdatedState because the reader callback is
     // installed once and would otherwise keep looking at the stage this ran on.
     val currentStage by rememberUpdatedState(stage)
+    val currentVolume by rememberUpdatedState(tagVolume)
     val currentPlayerName by rememberUpdatedState((stage as? WriteStage.Waiting)?.playerName)
     DisposableEffect(writer) {
         writer?.startWriting(
-            payloadFor = { (currentStage as? WriteStage.Waiting)?.payload }
+            payloadFor = {
+                (currentStage as? WriteStage.Waiting)?.payload?.copy(volume = currentVolume)
+            }
         ) { payload, result ->
             // Before anything on screen, because the phone is against a tag and the screen
             // is not being looked at.
@@ -146,13 +199,14 @@ fun NfcWriteSheet(
                 viewModel.remember(
                     NfcTagRecord(
                         tagId = result.tagId,
-                        mediaUri = payload.mediaUri,
+                        mediaUri = payload.mediaUri.orEmpty(),
                         playerId = payload.playerId,
                         // From the payload, which was frozen when the speaker was chosen.
                         // Taking it live could record one album's name against another
                         // album's uri.
                         label = payload.label.orEmpty(),
                         playerName = currentPlayerName,
+                        volume = payload.volume,
                         writtenAtMs = System.currentTimeMillis()
                     )
                 )
@@ -176,7 +230,11 @@ fun NfcWriteSheet(
                 )
             )
             Text(
-                text = (stage as? WriteStage.ChoosingPlayer)?.media?.label
+                // Who or what this tag is being made for, said once here so no row has to
+                // repeat it. Falls back to the media once one is chosen, and to the
+                // speaker whenever the caller already settled that.
+                text = fixedPlayer?.displayName
+                    ?: (stage as? WriteStage.ChoosingPlayer)?.media?.tagLabel
                     ?: (stage as? WriteStage.Waiting)?.payload?.label
                     ?: "Choose what it should start",
                 style = MaterialTheme.typography.bodyMedium,
@@ -207,23 +265,23 @@ fun NfcWriteSheet(
                 }
                 else -> when (val current = stage) {
                     is WriteStage.ChoosingMedia -> MediaChoice(
+                        prompt = if (fixedPlayer != null) {
+                            "What should a tap on this tag do?"
+                        } else {
+                            "What should this tag start?"
+                        },
                         choices = current.choices,
-                        onChosen = { stage = WriteStage.ChoosingPlayer(it) }
+                        onChosen = { chosen ->
+                            stage = fixedPlayer
+                                ?.let { waitingFor(chosen, it) }
+                                ?: WriteStage.ChoosingPlayer(chosen)
+                        }
                     )
                     is WriteStage.ChoosingPlayer -> PlayerChoice(
                         media = current.media,
                         players = players,
                         selectedPlayerId = selectedPlayer?.playerId,
-                        onChosen = { player ->
-                            stage = WriteStage.Waiting(
-                                NfcTagPayload(
-                                    mediaUri = current.media.uri,
-                                    playerId = player?.playerId,
-                                    label = current.media.label
-                                ),
-                                player?.displayName
-                            )
-                        }
+                        onChosen = { player -> stage = waitingFor(current.media, player) }
                     )
                     is WriteStage.Waiting -> Column {
                         val what = current.payload.label ?: "this"
@@ -233,8 +291,9 @@ fun NfcWriteSheet(
                                 ?.let { "Hold a tag against the back of the phone to play $what on $it." }
                                 ?: "Hold a tag against the back of the phone to play $what wherever you are."
                         )
+                        VolumeChoice(volume = tagVolume, onVolumeChange = { tagVolume = it })
                         MdTextButton(
-                            onClick = { stage = restart(choices) },
+                            onClick = { stage = startingStage(choices, fixedPlayer) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = SheetDefaults.HeaderHorizontalPadding)
@@ -254,7 +313,7 @@ fun NfcWriteSheet(
                                 if (current.result is NfcWriteResult.Written) {
                                     onDismiss()
                                 } else {
-                                    stage = restart(choices)
+                                    stage = startingStage(choices, fixedPlayer)
                                 }
                             },
                             modifier = Modifier
@@ -288,13 +347,14 @@ fun NfcWriteSheet(
  */
 @Composable
 private fun MediaChoice(
+    prompt: String,
     choices: List<NfcWriteChoice>,
     onChosen: (NfcWriteChoice) -> Unit
 ) {
     LazyColumn(modifier = Modifier.padding(bottom = 8.dp)) {
         item {
             Text(
-                text = "What should this tag start?",
+                text = prompt,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(
@@ -303,17 +363,26 @@ private fun MediaChoice(
                 )
             )
         }
-        items(choices, key = { it.uri }) { choice ->
+        // Keyed on the action, which is the one part that cannot repeat: two rows can
+        // carry the same title, as the queue's album and the current track's album do
+        // when a library copy and a provider copy of one record are both on offer, and a
+        // repeated key is a crash rather than a cosmetic problem.
+        items(choices, key = { it.action.toString() }) { choice ->
             ListItem(
                 colors = SheetDefaults.listItemColors(),
-                headlineContent = { Text(choice.label) },
-                supportingContent = { Text(choice.kind) },
+                headlineContent = { Text(choice.title) },
+                supportingContent = { Text(choice.detail) },
                 leadingContent = {
                     Icon(
-                        imageVector = if (choice.kind.startsWith("Playlist")) {
-                            Icons.AutoMirrored.Filled.QueueMusic
-                        } else {
-                            Icons.Default.Album
+                        imageVector = when (choice.action) {
+                            is NfcTagAction.PlayMedia ->
+                                if (choice.detail.startsWith("Playlist")) {
+                                    Icons.AutoMirrored.Filled.QueueMusic
+                                } else {
+                                    Icons.Default.Album
+                                }
+                            NfcTagAction.TransferQueue -> Icons.AutoMirrored.Filled.CallMade
+                            NfcTagAction.Resume -> Icons.Default.PlayArrow
                         },
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -325,11 +394,24 @@ private fun MediaChoice(
     }
 }
 
-/** Back to the sheet's first question, which depends on how much it was given. */
-private fun restart(choices: List<NfcWriteChoice>): WriteStage =
-    choices.singleOrNull()
-        ?.let { WriteStage.ChoosingPlayer(it) }
-        ?: WriteStage.ChoosingMedia(choices)
+/**
+ * The sheet's first question, which depends on how much the caller already settled. One
+ * thing to write and a known speaker leaves nothing to ask, so it goes straight to the tag.
+ */
+private fun startingStage(choices: List<NfcWriteChoice>, fixedPlayer: Player?): WriteStage {
+    val only = choices.singleOrNull() ?: return WriteStage.ChoosingMedia(choices)
+    return fixedPlayer?.let { waitingFor(only, it) } ?: WriteStage.ChoosingPlayer(only)
+}
+
+private fun waitingFor(media: NfcWriteChoice, player: Player?): WriteStage.Waiting =
+    WriteStage.Waiting(
+        NfcTagPayload(
+            action = media.action,
+            playerId = player?.playerId,
+            label = media.tagLabel
+        ),
+        player?.displayName
+    )
 
 @Composable
 private fun PlayerChoice(
@@ -341,7 +423,7 @@ private fun PlayerChoice(
     LazyColumn(modifier = Modifier.padding(bottom = 8.dp)) {
         item {
             Text(
-                text = "Which speaker should ${media.label} start playing on?",
+                text = "Which speaker should ${media.tagLabel} start playing on?",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(
@@ -393,7 +475,11 @@ private fun PlayerChoice(
                 modifier = Modifier.clickable { onChosen(player) }
             )
         }
-        item {
+        // Offered only for media. A transfer or a resume names a speaker and nothing else,
+        // so one written without one is refused on every tap: a tag that writes and is
+        // dead is worse than an option that is not there.
+        if (media.action is NfcTagAction.PlayMedia) {
+            item {
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             ListItem(
                 colors = SheetDefaults.listItemColors(),
@@ -408,9 +494,54 @@ private fun PlayerChoice(
                 },
                 modifier = Modifier.clickable { onChosen(null) }
             )
+            }
         }
     }
 }
+
+/**
+ * The optional level the tag sets before it starts anything.
+ *
+ * Off by default, because most tags have no opinion about volume and a tag that quietly
+ * changed it would be worse than one that did not offer to. Switching it on starts from
+ * the middle rather than from whatever the speaker is at now: the speaker the tag names
+ * may not be the one playing, and reading a level off the wrong one would be a guess
+ * dressed up as a default.
+ */
+@Composable
+private fun VolumeChoice(volume: Int?, onVolumeChange: (Int?) -> Unit) {
+    Column(modifier = Modifier.padding(horizontal = SheetDefaults.HeaderHorizontalPadding)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Set the volume too", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = volume?.let { "The tag will set it to $it%" }
+                        ?: "The tag will leave the volume alone",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = volume != null,
+                onCheckedChange = { on -> onVolumeChange(if (on) DEFAULT_TAG_VOLUME else null) }
+            )
+        }
+        if (volume != null) {
+            Slider(
+                value = volume.toFloat(),
+                onValueChange = { onVolumeChange(it.roundToInt()) },
+                valueRange = NfcTagPayload.MIN_VOLUME.toFloat()..NfcTagPayload.MAX_VOLUME.toFloat()
+            )
+        }
+    }
+}
+
+/** Where the slider starts when it is switched on. */
+private const val DEFAULT_TAG_VOLUME = 50
 
 @Composable
 private fun NfcMessage(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {

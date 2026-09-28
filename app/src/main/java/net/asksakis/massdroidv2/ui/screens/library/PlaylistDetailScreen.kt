@@ -53,6 +53,7 @@ import net.asksakis.massdroidv2.ui.components.MediaItemRow
 import net.asksakis.massdroidv2.ui.util.formatPlaybackTime
 import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 
@@ -90,7 +91,12 @@ fun PlaylistDetailScreen(
 
     if (showNfcWrite && viewModel.playlistUri.isNotBlank()) {
         NfcWriteSheet(
-            choices = listOf(NfcWriteChoice(viewModel.playlistUri, playlistName, "Playlist")),
+            choices = listOf(NfcWriteChoice(
+                    action = NfcTagAction.PlayMedia(viewModel.playlistUri),
+                    title = playlistName,
+                    detail = "Playlist",
+                    tagLabel = playlistName
+                )),
             onDismiss = { showNfcWrite = false }
         )
     }

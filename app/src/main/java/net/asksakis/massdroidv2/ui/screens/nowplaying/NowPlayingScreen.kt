@@ -77,6 +77,7 @@ import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.LyricsSheet
@@ -652,12 +653,15 @@ private fun NowPlayingPortrait(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(paddingValues)
-            .padding(horizontal = 24.dp),
+            .padding(paddingValues),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(modifier = Modifier.weight(0.5f))
 
+        // The only child that runs the full width of the screen. A swipe has to bring a
+        // cover in from an edge and take one out at an edge, and the surface this is
+        // clipped to is what decides where that edge is. Everything below is inset
+        // instead, which is where the screen's margin moved to.
         SwipeableAlbumArt(
             imageUrl = imageUrl,
             previousImageUrl = previousImageUrl,
@@ -671,101 +675,110 @@ private fun NowPlayingPortrait(
 
         Spacer(modifier = Modifier.weight(0.5f))
 
-        QualityActionRow(
-            audioFormat = audioFormat,
-            currentTrack = currentTrack,
-            viewModel = viewModel,
-            onShowPlaylistDialog = onShowPlaylistDialog,
-            onShowLyrics = onShowLyrics,
-            onNavigateToQueue = onNavigateToQueue,
-            onShowSendspinStatus = onShowSendspinStatus,
-            isSendspinPlayer = isSendspinPlayer,
-            enabled = controlsEnabled
-        )
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        TrackInfoSection(
-            title = title,
-            artist = artist,
-            album = album,
-            currentTrack = currentTrack,
-            onNavigateToArtist = onNavigateToArtist,
-            onNavigateToAlbum = onNavigateToAlbum
-        )
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        SeekBar(
-            elapsed = elapsedTime,
-            duration = duration,
-            onSeek = { if (controlsEnabled) viewModel.seek(it) },
-            enabled = controlsEnabled,
-            compact = true
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        TransportControls(
-            isPlaying = isPlaying,
-            queueState = queueState,
-            viewModel = viewModel,
-            enabled = controlsEnabled,
-            onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Volume indicator: fade in on change, fade out after 2s
-        val currentVolume = player?.volumeLevel ?: 0
-        val volumeMuted = player?.volumeMuted ?: false
-        var lastShownVolume by remember { mutableIntStateOf(currentVolume) }
-        val volumeAlpha = remember { Animatable(0f) }
-
-        LaunchedEffect(currentVolume, volumeMuted) {
-            if (lastShownVolume != currentVolume) {
-                lastShownVolume = currentVolume
-                volumeAlpha.animateTo(1f, tween(300))
-                delay(2000)
-                volumeAlpha.animateTo(0f, tween(1000))
-            }
-        }
-
-        // Fixed height so it doesn't push other components
-        Box(
+        // Everything under the artwork carries the screen margin that the column
+        // used to apply to all of its children, the artwork included.
+        Column(
             modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .height(24.dp),
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (volumeAlpha.value > 0.01f) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer { alpha = volumeAlpha.value },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        if (volumeMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    LinearProgressIndicator(
-                        progress = { currentVolume / 100f },
+            QualityActionRow(
+                audioFormat = audioFormat,
+                currentTrack = currentTrack,
+                viewModel = viewModel,
+                onShowPlaylistDialog = onShowPlaylistDialog,
+                onShowLyrics = onShowLyrics,
+                onNavigateToQueue = onNavigateToQueue,
+                onShowSendspinStatus = onShowSendspinStatus,
+                isSendspinPlayer = isSendspinPlayer,
+                enabled = controlsEnabled
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            TrackInfoSection(
+                title = title,
+                artist = artist,
+                album = album,
+                currentTrack = currentTrack,
+                onNavigateToArtist = onNavigateToArtist,
+                onNavigateToAlbum = onNavigateToAlbum
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            SeekBar(
+                elapsed = elapsedTime,
+                duration = duration,
+                onSeek = { if (controlsEnabled) viewModel.seek(it) },
+                enabled = controlsEnabled,
+                compact = true
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            TransportControls(
+                isPlaying = isPlaying,
+                queueState = queueState,
+                viewModel = viewModel,
+                enabled = controlsEnabled,
+                onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Volume indicator: fade in on change, fade out after 2s
+            val currentVolume = player?.volumeLevel ?: 0
+            val volumeMuted = player?.volumeMuted ?: false
+            var lastShownVolume by remember { mutableIntStateOf(currentVolume) }
+            val volumeAlpha = remember { Animatable(0f) }
+
+            LaunchedEffect(currentVolume, volumeMuted) {
+                if (lastShownVolume != currentVolume) {
+                    lastShownVolume = currentVolume
+                    volumeAlpha.animateTo(1f, tween(300))
+                    delay(2000)
+                    volumeAlpha.animateTo(0f, tween(1000))
+                }
+            }
+
+            // Fixed height so it doesn't push other components
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .height(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (volumeAlpha.value > 0.01f) {
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(4.dp)
-                            .clip(MaterialTheme.shapes.small),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
-                    )
-                    Text(
-                        text = "$currentVolume%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                            .fillMaxWidth()
+                            .graphicsLayer { alpha = volumeAlpha.value },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            if (volumeMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        LinearProgressIndicator(
+                            progress = { currentVolume / 100f },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(MaterialTheme.shapes.small),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+                        )
+                        Text(
+                            text = "$currentVolume%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -998,7 +1011,6 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
     // background went out and came back instead of turning over. Here the picture
     // leaving is still on screen underneath while the one arriving fades in above it.
     val slotUrls = remember { mutableStateListOf(imageUrl, null) }
-    var frontSlot by remember { mutableIntStateOf(0) }
     // The upper layer's opacity, and the whole of the crossfade: the lower layer is
     // always opaque, so fading the upper one to 1 reveals it and fading it to 0 gives
     // the lower one back. One value drives both directions.
@@ -1012,8 +1024,13 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
     )
 
     LaunchedEffect(imageUrl) {
-        if (imageUrl == slotUrls[frontSlot]) return@LaunchedEffect
-        val target = 1 - frontSlot
+        // Which layer is showing is read from the opacity rather than tracked beside it. A
+        // fade cancelled halfway used to leave a separate "front slot" claiming the layer
+        // it never reached, and the next change then aimed at the layer already on screen
+        // and never moved the opacity again, leaving the two albums blended for good.
+        val front = if (upperAlpha.value >= 0.5f) 1 else 0
+        if (imageUrl == slotUrls[front]) return@LaunchedEffect
+        val target = 1 - front
         slotUrls[target] = imageUrl
         // Wait for the arriving picture before fading to it, because fading to a layer
         // that has not decoded yet dissolves the old one into the bare surface and then
@@ -1035,7 +1052,6 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
             targetValue = if (target == 1) 1f else 0f,
             animationSpec = tween(BACKDROP_FADE_MS, easing = FastOutSlowInEasing)
         )
-        frontSlot = target
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1214,14 +1230,23 @@ private fun nfcWriteChoicesFor(
 ): List<NfcWriteChoice> {
     val fromSource = source
         ?.takeIf { it.uri.isNotBlank() && it.name.isNotBlank() }
-        ?.let { NfcWriteChoice(it.uri, it.name, sourceKindLabel(it.mediaType)) }
-    val fromTrack = currentTrack?.albumUri
-        ?.takeIf { it.isNotBlank() && it != fromSource?.uri }
         ?.let {
             NfcWriteChoice(
-                uri = it,
-                label = currentTrack.albumName.takeIf { name -> name.isNotBlank() } ?: albumName,
-                kind = "Album of the current track"
+                action = NfcTagAction.PlayMedia(it.uri),
+                title = it.name,
+                detail = sourceKindLabel(it.mediaType),
+                tagLabel = it.name
+            )
+        }
+    val fromTrack = currentTrack?.albumUri
+        ?.takeIf { it.isNotBlank() && it != fromSource?.mediaUriOrNull() }
+        ?.let { uri ->
+            val name = currentTrack.albumName.takeIf { it.isNotBlank() } ?: albumName
+            NfcWriteChoice(
+                action = NfcTagAction.PlayMedia(uri),
+                title = name,
+                detail = "Album of the current track",
+                tagLabel = name
             )
         }
     return listOfNotNull(fromSource, fromTrack)
@@ -1236,3 +1261,7 @@ private fun sourceKindLabel(mediaType: MediaType): String = when (mediaType) {
     MediaType.AUDIOBOOK -> "Audiobook, what is playing now"
     else -> "What is playing now"
 }
+
+/** The uri a choice plays, when it plays one. */
+private fun NfcWriteChoice.mediaUriOrNull(): String? =
+    (action as? NfcTagAction.PlayMedia)?.uri

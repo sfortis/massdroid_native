@@ -57,6 +57,7 @@ import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.MediaActionSheet
 import net.asksakis.massdroidv2.ui.components.MediaActionSheetExtraAction
+import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -789,7 +790,12 @@ fun LibraryScreen(
     nfcWriteTarget?.let { target ->
         NfcWriteSheet(
             choices = listOf(
-                NfcWriteChoice(target.uri, target.title, nfcKindOf(target.mediaType))
+                NfcWriteChoice(
+                    action = NfcTagAction.PlayMedia(target.uri),
+                    title = target.title,
+                    detail = nfcKindOf(target.mediaType),
+                    tagLabel = target.title
+                )
             ),
             onDismiss = { nfcWriteTarget = null }
         )

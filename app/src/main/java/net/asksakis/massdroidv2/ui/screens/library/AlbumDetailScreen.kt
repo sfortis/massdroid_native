@@ -58,6 +58,7 @@ import net.asksakis.massdroidv2.ui.components.RemoveFromLibraryDialog
 import net.asksakis.massdroidv2.ui.components.icons.Bookshelf
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
+import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
 
@@ -91,7 +92,12 @@ fun AlbumDetailScreen(
     if (showNfcWrite) {
         album?.let { target ->
             NfcWriteSheet(
-                choices = listOf(NfcWriteChoice(target.uri, target.name, "Album")),
+                choices = listOf(NfcWriteChoice(
+                        action = NfcTagAction.PlayMedia(target.uri),
+                        title = target.name,
+                        detail = "Album",
+                        tagLabel = target.name
+                    )),
                 onDismiss = { showNfcWrite = false }
             )
         }

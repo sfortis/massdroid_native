@@ -34,6 +34,8 @@ data class NfcTagRecord(
     val playerId: String?,
     val label: String,
     val playerName: String?,
+    /** The level the tag sets before it starts, or null when it leaves the volume alone. */
+    val volume: Int? = null,
     val writtenAtMs: Long
 )
 

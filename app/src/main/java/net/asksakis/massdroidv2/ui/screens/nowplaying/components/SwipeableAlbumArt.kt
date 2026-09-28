@@ -7,7 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.Icons
@@ -26,8 +26,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -43,8 +41,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.max
 import net.asksakis.massdroidv2.ui.components.MediaArtwork
+import net.asksakis.massdroidv2.ui.components.dropShadow
 
 private enum class SwipeCommitDirection { NEXT, PREVIOUS }
 
@@ -130,15 +128,14 @@ internal fun SwipeableAlbumArt(
     val shape = MaterialTheme.shapes.medium
 
     val outerModifier = if (fillMaxWidth) {
-        Modifier.fillMaxWidth(0.82f).aspectRatio(1f)
+        Modifier.fillMaxWidth().aspectRatio(SURFACE_ASPECT)
     } else {
-        Modifier.fillMaxWidth(0.82f).heightIn(max = 196.dp).aspectRatio(1f)
+        Modifier.fillMaxWidth().heightIn(max = SURFACE_MAX_COMPACT).aspectRatio(SURFACE_ASPECT)
     }
-    val artworkModifier = if (fillMaxWidth) {
-        Modifier.fillMaxWidth(0.915f).aspectRatio(1f)
-    } else {
-        Modifier.fillMaxSize()
-    }
+    // Sized off the surface's height, not its width. The surface is wider than it is tall
+    // so that a cover has somewhere to come from and somewhere to go, and sizing the cover
+    // off that width would make it grow with the room instead of staying put.
+    val artworkModifier = Modifier.fillMaxHeight(ARTWORK_FRACTION).aspectRatio(1f)
 
     suspend fun animateOffsetTo(target: Float, durationMs: Int, easing: androidx.compose.animation.core.Easing) {
         animate(
@@ -150,18 +147,14 @@ internal fun SwipeableAlbumArt(
 
     Box(
         modifier = outerModifier
-            // Both of Android's shadows are used. The ambient one surrounds the shape
-            // evenly and the spot one is cast from above, and it is the spot that
-            // carries most of the darkness: with it turned off, measured under the
-            // cover, the surface went from 85 to 81 over fifty pixels, which is the
-            // backdrop's own gradient and no shadow at all.
-            .shadow(
-                elevation = ALBUM_ART_SHADOW_ELEVATION,
-                shape = shape,
-                spotColor = ALBUM_ART_SHADOW_SPOT,
-                ambientColor = ALBUM_ART_SHADOW_AMBIENT
-            )
-            .clip(shape)
+            // The shadow is not here. This surface does not move, so a swipe slid the
+            // cover out from under its own shadow. It is on the cover itself now, and
+            // the room it needs inside this clip is what ARTWORK_FRACTION leaves over.
+            //
+            // Nothing rounds this clip. The artwork carries its own rounded corners, and
+            // rounding the surface as well cut the corners off the shadow. What the clip
+            // is for is keeping the covers either side out of sight until a drag pulls
+            // one in, and a rectangle does that.
             .clipToBounds()
             .onSizeChanged { containerWidth = it.width }
             .pointerInput(Unit) {
@@ -280,13 +273,15 @@ internal fun SwipeableAlbumArt(
             carriedImageUrl = null
         }
 
-        fun buildImageRequest(url: String?) = ImageRequest.Builder(context)
+        fun buildImageRequest(url: String?, requestPx: Int) = ImageRequest.Builder(context)
             .data(url)
-            .size(max(containerWidth, 512))
+            .size(requestPx)
             .crossfade(false)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCachePolicy(CachePolicy.ENABLED)
             .build()
+
+        val requestPx = artworkRequestPx(containerWidth)
 
         // While a commit runs, both ends are the copies taken when it started.
         // Outside a commit they are the live values.
@@ -319,7 +314,7 @@ internal fun SwipeableAlbumArt(
                     SlotRole.NEXT -> nextImage
                 }
                 if (url != null) {
-                    val request = remember(url, containerWidth) { buildImageRequest(url) }
+                    val request = remember(url, requestPx) { buildImageRequest(url, requestPx) }
                     MediaArtwork(
                         model = request,
                         contentDescription = when (role) {
@@ -335,7 +330,11 @@ internal fun SwipeableAlbumArt(
                             .zIndex(if (role == SlotRole.CURRENT) 1f else 0f)
                             .graphicsLayer {
                                 val drive = driveOffset(commitProgress, commitStart, commitEdge, offsetX)
-                                val eased = easedProgressOf(drive, size.width)
+                                // Measured against the surface, which is how far a commit
+                                // actually travels, rather than against the cover. Against
+                                // the cover the fade finished while the cover was still on
+                                // screen, and it vanished before it reached the edge.
+                                val eased = easedProgressOf(drive, containerWidth.toFloat())
                                 if (role == SlotRole.CURRENT) {
                                     translationX = drive
                                     scaleX = 1f - 0.20f * eased
@@ -355,7 +354,16 @@ internal fun SwipeableAlbumArt(
                                     scaleY = scaleX
                                     this.alpha = incomingAlphaOf(eased)
                                 }
-                            },
+                            }
+                            // Under the layer that moves the cover, so it travels, scales
+                            // and fades with it, and the artwork itself covers the middle
+                            // of it.
+                            .dropShadow(
+                                shape = shape,
+                                color = ALBUM_ART_SHADOW_COLOR,
+                                blurRadius = ALBUM_ART_SHADOW_BLUR,
+                                offsetY = ALBUM_ART_SHADOW_OFFSET_Y
+                            ),
                         shape = shape,
                         iconSize = 64.dp,
                         contentScale = ContentScale.Crop
@@ -411,6 +419,26 @@ private fun incomingTranslation(
     return from - from * progress
 }
 
+/**
+ * The pixel size to decode a cover at, stepped rather than followed pixel by pixel.
+ *
+ * A new [ImageRequest] puts `SubcomposeAsyncImage` back into its loading state, and the
+ * placeholder it draws for that frame reads as a blink. The surface's width does move on
+ * its own: navigating back brings the navigation bar and the mini player back while this
+ * screen is still animating out, which leaves the screen shorter, and a surface with a
+ * fixed aspect ratio that no longer fits the height is sized from the height instead. Three
+ * steps cover every screen the app runs on, so that movement no longer reaches the request.
+ */
+private fun artworkRequestPx(containerWidth: Int): Int = when {
+    containerWidth <= ARTWORK_REQUEST_SMALL -> ARTWORK_REQUEST_SMALL
+    containerWidth <= ARTWORK_REQUEST_MEDIUM -> ARTWORK_REQUEST_MEDIUM
+    else -> ARTWORK_REQUEST_LARGE
+}
+
+private const val ARTWORK_REQUEST_SMALL = 512
+private const val ARTWORK_REQUEST_MEDIUM = 1024
+private const val ARTWORK_REQUEST_LARGE = 2048
+
 /** How far along its travel the art is, eased, from an offset and the surface's width. */
 private fun easedProgressOf(offset: Float, width: Float): Float {
     val span = width.coerceAtLeast(1f)
@@ -422,11 +450,50 @@ private fun incomingScaleOf(easedProgress: Float): Float = 0.74f + 0.26f * eased
 private fun incomingAlphaOf(easedProgress: Float): Float =
     (0.02f + 0.98f * easedProgress).coerceIn(0f, 1f)
 
-/** Fraction of the art's width a drag must pass before it counts as a track change. */
-private const val SWIPE_COMMIT_FRACTION = 0.25f
+/**
+ * Fraction of the surface's width a drag must pass before it counts as a track change.
+ *
+ * The surface is the full width of the screen, so this is a smaller fraction than it looks:
+ * it works out at the same 83dp of finger travel as before the surface grew.
+ */
+private const val SWIPE_COMMIT_FRACTION = 0.20f
 
-/** How far the art either side travels while the current one is dragged away. */
-private const val INCOMING_TRAVEL_FACTOR = 0.94f
+/**
+ * The surface's shape: wider than it is tall.
+ *
+ * The surface runs the full width of the screen, so that the cover a swipe brings in
+ * arrives from the screen's own edge and the one it takes out leaves at the other. Were it
+ * square it would then be as tall as the screen is wide, which is 77dp more than the
+ * artwork needs, and that height would come out of everything below it. This keeps the
+ * height where it was and gives all of the extra width to the sides, which is where the
+ * covers travel.
+ */
+private const val SURFACE_ASPECT = 1.23f
+
+/** The surface's ceiling where the screen is short, which is the landscape layout. */
+private val SURFACE_MAX_COMPACT = 220.dp
+
+/**
+ * How much of the surface's height the cover takes, leaving the rest for its shadow.
+ *
+ * The surface clips, so a shadow on the cover is cut at its edge unless the cover stops
+ * short of it. What is left over here, eleven and a half percent of the height above and
+ * below, is about 38dp on a 1080 wide screen, against the 32dp a `0 8 24` shadow reaches
+ * below the cover. Sideways there is far more room than the shadow needs, and that room is
+ * the travel the covers either side need.
+ */
+private const val ARTWORK_FRACTION = 0.77f
+
+/**
+ * How far the art either side travels while the current one is dragged away.
+ *
+ * Tied to [SURFACE_ASPECT] and [ARTWORK_FRACTION]: the covers either side rest a whole
+ * travel out, scaled to [incomingScaleOf] at zero, and their near edge has to land outside
+ * the clip or a sliver of them shows down each side. The clip now reaches half the
+ * surface's width, which is `SURFACE_ASPECT / (2 * ARTWORK_FRACTION)` of the cover, so the
+ * travel has to clear that plus half the resting cover, which is 1.17 at the values above.
+ */
+private const val INCOMING_TRAVEL_FACTOR = 1.25f
 
 /**
  * One curve for the whole commit, shorter than the 380 ms the old two-part
@@ -448,21 +515,18 @@ private const val NO_COMMIT = -1f
 private const val CARRIED_ARTWORK_TTL_MS = 5000L
 
 /**
- * The lift under the cover.
+ * The cover's shadow, drawn rather than lifted.
  *
- * Elevation sets the blur radius as well as the depth, so this is really a choice of how
- * far the shade reaches. Twenty-eight spread it so thin that nothing was left to see. This
- * is scaled from the Music Assistant web client, whose cards use an eight pixel blur on
- * artwork about a third of this size.
+ * Taken from the Music Assistant web client, which gives the full player's artwork
+ * `box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25)`. The offset is what gives the cover
+ * somewhere to sit and the blur is what makes the edge soft instead of a rim. The shade is
+ * darker than the web client's because it falls on a blurred copy of the same artwork
+ * rather than on a flat page.
+ *
+ * The platform's elevation shadow used to do this job and could not: its blur is tied to
+ * its depth, so reaching far enough meant spreading the darkness until nothing was left to
+ * see, and its offset cannot be set at all.
  */
-private val ALBUM_ART_SHADOW_ELEVATION = 12.dp
-
-/**
- * The cast shadow, which is what the eye actually reads, and the even one around the rest
- * of the shape. The spot is the stronger of the two on purpose: it falls below the cover
- * and gives it somewhere to sit, which is the same thing the web client's `0 2px` offset
- * does. Both are honoured from API 28; below that the platform uses its own black and the
- * shadow comes out heavier.
- */
-private val ALBUM_ART_SHADOW_SPOT = Color.Black.copy(alpha = 0.45f)
-private val ALBUM_ART_SHADOW_AMBIENT = Color.Black.copy(alpha = 0.30f)
+private val ALBUM_ART_SHADOW_BLUR = 24.dp
+private val ALBUM_ART_SHADOW_OFFSET_Y = 8.dp
+private val ALBUM_ART_SHADOW_COLOR = Color.Black.copy(alpha = 0.32f)

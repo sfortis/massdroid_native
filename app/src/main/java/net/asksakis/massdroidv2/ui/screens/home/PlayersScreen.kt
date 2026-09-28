@@ -41,6 +41,8 @@ import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.fadingEdges
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
+import net.asksakis.massdroidv2.ui.nfc.speakerTagChoices
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerType
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -174,6 +176,21 @@ fun PlayersScreen(
                     var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
                     var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
                     var settingsPlayer by remember { mutableStateOf<Player?>(null) }
+                    var nfcWriteFor by remember { mutableStateOf<Player?>(null) }
+                    // Offered only where there is a chip to write with.
+                    val nfcContext = androidx.compose.ui.platform.LocalContext.current
+                    val hasNfc = remember(nfcContext) {
+                        nfcContext.packageManager
+                            .hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
+                    }
+
+                    nfcWriteFor?.let { target ->
+                        NfcWriteSheet(
+                            choices = speakerTagChoices(target),
+                            fixedPlayer = target,
+                            onDismiss = { nfcWriteFor = null }
+                        )
+                    }
                     var groupPlayer by remember { mutableStateOf<Player?>(null) }
                     var syncSpeakersFor by remember { mutableStateOf<Player?>(null) }
                     var showCreateGroup by remember { mutableStateOf(false) }
@@ -284,6 +301,14 @@ fun PlayersScreen(
                             onSyncSpeakers = {
                                 syncSpeakersFor = player
                                 queueMenuPlayer = null
+                            },
+                            onWriteNfcTag = if (hasNfc) {
+                                {
+                                    nfcWriteFor = player
+                                    queueMenuPlayer = null
+                                }
+                            } else {
+                                null
                             },
                             onDeleteGroup = if (player.type == PlayerType.GROUP) {
                                 {
@@ -852,6 +877,8 @@ private fun PlayerQueueSheet(
     onConfigureRoom: (() -> Unit)? = null,
     onGroupWith: () -> Unit,
     onSyncSpeakers: (() -> Unit)? = null,
+    /** Write a tag for this speaker. Null on a phone with no NFC chip. */
+    onWriteNfcTag: (() -> Unit)? = null,
     onDeleteGroup: (() -> Unit)? = null,
     onBreakSync: (() -> Unit)? = null,
     onPowerToggle: ((powered: Boolean) -> Unit)? = null,
@@ -980,6 +1007,22 @@ private fun PlayerQueueSheet(
                             },
                             modifier = Modifier.clickable {
                                 onSyncSpeakers!!()
+                                onDismiss()
+                            }
+                        )
+                    }
+                    // Under Sync speakers, because both are things done to this speaker
+                    // rather than to what it is playing.
+                    if (onWriteNfcTag != null) {
+                        ListItem(
+                            colors = SheetDefaults.listItemColors(),
+                            headlineContent = { Text("Write NFC tag...") },
+                            supportingContent = { Text("Tap the tag to bring the music here") },
+                            leadingContent = {
+                                Icon(Icons.Default.Nfc, contentDescription = null)
+                            },
+                            modifier = Modifier.clickable {
+                                onWriteNfcTag()
                                 onDismiss()
                             }
                         )

@@ -4,6 +4,8 @@ import android.util.Log
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector
+import net.asksakis.massdroidv2.domain.player.QueueTransfer
+import net.asksakis.massdroidv2.domain.player.QueueTransferOutcome
 import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -45,6 +47,10 @@ class NfcTapExecutor @Inject constructor(
     private val connector: SavedCredentialsConnector
 ) {
 
+    // Built here rather than injected, which is how every view model that moves a queue
+    // does it: the class is a pair of repositories and a method, with nothing to share.
+    private val queueTransfer = QueueTransfer(musicRepository, playerRepository)
+
     suspend fun execute(payload: NfcTagPayload): NfcTapOutcome {
         if (!connector.connectIfNeeded()) {
             Log.w(TAG, "Not connected, dropping ${payload.mediaUri}")
@@ -80,27 +86,66 @@ class NfcTapExecutor @Inject constructor(
         // and leaving it behind would point them at the speaker the user just walked away
         // from. A selection lock refuses the change (the car holds one), and the music
         // still goes where the tag said.
+        // Read before the selection moves, because selectPlayer starts a refresh of the
+        // TARGET's queue on its own scope, and that refresh overwrites the published queue
+        // state. Reading after it meant the source was the target by the time the transfer
+        // looked, the guard below failed, and a tag meant to move the music silently
+        // started whatever the speaker already had.
+        val sourceQueueId = playerRepository.queueState.value?.queueId
+
         val selected = playerRepository.selectPlayer(targetId)
         if (!selected) Log.d(TAG, "Selection locked elsewhere; playing on $targetId anyway")
 
         return try {
-            playerRepository.setQueueFilterMode(targetId, PlayerRepository.QueueFilterMode.NORMAL)
-            // Replace, because a tap on a tag means start this now. Leaving the option out
-            // lets the server decide between replacing and appending, which would turn a
-            // second tap into a growing queue rather than the restart it reads as.
-            //
-            // Awaited, because the toast is the only thing a tap ever says and it should not
-            // say "playing" for a uri the server refused. The wait is capped: a large
-            // container can keep the server busy well past the point where standing in front
-            // of a speaker holding a phone stops being reasonable, and by then the command is
-            // sent and the music is the server's business.
-            withTimeoutOrNull(PLAY_CONFIRM_MS) {
-                musicRepository.playMedia(
-                    queueId = targetId,
-                    uri = payload.mediaUri,
-                    option = "replace",
-                    awaitResponse = true
-                )
+            // Before the music, so the first thing heard is already at the right level
+            // rather than arriving loud and being turned down.
+            payload.volume?.let { level ->
+                Log.d(TAG, "Setting $targetId to $level before starting")
+                playerRepository.setVolume(targetId, level)
+            }
+            when (val action = payload.action) {
+                is NfcTagAction.PlayMedia -> {
+                    playerRepository.setQueueFilterMode(targetId, PlayerRepository.QueueFilterMode.NORMAL)
+                    // Replace, because a tap on a tag means start this now. Leaving the
+                    // option out lets the server decide between replacing and appending,
+                    // which would turn a second tap into a growing queue rather than the
+                    // restart it reads as.
+                    //
+                    // Awaited, because the toast is the only thing a tap ever says and it
+                    // should not say "playing" for a uri the server refused. The wait is
+                    // capped: a large container can keep the server busy well past the point
+                    // where standing in front of a speaker holding a phone stops being
+                    // reasonable, and by then the command is sent and the music is the
+                    // server's business.
+                    withTimeoutOrNull(PLAY_CONFIRM_MS) {
+                        musicRepository.playMedia(
+                            queueId = targetId,
+                            uri = action.uri,
+                            option = "replace",
+                            awaitResponse = true
+                        )
+                    }
+                }
+                NfcTagAction.TransferQueue -> {
+                    // Only worth moving when something is playing somewhere else. A tag by
+                    // a speaker is tapped on the way past, and the most likely state is
+                    // that the music is in the room just left.
+                    if (sourceQueueId != null && sourceQueueId != targetId) {
+                        // The transfer reports rather than throws, so the outcome has to be
+                        // read: without this a server that refused the move still produced
+                        // a toast saying the music had started.
+                        val outcome = queueTransfer.moveAndFollow(sourceQueueId, targetId)
+                        if (outcome is QueueTransferOutcome.Failed) {
+                            Log.w(TAG, "Transfer to $targetId failed: ${outcome.cause.message}")
+                            return NfcTapOutcome.Failed(outcome.cause.message)
+                        }
+                    } else {
+                        // Nothing to bring, so do the other useful thing rather than
+                        // nothing at all: start what this speaker already holds.
+                        playerRepository.play(targetId)
+                    }
+                }
+                NfcTagAction.Resume -> playerRepository.play(targetId)
             }
             NfcTapOutcome.Started(payload.label, player.displayName)
         } catch (e: EverythingBlockedException) {
