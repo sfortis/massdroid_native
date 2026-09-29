@@ -1,7 +1,6 @@
 package net.asksakis.massdroidv2.ui.components
 
 import androidx.annotation.DrawableRes
-import net.asksakis.massdroidv2.R
 
 /**
  * One thing worth telling a returning listener about, in their words rather than ours.
@@ -40,50 +39,34 @@ data class WhatsNewRelease(
  */
 val currentWhatsNew = WhatsNewRelease(
     // Bump both on the release that carries the news, and leave them alone otherwise.
-    sinceVersionCode = 39,
-    versionName = "2.36.0",
+    sinceVersionCode = 40,
+    versionName = "2.37.0",
     items = listOf(
         WhatsNewItem(
-            title = "NFC tags",
-            body = "Write an album, a playlist or a speaker onto an NFC tag and leave it " +
-                "where you listen. Tapping your phone on it starts that music on that " +
-                "speaker, or moves what is already playing into that room, at the volume " +
-                "you chose.",
-            animation = R.drawable.whatsnew_nfc_tag
-        ),
-        WhatsNewItem(
-            title = "Queue title",
-            body = "The queue is named after the playlist or album playing."
-        ),
-        WhatsNewItem(
-            title = "Play All",
-            body = "However long the playlist is. Your sort order is kept and blocked " +
-                "artists are skipped."
-        ),
-        WhatsNewItem(
-            title = "Library sorting",
-            body = "Albums by album artist, tracks by artist or length, playlists by when " +
-                "they changed."
-        ),
-        WhatsNewItem(
-            title = "Follow Me rooms",
-            body = "Put a player in a Follow Me room without opening the setup. Follow Me " +
-                "also scans less and costs less battery."
-        ),
-        WhatsNewItem(
-            title = "Now Playing",
-            body = "A swipe lands on the cover you were heading to, and shuffle and repeat " +
-                "read as set or unset."
+            title = "Audiobooks in search",
+            body = "Audiobooks and podcasts show up when you search, each with its own " +
+                "filter, and an audiobook starts straight from the results. The audiobook " +
+                "library no longer comes up empty either."
         ),
         WhatsNewItem(
             title = "Search",
-            body = "The keyboard's search key runs the search, and Deezer albums no longer " +
-                "go missing."
+            body = "It waits long enough for a slow server to answer instead of reporting " +
+                "a failure, and it no longer leaves the previous results under new text."
         ),
         WhatsNewItem(
-            title = "Playback stability",
-            body = "The phone as a speaker holds its connection, and a call pauses the " +
-                "music once instead of several times."
+            title = "Full player",
+            body = "It opens all the way to the top however you reach it, the cover keeps " +
+                "its shadow while you swipe, and the background has a fine grain."
+        ),
+        WhatsNewItem(
+            title = "Landscape",
+            body = "The cover is larger and the controls beside it are no longer pushed " +
+                "against the edge."
+        ),
+        WhatsNewItem(
+            title = "Local covers",
+            body = "Artwork for local music loads when you reach your server from outside " +
+                "your home network."
         )
     )
 )

@@ -50,35 +50,16 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- NFC tags: tap your phone on a tag to start an album or a playlist on a speaker, or to move what is already playing into that room, at the volume you chose.
-- The full player has a new look: the cover casts a real shadow, a swipe brings the next cover in from the edge of the screen, and the background changes over smoothly.
-- The queue is named after the playlist or album playing, instead of the word Queue.
-- After an update the app shows what is new, and the same list stays in Settings.
-- A new Diagnostics screen gathers the versions, the logs and the background setting you need when reporting a problem.
-- The library can now sort albums by album artist, tracks by artist or length, and playlists by when they were last changed.
-- Play All on a playlist or an album starts right away, however long it is, and the button now shows that it is working.
-- The order you see in a playlist is the order that plays, and tracks show their length so you can sort by it.
-- Artists you have blocked are no longer played when you start a whole playlist or album.
-- You can now put a player in a Follow Me room straight from the player settings, without opening the Follow Me setup.
-- Global search enhancements and bug fixes. (#76)
-- A command lost together with the connection now fails visibly, instead of reaching the screen as an empty answer from the server.
-- Follow Me is lighter on the battery: a phone that is still and already knows its room stops scanning, and a walk outside keeps the slow cadence.
-- The phone as a speaker is no longer dropped by the server right after it connects.
-- An interruption such as a call now pauses the music once instead of several times.
-- Fixed a crash that killed the app whenever the home screen widget was updated, including the moment you place it.
-- Search now remembers your recent searches and offers them when the field is empty, and it says so when nothing matched. (#72)
-- Holding a volume key raises the volume smoothly on a group instead of in jumps.
-- Home screen widget: album art, the track, the selected player and play, pause and skip buttons, as a 4x2 card or a 4x1 row. It works with the app closed and shows the last track as offline until the app reconnects.
-- Stereo pairs: a speaker can now play only the left or only the right channel, so two speakers in a group cover a room properly. The player settings were tidied up around it.
-- Play All on a big playlist starts in seconds instead of minutes. (#71, thanks @thanninger)
-- The music no longer starts on its own, and a notification no longer leaves it paused for good.
-- A phone playing in a group is no longer silent after the screen has been off for a while.
-- Ad-hoc sync groups show up as a group again, with their members marked. (#74)
-- Follow Me comes back on its own after a reboot or an app update, and is lighter on the battery while you drive.
-- Now Playing opens cleanly: its title bar sits below the status bar and the elapsed time no longer starts from a huge number.
-- Follow Me no longer crashes the app when Android restarts it in the background (the "MassDroid keeps stopping" message).
-- Now Playing: the album art now colours the whole player screen.
-- Various bug fixes.
+- Audiobooks and podcasts now appear in search, with their own filters, and an audiobook plays straight from the results.
+- The audiobook library no longer comes up empty when your audiobooks carry an author. (#77)
+- Search no longer reports a failure while the server is still answering, and it stops leaving the previous search's results under the new text. (#76)
+- Covers for local music load when you reach your server from outside your home network. (#66)
+- The full player opens all the way to the top of the screen, however you open it.
+- The cover keeps its shadow while you swipe to the next track.
+- The player background has a fine grain instead of a flat wash.
+- In landscape the cover is larger and the controls beside it sit where they should.
+- Playlists that cannot hold songs are no longer offered when adding one.
+- Album track numbers follow the disc, so a second disc starts at one again.
 
 ## Screenshots
 
