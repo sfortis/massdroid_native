@@ -60,8 +60,14 @@ class ImageUrlResolver @Inject constructor(
     /**
      * Resolve a single image to a loadable URL, covering both imageproxy routes across server
      * versions. Preference order: canonical proxy_id route -> direct URL -> legacy path proxy.
+     *
+     * Whatever [resolveOnServer] picks is rehosted before it is handed out, because an image path
+     * can itself be a finished imageproxy URL carrying the server's internal address (MA stores
+     * one that way for radio stations, and hands one out as the player's current media image).
      */
-    fun resolve(image: MediaItemImage): String? {
+    fun resolve(image: MediaItemImage): String? = resolveOnServer(image)?.let { rehostImageproxyUrl(it) }
+
+    private fun resolveOnServer(image: MediaItemImage): String? {
         val p = image.path.trim()
         if (p.isEmpty()) return null
         if (p.equals("none", ignoreCase = true) || p.equals("null", ignoreCase = true)) return null
@@ -100,14 +106,20 @@ class ImageUrlResolver @Inject constructor(
      * Loadability rank for [resolveItem] to prefer an image that actually renders:
      * proxy_id (3, loads anywhere) > local or public-remote (2, loads) > private-LAN remote with no
      * proxy_id on a 2.9+ server (1, on-LAN only). Higher is better.
+     *
+     * A private host is only a problem when the path points at the provider itself. One that is
+     * already an imageproxy route names our own server under its internal address, and
+     * [rehostImageproxyUrl] moves it onto the URL we connect through, so it loads anywhere.
      */
     private fun imageQuality(image: MediaItemImage): Int = when {
         image.proxyId != null -> PROXY_ID_QUALITY
         !image.remotelyAccessible -> LOADABLE_QUALITY
         else -> {
-            val host = runCatching { java.net.URI(image.path.trim()).host }.getOrNull()
+            val path = image.path.trim()
+            val host = runCatching { java.net.URI(path).host }.getOrNull()
             val privateHost = host != null && wsClient.isOffLanImageHost(host)
-            if (privateHost && !isLegacyImageproxyServer()) LAN_ONLY_QUALITY else LOADABLE_QUALITY
+            val reachable = !privateHost || isLegacyImageproxyServer() || isImageproxyUrl(path)
+            if (reachable) LOADABLE_QUALITY else LAN_ONLY_QUALITY
         }
     }
 
@@ -133,17 +145,29 @@ class ImageUrlResolver @Inject constructor(
     }
 
     /**
-     * Rehost a server-pre-built image_url (e.g. player current_media.image_url) from the server's
-     * INTERNAL base_url host to the user-configured external server URL, so it loads off-LAN.
+     * Point an imageproxy URL at the server URL we connect through, whatever host the server
+     * wrote into it. MA builds these with its own internal address deliberately: the player's
+     * current media image comes from `mass.streams.base_url`, because that request is meant for
+     * a player on the LAN, so off-LAN it names a host we cannot reach. The official web client
+     * answers this the same way, rewriting every URL that contains an imageproxy segment onto
+     * the base it connected on and never trusting the `base_url` the server announces.
+     *
      * Handles both the legacy "/imageproxy?path=..." and the canonical MA 2.9 "/imageproxy/<id>".
+     * A URL with no imageproxy segment, or a connection whose server URL is not known yet, is
+     * returned unchanged.
      */
-    fun rewritePrebuilt(url: String): String {
-        val idx = url.indexOf("/imageproxy")
-        if (idx < 0) return url
-        val after = url.getOrNull(idx + IMAGEPROXY_SEGMENT.length)
-        if (after != '/' && after != '?') return url
+    fun rehostImageproxyUrl(url: String): String {
+        if (!isImageproxyUrl(url)) return url
         val base = wsClient.externalServerUrl()?.trimEnd('/') ?: return url
-        return base + url.substring(idx)
+        return base + url.substring(url.indexOf(IMAGEPROXY_SEGMENT))
+    }
+
+    /** True for a URL whose path is an imageproxy route, in either the id or the legacy form. */
+    private fun isImageproxyUrl(url: String): Boolean {
+        val idx = url.indexOf(IMAGEPROXY_SEGMENT)
+        if (idx < 0) return false
+        val after = url.getOrNull(idx + IMAGEPROXY_SEGMENT.length)
+        return after == '/' || after == '?'
     }
 
     /** Canonical MA 2.9 route: {base}/imageproxy/<proxy_id>?size= on our external server URL. */

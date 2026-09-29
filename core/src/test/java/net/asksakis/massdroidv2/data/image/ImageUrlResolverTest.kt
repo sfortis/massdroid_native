@@ -149,6 +149,59 @@ class ImageUrlResolverTest {
         assertThat(resolver(schema = 31).resolve(placeholder)).isNull()
     }
 
+    // --- an image path that is already an imageproxy URL on the server's internal address ---
+
+    @Test
+    fun `an imageproxy path on the server's internal host is moved onto our server url`() {
+        // MA writes these with its own address on purpose (the player media image comes from the
+        // stream server), so off-LAN the host is unreachable until it is rehosted.
+        val path = "http://$lanHost:8095/imageproxy/abc123?size=512&fmt=jpg"
+        assertThat(resolver(31).resolve(img(path, remote = true)))
+            .isEqualTo("$serverBase/imageproxy/abc123?size=512&fmt=jpg")
+    }
+
+    @Test
+    fun `the legacy imageproxy form is rehosted too`() {
+        val path = "http://$lanHost:8095/imageproxy?path=Eels%2FFolder.jpg&size=256"
+        assertThat(resolver(31).resolve(img(path, remote = true)))
+            .isEqualTo("$serverBase/imageproxy?path=Eels%2FFolder.jpg&size=256")
+    }
+
+    @Test
+    fun `a provider url on a LAN host is left alone`() {
+        // Only an imageproxy route names our own server. A subsonic cover URL names the
+        // provider, which no rehost can reach, so it must stay as it is.
+        val path = "http://$lanHost:4040/rest/getCoverArt?id=ar-1"
+        assertThat(resolver(31).resolve(img(path, remote = true))).isEqualTo(path)
+    }
+
+    @Test
+    fun `a public cdn url is never rewritten`() {
+        val path = "https://$publicHost/air.jpg"
+        assertThat(resolver(31).resolve(img(path, remote = true))).isEqualTo(path)
+    }
+
+    @Test
+    fun `resolveItem prefers a rehostable imageproxy path over an unreachable provider url`() {
+        val providerUrl = img("http://$lanHost:4040/rest/getCoverArt?id=ar-1", remote = true)
+        val proxied = img("http://$lanHost:8095/imageproxy/def456?size=512", remote = true)
+        val url = resolver(31).resolveItem(item(providerUrl, proxied))
+        assertThat(url).isEqualTo("$serverBase/imageproxy/def456?size=512")
+    }
+
+    @Test
+    fun `rehosting leaves a url with no imageproxy segment untouched`() {
+        val url = "https://$publicHost/air.jpg"
+        assertThat(resolver(31).rehostImageproxyUrl(url)).isEqualTo(url)
+    }
+
+    @Test
+    fun `a path that merely starts with the word imageproxy is not the route`() {
+        // The segment has to end where the route does, at a slash or the query string.
+        val url = "https://$publicHost/imageproxy-cache/air.jpg"
+        assertThat(resolver(31).rehostImageproxyUrl(url)).isEqualTo(url)
+    }
+
     @Test
     fun `a real provider image is still resolved`() {
         val real = img(

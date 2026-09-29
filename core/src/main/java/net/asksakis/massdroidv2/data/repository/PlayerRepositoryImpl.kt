@@ -2332,7 +2332,7 @@ fun ServerPlayer.toDomain(
             artist = it.artist ?: "",
             album = it.album ?: "",
             imageUrl = queueTrackImageUrl
-                ?: it.imageUrl?.let { url -> imageResolver.rewritePrebuilt(url) }
+                ?: it.imageUrl?.let { url -> imageResolver.rehostImageproxyUrl(url) }
                 ?: it.image?.let { img -> imageResolver.resolve(img) },
             duration = it.duration ?: 0.0,
             elapsedTime = it.elapsedTime ?: 0.0,
