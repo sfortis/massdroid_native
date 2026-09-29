@@ -149,6 +149,9 @@ fun MassDroidNavHost(
                             playlist.favorite,
                             playlist.isDynamic
                         ))
+                },
+                onPodcastClick = { podcast ->
+                    navController.navigate(Routes.podcastDetail(podcast.itemId, podcast.provider, podcast.name))
                 }
             )
         }

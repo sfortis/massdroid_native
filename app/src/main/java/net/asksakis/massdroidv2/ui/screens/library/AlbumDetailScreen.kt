@@ -579,7 +579,13 @@ private fun AlbumTrackItem(
                 EqualizerBars(modifier = Modifier.size(24.dp))
             } else {
                 Text(
-                    "${track.position?.takeIf { it > 0 } ?: (index + 1)}",
+                    // The number on the sleeve, which on a release of several discs is not the
+                    // position within the album: there the second disc starts again at one
+                    // while the position keeps counting. Falls back to the position, and then
+                    // to the row, when the server does not carry the number.
+                    "${track.trackNumber?.takeIf { it > 0 }
+                        ?: track.position?.takeIf { it > 0 }
+                        ?: (index + 1)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (isCurrent) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant

@@ -186,7 +186,9 @@ val SEARCHABLE_MEDIA_TYPES = listOf(
     MediaType.ALBUM,
     MediaType.TRACK,
     MediaType.PLAYLIST,
-    MediaType.RADIO
+    MediaType.RADIO,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST
 )
 
 data class SearchResult(
@@ -194,10 +196,13 @@ data class SearchResult(
     val albums: List<Album> = emptyList(),
     val tracks: List<Track> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
-    val radios: List<Radio> = emptyList()
+    val radios: List<Radio> = emptyList(),
+    /** Modelled as [Track], the same as the library tab does: one playable item with chapters. */
+    val audiobooks: List<Track> = emptyList(),
+    val podcasts: List<Podcast> = emptyList()
 ) {
     /** True when the server matched nothing at all, in any category. */
     val isEmpty: Boolean
         get() = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty() &&
-            playlists.isEmpty() && radios.isEmpty()
+            playlists.isEmpty() && radios.isEmpty() && audiobooks.isEmpty() && podcasts.isEmpty()
 }

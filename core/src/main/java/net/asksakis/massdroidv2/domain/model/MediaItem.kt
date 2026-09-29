@@ -14,6 +14,16 @@ data class Track(
     val imageUrl: String? = null,
     val favorite: Boolean = false,
     val position: Int? = null,
+    /**
+     * The number the track carries on its disc, which is what a listener reads on the sleeve.
+     *
+     * Not the same as [position], which counts through the whole album: on a release of two
+     * discs the first track of the second one is position 13 and track number 1. Null when the
+     * server does not know it, and then [position] is the only thing left to show.
+     */
+    val trackNumber: Int? = null,
+    /** Which disc the track is on, 1 unless the release has several. */
+    val discNumber: Int? = null,
     val artistItemId: String? = null,
     val artistProvider: String? = null,
     val albumItemId: String? = null,
@@ -155,6 +165,13 @@ data class Playlist(
      */
     val isDynamic: Boolean = false,
     /**
+     * The media types the server will accept into this playlist, empty when it does not say.
+     *
+     * Read rather than assumed, because a playlist that takes only audiobooks or only podcast
+     * episodes is editable and not dynamic, so it passes every other test we could apply.
+     */
+    val supportedMediaTypes: List<String> = emptyList(),
+    /**
      * Who the playlist belongs to: the listener's own account name, or the name of
      * whatever generated it. Shown in the library only when it is NOT the listener, where
      * it answers where a playlist they did not make came from.
@@ -173,7 +190,11 @@ data class Playlist(
  * in the add-to-playlist dialog produces a server error on tap, so both are excluded.
  */
 val Playlist.acceptsManualTracks: Boolean
-    get() = isEditable && !isDynamic
+    get() = isEditable && !isDynamic &&
+        // The server names what it takes; only when it says nothing do the two flags decide.
+        (supportedMediaTypes.isEmpty() || TRACK_MEDIA_TYPE in supportedMediaTypes)
+
+private const val TRACK_MEDIA_TYPE = "track"
 
 @Serializable
 data class Radio(

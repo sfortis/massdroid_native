@@ -83,6 +83,14 @@ class ProviderManifestCache @Inject constructor() {
         }
     }
 
+    /**
+     * The providers that can fill a library tab, by the feature the server says they have.
+     *
+     * The audiobook and podcast tabs were missing here, so their provider filter was always
+     * empty and could not be used at all: a listener with more than one audiobook source had
+     * no way to narrow the tab to one of them. The server reports `library_audiobooks` and
+     * `library_podcasts` exactly as it reports the others.
+     */
     fun musicProvidersForTab(tab: Int): List<MusicProvider> {
         val requiredFeature = when (tab) {
             0 -> "library_artists"
@@ -90,6 +98,8 @@ class ProviderManifestCache @Inject constructor() {
             2 -> "library_tracks"
             3 -> "library_playlists"
             4 -> "library_radios"
+            5 -> "library_audiobooks"
+            6 -> "library_podcasts"
             else -> return emptyList()
         }
         return musicProviders.filter { requiredFeature in it.features }

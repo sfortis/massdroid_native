@@ -49,21 +49,25 @@ class MusicRepositoryImpl @Inject constructor(
         private const val SORT_BY_MIN_SCHEMA = 63
 
         /**
-         * How long one search attempt waits before it gives up.
+         * How long a search waits before it gives up.
          *
-         * Shorter than the 30 s default because someone is watching a spinner while
-         * it runs. A measured MA search takes about a second cold and 0.15 s once
-         * the provider has cached it, so five seconds is well clear of a slow answer.
+         * Shorter than the 30 s default because someone is watching a spinner while it
+         * runs, but longer than the server's own budget for a slow provider. Music
+         * Assistant gives each provider `SEARCH_PROVIDER_SOFT_TIMEOUT`, eight seconds,
+         * and then answers with whatever the other providers returned while the slow
+         * one carries on in the background to fill its cache. A client that gives up
+         * before those eight seconds are out never sees that answer: it reports a
+         * failure for a search the server was about to complete, which is what a
+         * reporter with a Spotify provider hit on 2026-09-28 while the measurement this
+         * value was first set from, about a second, came from a server whose providers
+         * are Deezer and the filesystem.
          *
-         * This is the budget per attempt, not per search. A search is a read, so
-         * [isRetryableCommand] lets it be sent a second time after a timeout, and
-         * the listener waits for both attempts before the failure reaches the
-         * screen. Measured on 2026-09-20 with both radios off: at 10 s per attempt
-         * the error arrived 20 s after the send, by which time the user had given
-         * up and left the screen. Five seconds keeps that total at about ten while
-         * the second attempt still covers a server that was briefly slow.
+         * The budget is for the whole search, not per attempt: [search] turns the
+         * timeout retry off, because the server deduplicates concurrent identical
+         * searches, so a second attempt waits on the same task the first one started
+         * and only pushes the failure further away from the listener.
          */
-        private const val SEARCH_TIMEOUT_MS = 5_000L
+        private const val SEARCH_TIMEOUT_MS = 12_000L
     }
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
@@ -134,7 +138,13 @@ class MusicRepositoryImpl @Inject constructor(
             MaCommands.Music.AUDIOBOOKS_LIBRARY_ITEMS,
             LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
         )
-        return parseMediaItems(result).mapNotNull { it.toTrack() }
+        val parsed = parseMediaItems(result)
+        val books = parsed.mapNotNull { it.toTrack() }
+        // Counted on both sides of the mapping, because an empty audiobook tab looks the same
+        // whether the server sent nothing or every item was dropped on the way in, and the
+        // report that led here could not be told apart without it.
+        Log.d(TAG, "audiobooks: server sent ${parsed.size}, kept ${books.size}; raw=${result.toString().take(400)}")
+        return books
     }
 
     override suspend fun getPodcasts(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Podcast> {
@@ -295,7 +305,8 @@ class MusicRepositoryImpl @Inject constructor(
                 limit = limit,
                 mediaTypes = (mediaTypes ?: SEARCHABLE_MEDIA_TYPES).map { it.apiValue }
             ),
-            timeoutMs = SEARCH_TIMEOUT_MS
+            timeoutMs = SEARCH_TIMEOUT_MS,
+            retryAfterTimeout = false
         )
 
         val obj = result?.jsonObject ?: return SearchResult()
@@ -304,7 +315,9 @@ class MusicRepositoryImpl @Inject constructor(
             albums = obj["albums"]?.let { parseMediaItems(it) }?.mapNotNull { it.toAlbum() } ?: emptyList(),
             tracks = obj["tracks"]?.let { parseMediaItems(it) }?.mapNotNull { it.toTrack() } ?: emptyList(),
             playlists = obj["playlists"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPlaylist() } ?: emptyList(),
-            radios = obj["radio"]?.let { parseMediaItems(it) }?.mapNotNull { it.toRadio() } ?: emptyList()
+            radios = obj["radio"]?.let { parseMediaItems(it) }?.mapNotNull { it.toRadio() } ?: emptyList(),
+            audiobooks = obj["audiobooks"]?.let { parseMediaItems(it) }?.mapNotNull { it.toTrack() } ?: emptyList(),
+            podcasts = obj["podcasts"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPodcast() } ?: emptyList()
         )
     }
 
@@ -940,12 +953,26 @@ class MusicRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Turn the server's item array into models, dropping anything that will not decode.
+     *
+     * A dropped item used to vanish without a word, so a screen fed entirely by items the
+     * model could not read looked exactly like a screen the server had nothing for. That is
+     * how an empty audiobook tab was reported twice with the server answering correctly the
+     * whole time. Dropping one item is still the right behaviour, since one unreadable record
+     * must not empty the list, but it is now said out loud.
+     */
     private fun parseMediaItems(result: JsonElement?): List<ServerMediaItem> {
         if (result == null) return emptyList()
         return when (result) {
             is JsonArray -> {
                 result.mapNotNull {
-                    try { json.decodeFromJsonElement<ServerMediaItem>(it) } catch (_: Exception) { null }
+                    try {
+                        json.decodeFromJsonElement<ServerMediaItem>(it)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Dropping an item the model could not read: ${e.message}")
+                        null
+                    }
                 }
             }
             else -> emptyList()
@@ -1030,6 +1057,8 @@ class MusicRepositoryImpl @Inject constructor(
             imageUrl = imageResolver.resolveItemWithUriFallback(this),
             favorite = favorite,
             position = position,
+            trackNumber = trackNumber,
+            discNumber = discNumber,
             artistItemId = artists?.firstOrNull()?.itemId,
             artistProvider = artists?.firstOrNull()?.provider,
             albumItemId = album?.itemId,
@@ -1082,6 +1111,7 @@ class MusicRepositoryImpl @Inject constructor(
             favorite = favorite,
             isEditable = isEditable != false,
             isDynamic = isDynamic == true,
+            supportedMediaTypes = supportedMediaTypes.orEmpty(),
             owner = owner.orEmpty(),
             providerDomains = extractProviderDomains()
         )

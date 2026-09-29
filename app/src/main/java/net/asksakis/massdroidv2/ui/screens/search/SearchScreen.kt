@@ -15,6 +15,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Podcasts
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.GridView
@@ -44,6 +46,7 @@ import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.asksakis.massdroidv2.domain.search.MIN_SEARCH_QUERY_LENGTH
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.ui.components.ActionSheetItem
@@ -60,18 +63,22 @@ fun SearchScreen(
     onArtistClick: (Artist) -> Unit,
     onAlbumClick: (Album) -> Unit,
     onPlaylistClick: (Playlist) -> Unit,
+    onPodcastClick: (Podcast) -> Unit,
     viewModel: SearchViewModel = hiltViewModel()
 ) {
-    val query by viewModel.query.collectAsStateWithLifecycle()
-    val results by viewModel.results.collectAsStateWithLifecycle()
-    val isSearching by viewModel.isSearching.collectAsStateWithLifecycle()
+    // One value rather than four flows, so the field, the grid and the progress line
+    // are always drawn from the same moment of the search.
+    val session by viewModel.session.collectAsStateWithLifecycle()
+    val query = session.query
+    val results = session.results
+    val isSearching = session.isSearching
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val focusRequester = remember { FocusRequester() }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     var selectedProviders by remember { mutableStateOf(emptySet<String>()) }
     val gridMode by viewModel.gridMode.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
-    val resultsQuery by viewModel.resultsQuery.collectAsStateWithLifecycle()
+    val resultsQuery = session.resultsQuery
     val players by viewModel.players.collectAsStateWithLifecycle()
     var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -420,11 +427,15 @@ fun SearchScreen(
                 gridMode -> SearchResultsGrid(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
+                    onAudiobookClick = { viewModel.playUri(it.uri) },
+                    onPodcastClick = onPodcastClick,
                     onLongPress = { actionSheetItem = it }
                 )
                 else -> SearchResultsList(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
+                    onAudiobookClick = { viewModel.playUri(it.uri) },
+                    onPodcastClick = onPodcastClick,
                     onLongPress = { actionSheetItem = it }
                 )
             }
@@ -553,6 +564,8 @@ private fun SearchResultsList(
     onPlaylistClick: (Playlist) -> Unit,
     onTrackClick: (Track) -> Unit,
     onRadioClick: (Radio) -> Unit,
+    onAudiobookClick: (Track) -> Unit,
+    onPodcastClick: (Podcast) -> Unit,
     onLongPress: (ActionSheetItem) -> Unit
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
@@ -619,6 +632,30 @@ private fun SearchResultsList(
                 )
             }
         }
+        if (filtered.audiobooks.isNotEmpty()) {
+            item { SectionHeader("Audiobooks") }
+            items(filtered.audiobooks, key = { it.uri }) { book ->
+                MediaItemRow(
+                    title = book.name, subtitle = book.authors.joinToString(", "),
+                    imageUrl = book.imageUrl,
+                    onClick = { onAudiobookClick(book) },
+                    providerDomains = book.providerDomains, providerCache = providerCache,
+                    fallbackIcon = Icons.AutoMirrored.Filled.MenuBook
+                )
+            }
+        }
+        if (filtered.podcasts.isNotEmpty()) {
+            item { SectionHeader("Podcasts") }
+            items(filtered.podcasts, key = { it.uri }) { podcast ->
+                MediaItemRow(
+                    title = podcast.name, subtitle = podcast.publisher ?: "",
+                    imageUrl = podcast.imageUrl,
+                    onClick = { onPodcastClick(podcast) },
+                    providerDomains = podcast.providerDomains, providerCache = providerCache,
+                    fallbackIcon = Icons.Default.Podcasts
+                )
+            }
+        }
     }
 }
 
@@ -631,6 +668,8 @@ private fun SearchResultsGrid(
     onPlaylistClick: (Playlist) -> Unit,
     onTrackClick: (Track) -> Unit,
     onRadioClick: (Radio) -> Unit,
+    onAudiobookClick: (Track) -> Unit,
+    onPodcastClick: (Podcast) -> Unit,
     onLongPress: (ActionSheetItem) -> Unit
 ) {
     LazyVerticalGrid(
@@ -700,6 +739,30 @@ private fun SearchResultsGrid(
                 )
             }
         }
+        if (filtered.audiobooks.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { SectionHeader("Audiobooks") }
+            items(filtered.audiobooks, key = { it.uri }) { book ->
+                MediaItemGrid(
+                    title = book.name, subtitle = book.authors.joinToString(", "),
+                    imageUrl = book.imageUrl,
+                    onClick = { onAudiobookClick(book) },
+                    providerDomains = book.providerDomains, providerCache = providerCache,
+                    fallbackIcon = Icons.AutoMirrored.Filled.MenuBook
+                )
+            }
+        }
+        if (filtered.podcasts.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { SectionHeader("Podcasts") }
+            items(filtered.podcasts, key = { it.uri }) { podcast ->
+                MediaItemGrid(
+                    title = podcast.name, subtitle = podcast.publisher ?: "",
+                    imageUrl = podcast.imageUrl,
+                    onClick = { onPodcastClick(podcast) },
+                    providerDomains = podcast.providerDomains, providerCache = providerCache,
+                    fallbackIcon = Icons.Default.Podcasts
+                )
+            }
+        }
     }
 }
 
@@ -714,7 +777,7 @@ private fun albumSearchSubtitle(album: Album): String =
     album.artistNames.ifBlank { formatAlbumTypeYear(album.albumType, album.year) }
 
 /**
- * The five result sections, as a one-tap filter (issue #65). Each knows how to
+ * The result sections, as a one-tap filter (issue #65). Each knows how to
  * count itself in and cut a [SearchResult] down to itself, so the chip row and
  * the renderers cannot disagree about what a selection means.
  */
@@ -738,6 +801,14 @@ private enum class SearchTypeFilter(val label: String, val mediaType: MediaType)
     RADIOS("Radios", MediaType.RADIO) {
         override fun count(r: SearchResult) = r.radios.size
         override fun slice(r: SearchResult) = SearchResult(radios = r.radios)
+    },
+    AUDIOBOOKS("Audiobooks", MediaType.AUDIOBOOK) {
+        override fun count(r: SearchResult) = r.audiobooks.size
+        override fun slice(r: SearchResult) = SearchResult(audiobooks = r.audiobooks)
+    },
+    PODCASTS("Podcasts", MediaType.PODCAST) {
+        override fun count(r: SearchResult) = r.podcasts.size
+        override fun slice(r: SearchResult) = SearchResult(podcasts = r.podcasts)
     };
 
     abstract fun count(r: SearchResult): Int
@@ -834,6 +905,11 @@ private fun collectProviderCounts(results: SearchResult): Map<String, Int> {
     results.tracks.forEach { addDomains(it.providerDomains) }
     results.playlists.forEach { addDomains(it.providerDomains) }
     results.radios.forEach { addDomains(it.providerDomains) }
+    // Audiobooks and podcasts count towards the source chips as well. Left out, a provider
+    // that only carries them, such as Audiobookshelf, never appeared as a source at all,
+    // which is half of what issue #77 reported.
+    results.audiobooks.forEach { addDomains(it.providerDomains) }
+    results.podcasts.forEach { addDomains(it.providerDomains) }
     return counts
 }
 
@@ -850,7 +926,9 @@ private fun filterByProviders(results: SearchResult, selected: Set<String>): Sea
         albums = filter(results.albums) { it.providerDomains },
         tracks = filter(results.tracks) { it.providerDomains },
         playlists = filter(results.playlists) { it.providerDomains },
-        radios = filter(results.radios) { it.providerDomains }
+        radios = filter(results.radios) { it.providerDomains },
+        audiobooks = filter(results.audiobooks) { it.providerDomains },
+        podcasts = filter(results.podcasts) { it.providerDomains }
     )
 }
 

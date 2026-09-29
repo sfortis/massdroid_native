@@ -1,9 +1,19 @@
 package net.asksakis.massdroidv2.data.websocket
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 data class CommandMessage(
@@ -138,6 +148,31 @@ data class AudioFormat(
     val channels: Int? = null
 )
 
+/**
+ * A name the server sends either as a bare string or as the whole media item it belongs to.
+ *
+ * An audiobook's `authors` and `narrators` arrive as strings until those people exist as
+ * artists in the library, and as full objects once they do, which is what happens as soon as
+ * a provider that carries authors, such as Audiobookshelf, is synced. Declared as strings
+ * alone, every audiobook then failed to decode and the library tab and the search results
+ * went empty with the server answering correctly the whole time (issue #77).
+ */
+internal object MediaItemNameSerializer : KSerializer<String> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("MediaItemName", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): String {
+        val input = decoder as? JsonDecoder ?: return decoder.decodeString()
+        return when (val element = input.decodeJsonElement()) {
+            is JsonPrimitive -> element.content
+            is JsonObject -> element["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            else -> ""
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: String) = encoder.encodeString(value)
+}
+
 @Serializable
 data class ServerMediaItem(
     @SerialName("item_id") val itemId: String,
@@ -151,8 +186,8 @@ data class ServerMediaItem(
     val artists: List<ServerMediaItem>? = null,
     val album: ServerMediaItem? = null,
     val metadata: MediaItemMetadata? = null,
-    val authors: List<String>? = null,
-    val narrators: List<String>? = null,
+    val authors: List<@Serializable(with = MediaItemNameSerializer::class) String>? = null,
+    val narrators: List<@Serializable(with = MediaItemNameSerializer::class) String>? = null,
     @SerialName("fully_played") val fullyPlayed: Boolean? = null,
     @SerialName("resume_position_ms") val resumePositionMs: Long? = null,
     val publisher: String? = null,
@@ -174,6 +209,16 @@ data class ServerMediaItem(
      */
     @SerialName("is_dynamic") val isDynamic: Boolean? = null,
     @SerialName("album_type") val albumType: String? = null,
+    /**
+     * Playlists only: which media types the server will accept into this playlist. A provider
+     * may offer playlists that hold only audiobooks or only podcast episodes, and offering a
+     * track to one of those fails at the tap.
+     */
+    @SerialName("supported_mediatypes") val supportedMediaTypes: List<String>? = null,
+    /** Tracks only: the number within the disc, which is not the position within the album. */
+    @SerialName("track_number") val trackNumber: Int? = null,
+    /** Tracks only: which disc the track belongs to, 1 unless the release has several. */
+    @SerialName("disc_number") val discNumber: Int? = null,
     @SerialName("is_playable") val isPlayable: Boolean? = null,
     val path: String? = null,
     @SerialName("translation_key") val translationKey: String? = null,
