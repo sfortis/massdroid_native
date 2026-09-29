@@ -14,10 +14,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
+import net.asksakis.massdroidv2.data.websocket.mediaType
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -231,7 +229,7 @@ class DiscoverViewModel @Inject constructor(
                     mediaEventJob = viewModelScope.launch {
                         delay(350)
                         if (wsClient.connectionState.value is ConnectionState.Connected) {
-                            when (eventMediaType(event)) {
+                            when (event.mediaType()) {
                                 "track" -> refreshRecentFavoriteTracksSection()
                                 "album" -> refreshFavoriteAlbumsAndRecentlyAddedTracksSections()
                                 else -> {
@@ -254,17 +252,6 @@ class DiscoverViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    private fun eventMediaType(event: net.asksakis.massdroidv2.data.websocket.ServerEvent): String? {
-        val root = event.data?.jsonObject ?: return null
-        val direct = root["media_type"]?.jsonPrimitive?.contentOrNull
-        if (!direct.isNullOrBlank()) return direct.lowercase()
-
-        val nested = root["media_item"]?.jsonObject?.get("media_type")?.jsonPrimitive?.contentOrNull
-        if (!nested.isNullOrBlank()) return nested.lowercase()
-
-        return null
     }
 
     @Suppress("TooGenericExceptionCaught")

@@ -86,15 +86,20 @@ enum class LibraryDisplayMode {
 
 enum class LibraryTabKey(
     val index: Int,
-    val defaultDisplayMode: LibraryDisplayMode
+    val defaultDisplayMode: LibraryDisplayMode,
+    /**
+     * The server's own name for what this tab holds, so an event that names a media type can
+     * be matched to the one list it changed. Browse holds no single kind and has none.
+     */
+    val mediaTypeName: String? = null
 ) {
-    ARTISTS(index = 0, defaultDisplayMode = LibraryDisplayMode.GRID),
-    ALBUMS(index = 1, defaultDisplayMode = LibraryDisplayMode.GRID),
-    TRACKS(index = 2, defaultDisplayMode = LibraryDisplayMode.GRID),
-    PLAYLISTS(index = 3, defaultDisplayMode = LibraryDisplayMode.GRID),
-    RADIOS(index = 4, defaultDisplayMode = LibraryDisplayMode.GRID),
-    AUDIOBOOKS(index = 5, defaultDisplayMode = LibraryDisplayMode.LIST),
-    PODCASTS(index = 6, defaultDisplayMode = LibraryDisplayMode.GRID),
+    ARTISTS(index = 0, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "artist"),
+    ALBUMS(index = 1, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "album"),
+    TRACKS(index = 2, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "track"),
+    PLAYLISTS(index = 3, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "playlist"),
+    RADIOS(index = 4, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "radio"),
+    AUDIOBOOKS(index = 5, defaultDisplayMode = LibraryDisplayMode.LIST, mediaTypeName = "audiobook"),
+    PODCASTS(index = 6, defaultDisplayMode = LibraryDisplayMode.GRID, mediaTypeName = "podcast"),
     BROWSE(index = 7, defaultDisplayMode = LibraryDisplayMode.LIST);
 
     companion object {

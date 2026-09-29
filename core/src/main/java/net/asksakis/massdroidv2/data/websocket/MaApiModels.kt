@@ -37,6 +37,21 @@ data class ServerEvent(
     val data: JsonElement? = null
 )
 
+/**
+ * Which kind of item a media event is about, lowercased, or null when it does not say.
+ *
+ * The server puts it at the top of the payload for some events and inside a nested
+ * `media_item` for others, so both are tried. A caller that cannot tell which kind changed
+ * has to assume the worst and refresh everything, which is why this is worth reading.
+ */
+fun ServerEvent.mediaType(): String? {
+    val root = data as? JsonObject ?: return null
+    (root["media_type"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        ?.let { return it.lowercase() }
+    val nested = (root["media_item"] as? JsonObject)?.get("media_type") as? JsonPrimitive
+    return nested?.contentOrNull?.takeIf { it.isNotBlank() }?.lowercase()
+}
+
 @Serializable
 data class ServerPlayer(
     @SerialName("player_id") val playerId: String,

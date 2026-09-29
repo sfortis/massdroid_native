@@ -17,6 +17,7 @@ import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 import net.asksakis.massdroidv2.data.util.LibraryPager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
+import net.asksakis.massdroidv2.data.websocket.mediaType
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.*
@@ -118,7 +119,17 @@ class LibraryViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     private var searchJob: Job? = null
-    private var pendingReload = false
+    /**
+     * The tabs whose list the server has changed under us, waiting to be opened again.
+     *
+     * One flag used to stand for all seven, and it was spent on whichever tab happened to be
+     * on screen when it was read. A book deleted while the listener was on Artists therefore
+     * stayed in the audiobook tab until a pull to refresh, because opening a tab only fetches
+     * when its list is empty. Recorded per tab now, and the event says which one: an item
+     * added or removed from another device, or from the web client, is the ordinary way this
+     * happens.
+     */
+    private val staleTabs = mutableSetOf<Int>()
 
     // ---- per-tab fetch parameters -------------------------------------------------------------
 
@@ -514,9 +525,7 @@ class LibraryViewModel @Inject constructor(
             wsClient.events.collect { event ->
                 when (event.event) {
                     EventType.MEDIA_ITEM_ADDED,
-                    EventType.MEDIA_ITEM_DELETED -> {
-                        pendingReload = true
-                    }
+                    EventType.MEDIA_ITEM_DELETED -> markStale(event.mediaType())
                     EventType.MEDIA_ITEM_UPDATED -> {
                         // Handled below via mediaItemUpdates: patched in place (stable URI keys),
                         // never a structural reload, so no scroll reset.
@@ -564,11 +573,30 @@ class LibraryViewModel @Inject constructor(
         return list.toMutableList().also { it[idx] = item }
     }
 
-    fun onScreenVisible() {
-        if (pendingReload) {
-            pendingReload = false
-            reloadCurrentTab()
+    /**
+     * Mark what an add or a delete has outdated. An event that does not name its kind, or names
+     * one with no tab of its own, outdates everything: guessing wrong leaves a list showing an
+     * item the server no longer has.
+     */
+    private fun markStale(mediaType: String?) {
+        val tab = mediaType?.let { type -> LibraryTabKey.entries.firstOrNull { it.mediaTypeName == type } }
+        if (tab == null) {
+            staleTabs += LibraryTabKey.entries.map { it.index }
+        } else {
+            staleTabs += tab.index
         }
+        // The one on screen has nothing to wait for.
+        refreshIfStale(_currentTab.value)
+    }
+
+    /** Fetch a tab again if the server has changed it since it was loaded. */
+    private fun refreshIfStale(tab: Int) {
+        if (!staleTabs.remove(tab)) return
+        if (_currentTab.value == tab) reloadCurrentTab() else pagerForIndex(tab)?.clear()
+    }
+
+    fun onScreenVisible() {
+        refreshIfStale(_currentTab.value)
     }
 
     private fun resetForAccountSwitch() {
@@ -582,7 +610,7 @@ class LibraryViewModel @Inject constructor(
         _browsePath.value = null
         browsePathStack.clear()
         _selectedProvidersMap.value = emptyMap()
-        pendingReload = false
+        staleTabs.clear()
         _browseLoading.value = false
         _isRefreshing.value = false
     }
@@ -607,6 +635,9 @@ class LibraryViewModel @Inject constructor(
         }
         _currentTab.value = tab
         savedStateHandle[STATE_CURRENT_TAB] = tab
+        // A tab the server changed while it was out of sight is fetched again rather than
+        // shown as it was left, which is what kept a deleted item on screen.
+        refreshIfStale(tab)
     }
 
     fun updateSearch(query: String) {
