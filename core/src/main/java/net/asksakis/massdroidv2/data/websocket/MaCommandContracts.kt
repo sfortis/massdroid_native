@@ -660,10 +660,12 @@ suspend fun MaWebSocketClient.sendCommand(
     command: String,
     args: MaCommandArgs,
     awaitResponse: Boolean = true,
-    timeoutMs: Long = 30_000
+    timeoutMs: Long = 30_000,
+    retryAfterTimeout: Boolean = true
 ): JsonElement? = sendCommand(
     command = command,
     args = args.toJson(),
     awaitResponse = awaitResponse,
-    timeoutMs = timeoutMs
+    timeoutMs = timeoutMs,
+    retryAfterTimeout = retryAfterTimeout
 )

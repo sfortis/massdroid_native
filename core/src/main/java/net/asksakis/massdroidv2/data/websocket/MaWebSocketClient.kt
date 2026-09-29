@@ -779,11 +779,19 @@ class MaWebSocketClient(
         })
     }
 
+    /**
+     * @param retryAfterTimeout whether a timed-out attempt is worth sending again. Safety is
+     *   decided separately by [shouldRetryCommand]; this is for a command the server already
+     *   handles slowness for on its own, where a second attempt only delays the answer or the
+     *   failure. `music/search` is the case: the server deduplicates concurrent identical
+     *   searches, so the retry waits on the very task the first attempt started.
+     */
     suspend fun sendCommand(
         command: String,
         args: JsonObject? = null,
         awaitResponse: Boolean = true,
         timeoutMs: Long = 30_000,
+        retryAfterTimeout: Boolean = true,
     ): JsonElement? {
         waitUntilReadyForCommand(command = command, awaitResponse = awaitResponse, timeoutMs = timeoutMs)
         // Not connected after the wait above gave the reconnect its chance. This
@@ -798,7 +806,7 @@ class MaWebSocketClient(
         // command, transport included. A TIMEOUT did reach it and may already have
         // taken effect, so only commands that can be repeated harmlessly get that one.
         val maxAttempts = if (isAuthCommand(command)) 1 else 2
-        val mayRetryAfterTimeout = shouldRetryCommand(command)
+        val mayRetryAfterTimeout = retryAfterTimeout && shouldRetryCommand(command)
         var attempt = 1
         while (attempt <= maxAttempts) {
             val messageId = UUID.randomUUID().toString().replace("-", "").take(12)
