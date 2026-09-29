@@ -28,11 +28,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.request.CachePolicy
@@ -127,11 +129,22 @@ internal fun SwipeableAlbumArt(
 
     val shape = MaterialTheme.shapes.medium
 
+    // Portrait is driven by the width it is given; landscape by the height, because there the
+    // column is usually wider than the surface wants and a width-driven surface then keeps the
+    // width while the height is capped, which silently widens the real aspect ratio. The travel
+    // below is computed from that ratio, so a surface wider than it claims to be uncovers the
+    // art either side: at 1.38 instead of 1.23 the next cover sat in plain view beside the
+    // current one.
+    val aspect = if (fillMaxWidth) SURFACE_ASPECT else SURFACE_ASPECT_COMPACT
     val outerModifier = if (fillMaxWidth) {
-        Modifier.fillMaxWidth().aspectRatio(SURFACE_ASPECT)
+        Modifier.fillMaxWidth().aspectRatio(aspect)
     } else {
-        Modifier.fillMaxWidth().heightIn(max = SURFACE_MAX_COMPACT).aspectRatio(SURFACE_ASPECT)
+        Modifier
+            .fillMaxHeight()
+            .heightIn(max = SURFACE_MAX_COMPACT)
+            .aspectRatio(aspect, matchHeightConstraintsFirst = true)
     }
+    val travelFactor = travelFactorFor(aspect)
     // Sized off the surface's height, not its width. The surface is wider than it is tall
     // so that a cover has somewhere to come from and somewhere to go, and sizing the cover
     // off that width would make it grow with the room instead of staying put.
@@ -329,6 +342,13 @@ internal fun SwipeableAlbumArt(
                             // whichever slot is holding it at the time.
                             .zIndex(if (role == SlotRole.CURRENT) 1f else 0f)
                             .graphicsLayer {
+                                // The fade is applied to each draw call rather than through
+                                // an offscreen layer. An offscreen layer is bounded by the
+                                // composable, and the shadow below is drawn outside those
+                                // bounds, so the moment a drag made the alpha anything other
+                                // than 1 the shadow was clipped away and the cover started to
+                                // move without one.
+                                compositingStrategy = CompositingStrategy.ModulateAlpha
                                 val drive = driveOffset(commitProgress, commitStart, commitEdge, offsetX)
                                 // Measured against the surface, which is how far a commit
                                 // actually travels, rather than against the cover. Against
@@ -341,7 +361,7 @@ internal fun SwipeableAlbumArt(
                                     scaleY = scaleX
                                     this.alpha = 1f - 0.88f * eased
                                 } else {
-                                    val travel = size.width * INCOMING_TRAVEL_FACTOR
+                                    val travel = size.width * travelFactor
                                     translationX = incomingTranslation(
                                         commitProgress,
                                         commitStart,
@@ -373,6 +393,18 @@ internal fun SwipeableAlbumArt(
         }
     }
 }
+
+/**
+ * The width the landscape surface takes when the row gives it [availableHeight].
+ *
+ * The caller needs this because the surface is driven by its height there, so its width is
+ * not known until the height is. A column laid out with a share of the screen instead ends
+ * up holding more than the surface uses, and that leftover pushes everything beside it
+ * outwards: measured at 137dp of empty space to the left of the cover against 24dp to the
+ * right of the controls.
+ */
+fun landscapeArtSurfaceWidth(availableHeight: Dp): Dp =
+    availableHeight.coerceAtMost(SURFACE_MAX_COMPACT) * SURFACE_ASPECT_COMPACT
 
 private enum class SlotRole { PREVIOUS, CURRENT, NEXT }
 
@@ -470,8 +502,16 @@ private const val SWIPE_COMMIT_FRACTION = 0.20f
  */
 private const val SURFACE_ASPECT = 1.23f
 
-/** The surface's ceiling where the screen is short, which is the landscape layout. */
-private val SURFACE_MAX_COMPACT = 220.dp
+/**
+ * The surface's ceiling where the screen is short, which is the landscape layout.
+ *
+ * It is a ceiling, not the size: in landscape the surface is usually narrower than this
+ * allows, so the width decides and this only stops the cover eating the row when there is
+ * an unusual amount of height. Raised from 220dp together with the column's width. At 220 the two met almost exactly,
+ * so the cover could not grow at all; measured after the first raise, the width was still
+ * what decided, and the cover came out at 185dp against 167 before.
+ */
+private val SURFACE_MAX_COMPACT = 300.dp
 
 /**
  * How much of the surface's height the cover takes, leaving the rest for its shadow.
@@ -485,15 +525,33 @@ private val SURFACE_MAX_COMPACT = 220.dp
 private const val ARTWORK_FRACTION = 0.77f
 
 /**
- * How far the art either side travels while the current one is dragged away.
+ * The surface's shape in landscape, where the height is what there is least of.
  *
- * Tied to [SURFACE_ASPECT] and [ARTWORK_FRACTION]: the covers either side rest a whole
- * travel out, scaled to [incomingScaleOf] at zero, and their near edge has to land outside
- * the clip or a sliver of them shows down each side. The clip now reaches half the
- * surface's width, which is `SURFACE_ASPECT / (2 * ARTWORK_FRACTION)` of the cover, so the
- * travel has to clear that plus half the resting cover, which is 1.17 at the values above.
+ * Narrower than [SURFACE_ASPECT], so the surface asks for less width at the same height and
+ * the cover inside it can be as tall as the row allows. Less of the art either side shows
+ * during a drag as a result, which is the trade: the room beside the cover is what the
+ * arriving and departing covers are seen in.
  */
-private const val INCOMING_TRAVEL_FACTOR = 1.25f
+private const val SURFACE_ASPECT_COMPACT = 1.10f
+
+/**
+ * How far the art either side travels while the current one is dragged away, as a multiple
+ * of the cover's width.
+ *
+ * The covers either side rest a whole travel out, scaled to [incomingScaleOf] at zero, and
+ * their near edge has to land outside the clip or a sliver of them shows down each side. The
+ * clip reaches half the surface's width, which is `aspect / (2 * ARTWORK_FRACTION)` of the
+ * cover, so the travel has to clear that plus half the resting cover, plus a margin.
+ *
+ * It is computed rather than written down because the aspect ratio now differs between
+ * portrait and landscape, and a constant that matched one of them uncovered the art in the
+ * other. At the portrait ratio this returns 1.25, which is the value it replaces.
+ */
+private fun travelFactorFor(aspect: Float): Float =
+    aspect / (2f * ARTWORK_FRACTION) + 0.5f * incomingScaleOf(0f) + TRAVEL_MARGIN
+
+/** Slack on top of the travel the geometry demands, so a rounding never shows an edge. */
+private const val TRAVEL_MARGIN = 0.08f
 
 /**
  * One curve for the whole commit, shorter than the 380 ms the old two-part

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.union
@@ -127,10 +128,14 @@ fun ExpandingPlayerSheet(
         val cWidth = parentW - 16f - leftInsetDp - rightInsetDp
         val cHeight = 72f
 
-        // Expanded: full-bleed so nothing behind (e.g. the landscape side nav rail)
-        // peeks through the side insets. The player content applies the safe-area
+        // Expanded: full-bleed on every edge, so nothing behind (e.g. the landscape side
+        // nav rail) peeks through the side insets. The player content applies the safe-area
         // insets itself so interactive elements stay clear of system bars/cutouts.
-        val eTop = if (isLandscape) 0f else parentH * 0.08f
+        //
+        // It reaches the top of the screen. It used to stop an eighth of the way down, which
+        // left the screen underneath showing above it, and the same player opened from the
+        // widget covered the screen, so which route was taken to it decided how it looked.
+        val eTop = 0f
         val eLeft = 0f
         val eWidth = parentW
         val eHeight = parentH - eTop
@@ -142,7 +147,9 @@ fun ExpandingPlayerSheet(
         val left = lerp(cLeft, eLeft)
         val w = lerp(cWidth, eWidth)
         val h = lerp(cHeight, eHeight)
-        val topR = lerp(16f, 28f)
+        // Square at the top once expanded: a rounded corner against the top edge of the
+        // screen shows the black behind it rather than reading as a sheet.
+        val topR = lerp(16f, 0f)
         val botR = lerp(16f, 0f)
         val miniA = (1f - f / 0.4f).coerceIn(0f, 1f)
         val fullA = ((f - 0.2f) / 0.8f).coerceIn(0f, 1f)
@@ -196,6 +203,9 @@ fun ExpandingPlayerSheet(
                     Box(modifier = Modifier.graphicsLayer { alpha = fullA }.fillMaxSize()) {
                         NowPlayingScreen(
                             isForeground = expanded,
+                            // The sheet now reaches the status bar, so the player's own top
+                            // row has to clear it, exactly as it does on the full-screen route.
+                            topBarInsets = WindowInsets.statusBars,
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {

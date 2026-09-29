@@ -10,7 +10,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
@@ -25,7 +24,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -59,6 +57,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import net.asksakis.massdroidv2.ui.screens.nowplaying.components.landscapeArtSurfaceWidth
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.KeepScreenOn
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.PlayerOptionsSheet
 import net.asksakis.massdroidv2.ui.screens.nowplaying.components.QualityActionRow
@@ -77,6 +76,7 @@ import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.ui.components.grain
 import net.asksakis.massdroidv2.domain.nfc.NfcTagAction
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteChoice
 import net.asksakis.massdroidv2.ui.nfc.NfcWriteSheet
@@ -322,7 +322,7 @@ fun NowPlayingScreen(
             } else {
                 // No artwork to take the colour from, so fall back to the tint the
                 // screen has always had rather than leaving a flat surface.
-                Box(modifier = Modifier.fillMaxSize().background(gradient))
+                Box(modifier = Modifier.fillMaxSize().background(gradient).grain(grainAlphaFor(isDark)))
             }
             if (isLandscape) {
                 NowPlayingLandscape(
@@ -725,62 +725,6 @@ private fun NowPlayingPortrait(
                 enabled = controlsEnabled,
                 onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Volume indicator: fade in on change, fade out after 2s
-            val currentVolume = player?.volumeLevel ?: 0
-            val volumeMuted = player?.volumeMuted ?: false
-            var lastShownVolume by remember { mutableIntStateOf(currentVolume) }
-            val volumeAlpha = remember { Animatable(0f) }
-
-            LaunchedEffect(currentVolume, volumeMuted) {
-                if (lastShownVolume != currentVolume) {
-                    lastShownVolume = currentVolume
-                    volumeAlpha.animateTo(1f, tween(300))
-                    delay(2000)
-                    volumeAlpha.animateTo(0f, tween(1000))
-                }
-            }
-
-            // Fixed height so it doesn't push other components
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.7f)
-                    .height(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (volumeAlpha.value > 0.01f) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .graphicsLayer { alpha = volumeAlpha.value },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            if (volumeMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        LinearProgressIndicator(
-                            progress = { currentVolume / 100f },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(4.dp)
-                                .clip(MaterialTheme.shapes.small),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
-                        )
-                        Text(
-                            text = "$currentVolume%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
         }
 
         Spacer(modifier = Modifier.weight(1f))
@@ -817,20 +761,39 @@ private fun NowPlayingLandscape(
     onNavigateToAlbum: (String, String, String) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    Row(
+    val infoColumnWidth = (LocalConfiguration.current.screenWidthDp.dp * INFO_COLUMN_SHARE)
+        .coerceIn(INFO_COLUMN_MIN, INFO_COLUMN_MAX)
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .padding(paddingValues)
             .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+    // Each column takes what it needs and the pair is centred, rather than the two sharing
+    // the row out between them. The cover's column is the width its surface will use at this
+    // height, so no leftover sits inside it pushing the controls towards the edge.
+    val coverColumnWidth = landscapeArtSurfaceWidth(maxHeight - COVER_COLUMN_VERTICAL_INSET) +
+        COVER_COLUMN_HORIZONTAL_INSET
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: close/name overlay + centered album art
+        // Left: close/name overlay + centered album art.
+        // The cover is sized by the width this column gets, so the split is what decides how
+        // big it is. The right hand column holds the track, the seek bar and the transport,
+        // which need a fixed amount of room rather than a share of it, so widening this one
+        // takes from slack rather than from anything that has to fit.
         Box(
             modifier = Modifier
-                .weight(0.92f)
+                .width(coverColumnWidth)
                 .fillMaxHeight()
-                .padding(8.dp)
+                // No inset at the top: the close button and the player name are the first
+                // thing under the status bar, and the row's own 40dp button already centres
+                // the name well clear of it. With 8dp here as well the name sat 29dp below
+                // the status bar and read as hanging in the middle of nothing.
+                .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
         ) {
             // Close + player name (overlay, doesn't affect art centering)
             Row(
@@ -857,11 +820,12 @@ private fun NowPlayingLandscape(
                 }
             }
 
-            // Album art (true center)
+            // Album art (true center). The inset is what is left for the close button and
+            // the player name above it, so it stays only as deep as that row needs.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 12.dp, vertical = 20.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
                 SwipeableAlbumArt(
@@ -878,19 +842,28 @@ private fun NowPlayingLandscape(
             }
         }
 
-        // Right: track info + controls (grouped, constrained width)
+        // Right: track info + controls, sized to what they need rather than to a share of
+        // the screen. A fixed share is the wrong tool here: this column holds a fixed set of
+        // controls while the cover beside it can use any width at all, so a share that leaves
+        // the cover room on a wide phone squeezes the controls on a narrow one. At the split
+        // this replaced, a 640dp landscape screen gave this column 266dp against the 280 its
+        // icon row needs. It now takes its share up to a ceiling and never below that floor,
+        // and the cover column takes whatever is left.
         Box(
             modifier = Modifier
-                .weight(1.32f)
+                .width(infoColumnWidth)
                 .fillMaxHeight()
                 .padding(start = 16.dp, end = 8.dp)
         ) {
-            // Menu overlay top-right (doesn't affect centering)
+            // Menu overlay top-right (doesn't affect centering). The same 40dp as the close
+            // button opposite it, so the two sit on one line: at 36dp its centre landed 3dp
+            // above the player name beside it, which reads as a misalignment across the top
+            // of the screen. The portrait top bar uses 40dp for both as well.
             MdIconButton(
                 onClick = onShowPlayerMenu,
-                modifier = Modifier.size(36.dp).align(Alignment.TopEnd)
+                modifier = Modifier.size(40.dp).align(Alignment.TopEnd)
             ) {
-                Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(20.dp))
+                Icon(Icons.Default.MoreVert, contentDescription = "Player options", modifier = Modifier.size(22.dp))
             }
 
             Column(
@@ -952,6 +925,7 @@ private fun NowPlayingLandscape(
             }
             }
         }
+    }
     }
 }
 
@@ -1071,6 +1045,26 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
                 .graphicsLayer { alpha = upperAlpha.value }
         )
         Box(modifier = Modifier.fillMaxSize().background(scrim))
+        // A second scrim over the top strip alone. The one above is lightest at the top,
+        // because that is where the artwork should show through, and the player name and
+        // the options button sit in exactly that strip: over a pale cover they were left
+        // reading dark text on a bright background. This pulls that strip back towards the
+        // surface colour, which is the colour the text is drawn against everywhere else, so
+        // it works in both themes rather than only darkening.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(TOP_SCRIM_HEIGHT)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            surfaceColor.copy(alpha = if (isDark) 0.50f else 0.60f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
         Box(modifier = Modifier.fillMaxSize().drawWithCache {
             // Deliberate vignette. The blur already darkens the rim on its own, because
             // it samples past the edge of the artwork and finds nothing there, but that
@@ -1089,8 +1083,19 @@ private fun AlbumArtBackdrop(imageUrl: String?, isDark: Boolean) {
             )
             onDrawBehind { drawRect(radial) }
         })
+        // Last, so the grain sits over the blur, the scrim and the vignette alike: it is
+        // the finish on the whole background rather than a layer inside it.
+        Box(modifier = Modifier.fillMaxSize().grain(grainAlphaFor(isDark)))
     }
 }
+
+/**
+ * How strongly the background carries its grain.
+ *
+ * Lighter in the light theme for the same reason the vignette is: the texture that gives a
+ * dark screen its matte finish reads as dust on a bright one.
+ */
+private fun grainAlphaFor(isDark: Boolean): Float = if (isDark) 0.065f else 0.045f
 
 /**
  * Decode size of the backdrop artwork. Small enough that stretching it to a phone
@@ -1104,6 +1109,33 @@ private const val BACKDROP_SOURCE_PX = 48
  * the screen. Six of forty-eight pixels is a wide blur once stretched.
  */
 private const val BACKDROP_BLUR_PASSES = 6
+
+/**
+ * The landscape split between the cover and the controls beside it.
+ *
+ * [INFO_COLUMN_SHARE] is what the controls take on a screen wide enough for both.
+ * [INFO_COLUMN_MIN] is the width its icon row needs, measured at 275dp on the device with a
+ * little over for the padding, below which the icons crowd. [INFO_COLUMN_MAX] stops a tablet
+ * from spreading the controls across half a metre when the cover could use that width, where
+ * the cover stops growing at the height of the screen anyway.
+ */
+/** What the cover's column spends on padding, so its width can be worked out in advance. */
+private val COVER_COLUMN_HORIZONTAL_INSET = 16.dp
+
+/** What the cover's column spends above and below the surface, for the same reason. */
+private val COVER_COLUMN_VERTICAL_INSET = 20.dp
+
+private const val INFO_COLUMN_SHARE = 0.45f
+private val INFO_COLUMN_MIN = 280.dp
+private val INFO_COLUMN_MAX = 360.dp
+
+/**
+ * How far down the extra scrim behind the player name and the options button reaches.
+ *
+ * It covers the status bar and the 48dp top bar under it with room to fade out, so the text
+ * sits on the strongest part and nothing below the bar shows an edge where it ends.
+ */
+private val TOP_SCRIM_HEIGHT = 140.dp
 
 /** Where the vignette starts to darken. Below this the backdrop is untouched. */
 private const val VIGNETTE_CLEAR_STOP = 0.55f
