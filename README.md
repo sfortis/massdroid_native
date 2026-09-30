@@ -77,18 +77,8 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
   <img src="screenshots/library.png" width="240" />
 </p>
 <p align="center">
-  <img src="screenshots/artist_detail.png" width="240" />&nbsp;&nbsp;
   <img src="screenshots/players.png" width="240" />&nbsp;&nbsp;
-  <img src="screenshots/lyrics.png" width="240" />
-</p>
-<p align="center">
   <img src="screenshots/search.png" width="240" />&nbsp;&nbsp;
-  <img src="screenshots/autoplay.png" width="240" />&nbsp;&nbsp;
-  <img src="screenshots/recommendation_tuning.png" width="240" />
-</p>
-<p align="center">
-  <img src="screenshots/playlists.png" width="240" />&nbsp;&nbsp;
-  <img src="screenshots/player_settings.png" width="240" />&nbsp;&nbsp;
   <img src="screenshots/queue.png" width="240" />
 </p>
 
