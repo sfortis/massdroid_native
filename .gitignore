@@ -37,3 +37,8 @@ build/
 # Claude Code
 .claude/
 .codex
+
+# Real MA search answers captured by scripts/search-parity.py for SearchParityTest.
+# Several MB of server output, and they belong to one server at one moment, so they are
+# taken again rather than kept. The test skips itself when they are not there.
+/core/src/test/resources/search/
