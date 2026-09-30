@@ -16,6 +16,56 @@ val localProperties = Properties().apply {
     if (file.exists()) load(file.inputStream())
 }
 
+/**
+ * Where the copied release notes land, kept out of the source tree because it is a build
+ * product: the file itself stays at the root of the repo, which is where it is written
+ * and where the release workflow reads it from.
+ */
+val whatsNewAssetDir: Provider<Directory> = layout.buildDirectory.dir("generated/whatsnew/assets")
+
+/** The notes, and the animations they can name, both written at the root of the repo. */
+val whatsNewNotes: RegularFile = rootProject.layout.projectDirectory.file("WHATSNEW.md")
+val whatsNewMedia: Directory = rootProject.layout.projectDirectory.dir("whatsnew")
+
+/**
+ * Puts the release notes, and only the animations they actually name, into the assets.
+ *
+ * Copying the whole media folder would carry every animation of every past release in the
+ * APK forever, so the notes decide what ships. A tag naming a file that is not there
+ * fails the build rather than leaving a gap nobody sees until after the release.
+ */
+val copyWhatsNew = tasks.register("copyWhatsNew") {
+    description = "Copies WHATSNEW.md and the animations it names into the app's assets."
+    val notes = whatsNewNotes
+    val media = whatsNewMedia
+    val output = whatsNewAssetDir
+    inputs.file(notes)
+    inputs.dir(media)
+    outputs.dir(output)
+    doLast {
+        val markdown = notes.asFile.readText()
+        // The whole output folder goes, not just its contents: a file left behind by an
+        // earlier version of this task would otherwise stay in the assets forever.
+        val root = output.get().asFile
+        root.deleteRecursively()
+        val target = root.resolve("whatsnew")
+        target.mkdirs()
+        target.resolve("notes.md").writeText(markdown)
+        Regex("""<!--\s*animation:\s*(\S+)\s*-->""").findAll(markdown)
+            .map { it.groupValues[1] }
+            .distinct()
+            .forEach { name ->
+                val source = media.file(name).asFile
+                require(source.isFile) {
+                    "WHATSNEW.md names the animation '$name', which is not in ${media.asFile}"
+                }
+                source.copyTo(target.resolve(name), overwrite = true)
+            }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(copyWhatsNew) }
+
 android {
     namespace = "net.asksakis.massdroidv2"
     compileSdk = 35
@@ -142,6 +192,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // The release notes ship with the app, so the What's New sheet after an update needs
+    // no network and always matches the version actually installed.
+    sourceSets.getByName("main").assets.srcDir(whatsNewAssetDir)
 }
 
 dependencies {

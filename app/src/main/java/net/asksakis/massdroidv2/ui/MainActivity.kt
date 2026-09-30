@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
     @Inject lateinit var acousticCalibrationCoordinator: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
     @Inject lateinit var volumeKeyController: net.asksakis.massdroidv2.domain.player.VolumeKeyController
+    @Inject lateinit var whatsNewRepository: net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
 
     @Volatile private var cachedSsClientId: String? = null
 
@@ -222,7 +223,7 @@ class MainActivity : ComponentActivity() {
                     MassDroidApp(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
                     DevBuildBadge()
                     UpdatePrompt(appUpdateChecker)
-                    WhatsNewPrompt(settingsRepository)
+                    WhatsNewPrompt(settingsRepository, whatsNewRepository)
                     // Top-level transient OSD for remote-player volume changes.
                     // The system already overlays its own bar for STREAM_MUSIC
                     // (local Sendspin path), but remote players have no OS
@@ -856,19 +857,26 @@ private fun DevBuildBadge() {
  * "Before" is read from whether a server was ever configured rather than from a flag of
  * its own. Somebody on their first run is not catching up on what changed, and the record
  * of what they have seen is written for them anyway so the next release finds it.
+ *
+ * Every version that brings a new version code shows its notes once, because the notes
+ * are the release notes themselves rather than a list kept by hand. The notes are only
+ * read once it is settled that they will be shown.
  */
 @Composable
 private fun WhatsNewPrompt(
-    settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository
+    settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
+    whatsNewRepository: net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
 ) {
-    var release by remember { mutableStateOf<net.asksakis.massdroidv2.ui.components.WhatsNewRelease?>(null) }
+    var release by remember {
+        mutableStateOf<net.asksakis.massdroidv2.domain.whatsnew.WhatsNewRelease?>(null)
+    }
     LaunchedEffect(Unit) {
-        val news = net.asksakis.massdroidv2.ui.components.currentWhatsNew
         val seen = settingsRepository.lastSeenWhatsNewVersion.first()
-        if (seen >= news.sinceVersionCode) return@LaunchedEffect
-        val usedBefore = settingsRepository.serverUrl.first().isNotBlank()
-        settingsRepository.setLastSeenWhatsNewVersion(news.sinceVersionCode)
-        if (usedBefore) release = news
+        if (seen < net.asksakis.massdroidv2.BuildConfig.VERSION_CODE) {
+            val usedBefore = settingsRepository.serverUrl.first().isNotBlank()
+            settingsRepository.setLastSeenWhatsNewVersion(net.asksakis.massdroidv2.BuildConfig.VERSION_CODE)
+            if (usedBefore) release = whatsNewRepository.load()
+        }
     }
     release?.let { news ->
         net.asksakis.massdroidv2.ui.components.WhatsNewSheet(

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
 import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
@@ -20,6 +21,7 @@ import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.repository.TrackScore
+import net.asksakis.massdroidv2.domain.whatsnew.WhatsNewRelease
 import javax.inject.Inject
 
 data class UpdateUiState(
@@ -43,8 +45,19 @@ class SettingsViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository
+    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository,
+    private val whatsNewRepository: WhatsNewRepository
 ) : ViewModel() {
+
+    /**
+     * The release notes that shipped with this build, for the list About shows in place.
+     *
+     * Read once per screen rather than held somewhere longer lived, because it is a small
+     * file and About is not a screen anybody sits on. Null until the read finishes, and
+     * null as well when the build carries no notes.
+     */
+    val whatsNew: StateFlow<WhatsNewRelease?> = flow { emit(whatsNewRepository.load()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val availableAuthProviders = maAuthRepository.availableProviders
     val oauthInProgress = maAuthRepository.oauthInProgress

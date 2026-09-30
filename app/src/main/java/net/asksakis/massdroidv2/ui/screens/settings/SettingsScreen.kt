@@ -49,7 +49,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.SystemUpdate
 import net.asksakis.massdroidv2.ui.components.WhatsNewItems
-import net.asksakis.massdroidv2.ui.components.currentWhatsNew
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Person
@@ -475,6 +474,7 @@ private fun RecommendationsScreen(
 @Composable
 private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
+    val whatsNew by viewModel.whatsNew.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -496,17 +496,23 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
         }
         // The entries in place rather than behind a row. The sheet still interrupts once
         // after an update, and this is the same list, so there is nothing to tap to read
-        // it again.
-        Text(
-            text = "New in ${currentWhatsNew.versionName}",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp)
-        )
-        WhatsNewItems(
-            release = currentWhatsNew,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
+        // it again. Nothing is drawn until the notes have been read off the assets, which
+        // is a file read and not a request, so the wait is not worth a placeholder.
+        whatsNew?.let { news ->
+            // Heavier than the Added/Improved/Fixed headings inside the list, which carry
+            // the settings section style. Leaving both at labelLarge in primary read as
+            // four headings of the same rank instead of a title with sections under it.
+            Text(
+                text = "New in ${news.versionName}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp)
+            )
+            WhatsNewItems(
+                release = news,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
     }
 }
 

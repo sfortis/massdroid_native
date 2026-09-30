@@ -50,14 +50,20 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
-- Audiobooks and podcasts now appear in search, with their own filters, and an audiobook plays straight from the results.
-- The audiobook library no longer comes up empty when your audiobooks carry an author. (#77)
-- Search no longer reports a failure while the server is still answering, and it stops leaving the previous search's results under the new text. (#76)
-- Covers for local music load when you reach your server from outside your home network. (#66)
-- The full player opens all the way to the top of the screen, however you open it.
+### Added
+- NFC tags: tap your phone on a tag to start an album or a playlist on a speaker, or to move what is already playing into that room.
+- Audiobooks and podcasts in search, each with a filter of its own.
+
+### Improved
+- The full player opens to the top of the screen, however you open it.
 - The cover keeps its shadow while you swipe to the next track.
-- The player background has a fine grain instead of a flat wash.
-- In landscape the cover is larger and the controls beside it sit where they should.
+- In landscape the cover is larger and the controls fit beside it.
+
+### Fixed
+- Search no longer reports a failure while the server is still answering, or leaves the previous results under new text. (#76)
+- The audiobook library no longer comes up empty. (#77)
+- Covers for local music load from outside your home network. (#66)
+- A tab no longer keeps showing something that was added or removed on the server until you pull to refresh.
 - Playlists that cannot hold songs are no longer offered when adding one.
 - Album track numbers follow the disc, so a second disc starts at one again.
 
