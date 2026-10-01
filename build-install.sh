@@ -72,19 +72,23 @@ if [[ -n "${ADB:-}" ]]; then
   add_adb_candidate "$ADB"
 fi
 
+# The native SDK adb comes first. On WSL the Windows adb.exe goes through interop, and
+# when interop stalls an install hangs until it times out. It stays as the last resort
+# because a phone on USB is bound to the Windows adb and the native one cannot see it.
+add_adb_candidate "${ANDROID_SDK_ROOT:-}/platform-tools/adb"
+add_adb_candidate "${ANDROID_HOME:-}/platform-tools/adb"
+add_adb_candidate "$HOME/Android/Sdk/platform-tools/adb"
+
+if command -v adb >/dev/null 2>&1; then
+  add_adb_candidate "$(command -v adb)"
+fi
+
 if is_wsl; then
   shopt -s nullglob
   for candidate in /mnt/c/Users/*/AppData/Local/Android/Sdk/platform-tools/adb.exe; do
     add_adb_candidate "$candidate"
   done
   shopt -u nullglob
-fi
-
-add_adb_candidate "${ANDROID_SDK_ROOT:-}/platform-tools/adb"
-add_adb_candidate "${ANDROID_HOME:-}/platform-tools/adb"
-
-if command -v adb >/dev/null 2>&1; then
-  add_adb_candidate "$(command -v adb)"
 fi
 
 if [[ ${#ADB_CANDIDATES[@]} -eq 0 ]]; then
