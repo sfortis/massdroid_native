@@ -649,6 +649,9 @@ class SendspinManager(
 
     private fun duckedGain(): Float = if (ducked) DUCK_GAIN else 1f
 
+    /** The mute last applied, by the server or by [setMuted]. */
+    val isMuted: Boolean get() = muted
+
     fun setMuted(muted: Boolean) {
         this.muted = muted
         audio.setMuted(muted)

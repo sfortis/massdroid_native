@@ -122,6 +122,13 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // for ~300 ms on a Pixel, so retrying at the plain settle pace would stall
         // the UI for as long as the other app holds the output.
         private const val REOPEN_BACKOFF_MAX_SHIFT = 3
+        // A decoder that fails on its own (seen once on a Pixel: the FLAC decoder
+        // reported UNKNOWN_ERROR right after a route-change flush and stayed in the
+        // Released state) is rebuilt at most this many times per window. Past that
+        // the stream stays silent until the next configure, rather than building
+        // a codec in a loop against a decoder that cannot run.
+        private const val CODEC_REBUILD_LIMIT = 3
+        private const val CODEC_REBUILD_WINDOW_MS = 60_000L
     }
 
     // Holds the raw WS frame (header included) with an offset/length view of
@@ -249,6 +256,14 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     @Volatile protected var activeBitDepth = 16
     @Volatile protected var activeSampleRate = 48_000
     @Volatile protected var activeChannels = 2
+    // The header the active codec was created with, kept so a failed decoder can
+    // be rebuilt with exactly the same configuration.
+    @Volatile private var activeCodecHeader: String? = null
+    // Set by the producer when the codec threw outside a release; the producer
+    // loop rebuilds it. See [rebuildFailedCodec].
+    @Volatile private var codecFailed = false
+    private var codecRebuildWindowStartMs = 0L
+    private var codecRebuildsInWindow = 0
     @Volatile private var lastEnqueuedTimestampUs = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
     @Volatile protected var startupWaitStartedMs = 0L
@@ -377,6 +392,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         activeSampleRate = sampleRate
         activeChannels = channels
         activeBitDepth = bitDepth
+        activeCodecHeader = codecHeader
+        codecFailed = false
 
         startNativeOutput()
         registerDeviceCallback()
@@ -954,6 +971,10 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                 sleepMs(10)
                 continue
             }
+            if (codecFailed) {
+                rebuildFailedCodec()
+                continue
+            }
             // The start buffer gate applies ONLY before the first startTrack.
             // Once playing, keep feeding the ring unconditionally — re-gating on
             // startBufferMs every iteration would BLOCK writes whenever the buffer
@@ -1107,9 +1128,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                 decoderMarks.addLast(DecoderMark(frame.serverTimestampUs, frame.generation))
                 mc.queueInputBuffer(inputIndex, 0, frame.length, frame.serverTimestampUs, 0)
             } catch (e: IllegalStateException) {
-                // Codec reconfigured/released out from under us (defensive: the
-                // join in releaseInternal should normally prevent this).
-                Log.w(TAG, "queueCodecInput skipped: codec not executing (${e.message})")
+                // releaseInternal joins the producer before it releases the codec,
+                // so reaching this means the decoder failed by itself. The producer
+                // loop rebuilds it; calling into it again would only fail again.
+                Log.w(TAG, "queueCodecInput: codec not executing (${e.message}), rebuilding it")
+                codecFailed = true
                 return@synchronized true
             }
             if (receivedFrameCount <= 8 || receivedFrameCount % 500 == 0L) {
@@ -1143,7 +1166,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                 val outputIndex = try {
                     mc.dequeueOutputBuffer(info, 0)
                 } catch (e: IllegalStateException) {
-                    Log.w(TAG, "drainDecoder stop: codec not executing (${e.message})")
+                    Log.w(TAG, "drainDecoder: codec not executing (${e.message}), rebuilding it")
+                    codecFailed = true
                     return@synchronized false
                 }
                 if (outputIndex < 0) {
@@ -1474,6 +1498,44 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         syncMuted = false
         syncMuteStartedMs = 0L
         transitionSyncState(SyncState.IDLE)
+    }
+
+    /**
+     * Replace a decoder that failed by itself with a fresh one of the same
+     * configuration. Runs on the producer thread, which is the only thread that
+     * feeds the codec, under [codecLock] so a concurrent release cannot interleave.
+     * The audio already in the native ring keeps playing; what was inside the dead
+     * decoder is lost, a fraction of a second. Bounded by [CODEC_REBUILD_LIMIT].
+     */
+    private fun rebuildFailedCodec() {
+        codecFailed = false
+        val now = System.currentTimeMillis()
+        if (now - codecRebuildWindowStartMs > CODEC_REBUILD_WINDOW_MS) {
+            codecRebuildWindowStartMs = now
+            codecRebuildsInWindow = 0
+        }
+        codecRebuildsInWindow++
+        synchronized(codecLock) {
+            try { codec?.release() } catch (_: Exception) {}
+            codec = null
+            decoderMarks.clear()
+            pendingFrame = null
+            if (codecRebuildsInWindow > CODEC_REBUILD_LIMIT) {
+                Log.e(
+                    TAG,
+                    "Decoder failed $codecRebuildsInWindow times within ${CODEC_REBUILD_WINDOW_MS}ms; " +
+                        "leaving $activeCodec silent until the next stream",
+                )
+                return
+            }
+            codec = try {
+                createCodec(activeCodec, activeSampleRate, activeChannels, activeBitDepth, activeCodecHeader)
+            } catch (e: Exception) {
+                Log.e(TAG, "Decoder rebuild failed for $activeCodec: ${e.message}")
+                null
+            }
+        }
+        Log.w(TAG, "Decoder rebuilt after a failure ($activeCodec, attempt $codecRebuildsInWindow)")
     }
 
     private fun createCodec(

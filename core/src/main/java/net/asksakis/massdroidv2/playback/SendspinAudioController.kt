@@ -85,6 +85,13 @@ class SendspinAudioController(
         private const val BT_STABILIZE_TIMEOUT_MS = 12_000L
         private const val BT_STABILIZE_QUIET_MS = 1_200L
         private const val BT_STABILIZE_POLL_MS = 250L
+        // An external sink that drops to the phone speaker is only believed gone
+        // after the route has stayed off every external sink this long. A message
+        // notification on Android Auto moves the output to the speaker and back
+        // in 2 to 3 s, and the A2DP connect handshake flaps for up to about 5 s;
+        // both used to pause the music for good. The output is silenced for the
+        // whole window, so nothing reaches the speaker on a real disconnect.
+        private const val ROUTE_LOSS_SETTLE_MS = 5_000L
         // How long a reconnect waits for the server to answer the re-asserted
         // pause before refreshing the Sendspin transport anyway. Bounded because
         // an unrefreshed transport is a worse outcome than the short leak the
@@ -164,9 +171,9 @@ class SendspinAudioController(
 
     // Noisy audio receiver: fires just before audio would re-route to the phone
     // speaker (BT/headset leaving). On a real disconnect we must not leak audio to
-    // the speaker; on a transient connect/handshake flap (the car's A2DP link
-    // settling) the route returns within seconds. Both funnel through the settle
-    // gate, which silences instantly but only commits a real pause on durable loss.
+    // the speaker; on a transient flap (an Android Auto notification, the car's
+    // A2DP link settling) the route returns within seconds. Both funnel through
+    // [holdForRouteLoss], which silences at once and pauses only on durable loss.
     private var noisyReceiverRegistered = false
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -180,7 +187,7 @@ class SendspinAudioController(
                 // and the settle re-check aborts the exit. No connect/lost distinction here.
                 volumeCoordinator.onRouteChanged()
                 ++routeChangeGeneration  // supersede any in-flight relock
-                pauseForRouteLoss()
+                holdForRouteLoss("becoming noisy")
             }
         }
     }
@@ -234,14 +241,17 @@ class SendspinAudioController(
             val gen = ++routeChangeGeneration
             Log.d(TAG, "Audio route changed: $oldRoute -> $newRoute (gen=$gen)")
             when {
-                // Lost an external sink to the phone speaker: clean immediate pause
-                // (no leak to the phone speaker). autoPlayOnBtConnect resumes if the
-                // sink later reconnects.
+                // Lost an external sink to the phone speaker: silence now, pause only
+                // if it stays lost (see [holdForRouteLoss]).
                 oldRoute.isExternal && newRoute == OutputRoute.SPEAKER ->
-                    pauseForRouteLoss()
-                // (Re)gained an external route: relock for the new route. Resume on a
-                // BT reconnect is handled by autoPlayOnBtConnect (A2DP device-added).
-                else -> relockForRoute(oldRoute, newRoute, gen)
+                    holdForRouteLoss("route $oldRoute->$newRoute")
+                // (Re)gained an external route: end a pending route-loss hold, then
+                // relock for the new route. Resume on a BT reconnect after a real
+                // loss is handled by autoPlayOnBtConnect (A2DP device-added).
+                else -> {
+                    if (newRoute.isExternal) releaseRouteLossHold("route returned to $newRoute")
+                    relockForRoute(oldRoute, newRoute, gen)
+                }
             }
         } else if (newRoute == OutputRoute.BT) {
             // Same route type but maybe a different BT device (bt:A -> bt:B).
@@ -276,18 +286,63 @@ class SendspinAudioController(
         }
     }
 
-    // ===== External-sink loss: clean immediate pause + auto-resume on return =====
+    // ===== External-sink loss: silence at once, pause only on durable loss =====
     //
-    // When an external sink (BT/wired/USB) drops to the phone speaker we pause
-    // cleanly and IMMEDIATELY. We do not wait to see if it returns: an active BT
-    // sink does not flap-disconnect mid-playback; a real disconnect just stops.
-    // If the sink later reconnects, autoPlayOnBtConnect (driven by the A2DP
-    // device-added callback) resumes playback. The connect-time A2DP handshake
-    // flap (speaker<->bt while the link settles) is absorbed by the native-output
-    // reopen settle in SendspinPlaybackEngine, not here — so dropping the old
-    // disconnect-side settle does not reintroduce the "stuck paused on car connect"
-    // bug (that lived on the connect path, and auto-resume self-heals any residual
-    // transient anyway).
+    // When an external sink (BT/wired/USB) drops to the phone speaker the output
+    // is muted and frozen immediately, so nothing leaks to the speaker, and the
+    // pause is committed only if the route is still off every external sink after
+    // ROUTE_LOSS_SETTLE_MS. An active sink does flap mid-playback: on Android Auto
+    // every message notification moved the output to the speaker and back within
+    // 2 to 3 s (issue #68), and the old immediate pause left the music stopped
+    // until the listener pressed play. If a real loss later reconnects,
+    // autoPlayOnBtConnect (driven by the A2DP device-added callback) resumes.
+
+    // The pending confirmation of a route loss, and the mute that was in force
+    // before the hold silenced the output. Main thread only (device callbacks, the
+    // noisy receiver and the engine's routing callback all run there).
+    private var routeLossConfirmJob: Job? = null
+    private var mutedBeforeRouteLossHold = false
+
+    private fun holdForRouteLoss(source: String) {
+        if (sendspinPlayerId == null) return
+        if (routeLossConfirmJob?.isActive == true) return
+        mutedBeforeRouteLossHold = sendspinManager.isMuted
+        sendspinManager.setMuted(true)
+        freezeOutput("route")
+        Log.i(TAG, "External sink lost ($source): output silenced, pausing if it is still gone in ${ROUTE_LOSS_SETTLE_MS}ms")
+        routeLossConfirmJob = scope.launch(Dispatchers.Main.immediate) {
+            delay(ROUTE_LOSS_SETTLE_MS)
+            routeLossConfirmJob = null
+            if (resolveOutputRoute().isExternal) {
+                restoreAfterRouteLossHold()
+                Log.i(TAG, "External sink back by the deadline: no pause")
+                // No device callback reported the return, so currentRoute still
+                // reads SPEAKER; this runs the relock for the route we are on.
+                checkRouteChange()
+            } else {
+                Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms: pausing")
+                pauseForRouteLoss()
+                // pauseForRouteLoss returns early without a player id, which would
+                // leave this hold's freeze in place; releasing it is a no-op otherwise.
+                unfreezeOutput("route")
+                sendspinManager.setMuted(mutedBeforeRouteLossHold)
+            }
+        }
+    }
+
+    /** The route came back to an external sink while a loss was being confirmed. */
+    private fun releaseRouteLossHold(reason: String) {
+        val job = routeLossConfirmJob ?: return
+        job.cancel()
+        routeLossConfirmJob = null
+        restoreAfterRouteLossHold()
+        Log.i(TAG, "External sink loss not confirmed ($reason): playing on")
+    }
+
+    private fun restoreAfterRouteLossHold() {
+        unfreezeOutput("route")
+        sendspinManager.setMuted(mutedBeforeRouteLossHold)
+    }
     /**
      * Drop the listener's intent to play, and with it any start owed to the next
      * audio-focus gain.
@@ -1211,6 +1266,11 @@ class SendspinAudioController(
         reconnectReassertJob = null
         clearDuck()
         cancelHeldCallGain()
+        routeLossConfirmJob?.let {
+            it.cancel()
+            routeLossConfirmJob = null
+            sendspinManager.setMuted(mutedBeforeRouteLossHold)
+        }
         reconnectJob?.cancel()
         reconnectJob = null
         abandonAudioFocus()
