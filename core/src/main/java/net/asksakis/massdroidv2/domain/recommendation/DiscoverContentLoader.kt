@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
+import kotlinx.coroutines.CancellationException
+import net.asksakis.massdroidv2.domain.model.Playlist
 import android.util.Log
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -11,6 +13,9 @@ import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 
 private const val LOADER_TAG = "DiscoverLoader"
+
+/** Far above any sensible playlist count, because the dynamic ones cannot be asked for. */
+private const val SMART_PLAYLIST_SCAN_LIMIT = 500
 private const val MIN_DISCOVER_SECTION_ITEMS = 3
 private const val RECENT_TRACKS_QUERY_FACTOR = 5
 private const val RECENT_FAVORITE_ALBUMS_FOLDER_ID_LOCAL = "recent_favorite_albums"
@@ -22,7 +27,9 @@ data class DiscoverContentBundle(
     val recommendationAlbums: List<Album>,
     val genreItems: List<GenreItem>,
     val genreArtists: Map<String, List<String>>,
-    val strictGenreArtists: Map<String, List<String>>
+    val strictGenreArtists: Map<String, List<String>>,
+    /** Playlists the server rebuilds when they are played, newest first. */
+    val smartPlaylists: List<Playlist>
 )
 
 class DiscoverContentLoader(
@@ -36,11 +43,13 @@ class DiscoverContentLoader(
         val randomArtistsDef = async { loadRandomArtists() }
         val favoriteAlbumsDef = async { loadRecentFavoriteAlbums() }
         val recsDef = async { loadRecommendations() }
+        val smartPlaylistsDef = async { loadSmartPlaylists() }
 
         val artists = artistsDef.await()
         val randomArtists = randomArtistsDef.await()
         val recentFavoriteAlbums = favoriteAlbumsDef.await()
         val serverFolders = recsDef.await()
+        val smartPlaylists = smartPlaylistsDef.await()
         val enrichedFolders = mergeFavoriteAlbumsFolder(serverFolders, recentFavoriteAlbums)
         val recommendationArtists = extractRecommendationArtists(enrichedFolders)
         val recommendationAlbums = extractRecommendationAlbums(enrichedFolders)
@@ -79,8 +88,28 @@ class DiscoverContentLoader(
             recommendationAlbums = recommendationAlbums,
             genreItems = genreItems,
             genreArtists = genreArtists,
-            strictGenreArtists = strictGenreArtists
+            strictGenreArtists = strictGenreArtists,
+            smartPlaylists = smartPlaylists
         )
+    }
+
+    /**
+     * The playlists the server fills itself, which is what a smart playlist is.
+     *
+     * There is no server side filter for them, so the whole library has to be read and
+     * sifted here. The limit is deliberately far above any sensible number of playlists:
+     * on the library this was written against, five of the a hundred and thirteen were
+     * dynamic, and a smaller page would have returned whichever of them happened to sort
+     * early.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun loadSmartPlaylists(limit: Int = SMART_PLAYLIST_SCAN_LIMIT): List<Playlist> = try {
+        musicRepository.getPlaylists(limit = limit).filter { it.isDynamic }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(LOADER_TAG, "Could not read smart playlists: ${e.message}")
+        emptyList()
     }
 
     @Suppress("TooGenericExceptionCaught")

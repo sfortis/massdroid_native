@@ -39,7 +39,8 @@ class DiscoverSectionBuilder @Inject constructor() {
         suggestedArtists: List<Artist>,
         suggestedAlbums: List<Album>,
         genreItems: List<GenreItem>,
-        bllGenreScores: List<GenreScore>
+        bllGenreScores: List<GenreScore>,
+        smartPlaylists: List<Playlist> = emptyList()
     ): List<DiscoverSection> {
         val sections = mutableListOf<DiscoverSection>()
 
@@ -58,29 +59,36 @@ class DiscoverSectionBuilder @Inject constructor() {
             sections.add(DiscoverSection.GenreRadioSection("Genre Radio", sortedGenres))
         }
 
-        // 2. Albums You Might Like (BLL+MMR)
+        // 2. Smart Playlists. Shown from one upwards, unlike the sections below it: a
+        // playlist the listener built themselves is worth a row on its own, while a
+        // suggestion list of one says nothing.
+        if (smartPlaylists.isNotEmpty()) {
+            sections.add(DiscoverSection.PlaylistSection("Smart Playlists", smartPlaylists))
+        }
+
+        // 3. Albums You Might Like (BLL+MMR)
         if (suggestedAlbums.size >= MIN_SECTION_ITEMS) {
             sections.add(DiscoverSection.AlbumSection("Albums You Might Like", suggestedAlbums))
         }
 
-        // 3. Artists You Might Like (BLL+MMR)
+        // 4. Artists You Might Like (BLL+MMR)
         if (suggestedArtists.size >= MIN_SECTION_ITEMS) {
             sections.add(DiscoverSection.ArtistSection("Artists You Might Like", suggestedArtists))
         }
 
-        // 4. Recent Favorite Albums (from server)
+        // 5. Recent Favorite Albums (from server)
         libraryFolders["recent_favorite_albums"]?.let { folder ->
             folderToSection(folder, titleOverride = "Recent Favorite Albums")?.let { sections.add(it) }
         }
 
-        // 5. Recent Favorite Tracks
+        // 6. Recent Favorite Tracks
         libraryFolders["recent_favorite_tracks"]?.let { folder ->
             if (folder.items.tracks.size >= MIN_SECTION_ITEMS) {
                 sections.add(DiscoverSection.TrackSection("Recent Favorite Tracks", folder.items.tracks))
             }
         }
 
-        // 6. Random fallbacks (if few sections so far)
+        // 7. Random fallbacks (if few sections so far)
         if (sections.size < MIN_SECTION_ITEMS) {
             libraryFolders["random_albums"]?.let { folder ->
                 if (folder.items.albums.size >= MIN_SECTION_ITEMS) {

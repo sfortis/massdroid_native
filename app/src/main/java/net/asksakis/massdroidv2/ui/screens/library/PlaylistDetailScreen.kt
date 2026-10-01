@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
@@ -36,7 +38,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -153,9 +154,12 @@ fun PlaylistDetailScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
+        val refreshState = rememberPullToRefreshState()
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
+            state = refreshState,
+            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
@@ -204,6 +208,7 @@ fun PlaylistDetailScreen(
 
                 if (showPlaySheet) {
                     ModalBottomSheet(
+                        sheetMaxWidth = SheetDefaults.maxWidth(),
                         onDismissRequest = { showPlaySheet = false },
                         sheetState = SheetDefaults.sheetState(),
                         containerColor = SheetDefaults.containerColor()
@@ -404,7 +409,7 @@ private fun PlaylistSortSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = SheetDefaults.sheetState(),
-        sheetMaxWidth = if (isLandscape) 480.dp else Dp.Unspecified
+        sheetMaxWidth = SheetDefaults.maxWidth()
     ) {
         Column(
             modifier = Modifier

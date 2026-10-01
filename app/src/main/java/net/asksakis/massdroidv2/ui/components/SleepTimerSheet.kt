@@ -24,6 +24,7 @@ fun SleepTimerSheet(
     var showTimePicker by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()

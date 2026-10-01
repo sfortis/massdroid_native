@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -85,9 +87,12 @@ fun PodcastDetailScreen(
             )
         }
     ) { paddingValues ->
+        val refreshState = rememberPullToRefreshState()
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
+            state = refreshState,
+            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)

@@ -61,7 +61,9 @@ fun ExpandingPlayerSheet(
     navController: NavHostController,
     showMiniPlayer: Boolean,
     showNav: Boolean = true,
-    bottomBarHeight: Dp = 0.dp
+    bottomBarHeight: Dp = 0.dp,
+    /** Width of the side rail in landscape, so the collapsed player centres beside it. */
+    leadingInset: Dp = 0.dp
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
@@ -122,11 +124,26 @@ fun ExpandingPlayerSheet(
         val parentH = maxHeight.value
         val parentW = maxWidth.value
 
-        // Collapsed: above measured bottom bar + margin, clear of side insets.
-        val cTop = parentH - effectiveBottomBar - 72f - 8f
-        val cLeft = 8f + leftInsetDp
-        val cWidth = parentW - 16f - leftInsetDp - rightInsetDp
-        val cHeight = 72f
+        // Collapsed: above measured bottom bar + margin, clear of side insets. In
+        // landscape it stops at a readable width and centres, because a bar stretched
+        // across a screen twice as wide as it is tall puts the title and the controls at
+        // opposite ends with nothing between them.
+        val cTop = parentH - effectiveBottomBar -
+            MiniPlayerGeometry.CollapsedHeight.value - MiniPlayerGeometry.Margin.value
+        // Centred inside what is free beside the rail, not inside the whole screen: the
+        // rail is 80dp of chrome on one side only, and centring past it left the bar
+        // visibly off to the right of the content it belongs to.
+        // The larger of the two, not their sum: with the camera on the left the cutout lies
+        // inside the rail's own width, and adding them pushed the bar right by the cutout.
+        val freeLeft = maxOf(leftInsetDp, leadingInset.value)
+        val freeWidth = parentW - freeLeft - rightInsetDp - 16f
+        val cWidth = if (parentW > parentH) {
+            minOf(freeWidth, MiniPlayerGeometry.LandscapeMaxWidth.value)
+        } else {
+            freeWidth
+        }
+        val cLeft = freeLeft + (freeWidth - cWidth) / 2f + 8f
+        val cHeight = MiniPlayerGeometry.CollapsedHeight.value
 
         // Expanded: full-bleed on every edge, so nothing behind (e.g. the landscape side
         // nav rail) peeks through the side insets. The player content applies the safe-area
@@ -191,9 +208,18 @@ fun ExpandingPlayerSheet(
                             animatable.animateTo(target, tween(400, easing = FastOutSlowInEasing))
                         }
                     }
+                )
+                // Drawn rather than lifted, for the same reason the cover's shadow is.
+                // `shadowElevation` puts black under a surface that is itself almost
+                // black in this theme, so on the collapsed player it did nothing and the
+                // bar read as part of the list behind it. This one is set by its own
+                // colour and reaches upwards, which is the side the content is on.
+                .dropShadow(
+                    shape = RoundedCornerShape(topR.dp, topR.dp, botR.dp, botR.dp),
+                    color = SHEET_SHADOW_COLOR,
+                    blurRadius = SHEET_SHADOW_BLUR
                 ),
             shape = RoundedCornerShape(topR.dp, topR.dp, botR.dp, botR.dp),
-            shadowElevation = 8.dp,
             tonalElevation = 2.dp,
             color = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
@@ -238,7 +264,7 @@ fun ExpandingPlayerSheet(
                                 indication = null
                             ) { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } }
                             .fillMaxWidth()
-                            .height(72.dp)
+                            .height(MiniPlayerGeometry.CollapsedHeight)
                     ) {
                         val guard = rememberConnectionGuard()
                         MiniPlayer(
@@ -266,3 +292,15 @@ fun ExpandingPlayerSheet(
         )
     }
 }
+
+/**
+ * The shade that separates the player from whatever is scrolling behind it.
+ *
+ * It has no offset, so it sits evenly around the shape. Only the top edge of it is ever
+ * visible, since the player fills the width and sits at the bottom, but a shadow with a
+ * direction reads as a light source, and this one and the Smart Mix button's were falling
+ * opposite ways on the same screen.
+ */
+private val SHEET_SHADOW_BLUR = 14.dp
+private val SHEET_SHADOW_COLOR = Color.Black.copy(alpha = 0.7f)
+

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -92,6 +93,9 @@ private fun VolumeOsdCard(state: PlayerRepository.VolumeOsdState) {
         modifier = Modifier
             .windowInsetsPadding(WindowInsets.statusBars)
             .padding(top = 8.dp, start = 16.dp, end = 16.dp)
+            // Full width on a phone held upright, and the collapsed player's width once the
+            // screen is wider than that: unbounded, it ran from edge to edge in landscape.
+            .widthIn(max = MiniPlayerGeometry.LandscapeMaxWidth)
             .fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,

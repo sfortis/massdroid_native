@@ -217,6 +217,7 @@ fun NfcWriteSheet(
     }
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = SheetDefaults.sheetState(),
         containerColor = SheetDefaults.containerColor()

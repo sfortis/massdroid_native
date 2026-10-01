@@ -71,6 +71,7 @@ internal fun SyncSpeakersSheet(
         }
     }
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()

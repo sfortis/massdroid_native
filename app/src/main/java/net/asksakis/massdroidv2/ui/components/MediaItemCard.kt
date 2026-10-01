@@ -25,6 +25,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.sp
 import coil.request.ImageRequest
 import coil.request.CachePolicy
 import net.asksakis.massdroidv2.data.provider.ProviderManifestCache
@@ -239,10 +241,30 @@ fun MediaItemGrid(
     fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     /** Same mark as in [MediaItemRow], on the same line, so one rule covers both surfaces. */
     typeIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
-    typeIconDescription: String? = null
+    typeIconDescription: String? = null,
+    /**
+     * Smaller text for a dense grid, used by the Library in landscape where the cards are
+     * about 80dp wide. The text shrinks less than the card, as on Discover: 11sp titles and
+     * 10sp subtitles rather than a proportional 8sp nobody can read.
+     */
+    compact: Boolean = false
 ) {
     val context = LocalContext.current
     val resolvedFallbackIcon = fallbackIcon ?: Icons.Default.MusicNote
+    val titleStyle = if (compact) {
+        MaterialTheme.typography.labelSmall.copy(lineHeight = 14.sp)
+    } else {
+        MaterialTheme.typography.labelMedium
+    }
+    val subtitleStyle = if (compact) {
+        MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 13.sp)
+    } else {
+        MaterialTheme.typography.labelSmall
+    }
+    // The empty subtitle keeps the line it would have taken, so every card in a grid row
+    // stays the same height. It used to be a fixed 14dp against a 16sp line, which left
+    // cards without a subtitle short by a few dp, more so at a larger font scale.
+    val subtitleLineHeight = with(LocalDensity.current) { subtitleStyle.lineHeight.toDp() }
     val imageModel = remember(imageUrl, context) {
         ImageRequest.Builder(context)
             .data(imageUrl)
@@ -268,19 +290,19 @@ fun MediaItemGrid(
                 .aspectRatio(1f)
                 .graphicsLayer { alpha = if (isBlocked) 0.2f else 1f },
             shape = MaterialTheme.shapes.medium,
-            iconSize = 48.dp,
+            iconSize = if (compact) 32.dp else 48.dp,
             variant = artworkPlaceholderVariantForIcon(resolvedFallbackIcon)
         )
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(if (compact) 4.dp else 6.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.labelMedium,
+            style = titleStyle,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         if (subtitle.isNotBlank() || typeIcon != null) {
             // Kept on one line whatever it holds, so every card in a grid row stays the
-            // same height (the empty case below is the same 14dp).
+            // same height (the empty case below takes the same line).
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -296,7 +318,7 @@ fun MediaItemGrid(
                 if (subtitle.isNotBlank()) {
                     Text(
                         text = subtitle,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = subtitleStyle,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -304,7 +326,7 @@ fun MediaItemGrid(
                 }
             }
         } else {
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(subtitleLineHeight))
         }
     }
 }

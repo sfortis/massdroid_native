@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.search
 
+import net.asksakis.massdroidv2.ui.components.MdSearchField
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 import net.asksakis.massdroidv2.ui.components.hapticClickable
@@ -26,7 +27,6 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Radio
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -84,8 +84,8 @@ fun SearchScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Failures reach the listener here or nowhere. The flow existed and carried the
-    // "Not connected to server" of every play and queue action on this screen, but
-    // nothing collected it, so those were lost too.
+    // failure of every play and queue action on this screen, but nothing collected it,
+    // so those were lost too.
     LaunchedEffect(Unit) {
         viewModel.error.collect { message ->
             snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
@@ -161,43 +161,21 @@ fun SearchScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val hasChips = hasResults && !isSearching
-                TextField(
+                MdSearchField(
                     value = query,
                     onValueChange = { viewModel.updateQuery(it) },
+                    placeholder = "Global search...",
+                    onSearch = {
+                        viewModel.submitQuery()
+                        focusManager.clearFocus()
+                    },
+                    onClear = {
+                        viewModel.updateQuery("")
+                        focusRequester.requestFocus()
+                    },
                     modifier = Modifier
                         .then(if (hasChips) Modifier.widthIn(min = 200.dp, max = 320.dp) else Modifier.weight(1f))
-                        .height(44.dp)
-                        .focusRequester(focusRequester),
-                    placeholder = { Text("Global search...", style = MaterialTheme.typography.labelSmall) },
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                    ),
-                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                        onSearch = {
-                            viewModel.submitQuery()
-                            focusManager.clearFocus()
-                        }
-                    ),
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            MdIconButton(onClick = {
-                                viewModel.updateQuery("")
-                                focusRequester.requestFocus()
-                            }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(14.dp))
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.labelSmall,
-                    shape = MaterialTheme.shapes.extraLarge,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-                    )
+                        .focusRequester(focusRequester)
                 )
                 if (hasResults && !isSearching) {
                     Spacer(modifier = Modifier.width(8.dp))
@@ -261,41 +239,21 @@ fun SearchScreen(
                     .padding(horizontal = 12.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-            TextField(
+            MdSearchField(
                 value = query,
                 onValueChange = { viewModel.updateQuery(it) },
+                placeholder = "Global search...",
+                onSearch = {
+                    viewModel.submitQuery()
+                    focusManager.clearFocus()
+                },
+                onClear = {
+                    viewModel.updateQuery("")
+                    focusRequester.requestFocus()
+                },
                 modifier = Modifier
                     .weight(1f)
-                    .focusRequester(focusRequester),
-                placeholder = { Text("Global search...") },
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                ),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onSearch = {
-                        viewModel.submitQuery()
-                        focusManager.clearFocus()
-                    }
-                ),
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        MdIconButton(onClick = {
-                            viewModel.updateQuery("")
-                            focusRequester.requestFocus()
-                        }) {
-                            Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = MaterialTheme.shapes.extraLarge,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-                )
+                    .focusRequester(focusRequester)
             )
             Spacer(Modifier.width(4.dp))
             MdIconButton(onClick = { viewModel.toggleGridMode() }) {

@@ -72,6 +72,7 @@ fun MediaActionSheet(
     var showSpeakers by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()

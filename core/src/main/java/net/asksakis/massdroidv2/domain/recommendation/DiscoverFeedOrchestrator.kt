@@ -121,6 +121,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
             suggestedAlbums = discovery.albums,
             genreItems = genreItems,
             bllGenreScores = bllGenreScores,
+            smartPlaylists = content.smartPlaylists,
         )
         Log.d(TAG, "Built ${sections.size} sections (${merged.size} artists)")
 

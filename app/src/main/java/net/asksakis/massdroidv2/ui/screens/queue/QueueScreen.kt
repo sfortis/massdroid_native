@@ -166,6 +166,7 @@ fun QueueSheet(
     )
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface
@@ -378,6 +379,7 @@ fun QueueSheet(
     // Track action sheet
     actionSheetItem?.let { item ->
         ModalBottomSheet(
+            sheetMaxWidth = SheetDefaults.maxWidth(),
             onDismissRequest = { actionSheetItem = null },
             sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
@@ -497,6 +499,7 @@ fun QueueSheet(
             .sortedBy { it.displayName.lowercase() }
 
         ModalBottomSheet(
+            sheetMaxWidth = SheetDefaults.maxWidth(),
             onDismissRequest = { showQueueMenu = false },
             sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()

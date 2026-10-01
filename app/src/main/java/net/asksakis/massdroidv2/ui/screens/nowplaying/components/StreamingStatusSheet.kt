@@ -121,6 +121,7 @@ internal fun SendspinStatusSheet(
     val driftLabel = String.format(java.util.Locale.US, "%.1f ppm", status.clockDriftPpm)
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()

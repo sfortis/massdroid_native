@@ -79,6 +79,7 @@ internal fun LyricsSheet(
     val sheetState = SheetDefaults.sheetState()
 
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()

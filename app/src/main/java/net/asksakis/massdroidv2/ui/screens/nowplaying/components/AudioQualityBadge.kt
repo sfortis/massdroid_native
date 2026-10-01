@@ -57,15 +57,17 @@ internal fun audioQualityTier(audioFormat: AudioFormatInfo?): AudioQualityTier? 
     return AudioQualityTier.LQ
 }
 
-@Composable
+/**
+ * The tier dot's colour. Fixed rather than taken from the theme, because the dot sits on a
+ * pill in the icon grey, which is dark in the light theme and light in the dark one, and the
+ * theme's own greys disappeared on one of the two: SQ used tertiary, #666666 on #444444.
+ * Each is a mid-tone saturated colour, so it stands apart from either grey.
+ */
 internal fun qualityTierColor(tier: AudioQualityTier): Color = when (tier) {
-    // Mirrors the visual hierarchy of the web UI without copying its exact
-    // palette — Material 3 tokens give a consistent feel with the rest of
-    // the app while still being immediately recognisable.
-    AudioQualityTier.LQ -> MaterialTheme.colorScheme.error
-    AudioQualityTier.SQ -> MaterialTheme.colorScheme.tertiary
-    AudioQualityTier.HQ -> Color(0xFF4CAF50) // green for "lossless CD"
-    AudioQualityTier.HR -> Color(0xFF9C27B0) // purple for "hi-res"
+    AudioQualityTier.LQ -> Color(0xFFE53935) // red for low-bitrate lossy
+    AudioQualityTier.SQ -> Color(0xFFF9A825) // amber for standard lossy
+    AudioQualityTier.HQ -> Color(0xFF43A047) // green for lossless CD
+    AudioQualityTier.HR -> Color(0xFFAB47BC) // purple for hi-res
 }
 
 /**
@@ -126,9 +128,13 @@ internal fun AudioQualityBadges(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // The pill takes the grey of the icons beside it and the label the background's
+        // colour, so the badge reads as one more control in the row rather than as a
+        // brighter patch on it.
         Surface(
             shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            contentColor = MaterialTheme.colorScheme.surface,
             tonalElevation = 0.dp
         ) {
             Row(
@@ -147,7 +153,7 @@ internal fun AudioQualityBadges(
                 Text(
                     text = tier?.label ?: fallbackLabel!!,
                     style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.surface,
                 )
             }
         }

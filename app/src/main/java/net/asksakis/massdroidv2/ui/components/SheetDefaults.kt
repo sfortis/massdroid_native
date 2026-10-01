@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.components
 
+import android.content.res.Configuration
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItemColors
 import androidx.compose.material3.ListItemDefaults
@@ -10,6 +12,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -26,6 +30,23 @@ object SheetDefaults {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun sheetState(): SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    /**
+     * How wide a bottom sheet may get.
+     *
+     * Material's own limit is 640dp, which in landscape is most of the space beside the rail
+     * and read as a sheet running across the screen. Every sheet takes this instead, so they
+     * all stop at the same width; a phone held upright is narrower than either figure and
+     * sees no difference.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    fun maxWidth(): Dp {
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        return if (isLandscape) LandscapeMaxWidth else BottomSheetDefaults.SheetMaxWidth
+    }
+
+    private val LandscapeMaxWidth = 480.dp
 
     @Composable
     fun containerColor(): Color = MaterialTheme.colorScheme.surfaceContainer

@@ -96,6 +96,7 @@ fun MassDroidNavHost(
                     )
                 },
                 onNavigateToSettings = { navController.navigate(Routes.settings()) },
+                onNavigateToSearch = { navController.navigate(Routes.SEARCH) },
                 onConfigureServer = { navController.navigate(Routes.settings(SettingsCategory.CONNECTION)) }
             )
         }

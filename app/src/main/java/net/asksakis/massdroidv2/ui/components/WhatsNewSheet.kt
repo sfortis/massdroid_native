@@ -32,6 +32,7 @@ import net.asksakis.massdroidv2.domain.whatsnew.WhatsNewSection
 @Composable
 fun WhatsNewSheet(release: WhatsNewRelease, onDismiss: () -> Unit) {
     ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
         onDismissRequest = onDismiss,
         sheetState = SheetDefaults.sheetState(),
         containerColor = SheetDefaults.containerColor()

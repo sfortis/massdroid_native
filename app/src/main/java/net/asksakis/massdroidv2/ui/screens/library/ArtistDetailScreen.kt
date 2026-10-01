@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
@@ -145,9 +147,12 @@ fun ArtistDetailScreen(
     ) { paddingValues ->
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+        val refreshState = rememberPullToRefreshState()
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
+            state = refreshState,
+            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
@@ -566,6 +571,7 @@ private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
     }
     if (showPlaySheet) {
         ModalBottomSheet(
+            sheetMaxWidth = SheetDefaults.maxWidth(),
             onDismissRequest = { showPlaySheet = false },
             sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()

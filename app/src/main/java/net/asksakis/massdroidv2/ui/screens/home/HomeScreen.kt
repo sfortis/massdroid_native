@@ -1,11 +1,19 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.components.MiniPlayerGeometry
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.platform.LocalConfiguration
+import android.content.res.Configuration
+import net.asksakis.massdroidv2.ui.components.SearchFieldDefaults
+import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
+import net.asksakis.massdroidv2.ui.components.dropShadow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Surface
 import net.asksakis.massdroidv2.ui.components.MdButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -13,7 +21,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -71,7 +78,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.geometry.Offset
@@ -79,23 +85,23 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.Immutable
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import kotlin.math.absoluteValue
 import coil.request.ImageRequest
 import kotlinx.coroutines.delay
-import net.asksakis.massdroidv2.R
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.GenreItem
@@ -135,17 +141,102 @@ private val smartMixPhrases = listOf(
     "Finding the sweet spot..."
 )
 
-private val HomeTitleFont = FontFamily(
-    Font(R.font.goldman_regular, FontWeight.Normal),
-    Font(R.font.goldman_bold, FontWeight.Bold)
+/**
+ * The sizes of everything in a Discover row, one set per orientation.
+ *
+ * Landscape has its own set because the screen is about 400dp tall there, and the portrait
+ * cards fit one and a half rows above the player. The text shrinks less than the artwork:
+ * scaling it with the cards would put titles near 8sp, which nobody can read.
+ */
+@Immutable
+private data class DiscoverCardMetrics(
+    val artistImage: Dp,
+    val albumImage: Dp,
+    val genreWidth: Dp,
+    val genreLabelLines: Int,
+    val trackImage: Dp,
+    val trackWidth: Dp,
+    val title: TextStyle,
+    val subtitle: TextStyle,
+    val genreLabel: TextStyle,
+    val genreLabelPadding: Dp,
+    val sectionSpacing: Dp
+) {
+    val genreHeight: Dp get() = genreWidth / 2
+}
+
+/**
+ * Each row's fixed height, which the LazyColumn needs to prefetch without re-measuring.
+ *
+ * They are worked out from the text's line height in sp rather than written down in dp, so a
+ * larger font scale makes the row taller instead of clipping the card's last line.
+ */
+private data class DiscoverRowHeights(
+    val artist: Dp,
+    val album: Dp,
+    val playlist: Dp,
+    val track: Dp,
+    val genre: Dp
 )
 
-// Fixed heights for LazyColumn item prefetch (avoids layout thrashing)
-private val ArtistRowHeight = 114.dp  // 90 image + 4 spacer + 20 text
-private val AlbumRowHeight = 148.dp   // 110 image + 4 spacer + 18 name + 16 artist
-private val PlaylistRowHeight = 148.dp
-private val TrackRowHeight = 48.dp
-private val GenreRowHeight = 70.dp    // 140 * 0.5 aspect ratio
+private val CardTextGap = 4.dp
+
+@Composable
+private fun rememberDiscoverCardMetrics(isLandscape: Boolean): DiscoverCardMetrics {
+    val typography = MaterialTheme.typography
+    return remember(isLandscape, typography) {
+        if (isLandscape) {
+            DiscoverCardMetrics(
+                artistImage = 64.dp,
+                albumImage = 76.dp,
+                genreWidth = 100.dp,
+                genreLabelLines = 2,
+                trackImage = 34.dp,
+                trackWidth = 150.dp,
+                title = typography.labelSmall.copy(lineHeight = 14.sp),
+                subtitle = typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 13.sp),
+                // Two lines so "alternative rock" wraps at its space; 11sp so a single word
+                // such as "downtempo" still fits on one line instead of breaking inside it.
+                genreLabel = typography.labelSmall.copy(lineHeight = 14.sp),
+                genreLabelPadding = 8.dp,
+                sectionSpacing = 16.dp
+            )
+        } else {
+            DiscoverCardMetrics(
+                artistImage = 90.dp,
+                albumImage = 110.dp,
+                genreWidth = 140.dp,
+                genreLabelLines = 1,
+                trackImage = 48.dp,
+                trackWidth = 200.dp,
+                title = typography.labelMedium,
+                subtitle = typography.labelSmall,
+                genreLabel = typography.titleSmall,
+                genreLabelPadding = 12.dp,
+                sectionSpacing = 24.dp
+            )
+        }
+    }
+}
+
+@Composable
+private fun rememberDiscoverRowHeights(metrics: DiscoverCardMetrics): DiscoverRowHeights {
+    val density = LocalDensity.current
+    return remember(metrics, density) {
+        with(density) {
+            val title = metrics.title.lineHeight.toDp()
+            val subtitle = metrics.subtitle.lineHeight.toDp()
+            DiscoverRowHeights(
+                artist = metrics.artistImage + CardTextGap + title,
+                album = metrics.albumImage + CardTextGap + title + subtitle,
+                // A playlist name may take two lines and has no subtitle under it.
+                playlist = metrics.albumImage + CardTextGap + title * 2,
+                track = maxOf(metrics.trackImage, title + subtitle),
+                genre = metrics.genreHeight
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -154,6 +245,7 @@ fun HomeScreen(
     onAlbumClick: (Album) -> Unit,
     onPlaylistClick: (Playlist) -> Unit,
     onNavigateToSettings: () -> Unit,
+    onNavigateToSearch: () -> Unit,
     onConfigureServer: () -> Unit = onNavigateToSettings,
     viewModel: DiscoverViewModel = hiltViewModel()
 ) {
@@ -168,6 +260,9 @@ fun HomeScreen(
     val pullToRefreshState = rememberPullToRefreshState()
     var showConnectionDialog by remember { mutableStateOf(false) }
     val guard = rememberConnectionGuard()
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cardMetrics = rememberDiscoverCardMetrics(isLandscape)
+    val rowHeights = rememberDiscoverRowHeights(cardMetrics)
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
@@ -177,34 +272,24 @@ fun HomeScreen(
                     message = smartMixMessage,
                     onMessageShown = { viewModel.clearSmartMixMessage() },
                     onClick = { guard { viewModel.makePlaylistForMe() } },
-                    modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current)
+                    // Beside the centred player in landscape there is room for the icon
+                    // only: the label, the margin and the camera cutout together need more
+                    // than the space the player leaves, so the two used to touch.
+                    compact = isLandscape,
+                    modifier = Modifier.padding(bottom = smartMixBottomInset())
                 )
             }
         },
         topBar = {
             TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.logo_md_monochrome),
-                            contentDescription = null,
-                            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Text(
-                            text = "MassDroid",
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontFamily = HomeTitleFont,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 24.sp,
-                                lineHeight = 28.sp
-                            )
-                        )
-                    }
-                },
+                // The mark and the app's name used to sit here. They cost a full app bar
+                // on the start destination to tell somebody which app they had just
+                // opened, and the search this replaced them with is the thing people
+                // reach for most and used to need a trip to another tab.
+                title = { SearchEntryField(onClick = onNavigateToSearch) },
+                // The bar's own 64dp is a sixth of a landscape screen; the field in it is
+                // 44dp, so 52dp still gives it air above and below.
+                expandedHeight = if (isLandscape) 52.dp else TopAppBarDefaults.TopAppBarExpandedHeight,
                 actions = {
                     MdIconButton(onClick = { showConnectionDialog = true }) {
                         ConnectionStatusIcon(connectionState = connectionState)
@@ -237,11 +322,12 @@ fun HomeScreen(
                     isRefreshing = isRefreshing,
                     onRefresh = { viewModel.refresh() },
                     state = pullToRefreshState,
+                    indicator = { MdRefreshIndicator(pullToRefreshState, isRefreshing) },
                     modifier = Modifier.fillMaxSize()
                 ) {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().fadingEdges(),
-                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(cardMetrics.sectionSpacing),
                         contentPadding = PaddingValues(top = 8.dp, bottom = LocalMiniPlayerPadding.current + 96.dp)
                     ) {
                         itemsIndexed(
@@ -256,7 +342,8 @@ fun HomeScreen(
                                         ArtistRow(
                                             artists = section.artists,
                                             onArtistClick = onArtistClick,
-                                            modifier = Modifier.height(ArtistRowHeight)
+                                            metrics = cardMetrics,
+                                            modifier = Modifier.height(rowHeights.artist)
                                         )
                                     }
                                     is DiscoverSection.AlbumSection -> {
@@ -264,7 +351,8 @@ fun HomeScreen(
                                         AlbumRow(
                                             albums = section.albums,
                                             onAlbumClick = onAlbumClick,
-                                            modifier = Modifier.height(AlbumRowHeight)
+                                            metrics = cardMetrics,
+                                            modifier = Modifier.height(rowHeights.album)
                                         )
                                     }
                                     is DiscoverSection.PlaylistSection -> {
@@ -272,7 +360,8 @@ fun HomeScreen(
                                         PlaylistRow(
                                             playlists = section.playlists,
                                             onPlaylistClick = onPlaylistClick,
-                                            modifier = Modifier.height(PlaylistRowHeight)
+                                            metrics = cardMetrics,
+                                            modifier = Modifier.height(rowHeights.playlist)
                                         )
                                     }
                                     is DiscoverSection.TrackSection -> {
@@ -280,7 +369,8 @@ fun HomeScreen(
                                         TrackRow(
                                             tracks = section.tracks,
                                             onTrackClick = { track -> viewModel.playTrack(track) },
-                                            modifier = Modifier.height(TrackRowHeight)
+                                            metrics = cardMetrics,
+                                            modifier = Modifier.height(rowHeights.track)
                                         )
                                     }
                                     is DiscoverSection.GenreRadioSection -> {
@@ -290,42 +380,12 @@ fun HomeScreen(
                                             onGenreClick = { genre ->
                                                 guard { viewModel.startGenreRadio(genre.name) }
                                             },
-                                            modifier = Modifier.height(GenreRowHeight)
+                                            metrics = cardMetrics,
+                                            modifier = Modifier.height(rowHeights.genre)
                                         )
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-
-                AnimatedVisibility(
-                    visible = isRefreshing,
-                    enter = fadeIn(animationSpec = tween(durationMillis = 140)),
-                    exit = fadeOut(animationSpec = tween(durationMillis = 140)),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.50f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            EqualizerBars(
-                                modifier = Modifier.height(56.dp),
-                                barWidth = 6.dp,
-                                spacing = 4.dp,
-                                barCount = 5,
-                                bpm = 120,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Refreshing...",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
                         }
                     }
                 }
@@ -395,6 +455,7 @@ private fun SmartMixFab(
     message: String?,
     onMessageShown: () -> Unit,
     onClick: () -> Unit,
+    compact: Boolean,
     modifier: Modifier = Modifier
 ) {
     val sparkleScale = remember { Animatable(1f) }
@@ -435,6 +496,9 @@ private fun SmartMixFab(
     }
 
     val displayLabel = displayMessage ?: "Smart Mix"
+    // A compact button still opens out for a message, which is short-lived and is the only
+    // way the result of a build reaches the screen.
+    val expanded = !compact || displayMessage != null
 
     ExtendedFloatingActionButton(
         onClick = { if (!isBusy && displayMessage == null) onClick() },
@@ -443,7 +507,16 @@ private fun SmartMixFab(
         // in light mode). The label's AnimatedContent already animates the width
         // smoothly via its SizeTransform, and the elevation shadow now renders in
         // full (like the mini player's).
-        modifier = modifier,
+        // The elevation below is what the platform draws, and in this theme it is black
+        // under a button that is nearly black, so it disappears. This one is drawn and
+        // set by its own colour, and it lands on album art rather than on the background,
+        // which is where a shadow has something to darken.
+        modifier = modifier.dropShadow(
+            shape = CircleShape,
+            color = FAB_SHADOW_COLOR,
+            blurRadius = FAB_SHADOW_BLUR
+        ),
+        expanded = expanded,
         shape = CircleShape,
         containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp),
         contentColor = MaterialTheme.colorScheme.onSurface,
@@ -460,7 +533,8 @@ private fun SmartMixFab(
             } else {
                 Icon(
                     Icons.Default.AutoAwesome,
-                    contentDescription = null,
+                    // The label says it while it shows; collapsed, the icon is all there is.
+                    contentDescription = if (expanded) null else displayLabel,
                     modifier = Modifier.graphicsLayer {
                         scaleX = sparkleScale.value
                         scaleY = sparkleScale.value
@@ -847,6 +921,79 @@ private fun SmartMixOverlay() {
     }
 }
 
+/**
+ * How far above the bottom the Smart Mix button sits.
+ *
+ * In portrait it clears the collapsed player, which runs the full width. In landscape the
+ * player stops at a readable width and centres, leaving the space beside it free, so the
+ * button moves down into that space and lines up with the player's own middle instead of
+ * floating above a bar that is no longer under it.
+ *
+ * The Scaffold already keeps its button [SCAFFOLD_FAB_SPACING] above the bottom, so that
+ * part is taken back out. Leaving it in put the button 16dp above the player's middle.
+ *
+ * With no player on screen there is nothing to clear or line up with, and the value is
+ * zero either way.
+ */
+@Composable
+private fun smartMixBottomInset(): Dp {
+    val playerInset = LocalMiniPlayerPadding.current
+    if (playerInset == 0.dp) return 0.dp
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    return if (isLandscape) {
+        MiniPlayerGeometry.Margin - SCAFFOLD_FAB_SPACING +
+            (MiniPlayerGeometry.CollapsedHeight - EXTENDED_FAB_HEIGHT) / 2
+    } else {
+        playerInset
+    }
+}
+
+/** What an `ExtendedFloatingActionButton` measures, which Material does not expose. */
+private val EXTENDED_FAB_HEIGHT = 56.dp
+
+/** The gap Material's Scaffold leaves under its button, which it does not expose either. */
+private val SCAFFOLD_FAB_SPACING = 16.dp
+
+/**
+ * The way into search from the start destination.
+ *
+ * It is a button dressed as the field on the search screen, not a field of its own: tapping
+ * it opens that screen, which already focuses its input when it opens. A real field here
+ * would mean a second copy of the search rules, and those were rewritten and covered with
+ * tests only after they reached a reporter, so there is no version of this worth having
+ * twice.
+ */
+@Composable
+private fun SearchEntryField(onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(SearchFieldDefaults.Height)
+            .semantics { contentDescription = "Search" }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(horizontal = 14.dp)
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Search",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 @Composable
 private fun SectionHeader(title: String) {
     Text(
@@ -892,6 +1039,7 @@ private fun rememberSizedImageModel(
 private fun ArtistRow(
     artists: List<Artist>,
     onArtistClick: (Artist) -> Unit,
+    metrics: DiscoverCardMetrics,
     modifier: Modifier = Modifier
 ) {
     LazyRow(
@@ -900,7 +1048,7 @@ private fun ArtistRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(artists, key = { it.uri }) { artist ->
-            ArtistCard(artist = artist, onClick = { onArtistClick(artist) })
+            ArtistCard(artist = artist, metrics = metrics, onClick = { onArtistClick(artist) })
         }
     }
 }
@@ -908,12 +1056,14 @@ private fun ArtistRow(
 @Composable
 private fun ArtistCard(
     artist: Artist,
+    metrics: DiscoverCardMetrics,
     onClick: () -> Unit
 ) {
+    val density = LocalDensity.current
     val interactionSource = remember { MutableInteractionSource() }
     Column(
         modifier = Modifier
-            .width(90.dp)
+            .width(metrics.artistImage)
             .semantics { contentDescription = artist.name }
             .clickable(
                 interactionSource = interactionSource,
@@ -923,18 +1073,21 @@ private fun ArtistCard(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         AsyncImage(
-            model = rememberSizedImageModel(artist.imageUrl, widthPx = 236),
+            model = rememberSizedImageModel(
+                artist.imageUrl,
+                widthPx = with(density) { metrics.artistImage.roundToPx() }
+            ),
             contentDescription = null,
             modifier = Modifier
-                .size(90.dp)
+                .size(metrics.artistImage)
                 .clip(CircleShape)
                 .background(Color(0x1F888888), CircleShape),
             contentScale = ContentScale.Crop
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(CardTextGap))
         Text(
             text = artist.name,
-            style = MaterialTheme.typography.labelMedium,
+            style = metrics.title,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
@@ -947,6 +1100,7 @@ private fun ArtistCard(
 private fun AlbumRow(
     albums: List<Album>,
     onAlbumClick: (Album) -> Unit,
+    metrics: DiscoverCardMetrics,
     modifier: Modifier = Modifier
 ) {
     LazyRow(
@@ -955,7 +1109,7 @@ private fun AlbumRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(albums, key = { it.uri }) { album ->
-            AlbumCard(album = album, onClick = { onAlbumClick(album) })
+            AlbumCard(album = album, metrics = metrics, onClick = { onAlbumClick(album) })
         }
     }
 }
@@ -963,12 +1117,14 @@ private fun AlbumRow(
 @Composable
 private fun AlbumCard(
     album: Album,
+    metrics: DiscoverCardMetrics,
     onClick: () -> Unit
 ) {
+    val density = LocalDensity.current
     val interactionSource = remember { MutableInteractionSource() }
     Column(
         modifier = Modifier
-            .width(110.dp)
+            .width(metrics.albumImage)
             .semantics {
                 contentDescription = if (album.artistNames.isNotBlank()) {
                     "${album.name}, ${album.artistNames}"
@@ -983,7 +1139,10 @@ private fun AlbumCard(
             )
     ) {
         AsyncImage(
-            model = rememberSizedImageModel(album.imageUrl, widthPx = 289),
+            model = rememberSizedImageModel(
+                album.imageUrl,
+                widthPx = with(density) { metrics.albumImage.roundToPx() }
+            ),
             contentDescription = null,
             modifier = Modifier
                 .fillMaxWidth()
@@ -992,10 +1151,10 @@ private fun AlbumCard(
                 .background(Color(0x1F888888), MaterialTheme.shapes.medium),
             contentScale = ContentScale.Crop
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(CardTextGap))
         Text(
             text = album.name,
-            style = MaterialTheme.typography.labelMedium,
+            style = metrics.title,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1003,7 +1162,7 @@ private fun AlbumCard(
             text = formatAlbumTypeYear(album.albumType, album.year).ifBlank {
                 album.artistNames.ifBlank { "\u00A0" }
             },
-            style = MaterialTheme.typography.labelSmall,
+            style = metrics.subtitle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1015,6 +1174,7 @@ private fun AlbumCard(
 private fun PlaylistRow(
     playlists: List<Playlist>,
     onPlaylistClick: (Playlist) -> Unit,
+    metrics: DiscoverCardMetrics,
     modifier: Modifier = Modifier
 ) {
     LazyRow(
@@ -1023,7 +1183,7 @@ private fun PlaylistRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(playlists, key = { it.uri }) { playlist ->
-            PlaylistCard(playlist = playlist, onClick = { onPlaylistClick(playlist) })
+            PlaylistCard(playlist = playlist, metrics = metrics, onClick = { onPlaylistClick(playlist) })
         }
     }
 }
@@ -1031,12 +1191,14 @@ private fun PlaylistRow(
 @Composable
 private fun PlaylistCard(
     playlist: Playlist,
+    metrics: DiscoverCardMetrics,
     onClick: () -> Unit
 ) {
+    val density = LocalDensity.current
     val interactionSource = remember { MutableInteractionSource() }
     Column(
         modifier = Modifier
-            .width(110.dp)
+            .width(metrics.albumImage)
             .semantics { contentDescription = playlist.name }
             .clickable(
                 interactionSource = interactionSource,
@@ -1045,7 +1207,10 @@ private fun PlaylistCard(
             )
     ) {
         AsyncImage(
-            model = rememberSizedImageModel(playlist.imageUrl, widthPx = 289),
+            model = rememberSizedImageModel(
+                playlist.imageUrl,
+                widthPx = with(density) { metrics.albumImage.roundToPx() }
+            ),
             contentDescription = null,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1054,10 +1219,10 @@ private fun PlaylistCard(
                 .background(Color(0x1F888888), MaterialTheme.shapes.medium),
             contentScale = ContentScale.Crop
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(CardTextGap))
         Text(
             text = playlist.name,
-            style = MaterialTheme.typography.labelMedium,
+            style = metrics.title,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
@@ -1068,6 +1233,7 @@ private fun PlaylistCard(
 private fun TrackRow(
     tracks: List<Track>,
     onTrackClick: (Track) -> Unit,
+    metrics: DiscoverCardMetrics,
     modifier: Modifier = Modifier
 ) {
     LazyRow(
@@ -1076,7 +1242,7 @@ private fun TrackRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(tracks, key = { it.uri }) { track ->
-            TrackCard(track = track, onClick = { onTrackClick(track) })
+            TrackCard(track = track, metrics = metrics, onClick = { onTrackClick(track) })
         }
     }
 }
@@ -1084,12 +1250,14 @@ private fun TrackRow(
 @Composable
 private fun TrackCard(
     track: Track,
+    metrics: DiscoverCardMetrics,
     onClick: () -> Unit
 ) {
+    val density = LocalDensity.current
     val interactionSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
-            .width(200.dp)
+            .width(metrics.trackWidth)
             .semantics {
                 contentDescription = if (track.artistNames.isNotBlank()) {
                     "${track.name}, ${track.artistNames}"
@@ -1105,10 +1273,13 @@ private fun TrackCard(
         verticalAlignment = Alignment.CenterVertically
     ) {
         AsyncImage(
-            model = rememberSizedImageModel(track.imageUrl, widthPx = 126),
+            model = rememberSizedImageModel(
+                track.imageUrl,
+                widthPx = with(density) { metrics.trackImage.roundToPx() }
+            ),
             contentDescription = null,
             modifier = Modifier
-                .size(48.dp)
+                .size(metrics.trackImage)
                 .clip(MaterialTheme.shapes.small)
                 .background(Color(0x1F888888), MaterialTheme.shapes.small),
             contentScale = ContentScale.Crop
@@ -1117,13 +1288,13 @@ private fun TrackCard(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.name,
-                style = MaterialTheme.typography.labelMedium,
+                style = metrics.title,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = track.artistNames.ifBlank { "\u00A0" },
-                style = MaterialTheme.typography.labelSmall,
+                style = metrics.subtitle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1136,6 +1307,7 @@ private fun TrackCard(
 private fun GenreRow(
     genres: List<GenreItem>,
     onGenreClick: (GenreItem) -> Unit,
+    metrics: DiscoverCardMetrics,
     modifier: Modifier = Modifier
 ) {
     LazyRow(
@@ -1144,7 +1316,7 @@ private fun GenreRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(genres, key = { it.name }) { genre ->
-            GenreChip(genre = genre, onClick = { onGenreClick(genre) })
+            GenreChip(genre = genre, metrics = metrics, onClick = { onGenreClick(genre) })
         }
     }
 }
@@ -1152,8 +1324,10 @@ private fun GenreRow(
 @Composable
 private fun GenreChip(
     genre: GenreItem,
+    metrics: DiscoverCardMetrics,
     onClick: () -> Unit
 ) {
+    val density = LocalDensity.current
     val interactionSource = remember { MutableInteractionSource() }
     val (bgA, bgB, glow) = remember(genre.name) { genrePalette(genre.name) }
     ElevatedCard(
@@ -1161,8 +1335,8 @@ private fun GenreChip(
     ) {
         Box(
             modifier = Modifier
-                .width(140.dp)
-                .aspectRatio(2f)
+                .width(metrics.genreWidth)
+                .height(metrics.genreHeight)
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(bgA, bgB)
@@ -1197,8 +1371,8 @@ private fun GenreChip(
                 AsyncImage(
                     model = rememberSizedImageModel(
                         url = url,
-                        widthPx = 368,
-                        heightPx = 184
+                        widthPx = with(density) { metrics.genreWidth.roundToPx() },
+                        heightPx = with(density) { metrics.genreHeight.roundToPx() }
                     ),
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
@@ -1208,7 +1382,7 @@ private fun GenreChip(
             }
             Text(
                 text = genre.name,
-                style = MaterialTheme.typography.titleSmall.copy(
+                style = metrics.genreLabel.copy(
                     shadow = Shadow(
                         color = Color.Black.copy(alpha = 0.35f),
                         blurRadius = 12f
@@ -1217,9 +1391,9 @@ private fun GenreChip(
                 color = Color.White,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
-                maxLines = 1,
+                maxLines = metrics.genreLabelLines,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(12.dp)
+                modifier = Modifier.padding(horizontal = metrics.genreLabelPadding, vertical = 4.dp)
             )
         }
     }
@@ -1236,3 +1410,13 @@ private fun genrePalette(name: String): Triple<Color, Color, Color> {
     )
     return palettes[(normalizeGenre(name).hashCode().absoluteValue) % palettes.size]
 }
+
+/**
+ * The Smart Mix button's shade, which falls on whatever art it is floating over.
+ *
+ * It has no offset, so it sits evenly around the shape rather than below it. A shadow with
+ * a direction reads as a light source, and this one and the player's were falling opposite
+ * ways on the same screen, which made two parts of the same surface look unrelated.
+ */
+private val FAB_SHADOW_BLUR = 12.dp
+private val FAB_SHADOW_COLOR = Color.Black.copy(alpha = 0.7f)

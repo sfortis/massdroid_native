@@ -1,5 +1,9 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.components.MdSearchField
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
@@ -44,7 +48,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -87,6 +90,7 @@ private const val TAB_BROWSE = 7
 private fun availableSortOptions(tab: Int): List<SortOption> =
     sortOptionsFor(LibraryTabKey.fromIndex(tab) ?: LibraryTabKey.ARTISTS)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     onArtistClick: (Artist) -> Unit,
@@ -233,48 +237,21 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextField(
+                MdSearchField(
                     value = searchQuery,
                     onValueChange = { viewModel.updateSearch(it) },
-                    modifier = Modifier.weight(1f),
-                    placeholder = {
-                        Text(
-                            when (selectedTab) {
-                                TAB_ARTISTS -> "Search artists..."
-                                TAB_ALBUMS -> "Search albums..."
-                                TAB_TRACKS -> "Search tracks..."
-                                TAB_PLAYLISTS -> "Search playlists..."
-                                TAB_RADIOS -> "Search radios..."
-                                TAB_AUDIOBOOKS -> "Search audiobooks..."
-                                TAB_PODCASTS -> "Search podcasts..."
-                                else -> "Search..."
-                            }
-                        )
+                    placeholder = when (selectedTab) {
+                        TAB_ARTISTS -> "Search artists..."
+                        TAB_ALBUMS -> "Search albums..."
+                        TAB_TRACKS -> "Search tracks..."
+                        TAB_PLAYLISTS -> "Search playlists..."
+                        TAB_RADIOS -> "Search radios..."
+                        TAB_AUDIOBOOKS -> "Search audiobooks..."
+                        TAB_PODCASTS -> "Search podcasts..."
+                        else -> "Search..."
                     },
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp))
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            MdIconButton(onClick = { viewModel.updateSearch("") }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                    ),
-                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                        onSearch = { focusManager.clearFocus() }
-                    ),
-                    shape = MaterialTheme.shapes.extraLarge,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-                    )
+                    onSearch = { focusManager.clearFocus() },
+                    modifier = Modifier.weight(1f)
                 )
                 FilledTonalIconButton(
                     onClick = { showControlsSheet = true },
@@ -348,9 +325,13 @@ fun LibraryScreen(
                     ?: LibraryTabKey.fromIndex(page)?.defaultDisplayMode
                     ?: LibraryDisplayMode.LIST
                 @OptIn(ExperimentalMaterial3Api::class)
+                val refreshState = rememberPullToRefreshState()
+                val refreshingHere = isRefreshing && page == selectedTab
                 PullToRefreshBox(
-                    isRefreshing = isRefreshing && page == selectedTab,
+                    isRefreshing = refreshingHere,
                     onRefresh = { viewModel.refresh() },
+                    state = refreshState,
+                    indicator = { MdRefreshIndicator(refreshState, refreshingHere) },
                     modifier = Modifier.fillMaxSize()
                 ) {
                     when (page) {
@@ -924,38 +905,12 @@ private fun LibraryCompactHeader(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Persistent search in landscape
-        TextField(
+        MdSearchField(
             value = searchQuery,
             onValueChange = onSearchChange,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            placeholder = { Text(searchPlaceholder, style = MaterialTheme.typography.bodySmall) },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    MdIconButton(onClick = { onSearchChange("") }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear search", modifier = Modifier.size(16.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                imeAction = androidx.compose.ui.text.input.ImeAction.Search
-            ),
-            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                onSearch = { onSearchIme() }
-            ),
-            textStyle = MaterialTheme.typography.bodySmall,
-            shape = MaterialTheme.shapes.extraLarge,
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-            )
+            placeholder = searchPlaceholder,
+            onSearch = { onSearchIme() },
+            modifier = Modifier.weight(1f)
         )
         FilledTonalIconButton(
             onClick = onOpenControls,
@@ -992,7 +947,7 @@ private fun LibraryControlsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = SheetDefaults.sheetState(),
-        sheetMaxWidth = if (isLandscape) 480.dp else Dp.Unspecified
+        sheetMaxWidth = SheetDefaults.maxWidth()
     ) {
         Column(
             modifier = Modifier
@@ -1254,6 +1209,7 @@ private fun <T> MediaList(
     groups: List<MediaListGroup<T>>? = null
 ) {
     val providerCache = LocalProviderManifestCache.current
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val sections = groups ?: listOf(MediaListGroup(null, items))
     // The handlers compare a LAYOUT index against this count, and a header occupies a slot
     // in the layout without being an item, so the headers have to be counted too. Without
@@ -1305,7 +1261,11 @@ private fun <T> MediaList(
             LazyVerticalGrid(
                 state = gridState,
                 modifier = Modifier.fillMaxSize().fadingEdges(),
-                columns = GridCells.Adaptive(minSize = 120.dp),
+                // Sized to match Discover's cards. Adaptive cannot hit an exact width, so
+                // the minimum picks the column count: 90dp gives four columns of about
+                // 93dp upright, where 120dp gave three of 127dp, and 76dp gives nine of
+                // about 82dp in landscape.
+                columns = GridCells.Adaptive(minSize = if (isLandscape) 76.dp else 90.dp),
                 contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = LocalMiniPlayerPadding.current),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1331,7 +1291,8 @@ private fun <T> MediaList(
                         providerDomains = providerDomains(item),
                         providerCache = providerCache,
                         typeIcon = typeIcon(item),
-                        typeIconDescription = typeIconDescription
+                        typeIconDescription = typeIconDescription,
+                        compact = isLandscape
                     )
                 }
                 }

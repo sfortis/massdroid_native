@@ -476,6 +476,7 @@ fun NowPlayingScreen(
         val otherPlayers = allPlayers.filter { it.available && it.playerId != player?.playerId }
             .sortedBy { it.displayName.lowercase() }
         ModalBottomSheet(
+            sheetMaxWidth = SheetDefaults.maxWidth(),
             onDismissRequest = { showTransferSheet = false },
             sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()

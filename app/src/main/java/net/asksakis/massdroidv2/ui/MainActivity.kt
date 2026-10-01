@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui
 
+import net.asksakis.massdroidv2.ui.components.MiniPlayerGeometry
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import net.asksakis.massdroidv2.service.FollowMeService
@@ -48,7 +49,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -107,11 +107,17 @@ private data class NavItem(
     val label: String
 )
 
+/**
+ * The three places the bottom bar goes.
+ *
+ * Search used to be a fourth. It is reached from the field at the top of Home now, which
+ * is where somebody is when they think of searching, and a tab of its own was paying for
+ * that trip twice.
+ */
 private val navItems = listOf(
     NavItem(Routes.HOME, Icons.Default.Home, "Home"),
     NavItem(Routes.PLAYERS, Icons.Default.Speaker, "Players"),
-    NavItem(Routes.LIBRARY, Icons.Default.LibraryMusic, "Library"),
-    NavItem(Routes.SEARCH, Icons.Default.Search, "Search")
+    NavItem(Routes.LIBRARY, Icons.Default.LibraryMusic, "Library")
 )
 
 @AndroidEntryPoint
@@ -587,9 +593,11 @@ private fun MassDroidApp(
         )
     }
 
-    val miniPlayerCollapsedHeight = 72.dp
-    val miniPlayerMargin = 8.dp
+    val miniPlayerCollapsedHeight = MiniPlayerGeometry.CollapsedHeight
+    val miniPlayerMargin = MiniPlayerGeometry.Margin
     var bottomBarHeight by remember { mutableStateOf(0.dp) }
+    // Zero in portrait, where there is no rail; the player then centres on the whole width.
+    var railWidth by remember { mutableStateOf(0.dp) }
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
     val isConnected = miniPlayerUiState.connected
     // Mirror the visibility predicate used by MiniPlayerContainer so any FAB or
@@ -630,6 +638,7 @@ private fun MassDroidApp(
                 snackbarHostState = snackbarHostState,
                 extraBottomPadding = 0.dp,
                 onBottomBarHeightChanged = { bottomBarHeight = it },
+                onRailWidthChanged = { railWidth = it },
                 navHost = navHostContent
             )
         } else {
@@ -652,7 +661,8 @@ private fun MassDroidApp(
             navController = navController,
             showMiniPlayer = showMiniPlayer,
             showNav = showNav,
-            bottomBarHeight = if (showNav) bottomBarHeight else 0.dp
+            bottomBarHeight = if (showNav) bottomBarHeight else 0.dp,
+            leadingInset = if (showNav && isLandscape) railWidth else 0.dp
         )
     }
     } // CompositionLocalProvider
@@ -676,10 +686,15 @@ private fun PortraitLayout(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(
-                modifier = (if (!showNav) Modifier.windowInsetsPadding(WindowInsets.navigationBars) else Modifier)
+                // The inset padding is applied here, now that the bar itself declares
+                // none. The measurement has to sit ABOVE it in the chain so it reports the
+                // whole height including that padding: measured below it, the reported bar
+                // was short by the system bar and the player floated down into it.
+                modifier = Modifier
                     .onSizeChanged { size ->
                         onBottomBarHeightChanged(with(density) { size.height.toDp() })
                     }
+                    .windowInsetsPadding(WindowInsets.navigationBars)
             ) {
                 if (extraBottomPadding > 0.dp) {
                     Spacer(modifier = Modifier.height(extraBottomPadding))
@@ -709,6 +724,7 @@ private fun LandscapeLayout(
     snackbarHostState: SnackbarHostState,
     extraBottomPadding: Dp = 0.dp,
     onBottomBarHeightChanged: (Dp) -> Unit = {},
+    onRailWidthChanged: (Dp) -> Unit = {},
     navHost: @Composable (Modifier) -> Unit
 ) {
     val density = LocalDensity.current
@@ -717,10 +733,12 @@ private fun LandscapeLayout(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(modifier = Modifier
-                .windowInsetsPadding(WindowInsets.navigationBars)
+                // Measured above the inset padding, so the height reported is the whole
+                // thing; see the portrait layout for what measuring below it cost.
                 .onSizeChanged { size ->
                     onBottomBarHeightChanged(with(density) { size.height.toDp() })
                 }
+                .windowInsetsPadding(WindowInsets.navigationBars)
             ) {
                 if (extraBottomPadding > 0.dp) {
                     Spacer(modifier = Modifier.height(extraBottomPadding))
@@ -739,7 +757,7 @@ private fun LandscapeLayout(
                 .padding(paddingValues)
         ) {
             if (showNav) {
-                SideNavRail(navController, currentRoute)
+                SideNavRail(navController, currentRoute, onRailWidthChanged)
             }
             navHost(
                 Modifier
@@ -784,7 +802,19 @@ private fun MiniPlayerContainer(
 
 @Composable
 private fun BottomNavBar(navController: NavHostController, currentRoute: String?) {
-    NavigationBar {
+    // The same colour as the screen behind it, rather than the `surfaceContainer` the
+    // component picks by default. In the light theme that default is a step darker than
+    // the background, so the bar read as a grey slab under the content; in the dark theme
+    // it is a step lighter, and the two together meant the bar sat differently depending
+    // on the theme. Sharing the background lets it read as part of the screen in both.
+    // Shorter than the 80dp the component takes by default, which is a lot of screen for
+    // three destinations. The insets are handled by the column outside, so this height is
+    // the bar itself rather than the bar plus whatever the system bar happens to be.
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.background,
+        windowInsets = WindowInsets(0, 0, 0, 0),
+        modifier = Modifier.height(NAV_BAR_HEIGHT)
+    ) {
         for (item in navItems) {
             NavigationBarItem(
                 icon = { Icon(item.icon, contentDescription = item.label) },
@@ -805,8 +835,20 @@ private fun BottomNavBar(navController: NavHostController, currentRoute: String?
 }
 
 @Composable
-private fun SideNavRail(navController: NavHostController, currentRoute: String?) {
-    NavigationRail {
+private fun SideNavRail(
+    navController: NavHostController,
+    currentRoute: String?,
+    onWidthChanged: (Dp) -> Unit = {}
+) {
+    val density = LocalDensity.current
+    NavigationRail(
+        // Measured rather than assumed: the collapsed player centres inside what is left
+        // of the screen beside it, and a guessed width would put it off centre by however
+        // much the guess was wrong.
+        modifier = Modifier.onSizeChanged { size ->
+            onWidthChanged(with(density) { size.width.toDp() })
+        }
+    ) {
         for (item in navItems) {
             NavigationRailItem(
                 icon = { Icon(item.icon, contentDescription = item.label) },
@@ -885,3 +927,6 @@ private fun WhatsNewPrompt(
         )
     }
 }
+
+/** The bottom bar's own height, without the system bar underneath it. */
+private val NAV_BAR_HEIGHT = 64.dp

@@ -9,6 +9,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
+// Every surface role is set in both schemes. A role left out falls back to the Material
+// baseline, which is tinted lilac (#E6E0E9 light, #36343B dark): the quality badge and the
+// volume overlay read surfaceContainerHighest and came out as the only coloured surfaces
+// in an otherwise grey palette, brighter than the background in the light theme.
 private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFFCCCCCC),
     onPrimary = Color(0xFF222222),
@@ -26,9 +30,13 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = Color(0xFFE0E0E0),
     onSurfaceVariant = Color(0xFFAAAAAA),
     surfaceVariant = Color(0xFF2A2A2A),
+    surfaceContainerHighest = Color(0xFF333333),
     surfaceContainerHigh = Color(0xFF2A2A2A),
     surfaceContainer = Color(0xFF1E1E1E),
     surfaceContainerLow = Color(0xFF1A1A1A),
+    surfaceContainerLowest = Color(0xFF0E0E0E),
+    surfaceBright = Color(0xFF383838),
+    surfaceDim = Color(0xFF121212),
     outline = Color(0xFF666666),
     outlineVariant = Color(0xFF444444)
 )
@@ -50,9 +58,13 @@ private val LightColorScheme = lightColorScheme(
     background = Color(0xFFDDDDDD),
     surface = Color(0xFFDDDDDD),
     surfaceVariant = Color(0xFFCCCCCC),
+    surfaceContainerHighest = Color(0xFFBEBEBE),
     surfaceContainerHigh = Color(0xFFC8C8C8),
     surfaceContainer = Color(0xFFD5D5D5),
     surfaceContainerLow = Color(0xFFDADADA),
+    surfaceContainerLowest = Color(0xFFE4E4E4),
+    surfaceBright = Color(0xFFE8E8E8),
+    surfaceDim = Color(0xFFCFCFCF),
     outline = Color(0xFF888888),
     outlineVariant = Color(0xFFBBBBBB)
 )
@@ -73,9 +85,13 @@ fun MassDroidTheme(
                     background = Color(0xFFDDDDDD),
                     surface = Color(0xFFDDDDDD),
                     surfaceVariant = Color(0xFFCCCCCC),
+                    surfaceContainerHighest = Color(0xFFBEBEBE),
                     surfaceContainerHigh = Color(0xFFC8C8C8),
                     surfaceContainer = Color(0xFFD5D5D5),
                     surfaceContainerLow = Color(0xFFDADADA),
+                    surfaceContainerLowest = Color(0xFFE4E4E4),
+                    surfaceBright = Color(0xFFE8E8E8),
+                    surfaceDim = Color(0xFFCFCFCF),
                     onBackground = Color(0xFF111111),
                     onSurface = Color(0xFF111111),
                     onSurfaceVariant = Color(0xFF333333)
