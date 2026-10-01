@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -29,6 +30,7 @@ import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.Chapter
 import net.asksakis.massdroidv2.domain.model.MediaType
+import net.asksakis.massdroidv2.domain.model.QueueSource
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.player.QueueTransfer
@@ -49,6 +51,29 @@ import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
+
+/**
+ * Why shuffle and repeat do nothing while the queue is dynamic.
+ *
+ * A queue is dynamic when one of the things it was filled from feeds it on demand, which
+ * means a smart playlist or a radio, and the server then refuses both commands because
+ * that source is already deciding the order. It is NOT Don't Stop the Music: the two are
+ * separate flags and happened to be on together when this was first written, which is how
+ * an earlier version of this message came to name the wrong one.
+ *
+ * It names the action that was refused and the kind of thing that refused it, and stops
+ * there. Three earlier attempts added a clause explaining what the source does instead,
+ * and none of them read well: the kind of source is the reason, so saying it twice only
+ * made the line longer.
+ */
+private fun dynamicQueueMessage(action: String, source: QueueSource?): String {
+    val kind = when (source?.mediaType) {
+        MediaType.RADIO -> "a radio"
+        MediaType.PLAYLIST -> "a smart playlist"
+        else -> "this queue"
+    }
+    return "Can't $action $kind"
+}
 
 /**
  * Compact projection of [QueueState] used as a `distinctUntilChanged`
@@ -606,7 +631,7 @@ class NowPlayingViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't change playback"))
             }
         }
     }
@@ -653,7 +678,7 @@ class NowPlayingViewModel @Inject constructor(
                 playerRepository.next(player.playerId)
             } catch (e: Exception) {
                 Log.w(TAG, "next failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't skip forward"))
             }
         }
     }
@@ -665,7 +690,7 @@ class NowPlayingViewModel @Inject constructor(
                 playerRepository.previous(player.playerId)
             } catch (e: Exception) {
                 Log.w(TAG, "previous failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't skip back"))
             }
         }
     }
@@ -900,7 +925,7 @@ class NowPlayingViewModel @Inject constructor(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.w(TAG, "seek failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't seek"))
             }
         }
     }
@@ -1024,12 +1049,16 @@ class NowPlayingViewModel @Inject constructor(
 
     fun toggleShuffle() {
         val queue = queueState.value ?: return
+        if (queue.isDynamic) {
+            _error.tryEmit(dynamicQueueMessage("shuffle", queue.source))
+            return
+        }
         viewModelScope.launch {
             try {
                 musicRepository.shuffleQueue(queue.queueId, !queue.shuffleEnabled)
             } catch (e: Exception) {
                 Log.w(TAG, "toggleShuffle failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't change shuffle"))
             }
         }
     }
@@ -1054,7 +1083,7 @@ class NowPlayingViewModel @Inject constructor(
                 if (queueState.value?.currentItem?.track?.uri == track.uri) {
                     playerRepository.updateCurrentTrackFavorite(track.favorite)
                 }
-                _error.tryEmit("Failed to update favorite")
+                _error.tryEmit(e.failureMessage("Couldn't save that"))
             }
         }
     }
@@ -1085,7 +1114,7 @@ class NowPlayingViewModel @Inject constructor(
                 player?.let { playerRepository.skipWithoutSignal(it.playerId) }
             } catch (e: Exception) {
                 Log.w(TAG, "dislikeCurrentTrack failed: ${e.message}")
-                _error.tryEmit("Failed to record dislike")
+                _error.tryEmit(e.failureMessage("Couldn't save that"))
             }
         }
     }
@@ -1096,7 +1125,7 @@ class NowPlayingViewModel @Inject constructor(
                 smartListeningRepository.undoDislike(undo.receipt)
             } catch (e: Exception) {
                 Log.w(TAG, "undoDislike failed: ${e.message}")
-                _error.tryEmit("Failed to undo")
+                _error.tryEmit(e.failureMessage("Couldn't undo that"))
             }
         }
     }
@@ -1132,7 +1161,7 @@ class NowPlayingViewModel @Inject constructor(
                 } else {
                     _blockedArtistUris.value - artistUri
                 }
-                _error.tryEmit("Failed to update artist filter")
+                _error.tryEmit(e.failureMessage("Couldn't update the filter"))
             }
         }
     }
@@ -1337,6 +1366,10 @@ class NowPlayingViewModel @Inject constructor(
 
     fun cycleRepeat() {
         val queue = queueState.value ?: return
+        if (queue.isDynamic) {
+            _error.tryEmit(dynamicQueueMessage("repeat", queue.source))
+            return
+        }
         val nextMode = when (queue.repeatMode) {
             RepeatMode.OFF -> RepeatMode.ALL
             RepeatMode.ALL -> RepeatMode.ONE
@@ -1347,7 +1380,7 @@ class NowPlayingViewModel @Inject constructor(
                 musicRepository.repeatQueue(queue.queueId, nextMode)
             } catch (e: Exception) {
                 Log.w(TAG, "cycleRepeat failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't change repeat"))
             }
         }
     }
@@ -1437,7 +1470,7 @@ class NowPlayingViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "savePlayerConfig failed: ${e.message}")
-                _error.tryEmit("Failed to save player settings")
+                _error.tryEmit(e.failureMessage("Couldn't save the settings"))
             }
         }
     }

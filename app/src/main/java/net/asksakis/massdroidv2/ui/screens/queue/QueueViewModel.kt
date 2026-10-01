@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.queue
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -322,7 +323,7 @@ class QueueViewModel @Inject constructor(
                 musicRepository.playQueueIndex(id, index)
             } catch (e: Exception) {
                 Log.w(TAG, "playIndex failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't jump to that track"))
             }
         }
     }
@@ -335,7 +336,7 @@ class QueueViewModel @Inject constructor(
                 playerRepository.seek(id, chapter.start)
             } catch (e: Exception) {
                 Log.w(TAG, "seekToChapter failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't jump to that chapter"))
             }
         }
     }
@@ -348,7 +349,7 @@ class QueueViewModel @Inject constructor(
                 _queueItems.value = _queueItems.value.filter { it.queueItemId != itemId }
             } catch (e: Exception) {
                 Log.w(TAG, "removeItem failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't remove that track"))
             }
         }
     }
@@ -479,7 +480,7 @@ class QueueViewModel @Inject constructor(
                 paginatedBeyond = false
             } catch (e: Exception) {
                 Log.w(TAG, "clearQueue failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't clear the queue"))
             }
         }
     }
@@ -560,7 +561,7 @@ class QueueViewModel @Inject constructor(
                 _error.tryEmit("Created '$name' with ${_queueItems.value.size} tracks")
             } catch (e: Exception) {
                 Log.w(TAG, "saveQueueToNewPlaylist failed: ${e.message}")
-                _error.tryEmit("Failed to create playlist: ${e.message}")
+                _error.tryEmit(e.failureMessage("Couldn't save the queue as a playlist"))
             }
         }
     }

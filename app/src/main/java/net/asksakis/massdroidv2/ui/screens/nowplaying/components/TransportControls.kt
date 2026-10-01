@@ -44,6 +44,11 @@ internal fun TransportControls(
     onHaptic: () -> Unit = {}
 ) {
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
+    // The server refuses shuffle and repeat while a source feeds the queue on demand,
+    // which a smart playlist or a radio does. The buttons stay tappable so that pressing
+    // one names that source, rather than doing nothing at all, but they are drawn as
+    // unavailable.
+    val locked = queueState?.isDynamic == true
     val buttonSize = if (compact) 40.dp else 48.dp
     val playSize = if (compact) 52.dp else 64.dp
     val iconSize = if (compact) 26.dp else 32.dp
@@ -76,7 +81,7 @@ internal fun TransportControls(
                 Icon(
                     Icons.Default.Shuffle,
                     contentDescription = "Shuffle",
-                    tint = toggleTint(queueState?.shuffleEnabled == true)
+                    tint = toggleTint(queueState?.shuffleEnabled == true, locked)
                 )
             }
         }
@@ -136,7 +141,7 @@ internal fun TransportControls(
                         else -> Icons.Default.Repeat
                     },
                     contentDescription = "Repeat",
-                    tint = toggleTint(queueState?.repeatMode != RepeatMode.OFF)
+                    tint = toggleTint(queueState?.repeatMode != RepeatMode.OFF, locked)
                 )
             }
         }
@@ -157,15 +162,20 @@ private const val SKIP_SECONDS = 30
  * which grey it happens to be.
  */
 @Composable
-private fun toggleTint(on: Boolean): Color =
-    if (on) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = TOGGLE_OFF_ALPHA)
-    }
+private fun toggleTint(on: Boolean, locked: Boolean = false): Color = when {
+    // Unavailable reads as fainter than switched off, which is what the platform's own
+    // disabled alpha is for. The state the toggle happens to hold does not matter here,
+    // because it cannot be changed.
+    locked -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = TOGGLE_LOCKED_ALPHA)
+    on -> MaterialTheme.colorScheme.primary
+    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = TOGGLE_OFF_ALPHA)
+}
 
 /**
  * How present an unset toggle is. Above the 0.38 the platform gives a disabled control,
  * because these are switched off rather than unavailable and they still take a tap.
  */
 private const val TOGGLE_OFF_ALPHA = 0.45f
+
+/** The platform's disabled alpha, for a toggle the server will not let anybody change. */
+private const val TOGGLE_LOCKED_ALPHA = 0.38f

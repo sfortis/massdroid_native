@@ -2380,6 +2380,7 @@ fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueSta
     totalItems = items,
     autoplayEnabled = autoplayEnabled,
     crossfadeEnabled = crossfadeEnabled == true,
+    isDynamic = isDynamic,
     currentItem = currentItem?.let { item ->
         QueueItem(
             queueItemId = item.queueItemId,

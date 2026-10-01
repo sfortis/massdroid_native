@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -98,7 +99,7 @@ class PodcastDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start playback"))
             }
         }
     }
@@ -110,7 +111,7 @@ class PodcastDetailViewModel @Inject constructor(
                 musicRepository.playMedia(playerId, uri, option = "replace")
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -122,7 +123,7 @@ class PodcastDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "add")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueue failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't add that to the queue"))
             }
         }
     }
@@ -134,7 +135,7 @@ class PodcastDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "next")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueueNext failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that next"))
             }
         }
     }
@@ -167,7 +168,7 @@ class PodcastDetailViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "setEpisodePlayed failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't mark that episode"))
             }
         }
     }

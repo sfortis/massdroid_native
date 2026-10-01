@@ -136,7 +136,17 @@ data class ServerQueue(
      * shuffle and repeat. An older server does not send it and the default below then
      * simply means the app shows no queue-level crossfade control.
      */
-    @SerialName("crossfade_enabled") val crossfadeEnabled: Boolean? = null
+    @SerialName("crossfade_enabled") val crossfadeEnabled: Boolean? = null,
+    /**
+     * Whether one of this queue's sources feeds it on demand.
+     *
+     * The server sets it when something the queue was filled from is a playlist or radio
+     * marked dynamic, a smart playlist being the usual case, and MA 2.10 then refuses to
+     * change shuffle or repeat because that source is already deciding the order. An older
+     * server does not send the key and the default below then leaves both controls working
+     * as before.
+     */
+    @SerialName("is_dynamic") val isDynamic: Boolean = false
 )
 
 @Serializable

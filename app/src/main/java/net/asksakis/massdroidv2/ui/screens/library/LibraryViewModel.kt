@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -847,7 +848,7 @@ class LibraryViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "playBrowseFolder failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that folder"))
             } finally {
                 _browseLoading.value = false
             }
@@ -903,7 +904,7 @@ class LibraryViewModel @Inject constructor(
                 _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "quickPlay failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -918,7 +919,7 @@ class LibraryViewModel @Inject constructor(
                 _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start playback"))
             }
         }
     }
@@ -932,7 +933,7 @@ class LibraryViewModel @Inject constructor(
                 _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -944,7 +945,7 @@ class LibraryViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "add")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueue failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't add that to the queue"))
             }
         }
     }
@@ -956,7 +957,7 @@ class LibraryViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "next")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueueNext failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that next"))
             }
         }
     }
@@ -969,7 +970,7 @@ class LibraryViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start the radio"))
             }
         }
     }
@@ -988,7 +989,7 @@ class LibraryViewModel @Inject constructor(
                 playlistsPager.update { it + playlist }
             } catch (e: Exception) {
                 Log.w(TAG, "createPlaylist failed: ${e.message}")
-                _error.tryEmit("Failed to create playlist")
+                _error.tryEmit(e.failureMessage("Couldn't create the playlist"))
             }
         }
     }

@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -195,7 +196,7 @@ class HomeViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "playPause failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't change playback"))
             }
         }
     }
@@ -207,7 +208,7 @@ class HomeViewModel @Inject constructor(
                 playerRepository.next(player.playerId)
             } catch (e: Exception) {
                 Log.w(TAG, "next failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't skip forward"))
             }
         }
     }
@@ -322,7 +323,7 @@ class HomeViewModel @Inject constructor(
                 playerRepository.previous(player.playerId)
             } catch (e: Exception) {
                 Log.w(TAG, "previous failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't skip back"))
             }
         }
     }

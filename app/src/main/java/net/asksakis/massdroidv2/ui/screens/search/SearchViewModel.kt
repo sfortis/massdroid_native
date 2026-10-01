@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.search
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -95,7 +96,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, radio.uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playRadio failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start that radio"))
             }
         }
     }
@@ -108,7 +109,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, track.uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playTrack failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that track"))
             }
         }
     }
@@ -125,7 +126,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playUri failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -137,7 +138,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -149,7 +150,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "add")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueue failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't add that to the queue"))
             }
         }
     }
@@ -161,7 +162,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "next")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueueNext failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that next"))
             }
         }
     }
@@ -174,7 +175,7 @@ class SearchViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start the radio"))
             }
         }
     }

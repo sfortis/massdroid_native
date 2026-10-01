@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
+import net.asksakis.massdroidv2.ui.failureMessage
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -175,7 +176,7 @@ class AlbumDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "play failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start playback"))
             }
         }
     }
@@ -187,7 +188,7 @@ class AlbumDetailViewModel @Inject constructor(
                 musicRepository.playMedia(playerId, uri)
             } catch (e: Exception) {
                 Log.w(TAG, "playOnPlayer failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that"))
             }
         }
     }
@@ -199,7 +200,7 @@ class AlbumDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "add")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueue failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't add that to the queue"))
             }
         }
     }
@@ -211,7 +212,7 @@ class AlbumDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, option = "next")
             } catch (e: Exception) {
                 Log.w(TAG, "enqueueNext failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't play that next"))
             }
         }
     }
@@ -224,7 +225,7 @@ class AlbumDetailViewModel @Inject constructor(
                 musicRepository.playMedia(queueId, uri, radioMode = true)
             } catch (e: Exception) {
                 Log.w(TAG, "startRadio failed: ${e.message}")
-                _error.tryEmit("Not connected to server")
+                _error.tryEmit(e.failureMessage("Couldn't start the radio"))
             }
         }
     }
@@ -315,7 +316,7 @@ class AlbumDetailViewModel @Inject constructor(
                 _error.tryEmit("Everything here is by an artist you blocked")
             } catch (e: Exception) {
                 Log.w(TAG, "$what failed: ${e.message}")
-                _error.tryEmit("Could not play this album")
+                _error.tryEmit(e.failureMessage("Couldn't play that album"))
             } finally {
                 _sending.value = false
             }
@@ -339,7 +340,7 @@ class AlbumDetailViewModel @Inject constructor(
         }
         if (changed == null) {
             Log.w(TAG, "queue did not change within ${QUEUE_CHANGE_TIMEOUT_MS}ms of play")
-            _error.tryEmit("The server did not start this album")
+            _error.tryEmit("Couldn't play that album. The server started nothing")
         }
     }
 

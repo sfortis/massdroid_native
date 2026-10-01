@@ -23,6 +23,14 @@ data class QueueState(
     /** Total item count of the whole queue (server-side), not just the fetched page. */
     val totalItems: Int = 0,
     val autoplayEnabled: Boolean = false,
+    /**
+     * Whether one of the things this queue was filled from feeds it on demand, which means
+     * a smart playlist or a radio. The server refuses shuffle and repeat in that state,
+     * because the source is already deciding the order, so the controls have to say so
+     * rather than fail when they are pressed. Separate from [autoplayEnabled]: Don't Stop
+     * the Music does not make a queue dynamic.
+     */
+    val isDynamic: Boolean = false,
     /** Whether crossfade is on. A queue property from MA 2.10; before that, player config. */
     val crossfadeEnabled: Boolean = false
 )
