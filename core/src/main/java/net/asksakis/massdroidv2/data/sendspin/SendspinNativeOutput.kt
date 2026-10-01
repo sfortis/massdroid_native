@@ -44,6 +44,12 @@ class SendspinNativeOutput {
 
     @Volatile private var ptr: Long = 0L
 
+    // True when the last start() could not open or start the stream. A stream
+    // that never opened raises no error callback, so this is the only record
+    // that the output is still wanted; [isDisconnected] reports it so the
+    // engine retries. Cleared by a successful start and by an explicit stop.
+    @Volatile private var startFailed = false
+
     val isStarted: Boolean get() = ptr != 0L
 
     /**
@@ -62,10 +68,12 @@ class SendspinNativeOutput {
         }
         if (!nativeStart(created, sampleRate, channels, driftCorrection)) {
             nativeDestroy(created)
+            startFailed = true
             Log.e(TAG, "nativeStart failed (${sampleRate}Hz ch=$channels)")
             return false
         }
         ptr = created
+        startFailed = false
         // The native engine is recreated on every (re)open, so re-apply the
         // cached output gain + compressor level + dither (native defaults are
         // volume 1.0, compressor 0 = off, dither off, so a default needs no call).
@@ -79,6 +87,7 @@ class SendspinNativeOutput {
     /** Stops and closes the stream, freeing native resources. */
     @Synchronized
     fun stop() {
+        startFailed = false
         val p = ptr
         if (p == 0L) return
         ptr = 0L
@@ -210,8 +219,13 @@ class SendspinNativeOutput {
         if (p != 0L) nativeResumeStream(p)
     }
 
-    /** True if Oboe disconnected the stream (route preempted, e.g. phone call). */
+    /**
+     * True when the output needs a reopen: Oboe disconnected the stream (route
+     * preempted, e.g. a phone call, or taken while stopped), or the last start
+     * failed to open it at all.
+     */
     fun isDisconnected(): Boolean {
+        if (startFailed) return true
         val p = ptr
         return p != 0L && nativeIsDisconnected(p)
     }

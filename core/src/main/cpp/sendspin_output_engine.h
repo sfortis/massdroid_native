@@ -202,7 +202,8 @@ private:
     // Freeze: hold the read position (preserve the ring) across a transient
     // interruption. Faded in/out via the existing gain ramp so it is click-free.
     std::atomic<bool> frozen_{false};
-    // Set by onErrorAfterClose when Oboe disconnects the stream; cleared on start.
+    // Set by onErrorAfterClose when Oboe disconnects the stream, and by a failed
+    // resumeStream; cleared on start.
     std::atomic<bool> disconnected_{false};
 
     // Output-latency anchor captured from Oboe getTimestamp (CLOCK_MONOTONIC),

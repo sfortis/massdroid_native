@@ -226,7 +226,15 @@ void SendspinOutputEngine::resumeStream() {
     anchorFramePosition_.store(-1);
     anchorTimeUs_.store(0);
     lastTimestampPollFrame_ = 0;
-    stream_->requestStart();
+    oboe::Result r = stream_->requestStart();
+    if (r != oboe::Result::OK) {
+        // Another app can take the output while this stream is stopped (a Pixel
+        // alarm does), and a stopped stream gets no error callback, so the only
+        // sign is this failed start. Flag it the same way onErrorAfterClose does,
+        // so the Kotlin engine reopens the output instead of staying silent.
+        LOGW("resumeStream: requestStart failed: %s", oboe::convertToText(r));
+        disconnected_.store(true);
+    }
 }
 
 void SendspinOutputEngine::flush() {

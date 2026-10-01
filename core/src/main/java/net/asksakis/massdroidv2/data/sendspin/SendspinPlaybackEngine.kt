@@ -116,6 +116,12 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // 8 s gives slow stacks time to establish A2DP before we give up on it.
         private const val REOPEN_SETTLE_MS = 350L
         private const val REOPEN_MAX_WAIT_MS = 8_000L
+        // A reopen whose open itself failed (another app still holds the output,
+        // e.g. an alarm ringing) is retried with the settle delay doubled per
+        // consecutive failure, up to 2.8 s. A failed open blocks the main thread
+        // for ~300 ms on a Pixel, so retrying at the plain settle pace would stall
+        // the UI for as long as the other app holds the output.
+        private const val REOPEN_BACKOFF_MAX_SHIFT = 3
     }
 
     // Holds the raw WS frame (header included) with an offset/length view of
@@ -201,6 +207,9 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     // wait). Touched only on the main thread; 0 = no cycle in flight.
     private var reopenSettleRunnable: Runnable? = null
     @Volatile private var reopenRequestedAtMs = 0L
+    // Consecutive startNativeOutput failures, which set the reopen backoff.
+    // Reset by a successful start and by a resume from idle.
+    @Volatile private var failedOutputOpens = 0
     // True while the output is frozen for a transient focus loss (solo/DIRECT).
     // startNativeOutput recreates the native object (which defaults to unfrozen),
     // so a reopen mid-freeze (phone call) must re-apply it or the preserved
@@ -664,6 +673,9 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     /** Restart the output + producer if they were stopped for idle. */
     private fun ensureOutputRunning() {
         cancelIdleStop()
+        // Playback is wanted again, so an output that failed to open is retried
+        // at the normal pace rather than at the backoff it reached meanwhile.
+        failedOutputOpens = 0
         if (!outputPausedForIdle) return
         outputPausedForIdle = false
         nativeOutput.resumeStream()
@@ -685,8 +697,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // flag is owned solely by stopOutputForIdle / ensureOutputRunning /
         // releaseInternal, which keep it consistent with the producer's liveness.
         // SYNC aligns to the group timeline; DIRECT (solo) is a pure FIFO.
-        if (!nativeOutput.start(activeSampleRate, activeChannels, isSync)) {
-            Log.e(TAG, "Native output failed to start ${activeSampleRate}Hz ch=$activeChannels; stream will be silent")
+        if (nativeOutput.start(activeSampleRate, activeChannels, isSync)) {
+            failedOutputOpens = 0
+        } else {
+            failedOutputOpens++
+            Log.e(
+                TAG,
+                "Native output failed to start ${activeSampleRate}Hz ch=$activeChannels " +
+                    "(attempt $failedOutputOpens); retrying while playback wants it",
+            )
         }
         // A (re)start recreates the native engine, which defaults to unfrozen. If
         // we were frozen for a focus loss (e.g. reopen mid phone call), re-apply
@@ -775,7 +794,13 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             reopenInFlight = false
             return
         }
-        scheduleReopen("oboe disconnect")
+        val failures = failedOutputOpens
+        if (failures == 0) {
+            scheduleReopen("oboe disconnect")
+        } else {
+            val settleMs = REOPEN_SETTLE_MS shl failures.coerceAtMost(REOPEN_BACKOFF_MAX_SHIFT)
+            scheduleReopen("output failed to open", settleMs)
+        }
     }
 
     /**
@@ -784,7 +809,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
      * route has been quiet for the settle window, or after [REOPEN_MAX_WAIT_MS].
      * Runs on the main thread (device callbacks + the loop's mainHandler.post).
      */
-    private fun scheduleReopen(reason: String) {
+    private fun scheduleReopen(reason: String, settleMs: Long = REOPEN_SETTLE_MS) {
         if (!configured) {
             reopenInFlight = false
             return
@@ -804,7 +829,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         }
         val r = Runnable { commitReopen(reason) }
         reopenSettleRunnable = r
-        mainHandler.postDelayed(r, REOPEN_SETTLE_MS)
+        mainHandler.postDelayed(r, settleMs)
     }
 
     /**
@@ -827,7 +852,10 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         if (now - reopenRequestedAtMs < REOPEN_MAX_WAIT_MS) {
             val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
             val boundId = nativeOutput.deviceId()
-            val boundGone = boundId <= 0 || outputs.none { it.id == boundId }
+            // With no stream at all (the last open failed) no device was lost, so
+            // there is no external sink to wait for: retry on the current route.
+            val boundGone = nativeOutput.isStarted &&
+                (boundId <= 0 || outputs.none { it.id == boundId })
             val hasExternalSink = outputs.any { isExternalSink(it.type) }
             if (boundGone && !hasExternalSink) {
                 Log.d(TAG, "Reopen ($reason): no external sink established yet, waiting")
