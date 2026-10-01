@@ -98,6 +98,11 @@ class SendspinAudioController(
         // ducks. Restoring then is right, because there is nothing to be quiet
         // under.
         private const val DUCK_INTERRUPTER_WAIT_MS = 10_000L
+        // How long the other sound must stay silent before a duck believes it has
+        // ended. The measured gap inside one spoken prompt was 0.49 s. The focus
+        // gain still restores at once, so this only delays the restore for an app
+        // that never hands focus back.
+        private const val DUCK_END_GRACE_MS = 1_500L
         // Usages that mean "another app is deliberately talking over us". Plain
         // media is NOT here and cannot be: our own output carries that usage, so
         // it would match permanently. Another app's media is caught by counting
@@ -301,7 +306,25 @@ class SendspinAudioController(
      */
     private fun abandonPlaybackIntent() {
         _userIntent.value = false
+        cancelOwedResume()
+    }
+
+    /**
+     * Drop the start owed to the next focus gain, and withdraw a focus request that
+     * is still queued for it.
+     *
+     * A DELAYED request stays in the platform's focus stack until it is abandoned.
+     * Left there after the listener cancelled the play, it took the focus the
+     * moment the lock cleared, with nothing playing, and the app that had been
+     * playing before the call never got its own focus back.
+     */
+    private fun cancelOwedResume() {
+        val owed = owedResume ?: return
         owedResume = null
+        if (owed == OwedResume.DEFERRED_PLAY) {
+            Log.i(TAG, "Delayed play cancelled: withdrawing the queued focus request")
+            abandonAudioFocus()
+        }
     }
 
     private fun pauseForRouteLoss() {
@@ -865,11 +888,12 @@ class SendspinAudioController(
                 if (intent.willPlay) {
                     _userIntent.value = true
                     // Playback is starting, so nothing is owed to a later focus
-                    // gain, any duck still in place is stale, and no pause is
-                    // waiting to be confirmed any more.
+                    // gain and no pause is waiting to be confirmed any more. A duck
+                    // in place is kept: a play pressed while another app speaks
+                    // stays quiet under it, and the duck ends with the focus gain or
+                    // with the sound, see [duckUntilInterrupterEnds].
                     owedResume = null
                     pauseAwaitingConfirmation = false
-                    clearDuck()
                     if (!hasAudioFocus && !requestFocusToPlay()) return@collect
                     if (isReady) {
                         sendspinManager.resumeAudio()
@@ -888,7 +912,7 @@ class SendspinAudioController(
                     // interruption was holding; the focus pause has to keep it.
                     // Now Playing calls the repository directly rather than
                     // handlePause(), so this is the only place that sees it.
-                    if (intent.cause == PlaybackIntentCause.LISTENER) owedResume = null
+                    if (intent.cause == PlaybackIntentCause.LISTENER) cancelOwedResume()
                     if (!isReady) return@collect
                     _userIntent.value = false
                     sendspinManager.pauseAudio()
@@ -990,7 +1014,7 @@ class SendspinAudioController(
                         return@collect
                     }
                     Log.i(TAG, "Another player was chosen: dropping the resume owed to this phone")
-                    owedResume = null
+                    cancelOwedResume()
                 }
         }
 
@@ -1186,6 +1210,7 @@ class SendspinAudioController(
         reconnectReassertJob?.cancel()
         reconnectReassertJob = null
         clearDuck()
+        cancelHeldCallGain()
         reconnectJob?.cancel()
         reconnectJob = null
         abandonAudioFocus()
@@ -1218,7 +1243,6 @@ class SendspinAudioController(
         playerRepository.selectPlayer(id)
         _userIntent.value = true
         owedResume = null
-        clearDuck()
         if (!hasAudioFocus && !requestFocusToPlay()) return
         if (isReady) sendspinManager.resumeAudio()
         scope.launch {
@@ -1311,7 +1335,6 @@ class SendspinAudioController(
         if (wantPlay) {
             _userIntent.value = true
             owedResume = null
-            clearDuck()
             if (!hasAudioFocus && !requestFocusToPlay()) return
             if (isReady) sendspinManager.resumeAudio()
         } else {
@@ -1384,87 +1407,23 @@ class SendspinAudioController(
             .setOnAudioFocusChangeListener { focusChange ->
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_GAIN -> {
-                        val intent = _userIntent.value
-                        Log.i(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=$intent")
+                        Log.i(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=${_userIntent.value}")
                         hasAudioFocus = true
                         // Phone call still up: do not resume yet (mid-call focus
-                        // blip). Keep the output frozen/paused; the real GAIN that
-                        // arrives when the call ends (mode == NORMAL) resumes it.
+                        // blip). Keep the output frozen or paused and act on this
+                        // gain once the call is over, see [holdFocusGainUntilCallEnds].
                         if (isInActiveCall()) {
-                            Log.i(TAG, "Focus gained during active call (mode=${audioManager.mode}); staying paused until the call ends")
+                            Log.i(TAG, "Focus gained during active call (mode=${audioManager.mode}); holding it until the call ends")
+                            holdFocusGainUntilCallEnds()
                             return@setOnAudioFocusChangeListener
                         }
-                        clearDuck()
-                        // We paused because another app was about to play. Pausing
-                        // the MA player cleared `_userIntent`, so the intent gate
-                        // below would refuse to resume; put the intent back and
-                        // play, which is what the listener asked for before the
-                        // interruption.
-                        val owed = owedResume
-                        if (owed != null) {
-                            val resumeId = sendspinPlayerId
-                            val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
-                            if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
-                                Log.i(TAG, "Focus regained: nothing to resume")
-                                return@setOnAudioFocusChangeListener
-                            }
-                            owedResume = null
-                            Log.i(
-                                TAG,
-                                when (owed) {
-                                    OwedResume.INTERRUPTION ->
-                                        "Focus regained: resuming the playback the interruption paused"
-                                    OwedResume.DEFERRED_PLAY ->
-                                        "Focus granted: starting the play that was waiting for it"
-                                }
-                            )
-                            _userIntent.value = true
-                            sendspinManager.resumeAudio()
-                            scope.launch {
-                                if (!isReady) ensureSendspinConnected()
-                                playerRepository.play(resumeId)
-                            }
-                            return@setOnAudioFocusChangeListener
-                        }
-                        // If the transient loss FROZE the solo output (buffer
-                        // preserved), just unfreeze: playback resumes instantly
-                        // and click-free from the intact buffer, no flush/rebuffer.
-                        if (unfreezeOutput("focus")) {
-                            Log.i(TAG, "Focus regained: unfroze output, buffer preserved")
-                            return@setOnAudioFocusChangeListener
-                        }
-                        // Resume is gated on `_userIntent` — the canonical
-                        // user-level intent flow. Noisy receiver, BT-to-speaker
-                        // fallback, and permanent focus loss all clear it, so the
-                        // route-change focus-shuffle that follows a BT disconnect
-                        // will not silently hand audio off to the phone speaker.
-                        if (!intent) {
-                            Log.i(TAG, "Focus gained but intent is paused, staying paused")
-                            return@setOnAudioFocusChangeListener
-                        }
-                        if (isStreaming) {
-                            sendspinManager.resumeAudio()
-                        } else {
-                            // Not streaming: during a long interruption (e.g. a
-                            // phone call routes audio to the earpiece, the Oboe
-                            // stream disconnects and the server ends the idle
-                            // stream) the engine drops to IDLE. Re-trigger
-                            // playback so the server restarts the stream and
-                            // audio comes back; reconnect first if the transport
-                            // is no longer ready.
-                            sendspinManager.resumeAudio()
-                            val id = sendspinPlayerId
-                            if (id != null) {
-                                scope.launch {
-                                    if (!isReady) ensureSendspinConnected()
-                                    playerRepository.play(id)
-                                }
-                            }
-                        }
+                        cancelHeldCallGain()
+                        handleFocusGain()
                     }
                     AudioManager.AUDIOFOCUS_LOSS -> {
                         Log.i(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
+                        cancelHeldCallGain()
                         clearDuck()
                         unfreezeOutput("focus")
                         // Align intent with the permanent loss: another app
@@ -1483,6 +1442,7 @@ class SendspinAudioController(
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         hasAudioFocus = false
+                        cancelHeldCallGain()
                         // Asked BEFORE the pause below, which is what clears the
                         // intent, and above the call split so the freeze path is
                         // covered too: a loss while nothing plays must not owe a
@@ -1531,6 +1491,118 @@ class SendspinAudioController(
     }
 
     /**
+     * Act on a focus gain once no call is in the way: end the duck, then resume
+     * whatever the interruption or a delayed grant left owed.
+     */
+    private fun handleFocusGain() {
+        clearDuck()
+        // We paused because another app was about to play. Pausing
+        // the MA player cleared `_userIntent`, so the intent gate
+        // below would refuse to resume; put the intent back and
+        // play, which is what the listener asked for before the
+        // interruption.
+        val owed = owedResume
+        if (owed != null) {
+            val resumeId = sendspinPlayerId
+            val outcome = AudioFocusPolicy.onFocusGain(resumeOwed = true)
+            if (outcome == AudioFocusPolicy.FocusGain.IGNORE || resumeId == null) {
+                Log.i(TAG, "Focus regained: nothing to resume")
+                return
+            }
+            owedResume = null
+            Log.i(
+                TAG,
+                when (owed) {
+                    OwedResume.INTERRUPTION ->
+                        "Focus regained: resuming the playback the interruption paused"
+                    OwedResume.DEFERRED_PLAY ->
+                        "Focus granted: starting the play that was waiting for it"
+                }
+            )
+            _userIntent.value = true
+            sendspinManager.resumeAudio()
+            scope.launch {
+                if (!isReady) ensureSendspinConnected()
+                playerRepository.play(resumeId)
+            }
+            return
+        }
+        // If the transient loss FROZE the solo output (buffer
+        // preserved), just unfreeze: playback resumes instantly
+        // and click-free from the intact buffer, no flush/rebuffer.
+        if (unfreezeOutput("focus")) {
+            Log.i(TAG, "Focus regained: unfroze output, buffer preserved")
+            return
+        }
+        // Resume is gated on `_userIntent` — the canonical
+        // user-level intent flow. Noisy receiver, BT-to-speaker
+        // fallback, and permanent focus loss all clear it, so the
+        // route-change focus-shuffle that follows a BT disconnect
+        // will not silently hand audio off to the phone speaker.
+        if (!_userIntent.value) {
+            Log.i(TAG, "Focus gained but intent is paused, staying paused")
+            return
+        }
+        if (isStreaming) {
+            sendspinManager.resumeAudio()
+        } else {
+            // Not streaming: during a long interruption (e.g. a
+            // phone call routes audio to the earpiece, the Oboe
+            // stream disconnects and the server ends the idle
+            // stream) the engine drops to IDLE. Re-trigger
+            // playback so the server restarts the stream and
+            // audio comes back; reconnect first if the transport
+            // is no longer ready.
+            sendspinManager.resumeAudio()
+            val id = sendspinPlayerId
+            if (id != null) {
+                scope.launch {
+                    if (!isReady) ensureSendspinConnected()
+                    playerRepository.play(id)
+                }
+            }
+        }
+    }
+
+    // The mode listener waiting to act on a gain that arrived during a call, or null.
+    // Typed as Any because the listener class only exists from API 31.
+    private var heldCallGainListener: Any? = null
+
+    /**
+     * Act on this gain when the call is over, instead of dropping it.
+     *
+     * Dropping it assumed a second gain follows the end of the call. Telecom does
+     * set the mode back to normal before it abandons the focus, so an ordinary call
+     * arrives in that order, but a VoIP app sets the mode itself and may hand the
+     * focus back first. Then the only gain was thrown away and the music stayed
+     * paused, with a resume still owed for a later unrelated gain to replay.
+     *
+     * Below API 31 there is no listener for the mode, and the next gain stays the
+     * only signal, as before.
+     */
+    private fun holdFocusGainUntilCallEnds() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        if (heldCallGainListener != null) return
+        val listener = AudioManager.OnModeChangedListener { mode ->
+            if (isCallMode(mode)) return@OnModeChangedListener
+            cancelHeldCallGain()
+            if (!hasAudioFocus) return@OnModeChangedListener
+            Log.i(TAG, "Call ended while a focus gain was held: acting on it now")
+            handleFocusGain()
+        }
+        heldCallGainListener = listener
+        audioManager.addOnModeChangedListener(context.mainExecutor, listener)
+    }
+
+    /** Stop waiting for the end of a call: a newer focus change supersedes the held gain. */
+    private fun cancelHeldCallGain() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val listener = heldCallGainListener as? AudioManager.OnModeChangedListener ?: return
+        heldCallGainListener = null
+        audioManager.removeOnModeChangedListener(listener)
+    }
+
+    /**
      * Settle audio focus for a stream that is starting, and release or hold the
      * output accordingly.
      *
@@ -1558,9 +1630,9 @@ class SendspinAudioController(
     /**
      * End any duck in place and stop watching for the interrupting sound.
      *
-     * The duck has no timer, so this is what stops one outliving its cause: it
-     * runs on the focus gain, on a permanent loss, on teardown, when a transient
-     * loss escalates to a pause, and whenever playback is asked to start again.
+     * It runs on the focus gain, on a permanent loss, on teardown and when a
+     * transient loss escalates to a pause. A play does not end a duck: the music
+     * stays quiet under the other app's sound until that sound or the focus ends.
      */
     private fun clearDuck() {
         // Only the watcher's own two endings log, so a duck ended from here left
@@ -1613,66 +1685,69 @@ class SendspinAudioController(
     }
 
     /**
-     * Duck, and restore the gain when the interrupting sound actually stops.
+     * Duck, and let the gain follow the interrupting sound until the focus comes back.
      *
-     * The release used to be a flat ten-second timer whose premise was "no
-     * AUDIOFOCUS_GAIN by now means the GAIN was dropped". That is wrong for any
-     * interruption longer than the timer: measured against a real alarm on two
-     * phones, the GAIN arrived after 14.8 s, 16.4 s, 12.8 s and 19.6 s, so the
-     * timer restored full volume over a still-ringing alarm every time. The
-     * events were never missing, we were second-guessing them.
+     * The documented end of a duck is the AUDIOFOCUS_GAIN, which cancels this watch
+     * and restores the gain itself. Watching the sound as well is our own addition,
+     * because an app that asked to duck us does not always hand the focus back, and
+     * then the gain would never return. The platform reports other apps' players
+     * through [AudioManager.AudioPlaybackCallback]; without MODIFY_AUDIO_ROUTING the
+     * entries are anonymised but keep the usage and the player state, which is all
+     * this needs.
      *
-     * The platform does report when another app's sound starts and stops, through
-     * [AudioManager.AudioPlaybackCallback]. An app without MODIFY_AUDIO_ROUTING
-     * still sees the usage of other apps' players (AOSP's
-     * `AudioPlaybackConfiguration.anonymizedCopy` keeps usage, content type and
-     * flags, and strips only the identifiers), which is all this needs.
+     * The gain follows the sound both ways. Ending the watch at the first silence
+     * was wrong twice over. A spoken prompt can arrive in parts: in the car on
+     * 2026-09-30 a first sound ended, full gain came back, and the text-to-speech
+     * voice started 0.49 s later and talked over the music for three and a half
+     * seconds. And while the other app still holds the focus, a second prompt sends
+     * no new callback, because the platform only reports a change in the kind of
+     * loss, so nothing would have lowered the music for it either. So an end is only
+     * believed after [DUCK_END_GRACE_MS] of silence, and a sound that starts again
+     * before the focus returns ducks the music again.
      *
-     * So the duck ends on one of two real events: the AUDIOFOCUS_GAIN, which
-     * cancels this watch and restores the gain itself, or the interrupting sound
-     * stopping, which this watch sees.
+     * There is no cap while the sound plays. Two timers used to sit here, at ten and
+     * sixty seconds, and both restored full volume over a ringing alarm. The only
+     * deadline left is for a sound that never appears at all.
      *
-     * There is no timer. Two of them used to be here, at ten and sixty seconds,
-     * and both did the one thing a duck must never do: restore full volume while
-     * the other app was still playing. The ten-second one fired whenever the
-     * interrupting sound was not observable, which is any app that asks to duck us
-     * but plays as plain media, since the usage filter below lists only alarms,
-     * notifications, navigation, the assistant and calls. The sixty-second one
-     * fired even when the sound was plainly still there. Neither is needed to
-     * guard against an app that takes focus and never returns it, because that app
-     * used the plain transient request, which now pauses rather than ducks. What
-     * is left is a duck that outlives its cause, and [clearDuck] ends that the
-     * moment playback is asked to start again.
+     * The watch runs on the main thread, where the focus listener runs, so a cancel
+     * from that listener lands before the watch can restore the gain behind it.
      */
     private fun duckUntilInterrupterEnds() {
         // Cancel BEFORE ducking: the other order leaves a window in which the
-        // previous watch restores full gain right after this duck applied it, and
-        // then nothing lowers it again for the rest of the interruption.
+        // previous watch restores full gain right after this duck applied it.
         duckWatchJob?.cancel()
         sendspinManager.duck()
-        duckWatchJob = scope.launch {
-            // First half: wait for the other sound to appear, on a deadline. This
-            // deadline was removed once, because while the filter was blind to an
-            // app playing plain media it fired over sound that was still going.
-            // Now that such an app is counted, nothing visible by the deadline
-            // really does mean nothing is playing, and staying quiet under silence
-            // is the fault this restores from. It is the only bounded recovery for
-            // an app that takes focus and never returns it.
+        duckWatchJob = scope.launch(Dispatchers.Main.immediate) {
+            // Nothing visible by the deadline means the app took focus and made no
+            // sound, which is 13 of 122 observed ducks. Restore, but keep watching
+            // in case it speaks later while it still holds the focus.
             val appeared = withTimeoutOrNull(DUCK_INTERRUPTER_WAIT_MS) {
                 interrupterActive().first { it }
             }
             if (appeared == null) {
                 Log.i(TAG, "Duck: nothing else is playing after ${DUCK_INTERRUPTER_WAIT_MS}ms, restoring gain")
                 sendspinManager.restoreVolume()
-                return@launch
+                interrupterActive().first { it }
+                Log.i(TAG, "Duck: the interrupting app started a sound after all, ducking")
+                sendspinManager.duck()
             }
-            // Second half: no deadline. While the other sound is still there,
-            // being quiet is the whole point, and a cap here restored full volume
-            // over a ringing alarm. Each collection is freshly seeded, so a sound
-            // that stopped between the two halves is still seen.
-            interrupterActive().first { !it }
-            Log.i(TAG, "Duck: interrupting sound ended, restoring gain")
-            sendspinManager.restoreVolume()
+            while (true) {
+                // Each collection is freshly seeded, so a sound that stopped
+                // between two steps is still seen.
+                interrupterActive().first { !it }
+                val cameBack = withTimeoutOrNull(DUCK_END_GRACE_MS) {
+                    interrupterActive().first { it }
+                }
+                if (cameBack != null) {
+                    Log.i(TAG, "Duck: interrupting sound came back within ${DUCK_END_GRACE_MS}ms, staying ducked")
+                    continue
+                }
+                Log.i(TAG, "Duck: interrupting sound ended, restoring gain until the focus returns")
+                sendspinManager.restoreVolume()
+                interrupterActive().first { it }
+                Log.i(TAG, "Duck: interrupting sound started again before the focus returned, ducking")
+                sendspinManager.duck()
+            }
         }
     }
 
@@ -1766,7 +1841,9 @@ class SendspinAudioController(
     // toggle, or the Oboe stream reconnecting) can deliver AUDIOFOCUS_GAIN
     // while the call is still up; resuming then plays music over the call. We
     // gate the focus-driven resume on this and wait for the real post-call GAIN.
-    private fun isInActiveCall(): Boolean = when (audioManager.mode) {
+    private fun isInActiveCall(): Boolean = isCallMode(audioManager.mode)
+
+    private fun isCallMode(mode: Int): Boolean = when (mode) {
         AudioManager.MODE_IN_CALL,
         AudioManager.MODE_IN_COMMUNICATION,
         AudioManager.MODE_RINGTONE -> true

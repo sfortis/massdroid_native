@@ -173,6 +173,12 @@ class SendspinManager(
     var currentVolume = 100
         private set
     private var muted = false
+
+    // Whether a duck is in effect. Kept here rather than read back from the engine because
+    // each engine owns its own gain: a group join or leave swaps engines, and a duck that
+    // lived only in the outgoing one was lost on the new engine and left behind on the old
+    // one, which then played at a tenth of its level the next time it was swapped back in.
+    @Volatile private var ducked = false
     @Volatile private var hasActiveProtocolStream = false
     // Last stream/start format, kept so an engine swap (DIRECT<->SYNC) that lands
     // while a stream is already active can re-configure the incoming engine. The
@@ -627,13 +633,21 @@ class SendspinManager(
         // and lives with the focus listener in
         // SendspinAudioController.duckUntilInterrupterEnds; this used to be a
         // flat timer here and it restored full volume over a ringing alarm.
-        if (!muted) audio.setVolume(DUCK_GAIN)
+        //
+        // Not skipped while muted: the engine composes the mute with this gain on its own
+        // (applyOutputVolume), and skipping either call left the duck wrong once the mute
+        // lifted, quiet for good when a restore was the call skipped.
+        ducked = true
+        audio.setVolume(duckedGain())
         Log.i(TAG, "Duck -> $DUCK_GAIN gain")
     }
 
     fun restoreVolume() {
-        if (!muted) audio.setVolume(1f)
+        ducked = false
+        audio.setVolume(duckedGain())
     }
+
+    private fun duckedGain(): Float = if (ducked) DUCK_GAIN else 1f
 
     fun setMuted(muted: Boolean) {
         this.muted = muted
@@ -702,6 +716,7 @@ class SendspinManager(
         target.clockSynchronizer = clockSynchronizer
         target.syncDelayMs = carrySyncDelay
         target.routeAcousticExtraUs = carryAcoustic
+        target.setVolume(duckedGain())
         (target as? SendspinPlaybackEngine)?.outputAllowed = carryOutputAllowed
         (target as? SendspinPlaybackEngine)?.onRoutingChanged = routingChangedCallback
         setupSyncStateCallback()
