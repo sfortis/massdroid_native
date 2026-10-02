@@ -1197,7 +1197,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                                 TAG,
                                 "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
                                     "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${info.size} frames=$frames " +
-                                    "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size}"
+                                    "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size} " +
+                                    "ptsMinusMark=${(info.presentationTimeUs - mark.serverTimestampUs) / 1000}ms"
                             )
                         }
                     }
@@ -1561,9 +1562,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             try { Base64.decode(it, Base64.DEFAULT) } catch (_: Exception) { null }
         } ?: createOpusHeader(channels, sampleRate)
         format.setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
-        val preSkipNs = 3840L * 1_000_000_000L / sampleRate.toLong()
-        format.setByteBuffer("csd-1", ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).apply { putLong(preSkipNs); rewind() })
-        format.setByteBuffer("csd-2", ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).apply { putLong(80_000_000L); rewind() })
+        // The server already shifts the Opus timestamps back by the encoder
+        // pre-skip, so the whole decoded stream, priming included, is on the
+        // timeline. The decoder must therefore discard nothing, as in sendspin-js
+        // and the official MA app. A codec delay here makes c2.android.opus.decoder
+        // swallow whole packets that never produce output, and the FIFO marks
+        // then label every later chunk that much early. csd-1 and csd-2 stay
+        // present at 0: the decoder consumes the first three inputs as config.
+        format.setByteBuffer("csd-1", zeroNanosCsd())
+        format.setByteBuffer("csd-2", zeroNanosCsd())
         return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS).apply {
             configure(format, null, null, 0)
             start()
@@ -1583,12 +1590,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         }
     }
 
+    private fun zeroNanosCsd(): ByteBuffer =
+        ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).apply { putLong(0L); rewind() }
+
     private fun createOpusHeader(channels: Int, sampleRate: Int): ByteArray =
         ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("OpusHead".toByteArray())
             put(1)
             put(channels.toByte())
-            putShort(3840.toShort())
+            putShort(0) // pre-skip: nothing is discarded, see createOpusDecoder
             putInt(sampleRate)
             putShort(0)
             put(0)
