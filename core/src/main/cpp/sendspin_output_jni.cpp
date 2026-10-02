@@ -136,6 +136,13 @@ Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativeDriftEmaU
     return reinterpret_cast<SendspinOutputEngine*>(ptr)->driftEmaUs();
 }
 
+JNIEXPORT jboolean JNICALL
+Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativeDriftMeasured(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {
+    if (ptr == 0) return JNI_FALSE;
+    return reinterpret_cast<SendspinOutputEngine*>(ptr)->driftMeasured() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jlong JNICALL
 Java_net_asksakis_massdroidv2_data_sendspin_SendspinNativeOutput_nativeUnderrunFrames(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong ptr) {

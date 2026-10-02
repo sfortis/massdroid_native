@@ -1198,7 +1198,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                                 "Timing/decode-out chunk#$decodedChunkCount codec=$activeCodec " +
                                     "serverTs=${mark.serverTimestampUs / 1000}ms bytes=${info.size} frames=$frames " +
                                     "dur=${frames * 1000L / activeSampleRate.coerceAtLeast(1)}ms marks=${decoderMarks.size} " +
-                                    "ptsMinusMark=${(info.presentationTimeUs - mark.serverTimestampUs) / 1000}ms"
+                                    "gapSum=${(mark.serverTimestampUs - info.presentationTimeUs) / 1000}ms"
                             )
                         }
                     }
@@ -1258,11 +1258,14 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // Unmute only once actually locked (fresh native drift < 5 ms), not at a
         // loose 20 ms: the native fast skip/insert convergence runs while muted,
         // so a tight gate keeps every audible sample on the click-free resampler.
-        // DIRECT (no drift correction) unmutes on time alone.
+        // DIRECT (no drift correction) unmutes on time alone. The drift must
+        // also have been measured since the flush: its reset value 0 is not
+        // "locked", and a start wait over the mute time would otherwise unmute
+        // before the callback has seen the new stream at all.
         if (syncMuted &&
             syncMuteStartedMs > 0L &&
             System.currentTimeMillis() - syncMuteStartedMs > startupMuteMs &&
-            (!isSync || abs(nativeOutput.driftEmaUs()) < 5_000L)
+            (!isSync || (nativeOutput.driftMeasured() && abs(nativeOutput.driftEmaUs()) < 5_000L))
         ) {
             syncMuted = false
             syncMuteStartedMs = 0L
@@ -1375,12 +1378,19 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         nativeOutput.setFrozen(false)
         frameQueue.clear()
         frameQueueBytes.set(0)
-        decoderMarks.clear()
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
         onFlush()
         nativeOutput.flush()
+        // The marks and the codec's in-flight inputs are cleared together under
+        // the codec lock, which the producer holds while it queues an input with
+        // its mark and while it pairs an output with one. Clearing the marks
+        // outside the lock would let the producer queue inputs between the clear
+        // and the flush: the flush drops those inputs while their marks survive,
+        // and every later chunk would carry the timestamp of a frame N places
+        // ahead. The deque is also not thread-safe on its own.
         synchronized(codecLock) {
+            decoderMarks.clear()
             try { codec?.flush() } catch (_: Exception) {}
         }
     }

@@ -139,6 +139,16 @@ class SendspinNativeOutput {
         return if (p == 0L) 0L else nativeDriftEmaUs(p)
     }
 
+    /**
+     * Whether the callback has measured the drift since the last start or
+     * flush. Until it has, [driftEmaUs] returns its reset value 0, which is
+     * not a measurement.
+     */
+    fun driftMeasured(): Boolean {
+        val p = ptr
+        return p != 0L && nativeDriftMeasured(p)
+    }
+
     /** Cumulative ring-underrun frames (audible dropouts); 0 = clean. */
     fun underrunFrames(): Long {
         val p = ptr
@@ -252,6 +262,7 @@ class SendspinNativeOutput {
     private external fun nativeIsDisconnected(ptr: Long): Boolean
     private external fun nativeDeviceId(ptr: Long): Int
     private external fun nativeDriftEmaUs(ptr: Long): Long
+    private external fun nativeDriftMeasured(ptr: Long): Boolean
     private external fun nativeUnderrunFrames(ptr: Long): Long
     private external fun nativeResampleRateMicros(ptr: Long): Long
 }

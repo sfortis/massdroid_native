@@ -45,6 +45,17 @@ constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(SNAP_US);
 // buffer is healthy (observed on slower devices).
 constexpr int64_t OUTLIER_US = 15000;
 
+// A change of the ring head's intended time this much larger than the frames
+// consumed since the last callback explain is a jump in the server timeline (a
+// gap or overlap in the stream), not a DAC reading. It is corrected at once by
+// snapping onto the new timeline, as the official clients resync, instead of
+// being filtered as an outlier and crept toward for seconds.
+constexpr int64_t TIMELINE_JUMP_US = 5000;
+// The relock ends once the raw drift is back inside this, or after this many
+// callbacks so a persistently noisy reading cannot keep it snapping.
+constexpr int64_t RELOCK_DONE_US = 2000;
+constexpr int RELOCK_MAX_CALLBACKS = 1000;
+
 // Max the timestamp anchor may move per ~100 ms poll. Lets dac0 follow the slow
 // real ppm clock drift smoothly while clamping a noisy getTimestamp reading to
 // a sub-ms blip (no freeze-then-jump sawtooth that makes the drift wander).
@@ -149,6 +160,9 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     latencyUs_.store(0);
     lastTimestampPollFrame_ = 0;
     driftEmaUs_.store(0);
+    driftMeasured_.store(false);
+    havePrevIntended_ = false;
+    relockCallbacks_ = 0;
     underrunFrames_.store(0);
     lastRateMicros_.store(1000000);
     callbackCount_ = 0;
@@ -250,6 +264,9 @@ void SendspinOutputEngine::resetRing() {
     readPos_ = static_cast<double>(w);
     markerRead_.store(markerWrite_.load());
     driftEmaUs_.store(0);
+    driftMeasured_.store(false);
+    havePrevIntended_ = false;
+    relockCallbacks_ = 0;
     compGsDb_ = 0.0f;
 }
 
@@ -459,10 +476,44 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // When will out[0] leave the DAC, and when was the ring head meant to play?
     int64_t dac0 = dacPresentationUsForNextWrite(framesWritten);
     int64_t intendedHead;
-    if (!intendedPresentationUs(read, &intendedHead)) {
+    const bool haveMarker = intendedPresentationUs(read, &intendedHead);
+    if (!haveMarker) {
         intendedHead = dac0; // no marker covers it yet: play as-is
     }
     const int64_t rawDriftUs = intendedHead - dac0; // >0 early (insert), <0 late (skip)
+
+    if (haveMarker && havePrevIntended_) {
+        const int64_t expected = prevIntendedHeadUs_ +
+            (read - prevReadFrame_) * 1000000LL / sampleRate_;
+        int64_t jump = intendedHead - expected;
+        if (jump < 0) jump = -jump;
+        if (jump > TIMELINE_JUMP_US) {
+            relockCallbacks_ = RELOCK_MAX_CALLBACKS;
+            relockJumpUs_ = intendedHead - expected;
+            relockStartRawUs_ = rawDriftUs;
+            relockInsertedFrames_ = 0;
+            relockSkippedFrames_ = 0;
+            relockStartCb_ = callbackCount_;
+            LOGD("timeline jump %lldus: relock raw=%lldus", (long long)relockJumpUs_,
+                 (long long)rawDriftUs);
+        }
+    }
+    havePrevIntended_ = haveMarker;
+    prevIntendedHeadUs_ = intendedHead;
+    prevReadFrame_ = read;
+    if (relockCallbacks_ > 0) {
+        const int64_t araw = rawDriftUs < 0 ? -rawDriftUs : rawDriftUs;
+        relockCallbacks_ = (araw <= RELOCK_DONE_US) ? 0 : relockCallbacks_ - 1;
+        if (relockCallbacks_ == 0) {
+            LOGD("relock done: jump=%lldus startRaw=%lldus inserted=%lldus skipped=%lldus "
+                 "endRaw=%lldus callbacks=%lld",
+                 (long long)relockJumpUs_, (long long)relockStartRawUs_,
+                 (long long)(relockInsertedFrames_ * 1000000LL / sampleRate_),
+                 (long long)(relockSkippedFrames_ * 1000000LL / sampleRate_),
+                 (long long)rawDriftUs, (long long)(callbackCount_ - relockStartCb_));
+        }
+    }
+    const bool relocking = relockCallbacks_ > 0;
 
     // Outlier-resistant smoothed drift. A bad getTimestamp reading spikes the
     // raw drift for a callback or two; correcting against that raw spike would
@@ -470,8 +521,16 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     // this estimate instead: it barely moves on single-callback outliers and
     // only tracks SUSTAINED drift (genuine boundaries flush + relock anyway).
     const int64_t prevEma = driftEmaUs_.load();
+    // While the output is silent (startup, seek, resume, track change) the
+    // estimate follows the raw drift directly. The muted snap and the unmute
+    // gate both read it, and the outlier filter would otherwise treat the large
+    // post-flush drift as a getTimestamp spike and creep toward it by 1/64 per
+    // callback, so the gate opened while the real drift was still 20-30 ms and
+    // the resampler then corrected it audibly for seconds. A bad timestamp under
+    // the mute only costs an inaudible re-snap on the next callback.
+    const bool silent = (g1 < 0.01f && g0 < 0.01f);
     int64_t ema;
-    if (callbackCount_ < 4) {
+    if (callbackCount_ < 4 || silent || relocking) {
         ema = rawDriftUs;
     } else {
         int64_t dev = rawDriftUs - prevEma;
@@ -480,6 +539,7 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
                                  : prevEma + (rawDriftUs - prevEma) / 8;
     }
     driftEmaUs_.store(ema);
+    driftMeasured_.store(true);
 
     const int64_t driftUs = ema;
     int silenceFront = 0;
@@ -497,15 +557,18 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
         // locks in ~1 callback, so audio resumes the instant the mute lifts
         // instead of after seconds of muted resampler crawl. A huge audible
         // drift (>= SNAP_US, rare) also snaps: one click beats a long desync.
-        const bool silent = (g1 < 0.01f && g0 < 0.01f);
-        if ((silent || adrift >= SNAP_US) && adrift > STEADY_DEADZONE_US) {
+        if ((silent || relocking || adrift >= SNAP_US) && adrift > STEADY_DEADZONE_US) {
             const int64_t driftFrames = driftUs * sampleRate_ / 1000000LL;
             if (driftUs > 0) {
                 silenceFront = static_cast<int>(std::min<int64_t>(numFrames, driftFrames));
+                if (relocking) relockInsertedFrames_ += silenceFront;
                 std::memset(out, 0, static_cast<size_t>(silenceFront) * ch * sizeof(int16_t));
             } else {
                 int64_t skip = std::min<int64_t>(available - 2, -driftFrames);
-                if (skip > 0) pos += static_cast<double>(skip);
+                if (skip > 0) {
+                    pos += static_cast<double>(skip);
+                    if (relocking) relockSkippedFrames_ += skip;
+                }
             }
         } else if (adrift > STEADY_DEADZONE_US) {
             // Audible residual: RESAMPLE at a hair off 1.0 — smooth, click-free

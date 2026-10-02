@@ -89,6 +89,11 @@ public:
     // Surfaced for the sync-error UI; correction itself is internal.
     int64_t driftEmaUs() const { return driftEmaUs_.load(); }
 
+    // True once a callback has measured the drift since the last start or
+    // flush. The reset value 0 of driftEmaUs() is not a measurement, and a
+    // caller must not read it as "locked".
+    bool driftMeasured() const { return driftMeasured_.load(); }
+
     // Cumulative ring-underrun frames (callback ran dry within a buffer): the
     // real audible-dropout counter for the quality readout. 0 = clean.
     int64_t underrunFrames() const { return underrunFrames_.load(); }
@@ -215,6 +220,21 @@ private:
 
     // Diagnostics
     std::atomic<int64_t> driftEmaUs_{0};
+    std::atomic<bool> driftMeasured_{false};
+    // Timeline-jump relock: the intended time of the ring head is tracked from
+    // callback to callback, and a jump that the consumed frames do not explain
+    // is a change in the server timestamps, not a noisy DAC reading.
+    bool havePrevIntended_ = false;
+    int64_t prevIntendedHeadUs_ = 0;
+    int64_t prevReadFrame_ = 0;
+    int relockCallbacks_ = 0;
+    // Diagnostics for one relock: the jump that started it and what the
+    // correction actually applied before the drift was back inside the window.
+    int64_t relockJumpUs_ = 0;
+    int64_t relockStartRawUs_ = 0;
+    int64_t relockInsertedFrames_ = 0;
+    int64_t relockSkippedFrames_ = 0;
+    int64_t relockStartCb_ = 0;
     std::atomic<int64_t> underrunFrames_{0};
     std::atomic<int64_t> lastRateMicros_{1000000}; // applied resampler rate * 1e6
     int64_t callbackCount_ = 0;
