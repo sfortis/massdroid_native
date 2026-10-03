@@ -48,6 +48,7 @@ class HomeViewModel @Inject constructor(
     private val queueTogglesCache: QueueTogglesCache,
     private val sleepTimerBridge: SleepTimerBridge,
     val acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator,
+    private val groupAutoSync: net.asksakis.massdroidv2.data.sendspin.GroupAutoSync,
 ) : ViewModel() {
 
     /**
@@ -309,6 +310,16 @@ class HomeViewModel @Inject constructor(
             settingsRepository.setSendspinAudioFormat(format.name)
         }
     }
+
+    /** Auto sync of a sync group's delays (debug builds only, see GroupAutoSync). */
+    val autoSyncState = groupAutoSync.state
+
+    /** The caller has already been granted RECORD_AUDIO. */
+    fun startAutoSync(memberIds: List<String>, ourPlayerId: String) = groupAutoSync.start(memberIds, ourPlayerId)
+
+    fun cancelAutoSync() = groupAutoSync.cancel()
+
+    fun dismissAutoSync() = groupAutoSync.dismiss()
 
     fun setSendspinSyncDelayMs(delayMs: Int) {
         viewModelScope.launch {

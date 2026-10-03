@@ -111,6 +111,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
+import net.asksakis.massdroidv2.ui.components.MdTextButton
+import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -411,6 +414,7 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
                 OutputQualityCard(viewModel = viewModel)
                 DspEffectsCard(viewModel = viewModel)
                 CarAudioCard(viewModel = viewModel)
+                if (BuildConfig.DEBUG) SyncProbeCard(viewModel = viewModel)
             }
         } else {
             Card(
@@ -1317,6 +1321,105 @@ private fun CarAudioCard(viewModel: SettingsViewModel) {
             }
         }
     }
+}
+
+/**
+ * Debug builds only: records the room and shows where each audible speaker
+ * plays relative to the server timestamp (see SyncProbe in :core).
+ */
+@Composable
+private fun SyncProbeCard(viewModel: SettingsViewModel) {
+    val context = LocalContext.current
+    val state by viewModel.syncProbe.collectAsStateWithLifecycle()
+    var permissionRefused by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        permissionRefused = !granted
+        if (granted) viewModel.runSyncProbe()
+    }
+    val running = state == SettingsViewModel.SyncProbeUiState.Running
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+    ) {
+        ListItem(
+            modifier = Modifier.clickable(enabled = !running) {
+                val missing = AppPermissions.missing(context, AppPermissions.acousticCalibrationRequired())
+                if (missing.isEmpty()) viewModel.runSyncProbe()
+                else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            headlineContent = { Text("Measure group sync (debug)") },
+            supportingContent = {
+                Text(
+                    when {
+                        running -> "Listening for 10 seconds. Keep the phone near the speakers."
+                        permissionRefused -> "Couldn't start. The microphone permission was refused."
+                        else -> "Records the room and shows where each speaker plays against the server timestamp."
+                    }
+                )
+            },
+            trailingContent = {
+                if (running) CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        )
+    }
+    (state as? SettingsViewModel.SyncProbeUiState.Finished)?.let { finished ->
+        SyncProbeResultDialog(outcome = finished.outcome, onDismiss = viewModel::dismissSyncProbe)
+    }
+}
+
+@Composable
+private fun SyncProbeResultDialog(outcome: SyncProbeOutcome, onDismiss: () -> Unit) {
+    fun ms(us: Long): String = "%+.1f ms".format(us / 1000.0)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Group sync") },
+        text = {
+            when (outcome) {
+                is SyncProbeOutcome.Failure -> Text(outcome.reason)
+                is SyncProbeOutcome.Success -> {
+                    val result = outcome.result
+                    val model = result.model
+                    val detail = MaterialTheme.typography.bodySmall
+                    val detailColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("This phone should play at ${ms(model.expectedLagUs)}.")
+                        if (result.analysis.peaks.isEmpty()) {
+                            Text("No speaker matched the stream.")
+                        }
+                        result.analysis.peaks.forEach { peak ->
+                            Text("Speaker at ${ms(peak.lagUs)}, strength ${"%.2f".format(peak.strength)}")
+                        }
+                        Text(
+                            "Clarity ${"%.1f".format(result.analysis.clarity)}; below 5 the peaks are noise.",
+                            style = detail, color = detailColor
+                        )
+                        Text(
+                            "Headroom ${model.headroomUs / 1000} ms, sync delay ${model.syncDelayUs / 1000} ms, " +
+                                "acoustic correction ${model.acousticCorrectionUs / 1000} ms.",
+                            style = detail, color = detailColor
+                        )
+                        Text(
+                            "Output latency ${model.reportedOutputLatencyUs / 1000} ms reported, " +
+                                "${model.fullOutputLatencyUs / 1000} ms full. " +
+                                "Native drift ${model.nativeDriftUs / 1000.0} ms.",
+                            style = detail, color = detailColor
+                        )
+                        Text(
+                            "${model.codec} ${model.sampleRate} Hz, microphone ${result.micSource}, " +
+                                "timestamp spread ${result.micTimestampSpreadUs / 1000.0} ms, " +
+                                "${result.analysis.overlapUs / 1000} ms analysed.",
+                            style = detail, color = detailColor
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { MdTextButton(onClick = onDismiss) { Text("Close") } }
+    )
 }
 
 @Composable

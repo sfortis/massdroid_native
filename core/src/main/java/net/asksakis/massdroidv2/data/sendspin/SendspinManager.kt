@@ -757,6 +757,30 @@ class SendspinManager(
     /** Get the actual routed device type from the AudioTrack, or null if unavailable. */
     fun getRoutedDeviceType(): Int? = audio.getRoutedDeviceType()
 
+    /**
+     * Why the sync probe cannot run now, or null when it can. It needs the phone
+     * in a sync group with a live stream, because only then is the stream placed
+     * on the server clock.
+     */
+    fun syncProbeBlocker(): String? = when {
+        engine !== syncEngine -> "Couldn't measure. The phone is not in a sync group."
+        !_streamActive.value || !clockSynced -> "Couldn't measure. Nothing is playing on the phone."
+        else -> null
+    }
+
+    /**
+     * Runs [block] with the sync probe's stream tap armed (see [SyncProbe]).
+     * Check [syncProbeBlocker] first.
+     */
+    suspend fun <T> syncProbeSession(block: suspend (SyncProbe.Session) -> T): T =
+        SyncProbe(clockSynchronizer).session(syncEngine, block)
+
+    /** Diagnostic: one measurement of every audible speaker against the server timestamp. */
+    suspend fun runSyncProbe(): SyncProbeOutcome {
+        syncProbeBlocker()?.let { return SyncProbeOutcome.Failure(it) }
+        return syncProbeSession { it.measure() }
+    }
+
     fun setOnRoutingChangedCallback(callback: () -> Unit) {
         routingChangedCallback = callback
         (engine as? SendspinPlaybackEngine)?.onRoutingChanged = callback

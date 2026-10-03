@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
@@ -467,6 +468,28 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setSendspinEnabled(enabled)
         }
+    }
+
+    sealed interface SyncProbeUiState {
+        data object Idle : SyncProbeUiState
+        data object Running : SyncProbeUiState
+        data class Finished(val outcome: SyncProbeOutcome) : SyncProbeUiState
+    }
+
+    private val _syncProbe = MutableStateFlow<SyncProbeUiState>(SyncProbeUiState.Idle)
+    val syncProbe: StateFlow<SyncProbeUiState> = _syncProbe.asStateFlow()
+
+    /** Debug builds only: the caller has already been granted RECORD_AUDIO. */
+    fun runSyncProbe() {
+        if (_syncProbe.value == SyncProbeUiState.Running) return
+        _syncProbe.value = SyncProbeUiState.Running
+        viewModelScope.launch {
+            _syncProbe.value = SyncProbeUiState.Finished(sendspinManager.runSyncProbe())
+        }
+    }
+
+    fun dismissSyncProbe() {
+        if (_syncProbe.value is SyncProbeUiState.Finished) _syncProbe.value = SyncProbeUiState.Idle
     }
 
     fun setSmartMixVariety(value: Float) {

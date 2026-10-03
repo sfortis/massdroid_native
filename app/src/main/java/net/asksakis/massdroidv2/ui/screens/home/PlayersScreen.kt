@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.asksakis.massdroidv2.BuildConfig
+import net.asksakis.massdroidv2.data.sendspin.GroupAutoSync
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
 import net.asksakis.massdroidv2.ui.components.SoundWaveIcon
@@ -447,6 +449,13 @@ fun PlayersScreen(
                         }
                         val localSyncDelayMs by viewModel.sendspinSyncDelayMs
                             .collectAsStateWithLifecycle(initialValue = 0)
+                        val autoSyncState by viewModel.autoSyncState.collectAsStateWithLifecycle()
+                        // Reload the member configs after an auto sync rewrote the delays.
+                        var configRevision by remember { mutableIntStateOf(0) }
+                        LaunchedEffect(autoSyncState) {
+                            if (autoSyncState is GroupAutoSync.State.Done) configRevision++
+                        }
+                        val ourId = sendspinClientId
                         net.asksakis.massdroidv2.ui.components.SyncSpeakersSheet(
                             members = members,
                             ourPlayerId = sendspinClientId,
@@ -454,7 +463,20 @@ fun PlayersScreen(
                             onLocalSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
-                            onDismiss = { syncSpeakersFor = null }
+                            onDismiss = { syncSpeakersFor = null },
+                            configRevision = configRevision,
+                            autoSync = if (BuildConfig.DEBUG && ourId != null && members.any { it.playerId == ourId }) {
+                                {
+                                    net.asksakis.massdroidv2.ui.components.AutoSyncSection(
+                                        state = autoSyncState,
+                                        onStart = { viewModel.startAutoSync(members.map { it.playerId }, ourId) },
+                                        onCancel = { viewModel.cancelAutoSync() },
+                                        onDismiss = { viewModel.dismissAutoSync() },
+                                    )
+                                }
+                            } else {
+                                null
+                            }
                         )
                     }
 

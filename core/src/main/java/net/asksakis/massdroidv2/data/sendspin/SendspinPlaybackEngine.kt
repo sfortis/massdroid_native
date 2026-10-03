@@ -293,6 +293,35 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     final override var syncState: SyncState = SyncState.IDLE
         private set
 
+    // Set by the sync probe while it measures, null otherwise, so the playback
+    // path pays nothing outside a measurement.
+    @Volatile var syncProbeTap: SyncProbeTap? = null
+    val streamSampleRate: Int get() = activeSampleRate
+
+    /**
+     * Where the timing model expects this phone's speaker to play, relative to
+     * the server timestamp. The native output aligns a frame's presentation
+     * time against now + the reported latency, and the model takes the frame to
+     * be heard after that latency plus [unreportedLatencyUs], so the expected lag
+     * is the planned offset plus that same term.
+     */
+    fun syncProbeModel(): SyncProbeModel {
+        val serverNowUs = clockSynchronizer?.localToServerUs(nowUs()) ?: 0L
+        val plan = timingPlan(serverNowUs)
+        return SyncProbeModel(
+            expectedLagUs = plan.presentationUs - plan.localOutputUs + unreportedLatencyUs(plan.outputLatencyUs),
+            headroomUs = plan.headroomUs,
+            syncDelayUs = syncDelayMs * 1000L,
+            acousticCorrectionUs = plan.staticDelayUs,
+            reportedOutputLatencyUs = plan.outputLatencyUs,
+            fullOutputLatencyUs = halOutputLatencyUs,
+            nativeDriftUs = nativeOutput.driftEmaUs(),
+            codec = activeCodec,
+            sampleRate = activeSampleRate,
+            channels = activeChannels,
+        )
+    }
+
     @Volatile private var currentVolume = 1f
     @Volatile private var muted = false
 
@@ -1241,13 +1270,16 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             val slice = if (offset == 0 && length == pcm.size) pcm else pcm.copyOfRange(offset, offset + length)
             val converted = convertPcm24To16(slice)
             nativeOutput.write(converted, 0, converted.size, plan.presentationUs)
+            syncProbeTap?.append(serverTimestampUs, converted, 0, converted.size, activeChannels)
         } else if (offset % 2 != 0) {
             // Odd offset would misalign the native int16 reinterpret; realign.
             if (pcmAligned.size < length) pcmAligned = ByteArray(length)
             System.arraycopy(pcm, offset, pcmAligned, 0, length)
             nativeOutput.write(pcmAligned, 0, length, plan.presentationUs)
+            syncProbeTap?.append(serverTimestampUs, pcmAligned, 0, length, activeChannels)
         } else {
             nativeOutput.write(pcm, offset, length, plan.presentationUs)
+            syncProbeTap?.append(serverTimestampUs, pcm, offset, length, activeChannels)
         }
 
         val frames = length / (activeChannels * 2).coerceAtLeast(1)

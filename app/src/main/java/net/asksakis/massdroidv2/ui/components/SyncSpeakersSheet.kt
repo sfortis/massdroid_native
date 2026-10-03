@@ -59,13 +59,17 @@ internal fun SyncSpeakersSheet(
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDismiss: () -> Unit,
+    // Bumped when something outside the sliders rewrote the delays (Auto sync),
+    // so the cards reload the configs and show the new values.
+    configRevision: Int = 0,
+    autoSync: (@Composable () -> Unit)? = null,
 ) {
     val sheetState = SheetDefaults.sheetState()
     // Keyed on the ids, not the list: the caller rebuilds the list on every player
     // state event (volume, position), and that must not reload the configs.
     val memberIds = members.map { it.playerId }
-    var configs by remember(memberIds) { mutableStateOf<Map<String, PlayerConfig?>?>(null) }
-    LaunchedEffect(memberIds) {
+    var configs by remember(memberIds, configRevision) { mutableStateOf<Map<String, PlayerConfig?>?>(null) }
+    LaunchedEffect(memberIds, configRevision) {
         configs = coroutineScope {
             memberIds.map { id -> async { id to onLoadConfig(id) } }.awaitAll().toMap()
         }
@@ -89,6 +93,7 @@ internal fun SyncSpeakersSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            autoSync?.invoke()
             val loaded = configs
             if (loaded == null) {
                 Box(
