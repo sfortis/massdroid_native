@@ -181,9 +181,20 @@ object AudioFocusPolicy {
      * 2026-09-12. The listener's intent at the moment of the loss is the only thing
      * that says whether there is anything to pause, so it is asked here, before the
      * pause clears it.
+     *
+     * The intent alone is not enough, because it can outlive the playback it
+     * describes. A pause sent to the sync group the phone plays in goes to the
+     * group's id, not to the local player, so the intent stayed set; six minutes
+     * later a keyboard click took transient focus and the gain restarted the whole
+     * group (2026-10-01). So the local stream has to be live as well: with no
+     * stream there is nothing audible to pause and nothing to owe.
      */
-    fun onTransientLoss(listenerWantsPlayback: Boolean): TransientLoss =
-        if (listenerWantsPlayback) TransientLoss.PAUSE_AND_OWE else TransientLoss.NOTHING_PLAYING
+    fun onTransientLoss(listenerWantsPlayback: Boolean, localStreamActive: Boolean): TransientLoss =
+        if (listenerWantsPlayback && localStreamActive) {
+            TransientLoss.PAUSE_AND_OWE
+        } else {
+            TransientLoss.NOTHING_PLAYING
+        }
 
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
         newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId

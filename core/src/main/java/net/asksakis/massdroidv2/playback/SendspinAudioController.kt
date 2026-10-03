@@ -1507,7 +1507,10 @@ class SendspinAudioController(
                         // intent, and above the call split so the freeze path is
                         // covered too: a loss while nothing plays must not owe a
                         // resume or freeze an idle output.
-                        val transientLoss = AudioFocusPolicy.onTransientLoss(_userIntent.value)
+                        val transientLoss = AudioFocusPolicy.onTransientLoss(
+                            listenerWantsPlayback = _userIntent.value,
+                            localStreamActive = sendspinManager.streamActive.value,
+                        )
                         if (transientLoss == AudioFocusPolicy.TransientLoss.NOTHING_PLAYING) {
                             Log.i(TAG, "Focus lost while nothing was playing: nothing to pause, no resume owed")
                             clearDuck()

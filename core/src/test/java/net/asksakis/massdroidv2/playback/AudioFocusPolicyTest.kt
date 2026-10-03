@@ -269,15 +269,26 @@ class AudioFocusPolicyTest {
      */
     @Test
     fun `a transient loss while paused owes nothing`() {
-        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = false)
+        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = false, localStreamActive = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.TransientLoss.NOTHING_PLAYING)
     }
 
     /** The interruption case itself must keep working: playing, so pause and owe. */
     @Test
     fun `a transient loss while playing pauses and owes a resume`() {
-        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = true)
+        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = true, localStreamActive = true)
         assertThat(outcome).isEqualTo(AudioFocusPolicy.TransientLoss.PAUSE_AND_OWE)
+    }
+
+    /**
+     * The intent can outlive the stream: a pause sent to the sync group left it set,
+     * and a keyboard click six minutes later restarted the group. With no local
+     * stream the loss must owe nothing, whatever the intent says.
+     */
+    @Test
+    fun `a transient loss with no local stream owes nothing even if the intent is set`() {
+        val outcome = AudioFocusPolicy.onTransientLoss(listenerWantsPlayback = true, localStreamActive = false)
+        assertThat(outcome).isEqualTo(AudioFocusPolicy.TransientLoss.NOTHING_PLAYING)
     }
 
     /** A gain with nothing owed must not start playback of its own accord. */
