@@ -39,6 +39,7 @@ import net.asksakis.massdroidv2.domain.player.userMessage
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.model.RepeatMode
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
@@ -316,7 +317,7 @@ class NowPlayingViewModel @Inject constructor(
     }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), -1)
 
     var cachedSendspinClientId: String? = null; private set
-    var cachedSendspinAudioFormat = "SMART"; private set
+    var cachedSendspinAudioFormat = SendspinAudioFormat.AUTOMATIC.name; private set
     private var cachedSendspinSyncDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
     private var lastLoggedSendspinStatusKey: String? = null

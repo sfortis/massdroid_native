@@ -80,7 +80,7 @@ fun PlayerSettingsDialog(
     initialAutoplayEnabled: Boolean?,
     isSendspinPlayer: Boolean = false,
     isLocalPlayer: Boolean = false,
-    initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.SMART,
+    initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.AUTOMATIC,
     initialSyncDelayMs: Int = 0,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
@@ -455,12 +455,16 @@ fun PlayerSettingsDialog(
                     // Offered wherever the config has it: a universal player carries the
                     // Sendspin format under its protocol entry and is not provider "sendspin".
                     if (formatOptions.isNotEmpty()) {
-                        val smartOption = net.asksakis.massdroidv2.domain.model.FormatOption(
-                            title = "Smart", value = "smart"
-                        )
-                        val allOptions =
-                            if (isLocalPlayer) listOf(smartOption) + formatOptions else formatOptions
-                        val currentValue = selectedFormatValue ?: "automatic"
+                        // "automatic" lets the client decide. This app decides by network, so
+                        // on the phone's own player the option says what it will pick.
+                        val allOptions = if (isLocalPlayer) {
+                            formatOptions.map {
+                                if (it.value == SendspinAudioFormat.SERVER_AUTOMATIC) it.copy(title = "Automatic") else it
+                            }
+                        } else {
+                            formatOptions
+                        }
+                        val currentValue = selectedFormatValue ?: SendspinAudioFormat.SERVER_AUTOMATIC
                         // A dropdown, not chips: the server offers up to seven formats with
                         // long titles, and as chips they filled the height of the dialog.
                         SettingsDropdownCard(
@@ -471,8 +475,8 @@ fun PlayerSettingsDialog(
                                 QueueConfigOption(
                                     value = it.value,
                                     title = it.title,
-                                    description = "FLAC on WiFi, Opus on mobile"
-                                        .takeIf { _ -> it.value == "smart" }
+                                    description = "FLAC on Wi-Fi, Opus on mobile data"
+                                        .takeIf { _ -> isLocalPlayer && it.value == SendspinAudioFormat.SERVER_AUTOMATIC }
                                 )
                             },
                             onSelect = { selectedFormatValue = it }
@@ -904,11 +908,10 @@ fun PlayerSettingsDialog(
                             val newFormat = selectedFormatValue
                             val newFormatKey = formatKey
                             if (newFormatKey != null && newFormat != null) {
-                                val serverValue = if (newFormat == "smart") "automatic" else newFormat
-                                values[newFormatKey] = serverValue
+                                values[newFormatKey] = newFormat
                                 if (isLocalPlayer) {
                                     val localFormat = when {
-                                        newFormat == "smart" -> SendspinAudioFormat.SMART
+                                        newFormat == SendspinAudioFormat.SERVER_AUTOMATIC -> SendspinAudioFormat.AUTOMATIC
                                         newFormat.startsWith("opus") -> SendspinAudioFormat.OPUS
                                         newFormat.startsWith("flac") -> SendspinAudioFormat.FLAC
                                         newFormat.startsWith("pcm") -> SendspinAudioFormat.PCM

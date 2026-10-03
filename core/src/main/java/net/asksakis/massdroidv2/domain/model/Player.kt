@@ -99,39 +99,32 @@ enum class CrossfadeMode(val apiValue: String, val label: String) {
     }
 }
 
-enum class SendspinAudioFormat(val label: String) {
-    SMART("Smart"),
-    OPUS("Opus"),
-    FLAC("FLAC"),
-    PCM("PCM");
+/**
+ * The Sendspin format chosen for this phone's own player. AUTOMATIC leaves the
+ * server on "automatic" and lets the client decide by network (FLAC on Wi-Fi,
+ * Opus on mobile data, see `helloSupportedFormats`); the others are explicit
+ * server overrides.
+ */
+private const val SERVER_FORMAT_AUTOMATIC = "automatic"
 
-    fun toApiValue(isWifi: Boolean): String = when (this) {
-        // Stable Android sync path: local/Wi-Fi playback uses FLAC 48/16.
-        // Higher-rate/24-bit streams add Android decoder and output-conversion
-        // variables while the engine still writes PCM16 to AudioTrack.
-        SMART -> if (isWifi) "flac:48000:16:2" else "opus:48000:16:2"
-        OPUS -> "opus:48000:16:2"
-        FLAC -> "flac:48000:16:2"
-        PCM -> "pcm:48000:16:2"
-    }
-
-    /** Codec name for stream/request-format. */
-    fun toCodec(isWifi: Boolean): String = when (this) {
-        SMART -> if (isWifi) "flac" else "opus"
-        OPUS -> "opus"
-        FLAC -> "flac"
-        PCM -> "pcm"
-    }
-
-    fun toBitDepth(isWifi: Boolean): Int = when (this) {
-        SMART -> 16
-        FLAC -> 16
-        else -> 16
-    }
+enum class SendspinAudioFormat(val label: String, val serverValue: String) {
+    AUTOMATIC("Automatic", SERVER_FORMAT_AUTOMATIC),
+    OPUS("Opus", "opus:48000:16:2"),
+    FLAC("FLAC", "flac:48000:16:2"),
+    PCM("PCM", "pcm:48000:16:2");
 
     companion object {
+        /** The server's `preferred_sendspin_format` value that lets the client decide. */
+        const val SERVER_AUTOMATIC = SERVER_FORMAT_AUTOMATIC
+
+        /**
+         * Stored by releases before Automatic. That "Smart" wrote an explicit FLAC or
+         * Opus override to the server on every network change, which is still there.
+         */
+        const val LEGACY_SMART = "SMART"
+
         fun fromStored(value: String): SendspinAudioFormat =
-            entries.find { it.name.equals(value, ignoreCase = true) } ?: SMART
+            entries.find { it.name.equals(value, ignoreCase = true) } ?: AUTOMATIC
     }
 }
 

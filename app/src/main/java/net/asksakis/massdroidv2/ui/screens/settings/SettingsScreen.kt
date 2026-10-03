@@ -1324,13 +1324,13 @@ private fun OutputQualityCard(viewModel: SettingsViewModel) {
     val formatStr by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
     val current = SendspinAudioFormat.fromStored(formatStr)
     val options = listOf(
-        SendspinAudioFormat.SMART,
+        SendspinAudioFormat.AUTOMATIC,
         SendspinAudioFormat.FLAC,
         SendspinAudioFormat.OPUS,
         SendspinAudioFormat.PCM
     )
     val desc = when (current) {
-        SendspinAudioFormat.SMART -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile."
+        SendspinAudioFormat.AUTOMATIC -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile data."
         SendspinAudioFormat.FLAC -> "Lossless. Highest fidelity, higher bandwidth."
         SendspinAudioFormat.OPUS -> "Lossy and efficient. Ideal on mobile data."
         SendspinAudioFormat.PCM -> "Uncompressed, no decode step. Highest bandwidth."

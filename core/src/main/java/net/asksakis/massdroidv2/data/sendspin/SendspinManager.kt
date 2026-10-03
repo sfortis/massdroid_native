@@ -290,9 +290,11 @@ class SendspinManager(
     private suspend fun handleIncoming(incoming: SendspinIncoming) {
         when (incoming) {
             is SendspinIncoming.AuthOk -> {
-                Log.d(TAG, "Auth OK, sending hello")
+                val formats = helloSupportedFormats(_preferredCodec.value)
+                announcedCodec = formats.first().codec
+                Log.d(TAG, "Auth OK, sending hello formats=${formats.joinToString { it.codec }}")
                 client.updateState(SendspinState.HANDSHAKING)
-                client.sendHello(clientId, clientName)
+                client.sendHello(clientId, clientName, formats)
             }
 
             is SendspinIncoming.AuthError -> {
@@ -659,6 +661,7 @@ class SendspinManager(
 
     fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
         Log.d(TAG, "Requesting format change: $codec ${sampleRate}Hz/${bitDepth}bit ${channels}ch")
+        announcedCodec = codec
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
     }
 
@@ -676,6 +679,8 @@ class SendspinManager(
 
     fun setInSyncGroup(grouped: Boolean) {
         val effectiveGrouped = grouped && !forceSolo
+        groupedForCodec = effectiveGrouped
+        updatePreferredCodec()
         val target: SendspinAudioEngine = if (effectiveGrouped) syncEngine else directEngine
         if (!effectiveGrouped && timeSyncJob != null) {
             // DIRECT (solo) is a pure FIFO with no peer to phase-lock to: it never
@@ -787,6 +792,26 @@ class SendspinManager(
         isCellularTransport = cellular
         _networkMode.value = if (cellular) "Mobile" else "WiFi"
         engine.setCellularTransport(cellular)
+        updatePreferredCodec()
+    }
+
+    @Volatile private var groupedForCodec = false
+
+    private val _preferredCodec = MutableStateFlow(preferredSendspinCodec(inSyncGroup = false, onCellular = false))
+
+    /**
+     * The codec this client wants under the server's "automatic" format, from the
+     * group state and the network (see [preferredSendspinCodec]). The hello is
+     * ordered by it; SendspinCoordinator requests a change while connected.
+     */
+    val preferredCodec: StateFlow<String> = _preferredCodec.asStateFlow()
+
+    /** The codec last put first in a hello or requested; null before the first hello. */
+    @Volatile var announcedCodec: String? = null
+        private set
+
+    private fun updatePreferredCodec() {
+        _preferredCodec.value = preferredSendspinCodec(groupedForCodec, isCellularTransport)
     }
 
     private fun sendCurrentState(syncState: String) {

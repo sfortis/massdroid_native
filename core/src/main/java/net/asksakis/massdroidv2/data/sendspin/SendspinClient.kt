@@ -419,11 +419,12 @@ class SendspinClient(
         return "$base/sendspin"
     }
 
-    fun sendHello(clientId: String, clientName: String) {
+    fun sendHello(clientId: String, clientName: String, supportedFormats: List<AudioFormatSpec>) {
         val hello = SendspinClientHello(
             payload = ClientHelloPayload(
                 clientId = clientId,
-                name = clientName
+                name = clientName,
+                playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
             )
         )
         val msg = json.encodeToString(hello)

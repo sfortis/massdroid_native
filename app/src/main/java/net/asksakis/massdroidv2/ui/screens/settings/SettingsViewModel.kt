@@ -170,11 +170,14 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // Phone-as-speaker output format (stored as the enum name). The controller
-    // applies it on the next (re)connect / network-format-apply, same as the
-    // per-player dialog's setter.
+    // Phone-as-speaker output format (stored as the enum name). SendspinCoordinator
+    // writes a change to this player's server config, same as the per-player dialog.
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "SMART")
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.AUTOMATIC.name,
+        )
 
     fun setSendspinAudioFormat(format: net.asksakis.massdroidv2.domain.model.SendspinAudioFormat) {
         viewModelScope.launch {

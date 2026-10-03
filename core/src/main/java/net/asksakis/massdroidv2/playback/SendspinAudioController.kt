@@ -78,7 +78,6 @@ class SendspinAudioController(
         private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
         private const val GROUP_JOIN_RELOCK_COOLDOWN_MS = 5_000L
         private const val GROUP_SOLO_STARTUP_GRACE_MS = 5_000L
-        private const val GROUPED_SENDSPIN_FORMAT = "flac:48000:16:2"
         // BT-connect auto-play waits for the route to actually settle on BT (no
         // route change across the quiet window) rather than a fixed delay, since
         // the A2DP connect handshake flaps speaker<->bt for a few seconds.
@@ -634,7 +633,6 @@ class SendspinAudioController(
                 if (selfInGroup || childOfOther) {
                     lastObservedInGroup = true
                     sendspinManager.setInSyncGroup(true)
-                    applyGroupedSyncFormat(ssId)
                     Log.d(TAG, "Eager group check: inGroup=true before connect")
                 } else if (self != null) {
                     // Our own player IS in the list -> player data is loaded and
@@ -823,7 +821,6 @@ class SendspinAudioController(
                         val joinedGroup = previousGroupState == false && inGroup
                         lastObservedInGroup = inGroup
                         sendspinManager.setInSyncGroup(inGroup)
-                        if (inGroup) applyGroupedSyncFormat(player.playerId)
                         if (joinedGroup) requestGroupJoinRelock(player)
                     }
                     // Playing-state used to be reconciled from player.state
@@ -1977,57 +1974,6 @@ class SendspinAudioController(
 
     // region Format + connection helpers
 
-    private suspend fun applyPreferredFormatForCurrentNetwork(playerId: String) {
-        try {
-            if (lastObservedInGroup == true) {
-                applyGroupedSyncFormat(playerId)
-                return
-            }
-            val formatName = settingsRepository.sendspinAudioFormat.first()
-            val format = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(formatName)
-            val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
-            val isWifi = cm?.getNetworkCapabilities(cm.activeNetwork)
-                ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ?: false
-            val apiValue = format.toApiValue(isWifi)
-            savePreferredFormatIfNeeded(
-                playerId = playerId,
-                apiValue = apiValue,
-                reason = "$format/${if (isWifi) "WiFi" else "Mobile"}",
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "Format apply failed: ${e.message}")
-        }
-    }
-
-    private suspend fun applyGroupedSyncFormat(playerId: String) {
-        try {
-            savePreferredFormatIfNeeded(
-                playerId = playerId,
-                apiValue = GROUPED_SENDSPIN_FORMAT,
-                reason = "grouped sync",
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "Grouped format apply failed: ${e.message}")
-        }
-    }
-
-    private suspend fun savePreferredFormatIfNeeded(
-        playerId: String,
-        apiValue: String,
-        reason: String,
-    ) {
-        // Authoritative check against the actual server config only. No
-        // in-memory cache: the server can clear an "incompatible" override on
-        // its own, and a stale cache would then never re-apply the format.
-        val current = playerRepository.getPlayerConfig(playerId)?.sendspinFormat
-        if (current == apiValue) {
-            Log.d(TAG, "Sendspin format already $apiValue ($reason), skipping save")
-            return
-        }
-        playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
-        Log.d(TAG, "Applied Sendspin format $apiValue ($reason, was=${current ?: "unknown"})")
-    }
-
     // region Sendspin connection helpers
 
     /**
@@ -2076,7 +2022,6 @@ class SendspinAudioController(
         val clientId = sendspinPlayerId ?: return false
 
         val job = scope.async {
-            applyPreferredFormatForCurrentNetwork(clientId)
             val latestState = sendspinManager.connectionState.value
             if (latestState == SendspinState.SYNCING || latestState == SendspinState.STREAMING) {
                 return@async true

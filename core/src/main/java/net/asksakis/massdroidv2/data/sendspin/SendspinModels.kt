@@ -71,22 +71,38 @@ data class AudioFormatSpec(
     @SerialName("bit_depth") val bitDepth: Int = 16
 )
 
-private val defaultFormats = listOf(
-    // FLAC first: it is the canonical Android codec and, crucially, the order
-    // here is the server's fallback when a client has no (or a cleared)
-    // `preferred_sendspin_format` override. Listing opus first made the server
-    // fall back to opus whenever the override was missing/cleared (e.g. after
-    // the server rejected a stale 24-bit override as incompatible), which broke
-    // grouped sync. Keeping everything at 48 kHz / 16-bit also removes any
-    // resample/convert variable from the timing path (AudioTrack is PCM16).
-    AudioFormatSpec(codec = "flac", sampleRate = 48000, bitDepth = 16, channels = 2),
-    AudioFormatSpec(codec = "opus", sampleRate = 48000, bitDepth = 16, channels = 2),
-    AudioFormatSpec(codec = "pcm", sampleRate = 48000, bitDepth = 16, channels = 2)
-)
+private val FLAC_48_16 = AudioFormatSpec(codec = "flac", sampleRate = 48000, bitDepth = 16, channels = 2)
+private val OPUS_48_16 = AudioFormatSpec(codec = "opus", sampleRate = 48000, bitDepth = 16, channels = 2)
+private val PCM_48_16 = AudioFormatSpec(codec = "pcm", sampleRate = 48000, bitDepth = 16, channels = 2)
+
+/**
+ * The codec this client wants while the player's `preferred_sendspin_format` is
+ * "automatic" (MA's "let client decide"). Opus only for a solo player on mobile
+ * data, where its much lower bitrate rides out a weak link without underruns.
+ * FLAC otherwise, and always in a sync group: the server encodes Opus about six
+ * times slower than FLAC, on its event loop, and on a loaded host that work
+ * stalled the group timeline after every seek (measured 2026-10-02).
+ */
+fun preferredSendspinCodec(inSyncGroup: Boolean, onCellular: Boolean): String =
+    if (onCellular && !inSyncGroup) OPUS_48_16.codec else FLAC_48_16.codec
+
+/**
+ * The formats announced in `client/hello`, [preferredCodec] first. With
+ * "automatic" the server streams the first entry; an explicit server format
+ * overrides the order and is never touched by the client. A later change of
+ * the wanted codec goes out as `stream/request-format`.
+ *
+ * Everything stays at 48 kHz / 16 bit: the native output is PCM16, and a
+ * single rate keeps resampling out of the timing path.
+ */
+fun helloSupportedFormats(preferredCodec: String): List<AudioFormatSpec> {
+    val all = listOf(FLAC_48_16, OPUS_48_16, PCM_48_16)
+    return all.filter { it.codec == preferredCodec } + all.filter { it.codec != preferredCodec }
+}
 
 @Serializable
 data class PlayerV1Support(
-    @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec> = defaultFormats,
+    @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec> = helloSupportedFormats(FLAC_48_16.codec),
     // Bytes of compressed audio the server may stream ahead (per Sendspin spec).
     // Sized for ~30 s of FLAC (Deezer 44.1k/16 ≈ 110 KB/s -> ~36 s; 96k/24 -> ~13 s)
     // so a cellular/5G throughput dip is ridden out of the buffer instead of

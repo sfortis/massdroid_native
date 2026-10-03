@@ -30,7 +30,7 @@ class TvSettingsViewModel @Inject constructor(
     /** Audio quality/codec. Applied live by the core coordinator's format observer. */
     val audioFormat: StateFlow<SendspinAudioFormat> = settingsRepository.sendspinAudioFormat
         .map { SendspinAudioFormat.fromStored(it) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SendspinAudioFormat.SMART)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SendspinAudioFormat.AUTOMATIC)
 
     fun setSyncDelay(ms: Int) {
         viewModelScope.launch {

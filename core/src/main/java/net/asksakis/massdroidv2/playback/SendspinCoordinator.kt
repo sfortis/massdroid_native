@@ -16,12 +16,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -72,7 +75,6 @@ class SendspinCoordinator(
 ) {
     companion object {
         private const val TAG = "SendspinCoord"
-        private const val GROUPED_SENDSPIN_FORMAT = "flac:48000:16:2"
         // Hidden but long-stable AudioManager broadcast: sent only on a volume change
         // (carries stream type + new/old value), unlike a Settings.System observer
         // which also wakes on unrelated changes. String literals because the
@@ -115,6 +117,7 @@ class SendspinCoordinator(
         observeConnectionState()
         observeStreamLifecycle()
         observeAudioFormatPreference()
+        observeSendspinFormatChoice()
         observeShortcutActions()
         observePhoneVolume()
         registerBtAudioDeviceCallback()
@@ -242,6 +245,9 @@ class SendspinCoordinator(
     private fun observeAudioFormatPreference() {
         val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
         val wifiState = MutableStateFlow(isOnWifi(connectivityManager))
+        // Seed the transport before the first Sendspin hello, which orders its
+        // formats by it; the callback below only reports later changes in time.
+        sendspinManager.setCellularHint(!wifiState.value)
         // Tracks the initial transport — the first onCapabilitiesChanged is the
         // baseline (already-active network at registration), not a transition,
         // so we skip handover handling for it. Subsequent toggles trigger the
@@ -279,92 +285,85 @@ class SendspinCoordinator(
         }
         networkCallback = callback
         connectivityManager.registerDefaultNetworkCallback(callback)
+    }
 
+    /**
+     * Writes the listener's format choice from this app (Settings, the car and TV
+     * screens) to this player's server config, and moves a legacy "Smart" over to
+     * "automatic" once. Only a change made here is written: a format picked on the
+     * server, in MA's own UI, is never overwritten on reconnect. With "automatic" the
+     * server takes the first format of our hello, ordered by the wanted codec
+     * (`preferredSendspinCodec`: FLAC in a group or on Wi-Fi, Opus solo on mobile
+     * data). When that changes on a live connection (a network switch the socket
+     * survives, as over a VPN, or a group join or leave), the change is requested
+     * with `stream/request-format`, and only while the server is on "automatic".
+     */
+    private fun observeSendspinFormatChoice() {
         scope.launch {
-            var lastFormat = settingsRepository.sendspinAudioFormat.first()
-            settingsRepository.sendspinAudioFormat
-                .distinctUntilChanged()
-                .collect { formatName ->
-                    if (formatName == lastFormat) {
-                        lastFormat = formatName
-                        return@collect
-                    }
-                    lastFormat = formatName
-                    val sendspinPlayerId = settingsRepository.sendspinClientId.first() ?: return@collect
-                    if (wsClient.connectionState.value !is ConnectionState.Connected) return@collect
-                    val format = SendspinAudioFormat.fromStored(formatName)
-                    val apiValue = if (isSendspinInGroup(sendspinPlayerId)) {
-                        GROUPED_SENDSPIN_FORMAT
-                    } else {
-                        format.toApiValue(wifiState.value)
-                    }
-                    val netType = if (wifiState.value) "WiFi" else "Mobile"
-                    try {
-                        savePreferredFormatIfNeeded(
-                            playerId = sendspinPlayerId,
-                            apiValue = apiValue,
-                            reason = "preference $format/$netType",
-                        )
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to update audio format: ${e.message}")
-                    }
+            wsClient.connectionState.first { it is ConnectionState.Connected }
+            if (settingsRepository.sendspinAudioFormat.first() == SendspinAudioFormat.LEGACY_SMART) {
+                if (writeSendspinFormat(SendspinAudioFormat.AUTOMATIC, reason = "legacy Smart")) {
+                    settingsRepository.setSendspinAudioFormat(SendspinAudioFormat.AUTOMATIC.name)
                 }
-        }
-
-        scope.launch {
-            var lastWifi: Boolean? = null
-            wifiState.collect { isWifi ->
-                val netType = if (isWifi) "WiFi" else "Mobile"
-                val format = SendspinAudioFormat.fromStored(settingsRepository.sendspinAudioFormat.first())
-                if (lastWifi != null && lastWifi != isWifi && format == SendspinAudioFormat.SMART) {
-                    val sendspinPlayerId = settingsRepository.sendspinClientId.first()
-                    if (sendspinPlayerId != null && wsClient.connectionState.value is ConnectionState.Connected) {
-                        val apiValue = if (isSendspinInGroup(sendspinPlayerId)) {
-                            GROUPED_SENDSPIN_FORMAT
-                        } else {
-                            format.toApiValue(isWifi)
-                        }
-                        try {
-                            savePreferredFormatIfNeeded(
-                                playerId = sendspinPlayerId,
-                                apiValue = apiValue,
-                                reason = "network $netType",
-                            )
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to update network format: ${e.message}")
-                        }
-                    }
-                } else {
-                    Log.d(TAG, "Network: $netType (format $format)")
-                }
-                lastWifi = isWifi
             }
         }
+        scope.launch {
+            settingsRepository.sendspinAudioFormat
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { stored ->
+                    if (wsClient.connectionState.value !is ConnectionState.Connected) return@collect
+                    val format = SendspinAudioFormat.fromStored(stored)
+                    if (writeSendspinFormat(format, reason = "choice") && format == SendspinAudioFormat.AUTOMATIC) {
+                        // The server now takes the codec from our last hello, which
+                        // may predate a network or group change since.
+                        requestPreferredCodecIfAutomatic(reason = "automatic chosen")
+                    }
+                }
+        }
+        scope.launch {
+            // Also on each Sendspin state change: a change that lands between the hello
+            // and SYNCING would otherwise wait for the next network or group change.
+            combine(sendspinManager.preferredCodec, sendspinManager.connectionState) { codec, _ -> codec }
+                .collect { requestPreferredCodecIfAutomatic(reason = "network or group") }
+        }
     }
 
-    private fun isSendspinInGroup(sendspinPlayerId: String): Boolean {
-        val players = playerRepository.players.value
-        val self = players.find { it.playerId == sendspinPlayerId }
-        val selfInGroup = self?.activeGroup != null || self?.groupChilds?.isNotEmpty() == true
-        val childOfOther = players.any { it.playerId != sendspinPlayerId && sendspinPlayerId in it.groupChilds }
-        return selfInGroup || childOfOther
-    }
-
-    private suspend fun savePreferredFormatIfNeeded(
-        playerId: String,
-        apiValue: String,
-        reason: String,
-    ) {
-        // Authoritative check against the actual server config only. No
-        // in-memory cache: the server can clear an "incompatible" override on
-        // its own, and a stale cache would then never re-apply the format.
-        val current = playerRepository.getPlayerConfig(playerId)?.sendspinFormat
-        if (current == apiValue) {
-            Log.d(TAG, "Sendspin format already $apiValue ($reason), skipping save")
+    private suspend fun requestPreferredCodecIfAutomatic(reason: String) {
+        val wanted = sendspinManager.preferredCodec.value
+        val announced = sendspinManager.announcedCodec ?: return // no hello yet: it will carry it
+        if (wanted == announced) return
+        if (wsClient.connectionState.value !is ConnectionState.Connected) return
+        // Only past the hello: before it the hello carries the order, and on a closed
+        // socket the request would go nowhere while being recorded as sent.
+        val sendspinState = sendspinManager.connectionState.value
+        if (sendspinState != SendspinState.SYNCING && sendspinState != SendspinState.STREAMING) return
+        val playerId = settingsRepository.sendspinClientId.first() ?: return
+        val serverFormat = try {
+            playerRepository.getPlayerConfig(playerId)?.sendspinFormat
+        } catch (e: Exception) {
+            Log.w(TAG, "Sendspin format read failed ($reason): ${e.message}")
             return
         }
-        playerRepository.savePlayerConfig(playerId, mapOf("preferred_sendspin_format" to apiValue))
-        Log.d(TAG, "Applied Sendspin format $apiValue ($reason, was=${current ?: "unknown"})")
+        if (serverFormat != SendspinAudioFormat.SERVER_AUTOMATIC) return // an explicit choice wins
+        Log.d(TAG, "Automatic: requesting $wanted ($reason, was $announced)")
+        sendspinManager.requestFormat(wanted)
+    }
+
+    /** Returns whether the server now holds [format]. */
+    private suspend fun writeSendspinFormat(format: SendspinAudioFormat, reason: String): Boolean {
+        val playerId = settingsRepository.sendspinClientId.first() ?: return false
+        return try {
+            val config = playerRepository.getPlayerConfig(playerId) ?: return false
+            val key = config.sendspinFormatKey ?: return false
+            if (config.sendspinFormat == format.serverValue) return true
+            playerRepository.savePlayerConfig(playerId, mapOf(key to format.serverValue))
+            Log.d(TAG, "Sendspin format ${format.serverValue} ($reason, was=${config.sendspinFormat})")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Sendspin format write failed ($reason): ${e.message}")
+            false
+        }
     }
 
     private fun observeShortcutActions() {

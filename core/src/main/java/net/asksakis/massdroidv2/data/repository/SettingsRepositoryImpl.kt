@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
+import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.model.SortOption
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.MapSerializer
@@ -348,7 +349,7 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     override val sendspinAudioFormat: Flow<String> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_AUDIO_FORMAT] ?: "SMART"
+        prefs[KEY_SENDSPIN_AUDIO_FORMAT] ?: SendspinAudioFormat.AUTOMATIC.name
     }
 
     override suspend fun setSendspinAudioFormat(format: String) {

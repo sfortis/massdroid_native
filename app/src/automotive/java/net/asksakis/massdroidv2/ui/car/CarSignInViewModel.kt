@@ -62,7 +62,7 @@ class CarSignInViewModel @Inject constructor(
     /** Sendspin output format (Smart/Opus/FLAC/PCM), app-level. */
     val audioFormat: StateFlow<SendspinAudioFormat> = settingsRepository.sendspinAudioFormat
         .map { SendspinAudioFormat.fromStored(it) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, SendspinAudioFormat.SMART)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SendspinAudioFormat.AUTOMATIC)
 
     /** Output dynamic-range compression level 0..3 (Off/Soft/Medium/Hard), app-level. */
     val compressorLevel: StateFlow<Int> = settingsRepository.sendspinCompressorLevel
