@@ -729,12 +729,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // it so the preserved buffer is held silent until the focus regain
         // unfreeze, instead of playing out into the still-preempted route.
         if (outputFrozen) nativeOutput.setFrozen(true)
-        // Oboe getTimestamp/calculateLatency only report the HAL buffer (~tens
-        // of ms), missing the DAC/analog/speaker path. The hidden
-        // AudioManager.getOutputLatency reports the FULL output latency (what
-        // the browser/OS uses), so we can COMPUTE the full compensation instead
-        // of needing a manual sync nudge. Re-queried on every (re)configure /
-        // route reopen so it tracks the active output.
+        // Oboe getTimestamp/calculateLatency only report the HAL buffer. The
+        // hidden AudioManager.getOutputLatency reports the primary output's
+        // latency, which is used for the Bluetooth gap only (see
+        // unreportedLatencyUs). Re-queried on every (re)configure / route
+        // reopen so it tracks the active output.
         val halMs = queryHalOutputLatencyMs()
         halOutputLatencyUs = if (halMs > 0) halMs * 1000L else 0L
         Log.d(TAG, "HAL output latency=${halMs}ms (getTimestamp sees ~${measuredOutputLatencyUs / 1000}ms)")
@@ -1236,6 +1235,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         if (length <= 0 || generation != playbackGeneration || paused) return
         if (chunkGeneration != configureGeneration) return
         val plan = timingPlan(serverTimestampUs)
+        if (isSync && playbackStarted && isLateOnArrival(plan, length)) return
 
         if (activeBitDepth == 24 && activeCodec == "pcm") {
             val slice = if (offset == 0 && length == pcm.size) pcm else pcm.copyOfRange(offset, offset + length)
@@ -1273,6 +1273,30 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         }
     }
 
+    @Volatile private var lateDroppedChunks = 0L
+    @Volatile private var lastLateDropLogMs = 0L
+
+    /**
+     * Whether a decoded chunk ends before the output could play its first sample.
+     * The spec has players drop late chunks rather than play them behind the
+     * timeline, as sendspin-js and the official MA app do. It only happens while
+     * the server delivers late (a production stall after a seek); the ring
+     * normally holds seconds of audio ahead of the DAC.
+     */
+    private fun isLateOnArrival(plan: TimingPlan, lengthBytes: Int): Boolean {
+        val frames = lengthBytes / (activeChannels * 2).coerceAtLeast(1)
+        val endUs = plan.presentationUs + frames * 1_000_000L / activeSampleRate.coerceAtLeast(1)
+        val outputUs = nowUs() + plan.outputLatencyUs
+        if (endUs >= outputUs) return false
+        lateDroppedChunks++
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastLateDropLogMs >= 1_000L) {
+            lastLateDropLogMs = nowMs
+            Log.d(TAG, "Timing/late-drop chunks=$lateDroppedChunks lateBy=${(outputUs - endUs) / 1000}ms")
+        }
+        return true
+    }
+
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
         // Output (HAL) latency is handled natively; this value is only used by
         // the DIRECT anchor (to start ~now + latency) and for logging.
@@ -1286,17 +1310,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // (lead < 0), making the native anchor chase a moving/past target. Solo is
         // pure FIFO: present = local anchor + headroom (+ the client UX nudge).
         val staticDelayUs = if (isSync) routeAcousticExtraUs.coerceAtLeast(0L) else 0L
-        // The native dac0 alignment compensates only the HAL latency that
-        // getTimestamp reports (outputLatencyUs). The real output path is longer
-        // (DAC/analog); AudioManager.getOutputLatency gives the full value. Shift
-        // playback earlier by that unreported gap so our ACOUSTIC output lands on
-        // the group timeline (serverTs + headroom) — matching official clients
-        // without a manual nudge.
-        val unreportedLatencyUs = if (isSync) {
-            (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
-        } else {
-            0L
-        }
+        val unreportedLatencyUs = unreportedLatencyUs(outputLatencyUs)
         // Intended presentation time: timeline + headroom, shifted earlier by the
         // external acoustic/BT delay, the unreported HAL gap, and the UX nudge.
         val presentationUs = local.localOutputUs +
@@ -1306,6 +1320,24 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             syncDelayMs.toLong() * 1000L
         return TimingPlan(local.localOutputUs, staticDelayUs, outputLatencyUs, local.headroomUs, presentationUs)
     }
+
+    /**
+     * Output latency beyond what the native alignment already covers
+     * (calculateLatencyMillis), subtracted from the play time in SYNC.
+     *
+     * On Bluetooth this is the gap up to AudioManager.getOutputLatency, because
+     * the A2DP path is longer than Oboe reports. It is not applied to the other
+     * routes: getOutputLatency describes the primary mixer output rather than the
+     * LowLatency stream we play on, and on the S25 speaker the sync probe found
+     * it about 95 ms too long (2026-10-02), so subtracting it played the phone
+     * early. The Bluetooth gap has not been measured yet.
+     */
+    private fun unreportedLatencyUs(outputLatencyUs: Long): Long =
+        if (isSync && isBluetoothSink(routedDeviceType)) {
+            (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
 
     private fun maybeSampleNativeSync() {
         if (!isSync) return

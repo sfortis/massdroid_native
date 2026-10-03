@@ -33,10 +33,14 @@ constexpr int64_t STEADY_DEADZONE_US = 1000;
 constexpr int64_t SNAP_US = 50000;
 
 // Between the deadzone and the snap threshold, converge by RESAMPLING (a small
-// playback-rate change with linear interpolation, sendspin-js style) — smooth
-// and click-free. Cap 3% (~30 ms/s); reached at the snap threshold.
-constexpr double MAX_RATE_DEV = 0.03;
-constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(SNAP_US);
+// playback-rate change with linear interpolation, sendspin-js style), smooth
+// and click-free. The Sendspin spec caps steady-state speed deviation at
+// +-0.5 % (sliding 150 ms average), the same as sendspin-js's firm rate; the
+// rate is proportional to the drift and reaches the cap at RATE_FULL_US, so a
+// residual decays with a time constant of about 4 s. Larger errors snap.
+constexpr double MAX_RATE_DEV = 0.005;
+constexpr int64_t RATE_FULL_US = 20000;
+constexpr double RATE_K = MAX_RATE_DEV / static_cast<double>(RATE_FULL_US);
 
 // A raw drift sample this far from the smoothed value is treated as a
 // getTimestamp outlier (bad DAC timestamp): it barely moves the estimate and
