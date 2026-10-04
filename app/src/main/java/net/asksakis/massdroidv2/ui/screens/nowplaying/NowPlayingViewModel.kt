@@ -278,8 +278,6 @@ class NowPlayingViewModel @Inject constructor(
     /** Emitted after a dislike so the screen can offer to take it back. */
     private val _dislikeUndo = MutableSharedFlow<DislikeUndo>(extraBufferCapacity = 1)
     val dislikeUndo: SharedFlow<DislikeUndo> = _dislikeUndo.asSharedFlow()
-    private val _sendspinStatus = MutableStateFlow<SendspinStatusUi?>(null)
-    val sendspinStatus: StateFlow<SendspinStatusUi?> = _sendspinStatus.asStateFlow()
     /**
      * True when the currently selected player **is** our local Sendspin
      * client. This used to be `status != null`, which evaluated to true
@@ -321,6 +319,72 @@ class NowPlayingViewModel @Inject constructor(
     private var cachedSendspinSyncDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
     private var lastLoggedSendspinStatusKey: String? = null
+
+    /**
+     * Sendspin status for the streaming sheet: the state flows plus a 1 Hz ticker, so that
+     * the dynamic metrics (buffer, latency, clock error, drift) refresh while none of the
+     * state sources change. Without the ticker the buffer reading froze at whatever it was
+     * at the last transition, for example a drained buffer after a Wi-Fi to mobile handover.
+     *
+     * The ticker runs only while the screen collects. It used to run in the init block for
+     * the life of the ViewModel, which is the life of the activity, so it woke every second
+     * all night with the screen off and read about twenty native getters each time.
+     * Declared below the cached fields it reads.
+     */
+    val sendspinStatus: StateFlow<SendspinStatusUi?> = combine(
+        sendspinManager.connectionState,
+        sendspinManager.syncState,
+        sendspinManager.streamCodec,
+        sendspinManager.networkMode,
+        sendspinClientId,
+        flow {
+            while (true) {
+                emit(Unit)
+                delay(1_000)
+            }
+        },
+        sendspinManager.streamFormat,
+    ) { values: Array<*> ->
+        val conn = values[0] as SendspinState
+        val sync = values[1] as SyncState
+        val codec = values[2] as String?
+        val netMode = values[3] as String
+        val clientId = values[4] as String?
+        if (clientId == null) {
+            lastSendspinStatusLogAtMs = 0L
+            lastLoggedSendspinStatusKey = null
+            return@combine null
+        }
+        val fmt = values[6] as net.asksakis.massdroidv2.data.sendspin.SendspinManager.StreamFormatSnapshot?
+        SendspinStatusUi(
+            connectionState = conn,
+            syncState = sync,
+            codec = codec,
+            configuredFormat = cachedSendspinAudioFormat,
+            networkMode = netMode,
+            activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
+            bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
+            syncDelayMs = cachedSendspinSyncDelayMs,
+            outputLatencyMs = sendspinManager.outputLatencyMs(),
+            acousticCorrectionMs = sendspinManager.acousticExtraMs(),
+            absoluteSyncMs = sendspinManager.absoluteSyncMs(),
+            syncMuted = sendspinManager.isSyncMuted(),
+            isBtRoute = acoustic.isBtRoute(),
+            clockSamples = sendspinManager.clockSampleCount(),
+            clockErrorUs = sendspinManager.clockErrorUs(),
+            clockRttUs = sendspinManager.clockRttUs(),
+            clockDriftPpm = sendspinManager.clockDriftPpm(),
+            resyncs = sendspinManager.resyncCount(),
+            correctionMode = sendspinManager.correctionModeName(),
+            outputSampleRate = fmt?.sampleRate ?: 0,
+            outputBitDepth = fmt?.bitDepth ?: 0,
+            ringBufferedMs = sendspinManager.ringBufferedMs(),
+            underrunFrames = sendspinManager.underrunFrames(),
+            resampleRate = sendspinManager.resampleRate(),
+        ).also { maybeLogSendspinUiStatus(it) }
+    }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     private val _cachedTrackDisplay = MutableStateFlow<CachedTrackDisplay?>(null)
 
     /**
@@ -554,71 +618,6 @@ class NowPlayingViewModel @Inject constructor(
         }
         // Don't clear cache on disconnect/error: keep showing last track info
         // until a new track replaces it (via queueState or serverMetadata collectors)
-        // Flow-based sendspin status: combines state flows with a 1Hz ticker so that
-        // dynamic metrics (buffer, latency, clock error, DAC drift) refresh in the UI
-        // while none of the state sources are changing. Without the ticker, the
-        // combine only emits on connection/sync/codec/network/id transitions, and
-        // the buffer reading stays frozen at whatever it was at the last transition
-        // — visible after WiFi↔mobile handover where the snapshot caught a drained
-        // buffer that has since refilled. distinctUntilChanged downstream still
-        // deduplicates ticks where nothing actually changed.
-        val sendspinUiTicker = flow {
-            while (true) {
-                emit(Unit)
-                delay(1_000)
-            }
-        }
-        viewModelScope.launch {
-            combine(
-                sendspinManager.connectionState,
-                sendspinManager.syncState,
-                sendspinManager.streamCodec,
-                sendspinManager.networkMode,
-                sendspinClientId,
-                sendspinUiTicker,
-                sendspinManager.streamFormat,
-            ) { values: Array<*> ->
-                val conn = values[0] as SendspinState
-                val sync = values[1] as SyncState
-                val codec = values[2] as String?
-                val netMode = values[3] as String
-                val clientId = values[4] as String?
-                if (clientId == null) {
-                    lastSendspinStatusLogAtMs = 0L
-                    lastLoggedSendspinStatusKey = null
-                    return@combine null
-                }
-                val fmt = values[6] as net.asksakis.massdroidv2.data.sendspin.SendspinManager.StreamFormatSnapshot?
-                SendspinStatusUi(
-                    connectionState = conn,
-                    syncState = sync,
-                    codec = codec,
-                    configuredFormat = cachedSendspinAudioFormat,
-                    networkMode = netMode,
-                    activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
-                    bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
-                    syncDelayMs = cachedSendspinSyncDelayMs,
-                    outputLatencyMs = sendspinManager.outputLatencyMs(),
-                    acousticCorrectionMs = sendspinManager.acousticExtraMs(),
-                    absoluteSyncMs = sendspinManager.absoluteSyncMs(),
-                    syncMuted = sendspinManager.isSyncMuted(),
-                    isBtRoute = acoustic.isBtRoute(),
-                    clockSamples = sendspinManager.clockSampleCount(),
-                    clockErrorUs = sendspinManager.clockErrorUs(),
-                    clockRttUs = sendspinManager.clockRttUs(),
-                    clockDriftPpm = sendspinManager.clockDriftPpm(),
-                    resyncs = sendspinManager.resyncCount(),
-                    correctionMode = sendspinManager.correctionModeName(),
-                    outputSampleRate = fmt?.sampleRate ?: 0,
-                    outputBitDepth = fmt?.bitDepth ?: 0,
-                    ringBufferedMs = sendspinManager.ringBufferedMs(),
-                    underrunFrames = sendspinManager.underrunFrames(),
-                    resampleRate = sendspinManager.resampleRate(),
-                ).also { maybeLogSendspinUiStatus(it) }
-            }
-                .distinctUntilChanged()
-                .collect { _sendspinStatus.value = it }
-        }
     }
 
     fun playPause() {
