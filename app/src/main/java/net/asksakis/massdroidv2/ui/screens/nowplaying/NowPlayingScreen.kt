@@ -538,12 +538,14 @@ fun NowPlayingScreen(
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinClientId)
             val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinAudioFormat)
             val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
+            val dynamicSources by viewModel.queueDynamicSources.collectAsStateWithLifecycle()
             val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
             val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle()
 
             net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                 player = currentPlayer,
                 initialAutoplayEnabled = autoplayStates[currentPlayer.playerId] ?: false,
+                dynamicSource = dynamicSources[currentPlayer.playerId],
                 isSendspinPlayer = currentPlayer.provider == "sendspin",
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),

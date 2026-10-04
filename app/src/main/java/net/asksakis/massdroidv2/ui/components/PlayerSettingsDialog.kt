@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.ui.components
 
 
+import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -88,6 +89,8 @@ fun PlayerSettingsDialog(
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onAutoplayEnabledChanged: ((enabled: Boolean) -> Unit)?,
+    /** Set while the queue is dynamic: the server refills it, so Autoplay is shown locked. */
+    dynamicSource: DynamicQueueSource? = null,
     /**
      * Whether crossfade is on for this player's queue, or null on a server that keeps
      * crossfade in the player config (before MA 2.10), where the mode carries the off.
@@ -582,7 +585,16 @@ fun PlayerSettingsDialog(
                                 )
                             }
 
-                            if (initialAutoplayEnabled != null) {
+                            if (initialAutoplayEnabled != null && dynamicSource != null) {
+                                SettingsSwitchCard(
+                                    title = "Autoplay",
+                                    icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                    checked = autoplayOn,
+                                    onCheckedChange = {},
+                                    description = autoplayRefillText(dynamicSource.name),
+                                    enabled = false
+                                )
+                            } else if (initialAutoplayEnabled != null) {
                                 val autoplaySwitch: @Composable () -> Unit = {
                                     Switch(
                                         checked = autoplayOn,

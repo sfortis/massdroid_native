@@ -349,14 +349,15 @@ fun SettingsSwitchCard(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    description: String? = null
+    description: String? = null,
+    enabled: Boolean = true
 ) {
     SettingCard(
         title = title,
         icon = icon,
         modifier = modifier,
         description = description,
-        trailing = { Switch(checked = checked, onCheckedChange = onCheckedChange) }
+        trailing = { Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled) }
     )
 }
 

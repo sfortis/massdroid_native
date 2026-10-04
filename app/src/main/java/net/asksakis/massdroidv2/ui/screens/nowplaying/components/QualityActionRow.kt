@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
@@ -22,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
@@ -133,6 +135,12 @@ internal fun QualityActionRow(
                         )
                     }
                 }
+                AutoplayButton(
+                    viewModel = viewModel,
+                    buttonSize = actionButtonSize,
+                    iconSize = actionIconSize,
+                    enabled = enabled
+                )
             }
             AudioQualityBadges(
                 audioFormat = audioFormat,
@@ -194,5 +202,50 @@ internal fun QualityActionRow(
                 }
             }
         }
+    }
+}
+
+/**
+ * Autoplay on or off for the playing queue, in the primary colour while on and dimmed
+ * while off. A
+ * dynamic queue refills itself whatever Autoplay says, so there the button is drawn
+ * half-tinted and a tap explains why instead of toggling.
+ */
+@Composable
+private fun AutoplayButton(
+    viewModel: NowPlayingViewModel,
+    buttonSize: Dp,
+    iconSize: Dp,
+    enabled: Boolean
+) {
+    val haptic = LocalHapticFeedback.current
+    val state by viewModel.autoplayButton.collectAsStateWithLifecycle()
+    val current = state
+    val tint = when {
+        current?.dynamicSource != null -> MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+        current?.enabled == true -> MaterialTheme.colorScheme.primary
+        // Dimmed well below the neighbouring icons: on the grey palette the primary colour
+        // is close to onSurfaceVariant, so a plain tint did not tell on from off.
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+    }
+    val description = when {
+        current?.dynamicSource != null -> "Autoplay, this queue refills itself"
+        current?.enabled == true -> "Autoplay on"
+        else -> "Autoplay off"
+    }
+    MdIconButton(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            viewModel.toggleAutoplay()
+        },
+        modifier = Modifier.size(buttonSize),
+        enabled = enabled && current != null
+    ) {
+        Icon(
+            Icons.Default.AllInclusive,
+            contentDescription = description,
+            modifier = Modifier.size(iconSize),
+            tint = tint
+        )
     }
 }

@@ -20,6 +20,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * What feeds a dynamic queue. [name] is the source's title, null when the server did not
+ * name one.
+ */
+data class DynamicQueueSource(val name: String?)
+
+/**
  * Tracks the on/off toggles of every queue, not just the currently selected player's.
  * PlayerRepository only owns the selected player's full QueueState, so settings dialogs
  * for other players would read a stale flag without this cache.
@@ -45,6 +51,14 @@ class QueueTogglesCache @Inject constructor(
     private val _crossfade = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val crossfadeStates: StateFlow<Map<String, Boolean>> = _crossfade.asStateFlow()
 
+    /**
+     * The dynamic queues and what feeds them; a queue that is not dynamic has no entry.
+     * The server refills such a queue from its source whether Autoplay is on or not, so
+     * the Autoplay switch has nothing to do there.
+     */
+    private val _dynamicSources = MutableStateFlow<Map<String, DynamicQueueSource>>(emptyMap())
+    val dynamicSources: StateFlow<Map<String, DynamicQueueSource>> = _dynamicSources.asStateFlow()
+
     init {
         scope.launch {
             wsClient.events.collect { event ->
@@ -53,6 +67,9 @@ class QueueTogglesCache @Inject constructor(
                     runCatching { json.decodeFromJsonElement<ServerQueue>(it) }.getOrNull()
                 } ?: return@collect
                 _autoplay.update { it + (queue.queueId to queue.autoplayEnabled) }
+                _dynamicSources.update { sources ->
+                    queue.dynamicSource()?.let { sources + (queue.queueId to it) } ?: (sources - queue.queueId)
+                }
                 // Recorded only when the server actually said: the field is absent before
                 // MA 2.10, and a default of false would make the map claim "crossfade is
                 // off" for every queue on every older server.
@@ -68,6 +85,7 @@ class QueueTogglesCache @Inject constructor(
                     is ConnectionState.Disconnected -> {
                         _autoplay.value = emptyMap()
                         _crossfade.value = emptyMap()
+                        _dynamicSources.value = emptyMap()
                     }
                     else -> {}
                 }
@@ -95,10 +113,21 @@ class QueueTogglesCache @Inject constructor(
             }.getOrNull() ?: return
             _autoplay.value = queues.associate { it.queueId to it.autoplayEnabled }
             _crossfade.value = queues.mapNotNull { q -> q.crossfadeEnabled?.let { q.queueId to it } }.toMap()
+            _dynamicSources.value = queues.mapNotNull { q -> q.dynamicSource()?.let { q.queueId to it } }.toMap()
             Log.d(TAG, "Seeded queue toggles from ${queues.size} queues")
         } catch (e: Exception) {
             Log.w(TAG, "refreshAll failed: ${e.message}")
         }
+    }
+
+    // Only a playlist or a radio can feed a queue on demand, and the server does not mark
+    // which of the sources does (`is_dynamic` is absent on them). An album or a plain
+    // playlist added to a dynamic queue becomes a source too, so the feed is named only
+    // while it is the one playlist or radio among them.
+    private fun ServerQueue.dynamicSource(): DynamicQueueSource? {
+        if (!isDynamic) return null
+        val feed = sources.filter { it.mediaType == "playlist" || it.mediaType == "radio" }.singleOrNull()
+        return DynamicQueueSource(feed?.name?.takeIf { it.isNotBlank() })
     }
 
     companion object {

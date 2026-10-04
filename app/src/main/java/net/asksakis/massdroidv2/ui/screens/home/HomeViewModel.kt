@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.*
 import net.asksakis.massdroidv2.data.sendspin.OutputFineTune
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.needsConnect
@@ -72,6 +73,7 @@ class HomeViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val queueState = playerRepository.queueState
     val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.autoplayStates
+    val queueDynamicSources: StateFlow<Map<String, DynamicQueueSource>> = queueTogglesCache.dynamicSources
 
     /** Whether crossfade is on, per queue. Empty on a server before MA 2.10. */
     val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
@@ -242,8 +244,14 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 musicRepository.setAutoplayEnabled(queueId, enabled)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                // Shown before the server answered, so a refused or lost command must put the
+                // switch back: otherwise it claims Autoplay is on and the queue just ends.
                 Log.w(TAG, "setAutoplayEnabled failed: ${e.message}")
+                queueTogglesCache.setOptimistic(queueId, !enabled)
+                _error.tryEmit(e.failureMessage(if (enabled) "Couldn't turn Autoplay on" else "Couldn't turn Autoplay off"))
             }
         }
     }

@@ -113,6 +113,15 @@ interface MusicRepository {
         awaitResponse: Boolean = false,
         timeoutMs: Long? = null
     )
+
+    /**
+     * Play [trackUri] now and let the dynamic playlist [feedUri] carry on after it.
+     *
+     * The server ignores `start_item` for a dynamic playlist, so the two go as separate
+     * commands: the track with the option the server uses for a playlist, then the
+     * playlist added, which turns the queue into the playlist's feed behind the track.
+     */
+    suspend fun playTrackThenFeed(queueId: String, trackUri: String, feedUri: String)
     suspend fun createPlaylist(name: String): Playlist
     suspend fun addTrackToPlaylist(playlist: Playlist, trackUri: String)
     suspend fun removeTrackFromPlaylist(playlist: Playlist, position: Int)

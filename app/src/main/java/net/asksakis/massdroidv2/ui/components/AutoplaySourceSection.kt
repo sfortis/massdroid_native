@@ -56,35 +56,79 @@ fun AutoplaySourceSection(
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
+    val playlistMode = config.playlistDependsOnMode
+    // The playlist source chosen while no playlist is set yet. It is held here and not
+    // saved, because the server refills from nothing in that state and the queue simply
+    // stops; the mode goes to the server together with the playlist picked for it.
+    var choosingPlaylist by remember(config.mode, config.playlistUri) { mutableStateOf(false) }
+    val shownMode = if (choosingPlaylist && playlistMode != null) playlistMode else config.mode
 
     Column(modifier = modifier.fillMaxWidth()) {
         config.modeOptions.forEach { option ->
+            val isPlaylistSource = option.value == playlistMode
             QueueOptionRow(
-                option = option,
-                selected = option.value == config.mode,
+                // Without a playlist in the library the source can never work, so it is
+                // shown with the reason rather than left to fail silently.
+                option = if (isPlaylistSource && config.playlistOptions.isEmpty() && !option.disabled) {
+                    option.copy(disabled = true, disabledReason = "There are no playlists in your library")
+                } else {
+                    option
+                },
+                selected = option.value == shownMode,
                 // "Global" means "follow the server-wide default" and never says what
                 // that default is, so name it here. Shown only for that option, and only
                 // once the server has told us.
                 resolvesTo = config.globalModeTitle
                     ?.takeIf { option.value == AutoplayConfig.MODE_GLOBAL },
                 onSelect = {
-                    // Carry the existing playlist through a mode change, so switching
-                    // away and back does not silently forget it.
-                    scope.launch { onChanged(option.value, config.playlistUri) }
+                    if (isPlaylistSource && config.playlistUri == null) {
+                        choosingPlaylist = true
+                    } else {
+                        choosingPlaylist = false
+                        // Carry the existing playlist through a mode change, so switching
+                        // away and back does not silently forget it.
+                        scope.launch { onChanged(option.value, config.playlistUri) }
+                    }
                 }
             )
         }
 
-        if (config.playlistApplies && config.playlistOptions.isNotEmpty()) {
+        val playlistShown = config.playlistApplies || choosingPlaylist
+        if (playlistShown && playlistMode != null && config.playlistOptions.isNotEmpty()) {
             PlaylistSelect(
                 options = config.playlistOptions,
                 selectedUri = config.playlistUri,
-                onSelect = { uri -> scope.launch { onChanged(config.mode, uri) } },
+                onSelect = { uri ->
+                    choosingPlaylist = false
+                    scope.launch { onChanged(playlistMode, uri) }
+                },
                 modifier = Modifier.padding(start = 12.dp, top = 6.dp)
             )
+            if (config.playlistUri == null) {
+                Text(
+                    // While choosing, nothing is saved yet and the old source still
+                    // applies. Saved without a playlist, which the server's own settings
+                    // allow, the queue really does stop.
+                    if (choosingPlaylist) {
+                        "Pick a playlist to use this source."
+                    } else {
+                        "Choose a playlist. Until then the queue stops when it runs out."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 12.dp, top = 4.dp)
+                )
+            }
         }
     }
 }
+
+/**
+ * Why Autoplay does not apply to a dynamic queue: the server refills it from [sourceName]
+ * whether Autoplay is on or not.
+ */
+fun autoplayRefillText(sourceName: String?): String =
+    if (sourceName.isNullOrBlank()) "This queue refills itself." else "This queue refills itself from $sourceName."
 
 /** The playlist to refill from, shaped like the other selects in this dialog. */
 @Composable

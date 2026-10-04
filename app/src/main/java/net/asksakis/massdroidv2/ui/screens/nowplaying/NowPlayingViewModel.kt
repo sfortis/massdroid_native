@@ -49,9 +49,18 @@ import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import javax.inject.Inject
 import net.asksakis.massdroidv2.data.proximity.withRoomPlayer
+import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
+import net.asksakis.massdroidv2.ui.components.autoplayRefillText
 
 private const val TAG = "NowPlayingVM"
 private const val SENDSPIN_UI_DBG = "SendspinUiDbg"
+
+/** What the Now Playing Autoplay button shows. [dynamicSource] is set while the queue refills itself. */
+data class AutoplayButtonState(
+    val queueId: String,
+    val enabled: Boolean,
+    val dynamicSource: DynamicQueueSource?
+)
 
 /**
  * Why shuffle and repeat do nothing while the queue is dynamic.
@@ -184,6 +193,25 @@ class NowPlayingViewModel @Inject constructor(
     val allPlayers: StateFlow<List<net.asksakis.massdroidv2.domain.model.Player>> = playerRepository.players
     val queueState = playerRepository.queueState
     val queueAutoplayStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.autoplayStates
+    val queueDynamicSources: StateFlow<Map<String, DynamicQueueSource>> = queueTogglesCache.dynamicSources
+
+    /** The Autoplay button of the playing queue; null while there is no queue. */
+    val autoplayButton: StateFlow<AutoplayButtonState?> = combine(
+        queueState,
+        queueTogglesCache.autoplayStates,
+        queueTogglesCache.dynamicSources
+    ) { queue, states, dynamicSources ->
+        queue?.let {
+            AutoplayButtonState(
+                queueId = it.queueId,
+                enabled = states[it.queueId] ?: false,
+                // The cache's entry, so the button and the settings dialog name the same
+                // source; the queue state may arrive first, which still locks the button.
+                dynamicSource = dynamicSources[it.queueId]
+                    ?: if (it.isDynamic) DynamicQueueSource(name = null) else null
+            )
+        }
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Whether crossfade is on, per queue. Empty on a server before MA 2.10. */
     val queueCrossfadeStates: StateFlow<Map<String, Boolean>> = queueTogglesCache.crossfadeStates
@@ -1395,14 +1423,44 @@ class NowPlayingViewModel @Inject constructor(
         }
     }
 
-    fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
-        queueTogglesCache.setOptimistic(queueId, enabled)
+    /**
+     * Turn Autoplay on or off for the playing queue. A dynamic queue is refilled by the
+     * server whatever Autoplay says, so there the button only says so.
+     */
+    fun toggleAutoplay() {
+        val state = autoplayButton.value ?: return
+        if (state.dynamicSource != null) {
+            _error.tryEmit(autoplayRefillText(state.dynamicSource.name))
+            return
+        }
+        val enabled = !state.enabled
         viewModelScope.launch {
-            try {
-                musicRepository.setAutoplayEnabled(queueId, enabled)
-            } catch (e: Exception) {
-                Log.w(TAG, "setAutoplayEnabled failed: ${e.message}")
+            // The button is small and its two states are close in colour, so say what it did.
+            if (applyAutoplay(state.queueId, enabled)) {
+                _error.tryEmit(if (enabled) "Autoplay on" else "Autoplay off")
             }
+        }
+    }
+
+    fun setAutoplayEnabled(queueId: String, enabled: Boolean) {
+        viewModelScope.launch { applyAutoplay(queueId, enabled) }
+    }
+
+    /** Turns Autoplay on or off, showing it at once; returns whether the server took it. */
+    private suspend fun applyAutoplay(queueId: String, enabled: Boolean): Boolean {
+        queueTogglesCache.setOptimistic(queueId, enabled)
+        return try {
+            musicRepository.setAutoplayEnabled(queueId, enabled)
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Shown before the server answered, so a refused or lost command must put the
+            // switch back: otherwise it claims Autoplay is on and the queue just ends.
+            Log.w(TAG, "setAutoplayEnabled failed: ${e.message}")
+            queueTogglesCache.setOptimistic(queueId, !enabled)
+            _error.tryEmit(e.failureMessage(if (enabled) "Couldn't turn Autoplay on" else "Couldn't turn Autoplay off"))
+            false
         }
     }
 

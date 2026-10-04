@@ -75,6 +75,7 @@ fun PlayersScreen(
     val isAaProjecting by viewModel.isAaProjecting.collectAsStateWithLifecycle()
     val sleepTimerTargetPlayerId by viewModel.sleepTimerTargetPlayerId.collectAsStateWithLifecycle()
     val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
+    val dynamicSources by viewModel.queueDynamicSources.collectAsStateWithLifecycle()
     val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
     val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle(
         initialValue = net.asksakis.massdroidv2.data.proximity.ProximityConfig()
@@ -378,6 +379,7 @@ fun PlayersScreen(
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
                             initialAutoplayEnabled = autoplayStates[player.playerId] ?: false,
+                            dynamicSource = dynamicSources[player.playerId],
                             isSendspinPlayer = player.provider == "sendspin",
                             isLocalPlayer = isLocal,
                             initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),

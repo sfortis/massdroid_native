@@ -339,6 +339,17 @@ class AndroidAutoBrowseController(
             mediaId.startsWith("genre_radio|") -> {
                 shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(mediaId.removePrefix("genre_radio|")))
             }
+            // Checked before the request URI, which on these rows is the bare track's.
+            mediaId.startsWith(DYNAMIC_TRACK_PREFIX) -> {
+                val (feedUri, trackUri) = mediaId.removePrefix(DYNAMIC_TRACK_PREFIX).split("|", limit = 2)
+                    .takeIf { it.size == 2 } ?: return
+                try {
+                    playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                    musicRepository.playTrackThenFeed(queueId, trackUri, feedUri)
+                } catch (e: Exception) {
+                    Log.e(TAG, "playTrackThenFeed failed for $trackUri in $feedUri", e)
+                }
+            }
             else -> {
                 val uri = item.requestMetadata.mediaUri?.toString()
                     ?: item.mediaId.takeIf { it.contains("/") }
@@ -381,7 +392,8 @@ class AndroidAutoBrowseController(
         val parts = mediaId.split("|")
         if (parts.size != 3) return null
         val (type, provider, itemId) = parts
-        return "$provider://$type/$itemId"
+        val uriType = if (type == DYNAMIC_PLAYLIST_TYPE) "playlist" else type
+        return "$provider://$uriType/$itemId"
     }
 
     // The AAOS media center renders root browsable children as TOP TABS and hard-caps
@@ -783,6 +795,17 @@ class AndroidAutoBrowseController(
             "artist" -> musicRepository.getArtistDiscography(itemId, provider).map { it.toBrowsableMediaItem() }
             "album" -> musicRepository.getAlbumTracks(itemId, provider).map { it.toPlayableMediaItem() }
             "playlist" -> musicRepository.getPlaylistTracks(itemId, provider).map { it.toPlayableMediaItem() }
+            // A dynamic playlist lists a sample of its feed. A tapped track starts and the
+            // feed carries on after it, so the row carries the playlist as well: the host
+            // drops the request metadata, and the mediaId is all that comes back.
+            DYNAMIC_PLAYLIST_TYPE -> {
+                val feedUri = "$provider://playlist/$itemId"
+                musicRepository.getPlaylistTracks(itemId, provider).map { track ->
+                    track.toPlayableMediaItem().buildUpon()
+                        .setMediaId("$DYNAMIC_TRACK_PREFIX$feedUri|${track.uri}")
+                        .build()
+                }
+            }
             else -> emptyList()
         }
     }
@@ -835,7 +858,7 @@ class AndroidAutoBrowseController(
         .build()
 
     private fun Playlist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
-        .setMediaId("playlist|$provider|$itemId")
+        .setMediaId("${if (isDynamic) DYNAMIC_PLAYLIST_TYPE else "playlist"}|$provider|$itemId")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(name)
@@ -854,5 +877,11 @@ class AndroidAutoBrowseController(
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
         private const val DISCOVER_FEED_TTL_MS = 10 * 60 * 1000L
+
+        /** mediaId type of a dynamic playlist, whose track rows continue with its feed. */
+        private const val DYNAMIC_PLAYLIST_TYPE = "dynplaylist"
+
+        /** mediaId prefix of a track row in a dynamic playlist: `dyntrack|<feed uri>|<track uri>`. */
+        private const val DYNAMIC_TRACK_PREFIX = "dyntrack|"
     }
 }

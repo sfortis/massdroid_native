@@ -260,7 +260,37 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
-    fun playTrack(track: Track) = playUri(track.uri)
+    /**
+     * Play a tapped track. In a dynamic playlist the track starts and the playlist's
+     * feed carries on after it; played on its own, it would leave a queue of one track,
+     * because the server ignores a start item for a dynamic playlist.
+     */
+    fun playTrack(track: Track) {
+        if (!isDynamic || playlistUri.isBlank()) {
+            playUri(track.uri)
+            return
+        }
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        // Two commands in a row: a second tap in between would interleave two pairs and
+        // rebuild the feed twice, so it waits like the play buttons do.
+        if (_sending.value) return
+        viewModelScope.launch {
+            _sending.value = true
+            try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                musicRepository.playTrackThenFeed(queueId, track.uri, playlistUri)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: EverythingBlockedException) {
+                _error.tryEmit("That track is by an artist you blocked")
+            } catch (e: Exception) {
+                Log.w(TAG, "playTrack in dynamic playlist failed: ${e.message}")
+                _error.tryEmit(e.failureMessage("Couldn't start playback"))
+            } finally {
+                _sending.value = false
+            }
+        }
+    }
 
     fun playAll() = playWhole(option = "replace", what = "playAll")
 

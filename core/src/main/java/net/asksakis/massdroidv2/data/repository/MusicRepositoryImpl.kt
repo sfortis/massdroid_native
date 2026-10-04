@@ -38,6 +38,18 @@ class MusicRepositoryImpl @Inject constructor(
         private const val LIBRARY_SYNC_COOLDOWN_MS = 45_000L
         private const val LIBRARY_SYNC_TIMEOUT_MS = 1_500L
 
+        private const val OPTION_PLAY = "play"
+        private const val OPTION_REPLACE = "replace"
+        private const val KEY_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+
+        /**
+         * Whether a play_media with this option starts playback. No option means the
+         * server's default for the media type, and every such default is "play" or
+         * "replace", so it starts playback as well. Only "add" and "next" do not.
+         */
+        private fun startsPlayback(option: String?): Boolean =
+            option == null || option == OPTION_PLAY || option == OPTION_REPLACE
+
         /**
          * The first schema that understands `sort_by` on `player_queues/play_media`, which
          * arrived with MA 2.10.0.
@@ -371,13 +383,13 @@ class MusicRepositoryImpl @Inject constructor(
         val sortBy = sortKey?.takeIf { supportsServerSideSort(it) }?.serverKey
 
         val shouldNotifyReplacement = option == "replace"
-        val shouldNotifyPlayback = option == "play" || option == "replace"
+        val shouldNotifyPlayback = startsPlayback(option)
         if (!awaitResponse) {
             if (shouldNotifyReplacement) {
                 playerRepository.get().notifyQueueReplacement(queueId)
             }
             if (shouldNotifyPlayback) {
-                playerRepository.get().notifyPlaybackIntent(true)
+                notifyPlaybackFor(queueId)
             }
         }
         wsClient.sendCommand(
@@ -397,7 +409,7 @@ class MusicRepositoryImpl @Inject constructor(
                 playerRepository.get().notifyQueueReplacement(queueId)
             }
             if (shouldNotifyPlayback) {
-                playerRepository.get().notifyPlaybackIntent(true)
+                notifyPlaybackFor(queueId)
             }
         }
     }
@@ -550,13 +562,13 @@ class MusicRepositoryImpl @Inject constructor(
         timeoutMs: Long?
     ) {
         val shouldNotifyReplacement = option == "replace"
-        val shouldNotifyPlayback = option == "play" || option == "replace"
+        val shouldNotifyPlayback = startsPlayback(option)
         if (!awaitResponse) {
             if (shouldNotifyReplacement) {
                 playerRepository.get().notifyQueueReplacement(queueId)
             }
             if (shouldNotifyPlayback) {
-                playerRepository.get().notifyPlaybackIntent(true)
+                notifyPlaybackFor(queueId)
             }
         }
         wsClient.sendCommand(
@@ -570,7 +582,7 @@ class MusicRepositoryImpl @Inject constructor(
                 playerRepository.get().notifyQueueReplacement(queueId)
             }
             if (shouldNotifyPlayback) {
-                playerRepository.get().notifyPlaybackIntent(true)
+                notifyPlaybackFor(queueId)
             }
         }
     }
@@ -679,15 +691,7 @@ class MusicRepositoryImpl @Inject constructor(
             listOf(settings.crossfadeMode, settings.volumeNormalization, settings.smartShuffle)
                 .any { it?.followsGlobal == true }
         if (!needsGlobal) return settings
-        val core = try {
-            wsClient.sendCommand(
-                MaCommands.ConfigCore.GET,
-                ConfigCoreGetArgs(domain = MaCommands.ConfigCore.DOMAIN_PLAYER_QUEUES)
-            )?.jsonObject?.get("values")?.jsonObject
-        } catch (e: Exception) {
-            Log.d(TAG, "server-wide queue defaults unavailable: ${e.message}")
-            return settings
-        }
+        val core = serverQueueDefaults() ?: return settings
         return settings.copy(
             autoplay = settings.autoplay?.copy(
                 globalMode = QueueConfigParser.coreValue(core, AutoplayConfig.KEY_MODE)
@@ -696,6 +700,42 @@ class MusicRepositoryImpl @Inject constructor(
             volumeNormalization = settings.volumeNormalization?.withGlobal(core),
             smartShuffle = settings.smartShuffle?.withGlobal(core)
         )
+    }
+
+    /**
+     * Tell the local playback that the selected player is about to play, which lets the
+     * phone's own Sendspin output take audio focus and resume. The intent names no player,
+     * so it is sent only when [queueId] is the selected player's: a play sent to another
+     * player from the action sheet must not wake the phone's output.
+     */
+    private fun notifyPlaybackFor(queueId: String) {
+        val players = playerRepository.get()
+        if (players.selectedPlayer.value?.playerId == queueId) players.notifyPlaybackIntent(true)
+    }
+
+    /** The server-wide queue settings, or null when they cannot be read. */
+    private suspend fun serverQueueDefaults(): JsonObject? = try {
+        wsClient.sendCommand(
+            MaCommands.ConfigCore.GET,
+            ConfigCoreGetArgs(domain = MaCommands.ConfigCore.DOMAIN_PLAYER_QUEUES)
+        )?.jsonObject?.get("values")?.jsonObject
+    } catch (e: Exception) {
+        Log.d(TAG, "server-wide queue defaults unavailable: ${e.message}")
+        null
+    }
+
+    override suspend fun playTrackThenFeed(queueId: String, trackUri: String, feedUri: String) {
+        // The track goes first and on its own, so it would get the server's TRACK default
+        // ("play") if no option were sent. The user started a playlist, so it takes the
+        // playlist's default instead.
+        val option = QueueConfigParser.coreValue(serverQueueDefaults(), KEY_ENQUEUE_OPTION_PLAYLIST)
+            ?.takeIf { it == OPTION_PLAY || it == OPTION_REPLACE }
+            ?: OPTION_REPLACE
+        Log.d(TAG, "playTrackThenFeed: $trackUri ($option), then $feedUri")
+        playMedia(queueId, trackUri, option = option, awaitResponse = true)
+        // Added once the track is in: the server keeps the track that plays and builds the
+        // dynamic playlist's feed behind it, without interrupting it.
+        playMedia(queueId, feedUri, option = "add", awaitResponse = true)
     }
 
     private fun QueueChoice.withGlobal(core: JsonObject?): QueueChoice =
