@@ -72,6 +72,23 @@ constexpr int64_t MAX_SLEW_US = 1000;
 // change is rare and re-anchored by a flush/relock anyway.
 constexpr int64_t LAT_SLEW_US = 1000;
 
+// Smoothed callback time. dac0 is "callback time + output latency", and the
+// callback time used to be the clock at callback entry. On the fast mixer
+// (speaker) callbacks arrive every 2 ms like clockwork, but on Bluetooth the
+// mixer pulls 18 ms at a time on an irregular schedule, so the entry time
+// scattered by +-5..19 ms around the real pace of the audio and the resampler
+// chased that scatter as if it were drift (rate 0.997..1.002, ema +-5 ms,
+// 2026-10-03). A first-order loop now predicts each callback's time from the
+// frame count at the nominal rate and moves toward the clock with this time
+// constant. The rate is deliberately not learned: a second-order DLL tried
+// first swung its rate estimate to +-1000 ppm on the Bluetooth scatter, while
+// the DAC and the system clock differ by tens of ppm, which leaves this loop a
+// steady error of a few tens of microseconds, and the resampler corrects real
+// drift anyway.
+constexpr double CALLBACK_TIME_CONSTANT_S = 1.0;
+// A gap this large (a stopped or stalled stream) restarts the loop from the clock.
+constexpr int64_t CALLBACK_TIME_RESET_US = 50000;
+
 // Gain-ramp time: a change reaches its target over this long instead of jumping
 // mid-waveform (which clicks). Two rates: toward SILENCE (mute/freeze) stays
 // snappy so hard sync boundaries cut tight; toward an AUDIBLE target (duck,
@@ -147,6 +164,29 @@ int64_t SendspinOutputEngine::monotonicNowUs() {
     return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
 }
 
+int64_t SendspinOutputEngine::smoothedCallbackTimeUs(int64_t framesWritten, int64_t nowUs) {
+    const int64_t frames = framesWritten - smoothFrames_;
+    double predicted = 0.0;
+    bool reset = !smoothValid_ || frames <= 0;
+    if (!reset) {
+        predicted = smoothTimeUs_ + static_cast<double>(frames) * 1000000.0 / sampleRate_;
+        reset = std::fabs(static_cast<double>(nowUs) - predicted) > CALLBACK_TIME_RESET_US;
+    }
+    smoothFrames_ = framesWritten;
+    if (reset) {
+        smoothValid_ = true;
+        smoothTimeUs_ = static_cast<double>(nowUs);
+        lastCallbackJitterUs_ = 0;
+        return nowUs;
+    }
+    const double err = static_cast<double>(nowUs) - predicted;
+    const double periodS = static_cast<double>(frames) / sampleRate_;
+    const double gain = std::min(1.0, periodS / CALLBACK_TIME_CONSTANT_S);
+    smoothTimeUs_ = predicted + gain * err;
+    lastCallbackJitterUs_ = static_cast<int64_t>(err);
+    return static_cast<int64_t>(std::llround(smoothTimeUs_));
+}
+
 bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool driftCorrection) {
     stop();
     sampleRate_ = sampleRate;
@@ -163,6 +203,7 @@ bool SendspinOutputEngine::start(int32_t sampleRate, int32_t channels, bool drif
     anchorTimeUs_.store(0);
     latencyUs_.store(0);
     lastTimestampPollFrame_ = 0;
+    smoothValid_ = false;
     driftEmaUs_.store(0);
     driftMeasured_.store(false);
     havePrevIntended_ = false;
@@ -244,6 +285,7 @@ void SendspinOutputEngine::resumeStream() {
     anchorFramePosition_.store(-1);
     anchorTimeUs_.store(0);
     lastTimestampPollFrame_ = 0;
+    smoothValid_ = false;
     oboe::Result r = stream_->requestStart();
     if (r != oboe::Result::OK) {
         // Another app can take the output while this stream is stopped (a Pixel
@@ -398,12 +440,14 @@ void SendspinOutputEngine::refreshTimestampAnchor(oboe::AudioStream* stream, int
     }
 }
 
-int64_t SendspinOutputEngine::dacPresentationUsForNextWrite(int64_t /*framesWritten*/) const {
+int64_t SendspinOutputEngine::dacPresentationUsForNextWrite(int64_t callbackTimeUs) const {
     // out[0] reaches the DAC after the (stable) output latency. Anchoring on the
     // raw getTimestamp position instead made dac0 sawtooth on flaky HALs and the
     // resampler over-correct; a stable latency keeps the drift steady so only
     // real, sustained clock drift is corrected (the resampler still tracks that).
-    return monotonicNowUs() + latencyUs_.load();
+    // callbackTimeUs is smoothed, so the burst schedule of the mixer does
+    // not reach the drift either.
+    return callbackTimeUs + latencyUs_.load();
 }
 
 int64_t SendspinOutputEngine::outputLatencyUs() const {
@@ -478,7 +522,7 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     }
 
     // When will out[0] leave the DAC, and when was the ring head meant to play?
-    int64_t dac0 = dacPresentationUsForNextWrite(framesWritten);
+    int64_t dac0 = dacPresentationUsForNextWrite(smoothedCallbackTimeUs(framesWritten, monotonicNowUs()));
     int64_t intendedHead;
     const bool haveMarker = intendedPresentationUs(read, &intendedHead);
     if (!haveMarker) {
@@ -722,10 +766,11 @@ oboe::DataCallbackResult SendspinOutputEngine::onAudioReady(
     if ((callbackCount_ & 0x1FF) == 0) {
         auto cl = stream->calculateLatencyMillis();
         double calcLatMs = cl ? cl.value() : -1.0;
-        LOGD("cb#%lld raw=%lldus ema=%lldus rate=%.5f buf=%lldms lat(gts)=%lldms calcLat=%.1fms underrun=%lld",
+        LOGD("cb#%lld raw=%lldus ema=%lldus rate=%.5f buf=%lldms lat(gts)=%lldms calcLat=%.1fms underrun=%lld "
+             "cbJitter=%lldus",
              (long long)callbackCount_, (long long)rawDriftUs, (long long)driftUs, rate,
              (long long)(bufferedFrames() * 1000 / sampleRate_), (long long)(latencyUs_.load() / 1000),
-             calcLatMs, (long long)underrunFrames_.load());
+             calcLatMs, (long long)underrunFrames_.load(), (long long)lastCallbackJitterUs_);
     }
     return oboe::DataCallbackResult::Continue;
 }

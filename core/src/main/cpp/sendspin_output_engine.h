@@ -148,9 +148,12 @@ private:
 
     void resetRing();
     void refreshTimestampAnchor(oboe::AudioStream* stream, int64_t framesWritten);
-    int64_t dacPresentationUsForNextWrite(int64_t framesWritten) const;
+    int64_t dacPresentationUsForNextWrite(int64_t callbackTimeUs) const;
 
     static int64_t monotonicNowUs();
+    // Callback time predicted from the frame count and smoothed toward the
+    // clock, see CALLBACK_TIME_CONSTANT_S in the .cpp. Callback thread only.
+    int64_t smoothedCallbackTimeUs(int64_t framesWritten, int64_t nowUs);
 
     // Triangular-PDF dither, ~1 LSB peak (two uniform randoms differenced).
     // Callback thread only; cheap LCG, no atomics.
@@ -217,6 +220,14 @@ private:
     std::atomic<int64_t> anchorTimeUs_{0};
     std::atomic<int64_t> latencyUs_{0};
     int64_t lastTimestampPollFrame_ = 0;
+
+    // Smoothed callback time state (callback thread only), see
+    // smoothedCallbackTimeUs. Cleared on start and resume; the loop also
+    // restarts itself on a large error.
+    bool smoothValid_ = false;
+    int64_t smoothFrames_ = 0;
+    double smoothTimeUs_ = 0.0;
+    int64_t lastCallbackJitterUs_ = 0;
 
     // Diagnostics
     std::atomic<int64_t> driftEmaUs_{0};
