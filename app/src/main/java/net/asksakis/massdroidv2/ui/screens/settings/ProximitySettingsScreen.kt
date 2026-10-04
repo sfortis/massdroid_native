@@ -87,7 +87,9 @@ fun ProximitySettingsScreen(
         if (!canEvaluateMissingSpeakers) emptyList()
         else config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
     }
-    var deleteTarget by remember { mutableStateOf<RoomConfig?>(null) }
+    // Saved by room id so the delete confirmation survives rotation.
+    var deleteTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    val deleteTarget = deleteTargetId?.let { id -> config.rooms.firstOrNull { it.id == id } }
     // rememberSaveable so the "Calibrate Rooms" wizard stays open across an Activity recreation
     // (e.g. screen rotation). The scan/step state itself lives in the ViewModel and already survives;
     // only this visibility flag was being reset to false, which closed the dialog mid-flow.
@@ -98,7 +100,7 @@ fun ProximitySettingsScreen(
     val tuningResult by viewModel.tuningResult.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
     var permissionRefreshTick by remember { mutableStateOf(0) }
-    var showFollowMePermissionDialog by remember { mutableStateOf(false) }
+    var showFollowMePermissionDialog by rememberSaveable { mutableStateOf(false) }
     val requiredPermissions = remember { AppPermissions.followMeRequired() }
     val missingPermissions = remember(permissionRefreshTick, context) {
         AppPermissions.missing(context, requiredPermissions)
@@ -330,7 +332,7 @@ fun ProximitySettingsScreen(
                             canEvaluateMissingPlayer = canEvaluateMissingSpeakers,
                             isCurrentRoom = currentRoom?.roomId == room.id,
                             onEdit = { onSetupRoom(room.id) },
-                            onDelete = { deleteTarget = room }
+                            onDelete = { deleteTargetId = room.id }
                         )
                     }
                     if (config.rooms.size >= 2) {
@@ -368,19 +370,19 @@ fun ProximitySettingsScreen(
 
     deleteTarget?.let { room ->
         AlertDialog(
-            onDismissRequest = { deleteTarget = null },
+            onDismissRequest = { deleteTargetId = null },
             title = { Text("Delete Room") },
             text = { Text("Delete \"${room.name}\"?") },
             confirmButton = {
                 MdTextButton(onClick = {
                     viewModel.deleteRoom(room.id)
-                    deleteTarget = null
+                    deleteTargetId = null
                 }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                MdTextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+                MdTextButton(onClick = { deleteTargetId = null }) { Text("Cancel") }
             }
         )
     }
@@ -622,8 +624,8 @@ private fun ScheduleConfig(
     }
 
     // Time range as clickable chips
-    var showStartPicker by remember { mutableStateOf(false) }
-    var showEndPicker by remember { mutableStateOf(false) }
+    var showStartPicker by rememberSaveable { mutableStateOf(false) }
+    var showEndPicker by rememberSaveable { mutableStateOf(false) }
 
     Row(
         modifier = Modifier

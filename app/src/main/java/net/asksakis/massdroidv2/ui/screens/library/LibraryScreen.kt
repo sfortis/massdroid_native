@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -136,7 +137,7 @@ fun LibraryScreen(
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val isBrowseTab = selectedTab == TAB_BROWSE
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    var showControlsSheet by remember { mutableStateOf(false) }
+    var showControlsSheet by rememberSaveable { mutableStateOf(false) }
     var landscapeSearchExpanded by remember { mutableStateOf(false) }
 
     // Single pager state shared by the tab chips and the content, so the chip highlight tracks the
@@ -174,13 +175,38 @@ fun LibraryScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Action sheet state
-    var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
-    var deletePlaylistTarget by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
-    var nfcWriteTarget by remember { mutableStateOf<ActionSheetItem?>(null) }
+    // Action sheet state. Only the item's uri and the tab it was opened from are saved, so
+    // the sheet and the dialogs it leads to survive rotation. The item is rebuilt from that
+    // tab's list, and whatever is open closes if the item is no longer there.
+    var sheetTab by rememberSaveable { mutableIntStateOf(TAB_ARTISTS) }
+    var actionSheetUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingLibraryRemoveUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
+    var deletePlaylistUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var addToPlaylistTrackUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var nfcWriteUri by rememberSaveable { mutableStateOf<String?>(null) }
+    fun sheetItem(uri: String?): ActionSheetItem? = uri?.let { wanted ->
+        when (sheetTab) {
+            TAB_ARTISTS -> artists.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_ALBUMS -> albums.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_TRACKS -> tracks.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_PLAYLISTS -> playlists.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_RADIOS -> radios.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_AUDIOBOOKS -> audiobooks.firstOrNull { it.uri == wanted }?.toAudiobookSheetItem()
+            TAB_PODCASTS -> podcasts.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            TAB_BROWSE -> browseItems.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            else -> null
+        }
+    }
+    fun openActionSheet(tab: Int, item: ActionSheetItem?) {
+        if (item == null) return
+        sheetTab = tab
+        actionSheetUri = item.uri
+    }
+    val actionSheetItem = sheetItem(actionSheetUri)
+    val pendingLibraryRemove = sheetItem(pendingLibraryRemoveUri)
+    val deletePlaylistTarget = sheetItem(deletePlaylistUri)
+    val nfcWriteTarget = sheetItem(nfcWriteUri)
     // Offered only where there is a chip to write with, so the action does not appear on a
     // phone that can never carry it out.
     val hasNfc = remember(context) {
@@ -346,19 +372,7 @@ fun LibraryScreen(
                             imageUrl = { it.imageUrl },
                             favorite = { it.favorite },
                             onClick = { onArtistClick(it) },
-                            onLongClick = { artist ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = artist.name,
-                                    subtitle = "",
-                                    uri = artist.uri,
-                                    imageUrl = artist.imageUrl,
-                                    favorite = artist.favorite,
-                                    mediaType = MediaType.ARTIST,
-                                    itemId = artist.itemId,
-                                    primaryArtistUri = artist.uri,
-                                    primaryArtistName = artist.name
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onPlayClick = { if (!blockedArtistUris.blocksArtist(it.uri)) viewModel.quickPlay(it.uri) },
                             isBlocked = { blockedArtistUris.blocksArtist(it.uri) },
                             providerDomains = { it.providerDomains }
@@ -376,19 +390,7 @@ fun LibraryScreen(
                             imageUrl = { it.imageUrl },
                             favorite = { it.favorite },
                             onClick = { onAlbumClick(it) },
-                            onLongClick = { album ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = album.name,
-                                    subtitle = album.artistNames,
-                                    uri = album.uri,
-                                    imageUrl = album.imageUrl,
-                                    favorite = album.favorite,
-                                    mediaType = MediaType.ALBUM,
-                                    itemId = album.itemId,
-                                    primaryArtistUri = album.artists.firstOrNull()?.uri,
-                                    primaryArtistName = album.artists.firstOrNull()?.name
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onPlayClick = { album ->
                                 val artistUri = album.artists.firstOrNull()?.uri
                                 if (!blockedArtistUris.blocksArtist(artistUri)) viewModel.quickPlay(album.uri)
@@ -414,19 +416,7 @@ fun LibraryScreen(
                                     viewModel.playTrack(track)
                                 }
                             },
-                            onLongClick = { track ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = track.name,
-                                    subtitle = track.artistNames,
-                                    uri = track.uri,
-                                    imageUrl = track.imageUrl,
-                                    favorite = track.favorite,
-                                    mediaType = MediaType.TRACK,
-                                    itemId = track.itemId,
-                                    primaryArtistUri = track.artistUri,
-                                    primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onPlayClick = { viewModel.quickPlay(it.uri) },
                             providerDomains = { it.providerDomains }
                         )
@@ -471,17 +461,7 @@ fun LibraryScreen(
                                 imageUrl = { it.imageUrl },
                                 favorite = { it.favorite },
                                 onClick = { onPlaylistClick(it) },
-                                onLongClick = { playlist ->
-                                    actionSheetItem = ActionSheetItem(
-                                        title = playlist.name,
-                                        subtitle = "",
-                                        uri = playlist.uri,
-                                        imageUrl = playlist.imageUrl,
-                                        favorite = playlist.favorite,
-                                        mediaType = MediaType.PLAYLIST,
-                                        itemId = playlist.itemId
-                                    )
-                                },
+                                onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                                 onPlayClick = { viewModel.quickPlay(it.uri) },
                                 providerDomains = { it.providerDomains }
                             )
@@ -506,18 +486,7 @@ fun LibraryScreen(
                             imageUrl = { it.imageUrl },
                             favorite = { it.favorite },
                             onClick = { viewModel.quickPlay(it.uri) },
-                            onLongClick = { radio ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = radio.name,
-                                    subtitle = "",
-                                    uri = radio.uri,
-                                    imageUrl = radio.imageUrl,
-                                    favorite = radio.favorite,
-                                    mediaType = MediaType.RADIO,
-                                    itemId = radio.itemId,
-                                    inLibrary = radio.inLibrary
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onPlayClick = { viewModel.quickPlay(it.uri) },
                             providerDomains = { it.providerDomains }
                         )
@@ -532,18 +501,7 @@ fun LibraryScreen(
                             imageUrl = { it.imageUrl },
                             favorite = { it.favorite },
                             onClick = { viewModel.quickPlay(it.uri) },
-                            onLongClick = { book ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = book.name,
-                                    subtitle = book.authors.joinToString(", "),
-                                    uri = book.uri,
-                                    imageUrl = book.imageUrl,
-                                    favorite = book.favorite,
-                                    mediaType = MediaType.AUDIOBOOK,
-                                    itemId = book.itemId,
-                                    inLibrary = book.uri.startsWith("library://")
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toAudiobookSheetItem()) },
                             onPlayClick = { viewModel.quickPlay(it.uri) },
                             providerDomains = { it.providerDomains }
                         )
@@ -558,18 +516,7 @@ fun LibraryScreen(
                             imageUrl = { it.imageUrl },
                             favorite = { it.favorite },
                             onClick = { onPodcastClick(it) },
-                            onLongClick = { podcast ->
-                                actionSheetItem = ActionSheetItem(
-                                    title = podcast.name,
-                                    subtitle = podcast.publisher ?: "",
-                                    uri = podcast.uri,
-                                    imageUrl = podcast.imageUrl,
-                                    favorite = podcast.favorite,
-                                    mediaType = MediaType.PODCAST,
-                                    itemId = podcast.itemId,
-                                    inLibrary = podcast.uri.startsWith("library://")
-                                )
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onPlayClick = { onPodcastClick(it) },
                             providerDomains = { it.providerDomains }
                         )
@@ -597,18 +544,7 @@ fun LibraryScreen(
                             },
                             onPlayClick = { viewModel.quickPlay(it.uri) },
                             onPlayFolder = { viewModel.playBrowseFolder(it) },
-                            onLongClick = { item ->
-                                MediaType.fromApi(item.mediaType)?.let { type ->
-                                    actionSheetItem = ActionSheetItem(
-                                        title = item.name,
-                                        uri = item.uri,
-                                        imageUrl = item.imageUrl,
-                                        favorite = false,
-                                        mediaType = type,
-                                        itemId = item.itemId
-                                    )
-                                }
-                            },
+                            onLongClick = { openActionSheet(page, it.toActionSheetItem()) },
                             onBack = { viewModel.browseBack() }
                         )
                     }
@@ -636,8 +572,8 @@ fun LibraryScreen(
                     title = "Write NFC tag",
                     icon = { Icon(Icons.Default.Nfc, contentDescription = null) },
                     onClick = {
-                        nfcWriteTarget = target
-                        actionSheetItem = null
+                        nfcWriteUri = target.uri
+                        actionSheetUri = null
                     }
                 )
             )
@@ -714,9 +650,9 @@ fun LibraryScreen(
                             )
                         )
                     } else {
-                        pendingLibraryRemove = target
+                        pendingLibraryRemoveUri = target.uri
                     }
-                    actionSheetItem = null
+                    actionSheetUri = null
                 }
             },
             extraActions = when (target.mediaType) {
@@ -727,7 +663,7 @@ fun LibraryScreen(
                         onClick = {
                             addToPlaylistTrackUri = target.uri
                             viewModel.loadEditablePlaylists(target.uri)
-                            actionSheetItem = null
+                            actionSheetUri = null
                         }
                     )
                 )
@@ -744,7 +680,7 @@ fun LibraryScreen(
                             },
                             onClick = {
                                 viewModel.setPlaylistPinned(target.uri, !isPinned)
-                                actionSheetItem = null
+                                actionSheetUri = null
                             }
                         )
                     )
@@ -760,11 +696,11 @@ fun LibraryScreen(
             },
             onDelete = if (isPlaylist) {
                 {
-                    deletePlaylistTarget = target
-                    actionSheetItem = null
+                    deletePlaylistUri = target.uri
+                    actionSheetUri = null
                 }
             } else null,
-            onDismiss = { actionSheetItem = null }
+            onDismiss = { actionSheetUri = null }
         )
     }
 
@@ -778,7 +714,7 @@ fun LibraryScreen(
                     tagLabel = target.title
                 )
             ),
-            onDismiss = { nfcWriteTarget = null }
+            onDismiss = { nfcWriteUri = null }
         )
     }
 
@@ -807,25 +743,25 @@ fun LibraryScreen(
             onConfirm = {
                 viewModel.removeFromLibrary(target.mediaType, target.itemId, target.uri)
             },
-            onDismiss = { pendingLibraryRemove = null }
+            onDismiss = { pendingLibraryRemoveUri = null }
         )
     }
 
     deletePlaylistTarget?.let { target ->
         AlertDialog(
-            onDismissRequest = { deletePlaylistTarget = null },
+            onDismissRequest = { deletePlaylistUri = null },
             title = { Text("Delete Playlist") },
             text = { Text("Delete \"${target.title}\"?") },
             confirmButton = {
                 MdTextButton(onClick = {
                     viewModel.removeFromLibrary(MediaType.PLAYLIST, target.itemId, target.uri)
-                    deletePlaylistTarget = null
+                    deletePlaylistUri = null
                 }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
-                MdTextButton(onClick = { deletePlaylistTarget = null }) { Text("Cancel") }
+                MdTextButton(onClick = { deletePlaylistUri = null }) { Text("Cancel") }
             }
         )
     }
@@ -1462,3 +1398,93 @@ private fun BrowseList(
 /** How a long pressed library item is described on the NFC write sheet. */
 private fun nfcKindOf(mediaType: MediaType): String =
     if (mediaType == MediaType.PLAYLIST) "Playlist" else "Album"
+
+private fun Artist.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = "",
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.ARTIST,
+    itemId = itemId,
+    primaryArtistUri = uri,
+    primaryArtistName = name
+)
+
+private fun Album.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = artistNames,
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.ALBUM,
+    itemId = itemId,
+    primaryArtistUri = artists.firstOrNull()?.uri,
+    primaryArtistName = artists.firstOrNull()?.name
+)
+
+private fun Track.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = artistNames,
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.TRACK,
+    itemId = itemId,
+    primaryArtistUri = artistUri,
+    primaryArtistName = artistNames.split(",").firstOrNull()?.trim()
+)
+
+private fun Track.toAudiobookSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = authors.joinToString(", "),
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.AUDIOBOOK,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://")
+)
+
+private fun Playlist.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = "",
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.PLAYLIST,
+    itemId = itemId
+)
+
+private fun Radio.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = "",
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.RADIO,
+    itemId = itemId,
+    inLibrary = inLibrary
+)
+
+private fun Podcast.toActionSheetItem() = ActionSheetItem(
+    title = name,
+    subtitle = publisher ?: "",
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.PODCAST,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://")
+)
+
+private fun BrowseItem.toActionSheetItem(): ActionSheetItem? = MediaType.fromApi(mediaType)?.let { type ->
+    ActionSheetItem(
+        title = name,
+        uri = uri,
+        imageUrl = imageUrl,
+        favorite = false,
+        mediaType = type,
+        itemId = itemId
+    )
+}

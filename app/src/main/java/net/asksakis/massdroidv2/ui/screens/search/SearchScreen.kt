@@ -80,7 +80,17 @@ fun SearchScreen(
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     val resultsQuery = session.resultsQuery
     val players by viewModel.players.collectAsStateWithLifecycle()
-    var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
+    // Sheets and dialogs keep only the item uri, so they survive rotation. The item is
+    // rebuilt from the results (a uri names its media type) and closes if it is gone.
+    var actionSheetUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingLibraryRemoveUri by rememberSaveable { mutableStateOf<String?>(null) }
+    fun resultItem(uri: String?): ActionSheetItem? = uri?.let { wanted ->
+        results.artists.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            ?: results.albums.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            ?: results.tracks.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+    }
+    val actionSheetItem = resultItem(actionSheetUri)
+    val pendingLibraryRemove = resultItem(pendingLibraryRemoveUri)
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Failures reach the listener here or nowhere. The flow existed and carried the
@@ -91,7 +101,6 @@ fun SearchScreen(
             snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
         }
     }
-    var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
 
     // Dismiss the soft keyboard once the user starts scrolling the results.
     val dismissKeyboardOnScroll = remember(focusManager) {
@@ -387,14 +396,14 @@ fun SearchScreen(
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onAudiobookClick = { viewModel.playUri(it.uri) },
                     onPodcastClick = onPodcastClick,
-                    onLongPress = { actionSheetItem = it }
+                    onLongPress = { actionSheetUri = it.uri }
                 )
                 else -> SearchResultsList(
                     typed, providerCache, onArtistClick, onAlbumClick,
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onAudiobookClick = { viewModel.playUri(it.uri) },
                     onPodcastClick = onPodcastClick,
-                    onLongPress = { actionSheetItem = it }
+                    onLongPress = { actionSheetUri = it.uri }
                 )
             }
             SnackbarHost(
@@ -420,11 +429,11 @@ fun SearchScreen(
             inLibrary = target.inLibrary,
             onToggleLibrary = {
                 if (target.inLibrary) {
-                    pendingLibraryRemove = target
+                    pendingLibraryRemoveUri = target.uri
                 } else {
                     viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
                 }
-                actionSheetItem = null
+                actionSheetUri = null
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
@@ -433,7 +442,7 @@ fun SearchScreen(
             onStartRadio = if (target.mediaType == MediaType.RADIO) null else {
                 { viewModel.startRadio(target.uri) }
             },
-            onDismiss = { actionSheetItem = null }
+            onDismiss = { actionSheetUri = null }
         )
     }
 
@@ -443,7 +452,7 @@ fun SearchScreen(
             onConfirm = {
                 viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, true)
             },
-            onDismiss = { pendingLibraryRemove = null }
+            onDismiss = { pendingLibraryRemoveUri = null }
         )
     }
 }

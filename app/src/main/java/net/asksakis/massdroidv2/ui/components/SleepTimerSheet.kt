@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -21,7 +22,7 @@ fun SleepTimerSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = SheetDefaults.sheetState()
-    var showTimePicker by remember { mutableStateOf(false) }
+    var showTimePicker by rememberSaveable { mutableStateOf(false) }
 
     ModalBottomSheet(
         sheetMaxWidth = SheetDefaults.maxWidth(),

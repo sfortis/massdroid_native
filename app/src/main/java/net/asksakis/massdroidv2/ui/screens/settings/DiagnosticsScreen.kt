@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -102,7 +103,7 @@ private fun ShareLogsItem(serverVersion: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
-    var confirming by remember { mutableStateOf(false) }
+    var confirming by rememberSaveable { mutableStateOf(false) }
     // Disabled while a build runs: each tap used to start its own coroutine, and two
     // within the same second wrote the same second-stamped zip at once.
     var building by remember { mutableStateOf(false) }

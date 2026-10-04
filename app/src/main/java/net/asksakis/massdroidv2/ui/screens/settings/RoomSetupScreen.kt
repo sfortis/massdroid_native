@@ -766,7 +766,7 @@ private fun PlaybackConfigSection(
     viewModel: ProximityViewModel
 ) {
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
-    var showPlaylistPicker by remember { mutableStateOf(false) }
+    var showPlaylistPicker by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.loadPlaylists() }
 

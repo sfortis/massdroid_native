@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,11 +81,19 @@ fun AlbumDetailScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val albumInLibrary by viewModel.albumInLibrary.collectAsStateWithLifecycle()
 
-    var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var addToPlaylistTrackUri by remember { mutableStateOf<String?>(null) }
-    var showRemoveAlbumConfirm by remember { mutableStateOf(false) }
-    var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var showNfcWrite by remember { mutableStateOf(false) }
+    // Sheets and dialogs keep only the track uri, so they survive rotation; the item is
+    // rebuilt from the current track list and the sheet closes if the track is gone.
+    var actionSheetUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var addToPlaylistTrackUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var showRemoveAlbumConfirm by rememberSaveable { mutableStateOf(false) }
+    var pendingLibraryRemoveUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var showNfcWrite by rememberSaveable { mutableStateOf(false) }
+    // Above the orientation branch, so the sheet survives the switch between layouts.
+    var showPlaySheet by rememberSaveable { mutableStateOf(false) }
+    fun trackSheetItem(uri: String?): ActionSheetItem? =
+        uri?.let { wanted -> tracks.firstOrNull { it.uri == wanted }?.toActionSheetItem(album) }
+    val actionSheetItem = trackSheetItem(actionSheetUri)
+    val pendingLibraryRemove = trackSheetItem(pendingLibraryRemoveUri)
     // Offered only where there is a chip to write with.
     val context = androidx.compose.ui.platform.LocalContext.current
     val hasNfc = remember(context) {
@@ -193,7 +202,8 @@ fun AlbumDetailScreen(
                         tracks = tracks,
                         onArtistClick = onArtistClick,
                         viewModel = viewModel,
-                        showActions = false
+                        showActions = false,
+                        onShowPlaySheet = { showPlaySheet = true }
                     )
                 }
                 LazyColumn(
@@ -205,6 +215,7 @@ fun AlbumDetailScreen(
                     item(key = "album-actions") {
                         AlbumPlayActions(
                             viewModel = viewModel,
+                            onShowPlaySheet = { showPlaySheet = true },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -219,7 +230,7 @@ fun AlbumDetailScreen(
                             isPlaying = isPlaying,
                             album = album,
                             onPlay = { viewModel.playTrack(track) },
-                            onAction = { actionSheetItem = it }
+                            onAction = { actionSheetUri = it.uri }
                         )
                     }
                 }
@@ -243,7 +254,8 @@ fun AlbumDetailScreen(
                             tracks = tracks,
                             onArtistClick = onArtistClick,
                             viewModel = viewModel,
-                            showActions = true
+                            showActions = true,
+                            onShowPlaySheet = { showPlaySheet = true }
                         )
                     }
                 }
@@ -255,12 +267,16 @@ fun AlbumDetailScreen(
                         isPlaying = isPlaying,
                         album = album,
                         onPlay = { viewModel.playTrack(track) },
-                        onAction = { actionSheetItem = it }
+                        onAction = { actionSheetUri = it.uri }
                     )
                 }
             }
         }
         }
+    }
+
+    if (showPlaySheet) {
+        AlbumPlaySheet(viewModel = viewModel, onDismiss = { showPlaySheet = false })
     }
 
     actionSheetItem?.let { target ->
@@ -282,11 +298,11 @@ fun AlbumDetailScreen(
             inLibrary = target.inLibrary,
             onToggleLibrary = {
                 if (target.inLibrary) {
-                    pendingLibraryRemove = target
+                    pendingLibraryRemoveUri = target.uri
                 } else {
                     viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
                 }
-                actionSheetItem = null
+                actionSheetUri = null
             },
             extraActions = if (target.mediaType == MediaType.TRACK) listOf(
                 MediaActionSheetExtraAction(
@@ -295,7 +311,7 @@ fun AlbumDetailScreen(
                     onClick = {
                         addToPlaylistTrackUri = target.uri
                         viewModel.loadEditablePlaylists(target.uri)
-                        actionSheetItem = null
+                        actionSheetUri = null
                     }
                 )
             ) else emptyList(),
@@ -304,7 +320,7 @@ fun AlbumDetailScreen(
             onPlayNext = { viewModel.enqueueNext(target.uri) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
             onStartRadio = { viewModel.startRadio(target.uri) },
-            onDismiss = { actionSheetItem = null }
+            onDismiss = { actionSheetUri = null }
         )
     }
 
@@ -322,7 +338,7 @@ fun AlbumDetailScreen(
             onConfirm = {
                 viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, true)
             },
-            onDismiss = { pendingLibraryRemove = null }
+            onDismiss = { pendingLibraryRemoveUri = null }
         )
     }
 
@@ -355,7 +371,8 @@ private fun AlbumHeader(
     tracks: List<Track>,
     onArtistClick: ((Artist) -> Unit)?,
     viewModel: AlbumDetailViewModel,
-    showActions: Boolean
+    showActions: Boolean,
+    onShowPlaySheet: () -> Unit
 ) {
     val imageUrl = album?.imageUrl ?: tracks.firstOrNull()?.imageUrl
     val configuration = LocalConfiguration.current
@@ -444,7 +461,7 @@ private fun AlbumHeader(
 
     if (showActions) {
         Spacer(modifier = Modifier.height(12.dp))
-        AlbumPlayActions(viewModel = viewModel)
+        AlbumPlayActions(viewModel = viewModel, onShowPlaySheet = onShowPlaySheet)
     }
 
     if (tracks.isNotEmpty()) {
@@ -466,11 +483,10 @@ private fun AlbumHeader(
 @Composable
 private fun AlbumPlayActions(
     viewModel: AlbumDetailViewModel,
+    onShowPlaySheet: () -> Unit,
     modifier: Modifier = Modifier,
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Center
 ) {
-    var showPlaySheet by remember { mutableStateOf(false) }
-    val playSheetState = SheetDefaults.sheetState()
     val sending by viewModel.sending.collectAsStateWithLifecycle()
 
     Row(
@@ -497,62 +513,68 @@ private fun AlbumPlayActions(
             Text("Play All")
         }
         MdTextButton(
-            onClick = { showPlaySheet = true },
+            onClick = onShowPlaySheet,
             contentPadding = PaddingValues(horizontal = 8.dp)
         ) {
             Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
         }
     }
+}
 
-    if (showPlaySheet) {
-        ModalBottomSheet(
-            sheetMaxWidth = SheetDefaults.maxWidth(),
-            onDismissRequest = { showPlaySheet = false },
-            sheetState = playSheetState,
-            containerColor = SheetDefaults.containerColor()
-        ) {
-            Column(modifier = Modifier.padding(bottom = 32.dp)) {
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Play Next") },
-                    supportingContent = { Text("Insert after current track") },
-                    leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
-                    modifier = Modifier.clickable {
-                        showPlaySheet = false
-                        viewModel.playAllNext()
-                    }
-                )
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Add to Queue") },
-                    supportingContent = { Text("Add to end of queue") },
-                    leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
-                    modifier = Modifier.clickable {
-                        showPlaySheet = false
-                        viewModel.addAllToQueue()
-                    }
-                )
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Replace Queue") },
-                    supportingContent = { Text("Replace queue without playing") },
-                    leadingContent = { Icon(Icons.Default.PlaylistPlay, contentDescription = null) },
-                    modifier = Modifier.clickable {
-                        showPlaySheet = false
-                        viewModel.replaceQueue()
-                    }
-                )
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Start Radio") },
-                    supportingContent = { Text("Play similar tracks") },
-                    leadingContent = { Icon(Icons.Default.Radio, contentDescription = null) },
-                    modifier = Modifier.clickable {
-                        showPlaySheet = false
-                        viewModel.startRadioAll()
-                    }
-                )
-            }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AlbumPlaySheet(
+    viewModel: AlbumDetailViewModel,
+    onDismiss: () -> Unit
+) {
+    val playSheetState = SheetDefaults.sheetState()
+    ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
+        onDismissRequest = onDismiss,
+        sheetState = playSheetState,
+        containerColor = SheetDefaults.containerColor()
+    ) {
+        Column(modifier = Modifier.padding(bottom = 32.dp)) {
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Play Next") },
+                supportingContent = { Text("Insert after current track") },
+                leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.playAllNext()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Add to Queue") },
+                supportingContent = { Text("Add to end of queue") },
+                leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.addAllToQueue()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Replace Queue") },
+                supportingContent = { Text("Replace queue without playing") },
+                leadingContent = { Icon(Icons.Default.PlaylistPlay, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.replaceQueue()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Start Radio") },
+                supportingContent = { Text("Play similar tracks") },
+                leadingContent = { Icon(Icons.Default.Radio, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.startRadioAll()
+                }
+            )
         }
     }
 }
@@ -610,20 +632,7 @@ private fun AlbumTrackItem(
                 MdIconButton(
                     onClick = {
                         onAction(
-                            ActionSheetItem(
-                                title = track.name,
-                                subtitle = track.artistNames,
-                                uri = track.uri,
-                                imageUrl = track.imageUrl,
-                                favorite = track.favorite,
-                                mediaType = MediaType.TRACK,
-                                itemId = track.itemId,
-                                inLibrary = track.uri.startsWith("library://"),
-                                primaryArtistUri = track.artistUri ?: album?.artists?.firstOrNull()?.uri,
-                                primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
-                                    .orEmpty()
-                                    .ifBlank { album?.artists?.firstOrNull()?.name ?: "Artist" }
-                            )
+                            track.toActionSheetItem(album)
                         )
                     },
                     modifier = Modifier.size(32.dp)
@@ -642,22 +651,24 @@ private fun AlbumTrackItem(
                 onClick = onPlay,
                 onLongClick = {
                     onAction(
-                        ActionSheetItem(
-                            title = track.name,
-                            subtitle = track.artistNames,
-                            uri = track.uri,
-                            imageUrl = track.imageUrl,
-                            favorite = track.favorite,
-                            mediaType = MediaType.TRACK,
-                            itemId = track.itemId,
-                            inLibrary = track.uri.startsWith("library://"),
-                            primaryArtistUri = track.artistUri ?: album?.artists?.firstOrNull()?.uri,
-                            primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim()
-                                .orEmpty()
-                                .ifBlank { album?.artists?.firstOrNull()?.name ?: "Artist" }
-                        )
+                        track.toActionSheetItem(album)
                     )
                 }
             )
     )
 }
+
+private fun Track.toActionSheetItem(album: Album?) = ActionSheetItem(
+    title = name,
+    subtitle = artistNames,
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.TRACK,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://"),
+    primaryArtistUri = artistUri ?: album?.artists?.firstOrNull()?.uri,
+    primaryArtistName = artistNames.split(",").firstOrNull()?.trim()
+        .orEmpty()
+        .ifBlank { album?.artists?.firstOrNull()?.name ?: "Artist" }
+)

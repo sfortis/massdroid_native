@@ -49,6 +49,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -86,6 +87,14 @@ private data class QueueActionItem(
     val index: Int
 )
 
+private fun QueueItem.toActionItem(index: Int) = QueueActionItem(
+    queueItemId = queueItemId,
+    name = track?.name ?: name,
+    artistNames = track?.artistNames ?: "",
+    imageUrl = track?.imageUrl ?: imageUrl,
+    index = index
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueueSheet(
@@ -109,9 +118,14 @@ fun QueueSheet(
     val chapterMode = isAudiobook && chapters.isNotEmpty()
     val players by viewModel.players.collectAsStateWithLifecycle()
     val sendspinClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = null)
-    var actionSheetItem by remember { mutableStateOf<QueueActionItem?>(null) }
-    var showQueueMenu by remember { mutableStateOf(false) }
-    var showSaveQueueDialog by remember { mutableStateOf(false) }
+    // Saved by queue item id so the sheet survives rotation; it closes if the item left the queue.
+    var actionSheetItemId by rememberSaveable { mutableStateOf<String?>(null) }
+    val actionSheetItem = actionSheetItemId?.let { id ->
+        val index = items.indexOfFirst { it.queueItemId == id }
+        items.getOrNull(index)?.toActionItem(index)
+    }
+    var showQueueMenu by rememberSaveable { mutableStateOf(false) }
+    var showSaveQueueDialog by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val haptic = LocalHapticFeedback.current
     val displayItems = remember { mutableStateListOf<QueueItem>() }
@@ -305,15 +319,7 @@ fun QueueSheet(
                                         Color.Unspecified
                                     },
                                     showEqualizer = item.queueItemId == currentQueueItemId && isPlaying,
-                                    onMoreClick = {
-                                        actionSheetItem = QueueActionItem(
-                                            queueItemId = item.queueItemId,
-                                            name = item.track?.name ?: item.name,
-                                            artistNames = item.track?.artistNames ?: "",
-                                            imageUrl = item.track?.imageUrl ?: item.imageUrl,
-                                            index = index
-                                        )
-                                    },
+                                    onMoreClick = { actionSheetItemId = item.queueItemId },
                                     dragHandle = {
                                         Icon(
                                             Icons.Default.DragHandle,
@@ -380,7 +386,7 @@ fun QueueSheet(
     actionSheetItem?.let { item ->
         ModalBottomSheet(
             sheetMaxWidth = SheetDefaults.maxWidth(),
-            onDismissRequest = { actionSheetItem = null },
+            onDismissRequest = { actionSheetItemId = null },
             sheetState = SheetDefaults.sheetState(),
             containerColor = SheetDefaults.containerColor()
         ) {
@@ -431,7 +437,7 @@ fun QueueSheet(
                     leadingContent = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
                     modifier = Modifier.clickable {
                         viewModel.playIndex(item.index)
-                        actionSheetItem = null
+                        actionSheetItemId = null
                     }
                 )
 
@@ -445,7 +451,7 @@ fun QueueSheet(
                         leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
                         modifier = Modifier.clickable {
                             viewModel.playNext(item.queueItemId)
-                            actionSheetItem = null
+                            actionSheetItemId = null
                         }
                     )
                 }
@@ -457,7 +463,7 @@ fun QueueSheet(
                         leadingContent = { Icon(Icons.Default.ArrowUpward, contentDescription = null) },
                         modifier = Modifier.clickable {
                             viewModel.moveItemUp(item.queueItemId)
-                            actionSheetItem = null
+                            actionSheetItemId = null
                         }
                     )
                 }
@@ -469,7 +475,7 @@ fun QueueSheet(
                         leadingContent = { Icon(Icons.Default.ArrowDownward, contentDescription = null) },
                         modifier = Modifier.clickable {
                             viewModel.moveItemDown(item.queueItemId)
-                            actionSheetItem = null
+                            actionSheetItemId = null
                         }
                     )
                 }
@@ -486,7 +492,7 @@ fun QueueSheet(
                     },
                     modifier = Modifier.clickable {
                         viewModel.removeItem(item.queueItemId)
-                        actionSheetItem = null
+                        actionSheetItemId = null
                     }
                 )
             }

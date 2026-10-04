@@ -71,6 +71,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -258,7 +259,7 @@ fun HomeScreen(
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val connectionProbe by viewModel.connectionProbe.collectAsStateWithLifecycle()
     val pullToRefreshState = rememberPullToRefreshState()
-    var showConnectionDialog by remember { mutableStateOf(false) }
+    var showConnectionDialog by rememberSaveable { mutableStateOf(false) }
     val guard = rememberConnectionGuard()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val cardMetrics = rememberDiscoverCardMetrics(isLandscape)

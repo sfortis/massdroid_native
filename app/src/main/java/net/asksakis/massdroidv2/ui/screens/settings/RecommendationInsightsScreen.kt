@@ -32,7 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,8 +56,8 @@ fun RecommendationInsightsScreen(
     val topGenres by viewModel.topGenres.collectAsStateWithLifecycle()
     val blockedArtists by viewModel.blockedArtists.collectAsStateWithLifecycle()
 
-    var showResetConfirm by remember { mutableStateOf(false) }
-    var showBlockedResetConfirm by remember { mutableStateOf(false) }
+    var showResetConfirm by rememberSaveable { mutableStateOf(false) }
+    var showBlockedResetConfirm by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshRecommendationData()

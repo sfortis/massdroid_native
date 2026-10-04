@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
@@ -77,12 +78,26 @@ fun PlaylistDetailScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val sending by viewModel.sending.collectAsStateWithLifecycle()
 
-    var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var moveTrack by remember { mutableStateOf<Track?>(null) }
-    var moveFallbackPosition by remember { mutableStateOf(0) }
-    var showSortSheet by remember { mutableStateOf(false) }
-    var showNfcWrite by remember { mutableStateOf(false) }
+    // Sheets and dialogs keep only the track uri and its position, so they survive
+    // rotation. A playlist can hold the same track twice, so the position tells the rows
+    // apart; whatever is open closes if that row is no longer in the list.
+    var actionSheetUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingLibraryRemoveUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var sheetPosition by rememberSaveable { mutableIntStateOf(0) }
+    var moveTrackUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var moveFallbackPosition by rememberSaveable { mutableStateOf(0) }
+    var showSortSheet by rememberSaveable { mutableStateOf(false) }
+    var showNfcWrite by rememberSaveable { mutableStateOf(false) }
+    // Outside the lazy item that shows the button, so scrolling it away keeps the sheet.
+    var showPlaySheet by rememberSaveable { mutableStateOf(false) }
+    fun playlistTrack(uri: String?, position: Int): Track? = uri?.let { wanted ->
+        tracks.withIndex()
+            .firstOrNull { (index, track) -> track.uri == wanted && (track.position ?: index) == position }
+            ?.value
+    }
+    val actionSheetItem = playlistTrack(actionSheetUri, sheetPosition)?.toActionSheetItem(sheetPosition)
+    val pendingLibraryRemove = playlistTrack(pendingLibraryRemoveUri, sheetPosition)?.toActionSheetItem(sheetPosition)
+    val moveTrack = playlistTrack(moveTrackUri, moveFallbackPosition)
     val snackbarHostState = remember { SnackbarHostState() }
     // Offered only where there is a chip to write with.
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -171,7 +186,6 @@ fun PlaylistDetailScreen(
             contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)
         ) {
             item(key = "play-all") {
-                var showPlaySheet by remember { mutableStateOf(false) }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                     horizontalArrangement = Arrangement.Center,
@@ -203,58 +217,6 @@ fun PlaylistDetailScreen(
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
                         Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
-                    }
-                }
-
-                if (showPlaySheet) {
-                    ModalBottomSheet(
-                        sheetMaxWidth = SheetDefaults.maxWidth(),
-                        onDismissRequest = { showPlaySheet = false },
-                        sheetState = SheetDefaults.sheetState(),
-                        containerColor = SheetDefaults.containerColor()
-                    ) {
-                        Column(modifier = Modifier.padding(bottom = 32.dp)) {
-                            ListItem(
-                                colors = SheetDefaults.listItemColors(),
-                                headlineContent = { Text("Play Next") },
-                                supportingContent = { Text("Insert after current track") },
-                                leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
-                                modifier = Modifier.clickable {
-                                    showPlaySheet = false
-                                    viewModel.playAllNext()
-                                }
-                            )
-                            ListItem(
-                                colors = SheetDefaults.listItemColors(),
-                                headlineContent = { Text("Add to Queue") },
-                                supportingContent = { Text("Add to end of queue") },
-                                leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
-                                modifier = Modifier.clickable {
-                                    showPlaySheet = false
-                                    viewModel.addAllToQueue()
-                                }
-                            )
-                            ListItem(
-                                colors = SheetDefaults.listItemColors(),
-                                headlineContent = { Text("Replace Queue") },
-                                supportingContent = { Text("Replace queue without playing") },
-                                leadingContent = { Icon(Icons.Default.PlaylistPlay, contentDescription = null) },
-                                modifier = Modifier.clickable {
-                                    showPlaySheet = false
-                                    viewModel.replaceQueue()
-                                }
-                            )
-                            ListItem(
-                                colors = SheetDefaults.listItemColors(),
-                                headlineContent = { Text("Start Radio") },
-                                supportingContent = { Text("Play similar tracks") },
-                                leadingContent = { Icon(Icons.Default.Radio, contentDescription = null) },
-                                modifier = Modifier.clickable {
-                                    showPlaySheet = false
-                                    viewModel.startRadioAll()
-                                }
-                            )
-                        }
                     }
                 }
             }
@@ -291,24 +253,17 @@ fun PlaylistDetailScreen(
                     favorite = track.favorite,
                     showEqualizer = isCurrent && isPlaying,
                     onLongClick = {
-                        actionSheetItem = ActionSheetItem(
-                            title = track.name,
-                            subtitle = track.artistNames,
-                            uri = track.uri,
-                            imageUrl = track.imageUrl,
-                            favorite = track.favorite,
-                            mediaType = MediaType.TRACK,
-                            itemId = track.itemId,
-                            inLibrary = track.uri.startsWith("library://"),
-                            position = track.position ?: fallbackPosition,
-                            primaryArtistUri = track.artistUri,
-                            primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { "Artist" }
-                        )
+                        actionSheetUri = track.uri
+                        sheetPosition = track.position ?: fallbackPosition
                     }
                 )
             }
         }
         }
+    }
+
+    if (showPlaySheet) {
+        PlaylistPlaySheet(viewModel = viewModel, onDismiss = { showPlaySheet = false })
     }
 
     if (showSortSheet) {
@@ -340,11 +295,11 @@ fun PlaylistDetailScreen(
             inLibrary = target.inLibrary,
             onToggleLibrary = {
                 if (target.inLibrary) {
-                    pendingLibraryRemove = target
+                    pendingLibraryRemoveUri = target.uri
                 } else {
                     viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
                 }
-                actionSheetItem = null
+                actionSheetUri = null
             },
             extraActions = listOf(
                 MediaActionSheetExtraAction(
@@ -360,7 +315,7 @@ fun PlaylistDetailScreen(
                     title = "Move to Playlist",
                     icon = { Icon(Icons.Default.DriveFileMove, contentDescription = null) },
                     onClick = {
-                        moveTrack = tracks.firstOrNull { it.uri == target.uri && (it.position ?: target.position) == target.position }
+                        moveTrackUri = target.uri
                         moveFallbackPosition = target.position ?: 0
                     }
                 )
@@ -370,7 +325,7 @@ fun PlaylistDetailScreen(
             onPlayNext = { viewModel.enqueueNext(target.uri) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
             onStartRadio = { viewModel.startRadio(target.uri) },
-            onDismiss = { actionSheetItem = null }
+            onDismiss = { actionSheetUri = null }
         )
     }
 
@@ -380,21 +335,89 @@ fun PlaylistDetailScreen(
             onConfirm = {
                 viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, true)
             },
-            onDismiss = { pendingLibraryRemove = null }
+            onDismiss = { pendingLibraryRemoveUri = null }
         )
     }
 
     moveTrack?.let { track ->
         MoveTrackDialog(
             playlists = playlists.filterNot { it.itemId == viewModel.itemId && it.provider == viewModel.provider },
-            onDismiss = { moveTrack = null },
+            onDismiss = { moveTrackUri = null },
             onPlaylistSelected = { destination ->
                 viewModel.moveTrackToPlaylist(track, moveFallbackPosition, destination)
-                moveTrack = null
+                moveTrackUri = null
             }
         )
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaylistPlaySheet(viewModel: PlaylistDetailViewModel, onDismiss: () -> Unit) {
+    ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
+        onDismissRequest = onDismiss,
+        sheetState = SheetDefaults.sheetState(),
+        containerColor = SheetDefaults.containerColor()
+    ) {
+        Column(modifier = Modifier.padding(bottom = 32.dp)) {
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Play Next") },
+                supportingContent = { Text("Insert after current track") },
+                leadingContent = { Icon(Icons.Default.SkipNext, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.playAllNext()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Add to Queue") },
+                supportingContent = { Text("Add to end of queue") },
+                leadingContent = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.addAllToQueue()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Replace Queue") },
+                supportingContent = { Text("Replace queue without playing") },
+                leadingContent = { Icon(Icons.Default.PlaylistPlay, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.replaceQueue()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Start Radio") },
+                supportingContent = { Text("Play similar tracks") },
+                leadingContent = { Icon(Icons.Default.Radio, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    onDismiss()
+                    viewModel.startRadioAll()
+                }
+            )
+        }
+    }
+}
+
+private fun Track.toActionSheetItem(position: Int) = ActionSheetItem(
+    title = name,
+    subtitle = artistNames,
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.TRACK,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://"),
+    position = position,
+    primaryArtistUri = artistUri,
+    primaryArtistName = artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { "Artist" }
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

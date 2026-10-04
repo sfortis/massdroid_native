@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,9 +76,21 @@ fun ArtistDetailScreen(
     val artistBlocked = blockedArtistUris.blocksArtist(artist?.uri)
 
     val artistInLibrary by viewModel.artistInLibrary.collectAsStateWithLifecycle()
-    var actionSheetItem by remember { mutableStateOf<ActionSheetItem?>(null) }
-    var showRemoveArtistConfirm by remember { mutableStateOf(false) }
-    var pendingLibraryRemove by remember { mutableStateOf<ActionSheetItem?>(null) }
+    // Sheets and dialogs keep only the item uri, so they survive rotation; the item is
+    // rebuilt from the current lists and the sheet closes if it is gone. A uri names its
+    // media type, so a track and an album cannot collide.
+    var actionSheetUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var showRemoveArtistConfirm by rememberSaveable { mutableStateOf(false) }
+    var pendingLibraryRemoveUri by rememberSaveable { mutableStateOf<String?>(null) }
+    // Above the orientation branch and outside the lazy item that shows the button.
+    var showPlaySheet by rememberSaveable { mutableStateOf(false) }
+    fun sheetItem(uri: String?): ActionSheetItem? = uri?.let { wanted ->
+        tracks.firstOrNull { it.uri == wanted }?.toActionSheetItem(artist, artistName)
+            ?: (albums.firstOrNull { it.uri == wanted } ?: discographyAlbums.firstOrNull { it.uri == wanted })
+                ?.toActionSheetItem(artist, artistName)
+    }
+    val actionSheetItem = sheetItem(actionSheetUri)
+    val pendingLibraryRemove = sheetItem(pendingLibraryRemoveUri)
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -191,7 +204,8 @@ fun ArtistDetailScreen(
                         onArtistClick = onArtistClick,
                         onAlbumClick = onAlbumClick,
                         viewModel = viewModel,
-                        onAction = { actionSheetItem = it }
+                        onAction = { actionSheetUri = it.uri },
+                        onShowPlaySheet = { showPlaySheet = true }
                     )
                 }
             }
@@ -227,11 +241,16 @@ fun ArtistDetailScreen(
                     onArtistClick = onArtistClick,
                     onAlbumClick = onAlbumClick,
                     viewModel = viewModel,
-                    onAction = { actionSheetItem = it }
+                    onAction = { actionSheetUri = it.uri },
+                    onShowPlaySheet = { showPlaySheet = true }
                 )
             }
         }
         }
+    }
+
+    if (showPlaySheet) {
+        ArtistTracksPlaySheet(viewModel = viewModel, onDismiss = { showPlaySheet = false })
     }
 
     actionSheetItem?.let { target ->
@@ -253,18 +272,18 @@ fun ArtistDetailScreen(
             inLibrary = target.inLibrary,
             onToggleLibrary = {
                 if (target.inLibrary) {
-                    pendingLibraryRemove = target
+                    pendingLibraryRemoveUri = target.uri
                 } else {
                     viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
                 }
-                actionSheetItem = null
+                actionSheetUri = null
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onPlayNext = { viewModel.enqueueNext(target.uri) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
             onStartRadio = { viewModel.startRadio(target.uri) },
-            onDismiss = { actionSheetItem = null }
+            onDismiss = { actionSheetUri = null }
         )
     }
 
@@ -282,7 +301,7 @@ fun ArtistDetailScreen(
             onConfirm = {
                 viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, true)
             },
-            onDismiss = { pendingLibraryRemove = null }
+            onDismiss = { pendingLibraryRemoveUri = null }
         )
     }
 }
@@ -386,7 +405,8 @@ private fun LazyListScope.ArtistContentItems(
     onArtistClick: (Artist) -> Unit,
     onAlbumClick: (Album) -> Unit,
     viewModel: ArtistDetailViewModel,
-    onAction: (ActionSheetItem) -> Unit
+    onAction: (ActionSheetItem) -> Unit,
+    onShowPlaySheet: () -> Unit
 ) {
     if (similarArtists.isNotEmpty()) {
         item {
@@ -441,7 +461,7 @@ private fun LazyListScope.ArtistContentItems(
 
     if (tracks.isNotEmpty()) {
         item {
-            ArtistTracksHeader(viewModel = viewModel)
+            ArtistTracksHeader(viewModel = viewModel, onShowPlaySheet = onShowPlaySheet)
         }
         items(tracks, key = { it.uri }) { track ->
             MediaItemRow(
@@ -452,34 +472,12 @@ private fun LazyListScope.ArtistContentItems(
                 favorite = track.favorite,
                 onMoreClick = {
                     onAction(
-                        ActionSheetItem(
-                            title = track.name,
-                            subtitle = track.artistNames,
-                            uri = track.uri,
-                            imageUrl = track.imageUrl,
-                            favorite = track.favorite,
-                            mediaType = MediaType.TRACK,
-                            itemId = track.itemId,
-                            inLibrary = track.uri.startsWith("library://"),
-                            primaryArtistUri = track.artistUri ?: artist?.uri,
-                            primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { artistName }
-                        )
+                        track.toActionSheetItem(artist, artistName)
                     )
                 },
                 onLongClick = {
                     onAction(
-                        ActionSheetItem(
-                            title = track.name,
-                            subtitle = track.artistNames,
-                            uri = track.uri,
-                            imageUrl = track.imageUrl,
-                            favorite = track.favorite,
-                            mediaType = MediaType.TRACK,
-                            itemId = track.itemId,
-                            inLibrary = track.uri.startsWith("library://"),
-                            primaryArtistUri = track.artistUri ?: artist?.uri,
-                            primaryArtistName = track.artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { artistName }
-                        )
+                        track.toActionSheetItem(artist, artistName)
                     )
                 }
             )
@@ -518,18 +516,7 @@ private fun LazyListScope.artistAlbumSection(
             inLibrary = album.uri.startsWith("library://"),
             onLongClick = {
                 onAction(
-                    ActionSheetItem(
-                        title = album.name,
-                        subtitle = "",
-                        uri = album.uri,
-                        imageUrl = album.imageUrl,
-                        favorite = album.favorite,
-                        mediaType = MediaType.ALBUM,
-                        itemId = album.itemId,
-                        inLibrary = album.uri.startsWith("library://"),
-                        primaryArtistUri = album.artists.firstOrNull()?.uri ?: artist?.uri,
-                        primaryArtistName = album.artists.firstOrNull()?.name ?: artistName
-                    )
+                    album.toActionSheetItem(artist, artistName)
                 )
             },
             onPlayClick = { viewModel.quickPlay(album.uri) }
@@ -539,8 +526,7 @@ private fun LazyListScope.artistAlbumSection(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
-    var showPlaySheet by remember { mutableStateOf(false) }
+private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel, onShowPlaySheet: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -562,38 +548,67 @@ private fun ArtistTracksHeader(viewModel: ArtistDetailViewModel) {
                 Text("Play All", style = MaterialTheme.typography.labelMedium)
             }
             MdTextButton(
-                onClick = { showPlaySheet = true },
+                onClick = onShowPlaySheet,
                 contentPadding = PaddingValues(horizontal = 8.dp)
             ) {
                 Icon(Icons.Default.ArrowDropDown, contentDescription = "More options")
             }
         }
     }
-    if (showPlaySheet) {
-        ModalBottomSheet(
-            sheetMaxWidth = SheetDefaults.maxWidth(),
-            onDismissRequest = { showPlaySheet = false },
-            sheetState = SheetDefaults.sheetState(),
-            containerColor = SheetDefaults.containerColor()
-        ) {
-            Column(modifier = Modifier.padding(bottom = 32.dp)) {
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Add to Queue") },
-                    modifier = Modifier.clickable {
-                        viewModel.playAllTracks(option = "add")
-                        showPlaySheet = false
-                    }
-                )
-                ListItem(
-                    colors = SheetDefaults.listItemColors(),
-                    headlineContent = { Text("Play Next") },
-                    modifier = Modifier.clickable {
-                        viewModel.playAllTracks(option = "next")
-                        showPlaySheet = false
-                    }
-                )
-            }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ArtistTracksPlaySheet(viewModel: ArtistDetailViewModel, onDismiss: () -> Unit) {
+    ModalBottomSheet(
+        sheetMaxWidth = SheetDefaults.maxWidth(),
+        onDismissRequest = onDismiss,
+        sheetState = SheetDefaults.sheetState(),
+        containerColor = SheetDefaults.containerColor()
+    ) {
+        Column(modifier = Modifier.padding(bottom = 32.dp)) {
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Add to Queue") },
+                modifier = Modifier.clickable {
+                    viewModel.playAllTracks(option = "add")
+                    onDismiss()
+                }
+            )
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Play Next") },
+                modifier = Modifier.clickable {
+                    viewModel.playAllTracks(option = "next")
+                    onDismiss()
+                }
+            )
         }
     }
 }
+
+private fun Track.toActionSheetItem(artist: Artist?, artistName: String) = ActionSheetItem(
+    title = name,
+    subtitle = artistNames,
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.TRACK,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://"),
+    primaryArtistUri = artistUri ?: artist?.uri,
+    primaryArtistName = artistNames.split(",").firstOrNull()?.trim().orEmpty().ifBlank { artistName }
+)
+
+private fun Album.toActionSheetItem(artist: Artist?, artistName: String) = ActionSheetItem(
+    title = name,
+    subtitle = "",
+    uri = uri,
+    imageUrl = imageUrl,
+    favorite = favorite,
+    mediaType = MediaType.ALBUM,
+    itemId = itemId,
+    inLibrary = uri.startsWith("library://"),
+    primaryArtistUri = artists.firstOrNull()?.uri ?: artist?.uri,
+    primaryArtistName = artists.firstOrNull()?.name ?: artistName
+)

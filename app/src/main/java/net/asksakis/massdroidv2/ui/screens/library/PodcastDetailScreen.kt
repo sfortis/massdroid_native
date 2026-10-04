@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,7 +55,9 @@ fun PodcastDetailScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val elapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
 
-    var actionSheetEpisode by remember { mutableStateOf<PodcastEpisode?>(null) }
+    // Saved by episode uri so the sheet survives rotation; it closes if the episode is gone.
+    var actionSheetEpisodeUri by rememberSaveable { mutableStateOf<String?>(null) }
+    val actionSheetEpisode = actionSheetEpisodeUri?.let { uri -> episodes.firstOrNull { it.uri == uri } }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -120,7 +123,7 @@ fun PodcastDetailScreen(
                         // so they don't recompose every tick).
                         liveElapsedSeconds = if (episode.uri == currentTrackUri) elapsedTime else 0.0,
                         onPlay = { viewModel.playEpisode(episode) },
-                        onAction = { actionSheetEpisode = it }
+                        onAction = { actionSheetEpisodeUri = it.uri }
                     )
                 }
             }
@@ -156,7 +159,7 @@ fun PodcastDetailScreen(
                 null
             },
             onAddToQueue = { viewModel.enqueue(target.uri) },
-            onDismiss = { actionSheetEpisode = null }
+            onDismiss = { actionSheetEpisodeUri = null }
         )
     }
 }
