@@ -70,6 +70,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,6 +93,7 @@ import net.asksakis.massdroidv2.ui.components.LocalIsConnected
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
 import net.asksakis.massdroidv2.ui.components.LocalProviderManifestCache
 import net.asksakis.massdroidv2.ui.components.MiniPlayer
+import net.asksakis.massdroidv2.ui.components.calibrationTarget
 import javax.inject.Inject
 import net.asksakis.massdroidv2.ui.navigation.MassDroidNavHost
 import net.asksakis.massdroidv2.ui.navigation.Routes
@@ -237,7 +239,7 @@ class MainActivity : ComponentActivity() {
                     net.asksakis.massdroidv2.ui.components.VolumeOsdOverlay(
                         flow = playerRepository.volumeOsd
                     )
-                    SpeakerCalibrationPrompt(acousticCalibrationCoordinator)
+                    OutputCalibrationPrompt(acousticCalibrationCoordinator)
                     if (showNotificationPermissionDialog) {
                         PermissionRationaleDialog(
                             spec = AppPermissionRationales.notifications,
@@ -403,22 +405,32 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Top-level one-time offer to calibrate this phone's speaker output delay when
- * it joins a sync group uncalibrated. The dialog's Start button is the user
- * confirmation; Cancel skips (not re-offered again this session).
+ * Top-level one-time offer to calibrate the output this phone plays on (its
+ * speaker or a Bluetooth device) when it joins a sync group uncalibrated. The
+ * dialog's Start button is the user confirmation; Cancel skips (not re-offered
+ * for that output again this session).
  */
 @Composable
-private fun SpeakerCalibrationPrompt(
+private fun OutputCalibrationPrompt(
     coordinator: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 ) {
-    var show by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        coordinator.speakerCalSuggested.collect { show = true }
+    var target by rememberSaveable {
+        mutableStateOf<net.asksakis.massdroidv2.ui.components.OutputCalibrationTarget?>(null)
     }
-    if (show) {
-        net.asksakis.massdroidv2.ui.components.SpeakerCalibrationDialog(
+    var routeName by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        coordinator.calibrationSuggested.collect { output ->
+            val suggested = output.kind.calibrationTarget() ?: return@collect
+            routeName = output.name
+            target = suggested
+        }
+    }
+    target?.let {
+        net.asksakis.massdroidv2.ui.components.OutputCalibrationDialog(
             coordinator = coordinator,
-            onDismiss = { show = false }
+            target = it,
+            routeName = routeName,
+            onDismiss = { target = null }
         )
     }
 }
@@ -778,7 +790,7 @@ private fun MiniPlayerContainer(
     onClick: () -> Unit
 ) {
     val miniPlayerUiState by miniPlayerViewModel.miniPlayerUiState.collectAsStateWithLifecycle()
-    var showQueueSheet by remember { mutableStateOf(false) }
+    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     val hasMiniPlayer = showMiniPlayer && miniPlayerUiState.hasPlayer
     if (!hasMiniPlayer) return
 

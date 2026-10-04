@@ -1,16 +1,8 @@
 package net.asksakis.massdroidv2.data.sendspin
 
-import android.annotation.SuppressLint
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.AudioTimestamp
-import android.media.MediaRecorder
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.coroutineContext
-import kotlin.math.max
 
 data class SyncProbeResult(
     val analysis: SyncProbeAnalysis,
@@ -43,11 +35,9 @@ class SyncProbe(private val clock: ClockSynchronizer) {
 
     companion object {
         private const val TAG = "SyncProbe"
-        private const val MIC_RATE = 48_000
         const val FIRST_RECORD_SECONDS = 10
         const val NEXT_RECORD_SECONDS = 5
         private const val TAP_SECONDS = 20
-        private const val READ_FRAMES = 1024
         private const val REFERENCE_MARGIN_US = 1_000_000L
     }
 
@@ -64,7 +54,7 @@ class SyncProbe(private val clock: ClockSynchronizer) {
          */
         suspend fun measure(windowUs: LongRange = SyncProbeAnalyzer.DEFAULT_WINDOW_US): SyncProbeOutcome {
             val seconds = if (measured++ == 0) FIRST_RECORD_SECONDS else NEXT_RECORD_SECONDS
-            val mic = withContext(Dispatchers.IO) { record(seconds) }
+            val mic = record(seconds)
                 ?: return SyncProbeOutcome.Failure(
                     "Couldn't record. The microphone did not open; check the microphone permission."
                 )
@@ -99,69 +89,13 @@ class SyncProbe(private val clock: ClockSynchronizer) {
 
     private class Recording(val signal: SyncProbeSignal, val source: String, val timestampSpreadUs: Long)
 
-    // The caller requests RECORD_AUDIO before it starts the probe, and a refused
-    // permission leaves the recorder uninitialised, which returns null here.
-    @SuppressLint("MissingPermission")
+    /** Records [seconds] of the room and places the recording on the server clock. */
     private suspend fun record(seconds: Int): Recording? {
-        val (record, source) = openRecorder() ?: return null
-        val pcm = ShortArray(MIC_RATE * seconds)
-        val origins = ArrayList<Long>()
-        val timestamp = AudioTimestamp()
-        try {
-            record.startRecording()
-            var filled = 0
-            while (filled < pcm.size) {
-                coroutineContext.ensureActive()
-                val read = record.read(pcm, filled, minOf(READ_FRAMES, pcm.size - filled))
-                if (read <= 0) break
-                filled += read
-                if (record.getTimestamp(timestamp, AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS) {
-                    // Local time of frame 0, as this timestamp places it.
-                    origins += timestamp.nanoTime / 1000L - timestamp.framePosition * 1_000_000L / MIC_RATE
-                }
-            }
-            if (filled < MIC_RATE || origins.isEmpty()) return null
-            origins.sort()
-            val originUs = origins[origins.size / 2]
-            val spreadUs = max(originUs - origins.first(), origins.last() - originUs)
-            val samples = FloatArray(filled) { pcm[it] / 32768f }
-            val durationUs = (filled - 1) * 1_000_000L / MIC_RATE
-            val startServerUs = clock.localToServerUs(originUs)
-            val endServerUs = clock.localToServerUs(originUs + durationUs)
-            val interval = (endServerUs - startServerUs).toDouble() / (filled - 1)
-            return Recording(SyncProbeSignal(samples, startServerUs, interval), source, spreadUs)
-        } finally {
-            runCatching { record.stop() }
-            record.release()
-        }
-    }
-
-    /**
-     * UNPROCESSED first: the voice sources may run echo cancellation, which
-     * removes the phone's own playback from the recording.
-     */
-    @SuppressLint("MissingPermission")
-    private fun openRecorder(): Pair<AudioRecord, String>? {
-        val minBuffer = AudioRecord.getMinBufferSize(
-            MIC_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-        )
-        if (minBuffer <= 0) return null
-        val sources = listOf(
-            MediaRecorder.AudioSource.UNPROCESSED to "unprocessed",
-            MediaRecorder.AudioSource.VOICE_RECOGNITION to "voice_recognition",
-            MediaRecorder.AudioSource.MIC to "mic",
-        )
-        for ((source, name) in sources) {
-            val record = runCatching {
-                AudioRecord(
-                    source, MIC_RATE, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT, max(minBuffer, MIC_RATE / 5 * 2)
-                )
-            }.getOrNull() ?: continue
-            if (record.state == AudioRecord.STATE_INITIALIZED) return record to name
-            record.release()
-        }
-        return null
+        val mic = TimestampedMicRecorder.record(seconds * 1000L) ?: return null
+        val startServerUs = clock.localToServerUs(mic.originUs)
+        val endServerUs = clock.localToServerUs(mic.originUs + mic.durationUs)
+        val interval = (endServerUs - startServerUs).toDouble() / (mic.samples.size - 1)
+        return Recording(SyncProbeSignal(mic.samples, startServerUs, interval), mic.source, mic.timestampSpreadUs)
     }
 
     private fun logResult(result: SyncProbeResult) {

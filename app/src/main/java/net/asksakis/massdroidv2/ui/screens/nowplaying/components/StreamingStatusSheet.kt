@@ -19,10 +19,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -33,7 +29,6 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
-import net.asksakis.massdroidv2.ui.components.SteppedValueRow
 import net.asksakis.massdroidv2.ui.components.SyncErrorGraph
 import net.asksakis.massdroidv2.ui.screens.nowplaying.SendspinStatusUi
 
@@ -43,9 +38,9 @@ private fun formatMs(valueMs: Float): String =
 /**
  * Bottom sheet shown when the user taps the audio-quality badge while the
  * local Sendspin player is selected. Exposes the Sendspin transport state,
- * input/output format, sync details, buffer fill graph and static-delay
- * stepper. Pure display + the static-delay callback — all state comes in
- * via [status] and [syncHistory].
+ * input/output format, sync details and buffer fill graph. Pure display: all
+ * state comes in via [status] and [syncHistory]. The phone's timing is set
+ * in the player settings, per output.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,7 +48,6 @@ internal fun SendspinStatusSheet(
     status: SendspinStatusUi,
     inputAudioFormat: AudioFormatInfo? = null,
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
-    onSyncDelayChanged: (Int) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val sheetState = SheetDefaults.sheetState()
@@ -99,23 +93,26 @@ internal fun SendspinStatusSheet(
     // write-scheduling error against the group timeline. In DIRECT (solo) there
     // is no peer to converge to, so those readouts are meaningless — hide them.
     val isSyncMode = !status.correctionMode.equals("DIRECT", ignoreCase = true)
+    // The output aligns against the latency Android reports for the route
+    // (outputLatencyMs, Bluetooth included). A calibrated route adds what the
+    // microphone measured beyond that; the two together are how early the
+    // phone writes before the timestamp.
     val routeCorrectionMs = status.acousticCorrectionMs
-    val routeExtraMs = (routeCorrectionMs - status.outputLatencyMs).coerceAtLeast(0L)
-    // The in-device output latency is COMPUTED (the full AudioManager output
-    // latency, not just the HAL buffer), so playback lands on the group timeline
-    // automatically with no manual nudge. Acoustic calibration is only the
-    // beyond-DAC layer for Bluetooth routes; non-BT routes need no calibration.
     val latencyPrimary = when {
-        routeCorrectionMs > 0L -> "${routeCorrectionMs}ms calibrated"
-        status.outputLatencyMs > 0L -> "${status.outputLatencyMs}ms output latency"
-        else -> "Measuring"
+        status.outputLatencyMs <= 0L -> "Measuring"
+        routeCorrectionMs > 0L -> "${status.outputLatencyMs + routeCorrectionMs}ms"
+        else -> "${status.outputLatencyMs}ms output latency"
     }
+    // The applied sync delay is the output's fine-tune (positive = later).
+    val fineTuneDetail = status.syncDelayMs.takeIf { it != 0 }
+        ?.let { " + fine-tune ${if (it > 0) "+" else ""}${it}ms" }
+        .orEmpty()
     val latencyDetail = when {
-        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + BT route ${routeExtraMs}ms"
-        status.isBtRoute && status.outputLatencyMs > 0L -> "calibrate in player settings for tighter BT sync"
-        status.outputLatencyMs > 0L -> "computed, auto-synced"
-        else -> "waiting for output timestamp"
-    }
+        status.outputLatencyMs <= 0L -> "waiting for output timestamp"
+        routeCorrectionMs > 0L -> "output ${status.outputLatencyMs}ms + calibration ${routeCorrectionMs}ms"
+        status.isBtRoute -> "calibrate in player settings for tighter BT sync"
+        else -> "not calibrated"
+    } + fineTuneDetail
     val clockLabel = "${status.clockSamples} samples / ${formatMs(status.clockErrorUs / 1000f)} error"
     val rttLabel = formatMs(status.clockRttUs / 1000f)
     val driftLabel = String.format(java.util.Locale.US, "%.1f ppm", status.clockDriftPpm)
@@ -214,25 +211,6 @@ internal fun SendspinStatusSheet(
                 Text("0s", style = MaterialTheme.typography.labelSmall, color = dimColor)
                 Text("30s", style = MaterialTheme.typography.labelSmall, color = dimColor)
             }
-
-            HorizontalDivider()
-            var syncDelayMs by remember(status.syncDelayMs) { mutableIntStateOf(status.syncDelayMs) }
-            SteppedValueRow(
-                label = "Sendspin sync delay",
-                valueLabel = "${syncDelayMs}ms",
-                onDecrement = {
-                    // Range -1000..+1000 ms. Negative shifts playback sooner,
-                    // positive shifts it later — intuitive sign convention
-                    // matching the MA web UI's Sendspin sync delay slider.
-                    syncDelayMs = (syncDelayMs - 2).coerceAtLeast(-1000)
-                    onSyncDelayChanged(syncDelayMs)
-                },
-                onIncrement = {
-                    syncDelayMs = (syncDelayMs + 2).coerceAtMost(1000)
-                    onSyncDelayChanged(syncDelayMs)
-                },
-                labelStyle = MaterialTheme.typography.labelMedium
-            )
 
             if (isSyncMode && syncHistory.size >= 2) {
                 SyncErrorGraph(syncHistory)

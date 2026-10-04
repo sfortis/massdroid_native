@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import net.asksakis.massdroidv2.data.sendspin.OutputFineTune
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
@@ -78,8 +79,11 @@ class HomeViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-    val sendspinSyncDelayMs = settingsRepository.sendspinSyncDelayMs
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    /** The fine-tune of the output the phone plays on; null when that output cannot be named. */
+    val localOutputFineTune: StateFlow<OutputFineTune?> =
+        combine(acoustic.currentOutput, acoustic.outputFineTuneMs) { output, fineTunes ->
+            output.routeKey?.let { OutputFineTune(it, fineTunes[it] ?: 0) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     val sendspinSyncHistory = sendspinManager.syncHistory
     val proximityConfig = proximityConfigStore.config
     val currentDetectedRoom = roomDetector.currentRoom
@@ -321,11 +325,7 @@ class HomeViewModel @Inject constructor(
 
     fun dismissAutoSync() = groupAutoSync.dismiss()
 
-    fun setSendspinSyncDelayMs(delayMs: Int) {
-        viewModelScope.launch {
-            settingsRepository.setSendspinSyncDelayMs(delayMs)
-        }
-    }
+    fun setOutputFineTuneMs(routeKey: String, ms: Int) = acoustic.setOutputFineTuneMs(routeKey, ms)
 
     fun previous() {
         val player = selectedPlayer.value ?: return

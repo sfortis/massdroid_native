@@ -10,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
@@ -101,7 +102,7 @@ fun NowPlayingScreen(
     topBarInsets: WindowInsets = WindowInsets(0, 0, 0, 0),
     viewModel: NowPlayingViewModel = hiltViewModel()
 ) {
-    var showQueueSheet by remember { mutableStateOf(false) }
+    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
     val liveElapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
@@ -122,18 +123,16 @@ fun NowPlayingScreen(
     val artistBlocked = currentArtistUri?.let { it in blockedArtistUris } ?: false
     val canToggleArtistBlock = currentArtistUri != null
     val allPlayers by viewModel.allPlayers.collectAsStateWithLifecycle()
-    var showPlayerMenu by remember { mutableStateOf(false) }
-    // What the tag could be written with, captured when the action is tapped. Reading it
-    // live let the track advance underneath an open sheet, which silently retargeted the
-    // tag, and left the sheet to reopen by itself on the next track that had one.
-    var nfcWriteChoices by remember { mutableStateOf<List<NfcWriteChoice>>(emptyList()) }
+    var showPlayerMenu by rememberSaveable { mutableStateOf(false) }
+    // Whether the tag sheet is open is saved; its choices are captured below.
+    var showNfcWrite by rememberSaveable { mutableStateOf(false) }
     // Offered only where there is a chip to write with.
     val nfcContext = androidx.compose.ui.platform.LocalContext.current
     val hasNfc = remember(nfcContext) {
         nfcContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_NFC)
     }
-    var showTransferSheet by remember { mutableStateOf(false) }
-    var showLyricsSheet by remember { mutableStateOf(false) }
+    var showTransferSheet by rememberSaveable { mutableStateOf(false) }
+    var showLyricsSheet by rememberSaveable { mutableStateOf(false) }
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
     val lyricsTimingOffsetMs by viewModel.lyricsTimingOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
@@ -159,6 +158,15 @@ fun NowPlayingScreen(
         currentTrack?.albumName ?: player?.currentMedia?.album
             ?: cachedTrackDisplay?.album ?: ""
     }
+    // What the tag could be written with, captured when the action is tapped. Reading it
+    // live let the track advance underneath an open sheet, which silently retargeted the
+    // tag, and left the sheet to reopen by itself on the next track that had one. After a
+    // rotation the open sheet's choices are rebuilt once from the track playing then.
+    var nfcWriteChoices by remember {
+        mutableStateOf(
+            if (showNfcWrite) nfcWriteChoicesFor(queueState?.source, currentTrack, album) else emptyList()
+        )
+    }
     val imageUrl = currentTrack?.imageUrl ?: queueState?.currentItem?.imageUrl
         ?: player?.currentMedia?.imageUrl ?: cachedTrackDisplay?.imageUrl
     val duration = currentTrack?.duration ?: queueState?.currentItem?.duration
@@ -175,10 +183,10 @@ fun NowPlayingScreen(
         sleepTimerRemainingMs > 0 -> "${sleepTimerRemainingMs / 1000}s"
         else -> ""
     }
-    var showPlaylistDialog by remember { mutableStateOf(false) }
-    var showPlayerSettingsDialog by remember { mutableStateOf(false) }
-    var showSendspinStatusSheet by remember { mutableStateOf(false) }
-    var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showPlaylistDialog by rememberSaveable { mutableStateOf(false) }
+    var showPlayerSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showSendspinStatusSheet by rememberSaveable { mutableStateOf(false) }
+    var showSleepTimerDialog by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(isForeground) {
         if (isForeground) {
@@ -457,7 +465,12 @@ fun NowPlayingScreen(
             // source, and the album of the track itself. Both are offered when they differ.
             onWriteNfcTag = nfcWriteChoicesFor(queueState?.source, currentTrack, album)
                 .takeIf { it.isNotEmpty() && hasNfc }
-                ?.let { choices -> { nfcWriteChoices = choices } },
+                ?.let { choices ->
+                    {
+                        nfcWriteChoices = choices
+                        showNfcWrite = true
+                    }
+                },
             onClick = {
                 showPlayerMenu = false
                 viewModel.toggleCurrentArtistBlocked()
@@ -465,10 +478,13 @@ fun NowPlayingScreen(
         )
     }
 
-    if (nfcWriteChoices.isNotEmpty()) {
+    if (showNfcWrite && nfcWriteChoices.isNotEmpty()) {
         NfcWriteSheet(
             choices = nfcWriteChoices,
-            onDismiss = { nfcWriteChoices = emptyList() }
+            onDismiss = {
+                nfcWriteChoices = emptyList()
+                showNfcWrite = false
+            }
         )
     }
 
@@ -521,12 +537,6 @@ fun NowPlayingScreen(
         if (showPlayerSettingsDialog) {
             val ssClientId by viewModel.sendspinClientId.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinClientId)
             val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle(initialValue = viewModel.cachedSendspinAudioFormat)
-            val syncDelayMs by viewModel.sendspinSyncDelayMs.collectAsStateWithLifecycle(initialValue = 0)
-            val isBt = viewModel.acoustic.isBtRoute()
-            val calibrations by viewModel.acoustic.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
-            val micPathUs by viewModel.acoustic.acousticMicPathUs.collectAsStateWithLifecycle(initialValue = 0L)
-            val btRouteKey = viewModel.acoustic.getBtRouteKey()
-            val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
             val autoplayStates by viewModel.queueAutoplayStates.collectAsStateWithLifecycle()
             val crossfadeStates by viewModel.queueCrossfadeStates.collectAsStateWithLifecycle()
             val proximityConfig by viewModel.proximityConfig.collectAsStateWithLifecycle()
@@ -537,7 +547,6 @@ fun NowPlayingScreen(
                 isSendspinPlayer = currentPlayer.provider == "sendspin",
                 isLocalPlayer = ssClientId != null && currentPlayer.playerId == ssClientId,
                 initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat),
-                initialSyncDelayMs = syncDelayMs,
                 onLoadConfig = { viewModel.getPlayerConfig(it) },
                 onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                 onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(currentPlayer.playerId, it) },
@@ -553,17 +562,7 @@ fun NowPlayingScreen(
                     viewModel.setQueueConfigValue(currentPlayer.playerId, key, value)
                 },
                 onAudioFormatChanged = { viewModel.setAudioFormat(it) },
-                onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
-                isBtRoute = isBt,
-                acousticCorrectionMs = acousticCorrectionMs.toInt(),
                 acoustic = viewModel.acoustic,
-                micPathCalibratedMs = micPathUs / 1000,
-                isPlaybackActive = viewModel.acoustic.isPlaybackActive(),
-                onPausePlayback = { viewModel.acoustic.pauseForCalibration() },
-                onResumePlayback = { viewModel.acoustic.resumeAfterCalibration() },
-                btRouteName = viewModel.acoustic.getBtRouteName(),
-                onResetBtCalibration = { viewModel.acoustic.resetCalibration() },
-                onResetMicPath = { viewModel.acoustic.resetMicPath() },
                 rooms = proximityConfig.rooms,
                 onAssignRoom = { roomId ->
                     viewModel.assignPlayerToRoom(roomId, currentPlayer)
@@ -597,7 +596,6 @@ fun NowPlayingScreen(
             status = statusSnapshot,
             inputAudioFormat = audioFormat,
             syncHistory = syncHistory,
-            onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
             onDismiss = { showSendspinStatusSheet = false }
         )
     }

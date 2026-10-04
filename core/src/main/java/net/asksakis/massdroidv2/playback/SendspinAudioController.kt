@@ -30,14 +30,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
+import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -225,8 +228,19 @@ class SendspinAudioController(
         }
     }
 
+    // The routed name is null while the output stream is closed or settling; a
+    // single connected sink is then unambiguous (see soleBluetoothSinkName).
     private fun resolveBtRouteKey(): String =
-        "bt:${sendspinManager.getRoutedDeviceProductName() ?: "unknown"}"
+        "bt:${sendspinManager.getRoutedDeviceProductName() ?: audioManager.soleBluetoothSinkName() ?: "unknown"}"
+
+    /** The key a route's calibration and fine-tune are stored under; null when the route is unknown. */
+    private fun routeKeyFor(route: OutputRoute): String? = when (route) {
+        OutputRoute.SPEAKER -> OutputRouteKeys.SPEAKER
+        OutputRoute.BT -> resolveBtRouteKey()
+        OutputRoute.WIRED -> OutputRouteKeys.WIRED
+        OutputRoute.USB -> OutputRouteKeys.USB
+        OutputRoute.UNKNOWN -> null
+    }
 
     private fun checkRouteChange() {
         val newRoute = resolveOutputRoute()
@@ -264,6 +278,8 @@ class SendspinAudioController(
                     val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
                     if (gen != routeChangeGeneration) return@launch
                     sendspinManager.setRouteAcousticExtraUs(correctionUs)
+                    applySyncDelayForRoute(newRoute)
+                    if (gen != routeChangeGeneration) return@launch
                     sendspinManager.onOutputRouteChanged("bt:device-switch")
                     currentBtRouteKey = routeKey  // commit only after successful apply
                     volumeCoordinator.onRouteChanged()
@@ -279,6 +295,8 @@ class SendspinAudioController(
             val correctionUs = resolveAcousticCorrectionForRoute(newRoute)
             if (gen != routeChangeGeneration) return@launch  // superseded during resolve
             sendspinManager.setRouteAcousticExtraUs(correctionUs)
+            applySyncDelayForRoute(newRoute)
+            if (gen != routeChangeGeneration) return@launch  // superseded during apply
             sendspinManager.onOutputRouteChanged("$oldRoute->$newRoute")
             currentBtRouteKey = if (newRoute == OutputRoute.BT) resolveBtRouteKey() else ""
             if (newRoute == OutputRoute.BT) volumeCoordinator.onRouteChanged()
@@ -321,6 +339,7 @@ class SendspinAudioController(
             } else {
                 Log.i(TAG, "External sink still gone after ${ROUTE_LOSS_SETTLE_MS}ms: pausing")
                 pauseForRouteLoss()
+                applyRouteTiming(OutputRoute.SPEAKER)
                 // pauseForRouteLoss returns early without a player id, which would
                 // leave this hold's freeze in place; releasing it is a no-op otherwise.
                 unfreezeOutput("route")
@@ -400,34 +419,44 @@ class SendspinAudioController(
         scope.launch { playerRepository.pause(id) }
     }
 
-    private suspend fun resolveAcousticCorrectionForRoute(route: OutputRoute): Long {
-        return when (route) {
-            // Phone speaker: normally the in-device sync model trusts the
-            // platform's reported output latency (getOutputLatency), which is
-            // correct on honest HALs. But some HALs (e.g. Xiaomi/MIUI) under-report
-            // it by omitting the analog/speaker stage, leaving playback tens of ms
-            // late with no software way to detect it. If a built-in-speaker
-            // acoustic calibration was run (auto on group join, or manual), it
-            // stored ONLY that under-reported shortfall; apply it here. 0 when not
-            // calibrated or on honest HALs. NOTE: we store the shortfall ABOVE
-            // getOutputLatency, not the full round trip, so this does not
-            // reintroduce the old "locked but audibly out of sync" double-count.
-            OutputRoute.SPEAKER -> {
-                val calibrations = settingsRepository.acousticRouteCalibrations.first()
-                val correctionUs = calibrations[AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY]?.correctionUs ?: 0L
-                if (correctionUs > 0L) Log.d(TAG, "Speaker acoustic correction: ${correctionUs / 1000}ms")
-                correctionUs
-            }
-            OutputRoute.WIRED, OutputRoute.USB, OutputRoute.UNKNOWN -> 0L
-            OutputRoute.BT -> {
-                val productName = sendspinManager.getRoutedDeviceProductName() ?: "unknown"
-                val routeKey = "bt:$productName"
-                val calibrations = settingsRepository.acousticRouteCalibrations.first()
-                val calibration = calibrations[routeKey]
-                val correctionUs = calibration?.correctionUs ?: 0L
-                Log.d(TAG, "Acoustic correction for $routeKey: ${correctionUs / 1000}ms (${if (calibration != null) calibration.quality else "not calibrated"})")
-                correctionUs
-            }
+    /**
+     * The route's measured output latency beyond getTimestamp (the output
+     * calibration, see AcousticCalibrationCoordinator), or null when the route
+     * has not been calibrated. Wired and USB outputs are never calibrated.
+     */
+    private suspend fun resolveAcousticCorrectionForRoute(route: OutputRoute): Long? {
+        val calibrations = settingsRepository.acousticRouteCalibrations.first()
+        val routeKey = when (route) {
+            OutputRoute.SPEAKER -> AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY
+            OutputRoute.BT -> resolveBtRouteKey()
+            OutputRoute.WIRED, OutputRoute.USB, OutputRoute.UNKNOWN -> return null
+        }
+        val correctionUs = calibrations[routeKey]?.correctionUs
+        Log.d(TAG, "Output calibration for $routeKey: ${correctionUs?.div(1000)?.let { "${it}ms" } ?: "not calibrated"}")
+        return correctionUs
+    }
+
+    /** Gives the engine the sync delay for [route]: the output's fine-tune, 0 when it has none. */
+    private suspend fun applySyncDelayForRoute(route: OutputRoute) {
+        val routeKey = routeKeyFor(route)
+        val fineTuneMs = routeKey?.let { settingsRepository.outputFineTuneMs.first()[it] } ?: 0
+        Log.d(TAG, "Sync delay for ${routeKey ?: route}: fine-tune ${fineTuneMs}ms")
+        sendspinManager.setSyncDelayMs(fineTuneMs)
+    }
+
+    /**
+     * Applies [route]'s calibration and sync delay without a relock. A
+     * confirmed route loss pauses on the speaker and no route change follows,
+     * so without this the lost output's values would stay applied to the next
+     * play on the speaker.
+     */
+    private fun applyRouteTiming(route: OutputRoute) {
+        val gen = routeChangeGeneration
+        scope.launch {
+            val correctionUs = resolveAcousticCorrectionForRoute(route)
+            if (gen != routeChangeGeneration) return@launch  // a route change applies its own
+            sendspinManager.setRouteAcousticExtraUs(correctionUs)
+            applySyncDelayForRoute(route)
         }
     }
 
@@ -581,10 +610,7 @@ class SendspinAudioController(
 
     fun start() {
         currentRoute = resolveOutputRoute()
-        scope.launch {
-            val correctionUs = resolveAcousticCorrectionForRoute(currentRoute)
-            sendspinManager.setRouteAcousticExtraUs(correctionUs)
-        }
+        applyRouteTiming(currentRoute)
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         // Audio focus has to be settled before a play command reaches the server:
         // once the server opens a stream the output starts feeding it, and the
@@ -657,9 +683,19 @@ class SendspinAudioController(
             sendspinManager.seedClockOffset(persistedOffset)
         }
 
+        // A calibration stored or reset in the settings applies at once to the
+        // route it belongs to; the calibration coordinator only stores.
         collectorJobs += scope.launch {
-            settingsRepository.sendspinSyncDelayMs.collect { delayMs ->
-                sendspinManager.setSyncDelayMs(delayMs)
+            settingsRepository.acousticRouteCalibrations.distinctUntilChanged().drop(1).collect {
+                sendspinManager.setRouteAcousticExtraUs(resolveAcousticCorrectionForRoute(currentRoute))
+            }
+        }
+
+        // A fine-tune changed: re-apply for the route we are on. Route changes
+        // apply it themselves (relockForRoute).
+        collectorJobs += scope.launch {
+            settingsRepository.outputFineTuneMs.distinctUntilChanged().collect {
+                applySyncDelayForRoute(currentRoute)
             }
         }
 

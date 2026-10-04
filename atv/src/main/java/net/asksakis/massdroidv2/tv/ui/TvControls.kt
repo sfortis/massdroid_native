@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 /** Thin horizontal divider for grouping TV settings sections. */
 @Composable
@@ -108,42 +109,56 @@ fun TvSlider(
 }
 
 /**
- * Reusable "audio sync delay" control: slider (1 ms resolution), live value, and
- * a Reset button, framed by dividers so more settings can slot in around it.
- * Shared by the Settings screen and the Now-Playing options panel.
+ * The output delay control: the output it belongs to, the value, a 1 ms
+ * slider (D-pad, auto-repeat while held) and Reset. Shared by the Settings
+ * screen and the Now Playing options panel.
  */
 @Composable
-fun SyncDelayControl(
-    valueMs: Int,
+fun OutputDelayControl(
+    outputDelay: TvOutputDelay?,
     onChange: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
         TvDivider()
         Spacer(Modifier.height(16.dp))
-        Text("Audio sync delay", style = MaterialTheme.typography.titleMedium)
+        Text("Output delay", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Negative plays earlier (compensates HDMI / AV receiver latency) so this TV aligns with other speakers in a group.",
+            "How late your TV or AV receiver plays the sound. This device plays that much earlier, " +
+                "so it lines up with the other speakers in a group.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(16.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        if (outputDelay == null) {
             Text(
-                "${if (valueMs > 0) "+" else ""}$valueMs ms",
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.width(120.dp)
+                "Several Bluetooth devices are connected. Play something to set the delay of the one in use.",
+                style = MaterialTheme.typography.bodyMedium
             )
-            TvSlider(
-                value = valueMs,
-                min = -1000,
-                max = 1000,
-                step = 5,
-                onChange = onChange,
-                modifier = Modifier.weight(1f)
+        } else {
+            Text(
+                outputDelay.outputName,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Button(onClick = { onChange(0) }) { Text("Reset") }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Text(
+                    "${outputDelay.delayMs} ms",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.width(120.dp)
+                )
+                TvSlider(
+                    value = outputDelay.delayMs,
+                    min = 0,
+                    max = SettingsRepository.MANUAL_OUTPUT_DELAY_MAX_MS,
+                    step = 1,
+                    onChange = onChange,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(onClick = { onChange(0) }) { Text("Reset") }
+            }
         }
         Spacer(Modifier.height(16.dp))
         TvDivider()

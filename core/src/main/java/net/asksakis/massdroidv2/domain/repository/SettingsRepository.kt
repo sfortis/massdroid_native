@@ -91,15 +91,6 @@ interface SettingsRepository {
     val playlistSortDescending: Flow<Boolean>
     val themeMode: Flow<String>
     val sendspinAudioFormat: Flow<String>
-    /**
-     * Client-side sync delay applied locally by the Android Sendspin engine,
-     * range -1000..+1000 ms. **Positive shifts playback later, negative
-     * shifts playback sooner** — the intuitive sign convention used by the
-     * Music Assistant web UI's "Sendspin sync delay" slider. Independent of
-     * the per-player spec field `static_delay_ms` (which is server-side and
-     * available only on MA servers with PR #3689 deployed).
-     */
-    val sendspinSyncDelayMs: Flow<Int>
     val sendspinClockOffsetUs: Flow<Long>
     /**
      * Whether Sendspin player volume should be bridged to the phone's
@@ -198,8 +189,15 @@ interface SettingsRepository {
      * callers fall back to a single-pass BT calibration (with Oboe input
      * latency as an approximation) in that case.
      */
-    val acousticMicPathUs: Flow<Long>
     val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>>
+
+    /**
+     * The listener's fine-tune per output, by the same route keys as
+     * [acousticRouteCalibrations] plus "wired" and "usb". Range
+     * -[OUTPUT_FINE_TUNE_MAX_MS]..+[OUTPUT_FINE_TUNE_MAX_MS] ms, positive plays
+     * later (the sign of the engine's sync delay). Outputs at 0 have no entry.
+     */
+    val outputFineTuneMs: Flow<Map<String, Int>>
 
     suspend fun setServerUrl(url: String)
     suspend fun setAuthToken(token: String)
@@ -226,7 +224,6 @@ interface SettingsRepository {
     suspend fun setPlaylistSortDescending(descending: Boolean)
     suspend fun setThemeMode(mode: String)
     suspend fun setSendspinAudioFormat(format: String)
-    suspend fun setSendspinSyncDelayMs(delayMs: Int)
     suspend fun setSendspinClockOffsetUs(offsetUs: Long)
     suspend fun setSendspinSyncSystemVolume(enabled: Boolean)
     suspend fun setSendspinCompressorLevel(level: Int)
@@ -236,14 +233,59 @@ interface SettingsRepository {
     /** Flag/unflag a BT route key as car audio (full volume on connect). */
     suspend fun setCarAudioBtDevice(routeKey: String, enabled: Boolean)
     suspend fun setSendspinLastVolume(volume: Int)
-    suspend fun setAcousticMicPathUs(valueUs: Long)
     suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration)
     suspend fun removeAcousticRouteCalibration(routeKey: String)
+
+    /** Stores [routeKey]'s fine-tune, clamped to its range; 0 removes the entry. */
+    suspend fun setOutputFineTuneMs(routeKey: String, ms: Int)
+
+    /**
+     * Removes the legacy global Sendspin sync delay (-1000..+1000 ms, positive
+     * played later) the first time it is called and returns the value it held;
+     * returns null on every later call. The phone replaced it with a fine-tune
+     * per output, the TV with a manual output delay per output.
+     */
+    suspend fun resetLegacySyncDelayOnce(): Int?
+
+    companion object {
+        /** Bound of [outputFineTuneMs] either side of 0. */
+        const val OUTPUT_FINE_TUNE_MAX_MS = 100
+
+        /** Upper bound of a [AcousticRouteCalibration.manual] output delay. */
+        const val MANUAL_OUTPUT_DELAY_MAX_MS = 1000
+    }
 }
 
+/**
+ * A route's measured output latency beyond what the output stream's
+ * getTimestamp covers, applied by the Sendspin engine as the acoustic
+ * correction. It is the Sendspin spec's output delay: the engine plays that
+ * much earlier, and outside the built-in speaker it is reported to the server
+ * as `static_delay_ms`. [method] tells the sources apart: [METHOD_ABSOLUTE] is
+ * the phone's measurement, [METHOD_MANUAL] a value the listener set (the TV,
+ * which has no microphone). The round-trip calibrations stored before
+ * 2026-10-03 have no method and are dropped.
+ */
 @kotlinx.serialization.Serializable
 data class AcousticRouteCalibration(
     val correctionUs: Long,
     val quality: String,
-    val updatedAt: Long
-)
+    val updatedAt: Long,
+    val method: String? = null,
+) {
+    companion object {
+        /** Microphone arrival time minus the output's getTimestamp presentation time. */
+        const val METHOD_ABSOLUTE = "absolute"
+
+        /** Set by the listener, in whole milliseconds. */
+        const val METHOD_MANUAL = "manual"
+
+        /** A listener-set output delay of [delayMs]. */
+        fun manual(delayMs: Int): AcousticRouteCalibration = AcousticRouteCalibration(
+            correctionUs = delayMs * 1000L,
+            quality = "MANUAL",
+            updatedAt = System.currentTimeMillis(),
+            method = METHOD_MANUAL,
+        )
+    }
+}

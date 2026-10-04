@@ -1,109 +1,92 @@
 package net.asksakis.massdroidv2.data.sendspin
 
-import androidx.annotation.Keep
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
- * Oboe-based acoustic round-trip latency calibrator.
- *
- * Plays 1kHz tone bursts through the speaker and detects them via the
- * microphone using native Oboe streams for deterministic, low-jitter timing.
- * All audio I/O and DSP runs in C++ on SCHED_FIFO audio threads.
+ * Plays test signals through a native Oboe output stream opened the same way as
+ * the Sendspin output (Shared, LowLatency, stereo, Media/Music), so they take the
+ * mixer and effect path the music takes, and reports when the output presented
+ * each signal's first frame according to its getTimestamp.
  */
 class NativeAcousticCalibrator {
 
     companion object {
-        private const val MAX_DELAY_MS_DEFAULT = 500
-
         init {
             System.loadLibrary("acoustic_calibrator")
         }
+
+        // Slots of the LongArray nativePlaySignal fills (see acoustic_calibrator_jni.cpp).
+        private const val SLOT_FRAME0_NANOS = 0
+        private const val SLOT_SPREAD_NANOS = 1
+        private const val SLOT_TIMESTAMP_SAMPLES = 2
+        private const val SLOT_XRUNS = 3
+        private const val SLOT_ROUTED_DEVICE_ID = 4
+        private const val SLOT_SAMPLE_RATE = 5
+        private const val SLOT_FRAME_OFFSET = 6
+        private const val SLOT_COUNT = 7
+
+        const val SAMPLE_RATE = 48_000
     }
 
-    data class CalibrationResult(
-        val roundTripUs: Long,
-        val detectedTones: Int,
-        val varianceMs: Double,
-        val snrDb: Float,
-        val quality: Quality,
-        // Microphone input-path latency reported by Oboe. Reports only the
-        // AAudio HAL buffer occupancy — DSP/processing latency on the mic
-        // path is NOT included. Use [outputHALUs] from a phone-speaker
-        // reference pass plus that pass' [roundTripUs] to derive the true
-        // full mic_path instead.
-        val inputLatencyUs: Long,
-        // Output pipeline latency extrapolated from Oboe getTimestamp during
-        // chirp playback. Meaningful for in-phone outputs (built-in speaker,
-        // wired, USB). For BT this reflects only the time frames left the
-        // host SDK boundary, NOT the BT speaker's DAC time; treat it as an
-        // emission timestamp rather than true output HAL when the routed
-        // device is BT.
-        val outputHALUs: Long,
-        // AAudio device ids that the streams actually opened on. When a
-        // calibration call requested a specific output device, the caller
-        // verifies via this field that the routing override took effect.
+    data class PlayResult(
+        // CLOCK_MONOTONIC time at which the signal's first frame was presented,
+        // as the output's getTimestamp places it (median over the run).
+        val frame0Us: Long,
+        // Largest distance of one timestamp sample from that median.
+        val spreadUs: Long,
+        val timestampSamples: Int,
+        val xRuns: Int,
         val routedOutputDeviceId: Int,
-        val routedInputDeviceId: Int
+        val sampleRate: Int,
+        val frameOffset: Long,
     )
 
-    enum class Quality { GOOD, MARGINAL, FAILED }
-
-    var onProgress: ((toneIndex: Int, total: Int) -> Unit)? = null
-
-    /**
-     * Run a single calibration pass.
-     *
-     * @param maxDelayMs Maximum acceptable round-trip delay; tones beyond are
-     *   rejected as outliers.
-     * @param outputDeviceId Optional AAudio device id to pin the output route
-     *   to (e.g. [android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER] id from
-     *   AudioManager.getDevices). Default 0 lets the framework pick the
-     *   current default route. Pass an explicit id to force a phone-speaker
-     *   reference pass while BT is the system default. The framework MAY
-     *   silently ignore the request — callers must verify success via the
-     *   returned [CalibrationResult.routedOutputDeviceId].
-     */
-    suspend fun measureRoundTrip(
-        maxDelayMs: Int = MAX_DELAY_MS_DEFAULT,
-        outputDeviceId: Int = 0
-    ): CalibrationResult = withContext(Dispatchers.Default) {
-        val ptr = nativeCreate()
-        if (ptr == 0L) {
-            return@withContext CalibrationResult(
-                roundTripUs = 0,
-                detectedTones = 0,
-                varianceMs = 0.0,
-                snrDb = 0f,
-                quality = Quality.FAILED,
-                inputLatencyUs = 0L,
-                outputHALUs = 0L,
-                routedOutputDeviceId = 0,
-                routedInputDeviceId = 0
+    /** An open output stream that plays silence between test signals. */
+    inner class Session internal constructor(private val ptr: Long) {
+        /**
+         * Plays [signal] (mono, 48 kHz) and returns after it has been presented.
+         * Null when the stream failed or reported no usable timestamp.
+         */
+        suspend fun play(signal: ShortArray): PlayResult? = withContext(Dispatchers.Default) {
+            val out = LongArray(SLOT_COUNT)
+            if (!nativePlaySignal(ptr, signal, out)) return@withContext null
+            PlayResult(
+                frame0Us = out[SLOT_FRAME0_NANOS] / 1000L,
+                spreadUs = out[SLOT_SPREAD_NANOS] / 1000L,
+                timestampSamples = out[SLOT_TIMESTAMP_SAMPLES].toInt(),
+                xRuns = out[SLOT_XRUNS].toInt(),
+                routedOutputDeviceId = out[SLOT_ROUTED_DEVICE_ID].toInt(),
+                sampleRate = out[SLOT_SAMPLE_RATE].toInt(),
+                frameOffset = out[SLOT_FRAME_OFFSET],
             )
-        }
-        try {
-            nativeMeasure(ptr, maxDelayMs, outputDeviceId)
-        } finally {
-            nativeDestroy(ptr)
         }
     }
 
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-
-    /** Called from native audio thread via JNI. Post to main thread for Compose state safety. */
-    @Keep
-    @Suppress("unused")
-    private fun onNativeProgress(toneIndex: Int, total: Int) {
-        val callback = onProgress ?: return
-        mainHandler.post { callback(toneIndex, total) }
+    /**
+     * Opens an output stream on [outputDeviceId], or on the current route when
+     * it is 0, runs [block] with it, and closes it. The stream plays silence
+     * whenever [block] is not playing a signal, so the output path keeps running
+     * from one signal to the next. Returns null when the stream did not open.
+     */
+    suspend fun <T> session(outputDeviceId: Int, block: suspend (Session) -> T): T? {
+        val ptr = nativeCreate()
+        try {
+            val opened = withContext(Dispatchers.Default) { nativeOpen(ptr, outputDeviceId) }
+            if (!opened) return null
+            return block(Session(ptr))
+        } finally {
+            withContext(NonCancellable + Dispatchers.Default) {
+                nativeClose(ptr)
+                nativeDestroy(ptr)
+            }
+        }
     }
 
     private external fun nativeCreate(): Long
     private external fun nativeDestroy(enginePtr: Long)
-    private external fun nativeMeasure(
-        enginePtr: Long,
-        maxDelayMs: Int,
-        outputDeviceId: Int
-    ): CalibrationResult
+    private external fun nativeOpen(enginePtr: Long, outputDeviceId: Int): Boolean
+    private external fun nativeClose(enginePtr: Long)
+    private external fun nativePlaySignal(enginePtr: Long, signal: ShortArray, resultOut: LongArray): Boolean
 }

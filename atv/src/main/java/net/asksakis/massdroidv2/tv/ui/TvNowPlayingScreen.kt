@@ -66,7 +66,7 @@ fun TvNowPlayingScreen(
     val player by viewModel.player.collectAsStateWithLifecycle()
     val elapsed by viewModel.elapsed.collectAsStateWithLifecycle()
     val queue by viewModel.queueState.collectAsStateWithLifecycle()
-    val syncDelay by settingsViewModel.syncDelayMs.collectAsStateWithLifecycle()
+    val outputDelay by settingsViewModel.outputDelay.collectAsStateWithLifecycle()
     var showOptions by remember { mutableStateOf(false) }
     val media = player?.currentMedia
     val duration = media?.duration ?: 0.0
@@ -162,7 +162,7 @@ fun TvNowPlayingScreen(
 
                     if (showOptions) {
                         Spacer(Modifier.height(24.dp))
-                        SyncDelayControl(valueMs = syncDelay, onChange = settingsViewModel::setSyncDelay)
+                        OutputDelayControl(outputDelay = outputDelay, onChange = settingsViewModel::setOutputDelay)
                     }
                     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
                 }

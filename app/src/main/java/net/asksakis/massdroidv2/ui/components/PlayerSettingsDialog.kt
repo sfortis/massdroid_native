@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,6 +65,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
+import net.asksakis.massdroidv2.data.sendspin.outputNameForRouteKey
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.QueueSettings
@@ -81,7 +85,6 @@ fun PlayerSettingsDialog(
     isSendspinPlayer: Boolean = false,
     isLocalPlayer: Boolean = false,
     initialAudioFormat: SendspinAudioFormat = SendspinAudioFormat.AUTOMATIC,
-    initialSyncDelayMs: Int = 0,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onAutoplayEnabledChanged: ((enabled: Boolean) -> Unit)?,
@@ -108,17 +111,7 @@ fun PlayerSettingsDialog(
      */
     onAutoplayChanged: (suspend (mode: String, playlistUri: String?) -> Boolean)? = null,
     onAudioFormatChanged: ((SendspinAudioFormat) -> Unit)? = null,
-    onSyncDelayChanged: ((Int) -> Unit)? = null,
-    isBtRoute: Boolean = false,
-    acousticCorrectionMs: Int = 0,
-    acoustic: net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator? = null,
-    micPathCalibratedMs: Long = 0L,
-    isPlaybackActive: Boolean = false,
-    btRouteName: String = "",
-    onPausePlayback: (() -> Unit)? = null,
-    onResumePlayback: (() -> Unit)? = null,
-    onResetBtCalibration: (() -> Unit)? = null,
-    onResetMicPath: (() -> Unit)? = null,
+    acoustic: AcousticCalibrationCoordinator? = null,
     syncHistory: List<SendspinManager.SyncSample> = emptyList(),
     /**
      * Follow Me rooms as they are configured now. While it is empty, which is the case until
@@ -168,12 +161,6 @@ fun PlayerSettingsDialog(
     var outputChannelsOptions by remember(player.playerId) {
         mutableStateOf<List<net.asksakis.massdroidv2.domain.model.FormatOption>>(emptyList())
     }
-    // Local client-side UX sync nudge (DataStore-backed). Range -1000..+1000,
-    // positive shifts playback later (intuitive sign, matches MA web UI's
-    // "Sendspin sync delay" slider).
-    var syncDelayMs by remember(player.playerId, initialSyncDelayMs) {
-        mutableIntStateOf(initialSyncDelayMs)
-    }
     // Server-side spec field sendspin_static_delay (per-player config).
     // Range 0..5000, positive compensates for known external delay (spec
     // sign). Only available on MA servers with PR #3689 deployed; otherwise
@@ -193,7 +180,9 @@ fun PlayerSettingsDialog(
     var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
     var queueSettings by remember(player.playerId) { mutableStateOf<QueueSettings?>(null) }
     // The room a pick would take away from another player, held until that is confirmed.
-    var roomToReassign by remember(player.playerId) { mutableStateOf<RoomConfig?>(null) }
+    // Saved by id so the confirmation survives rotation; it closes if the room is gone.
+    var roomToReassignId by rememberSaveable(player.playerId) { mutableStateOf<String?>(null) }
+    val roomToReassign = roomToReassignId?.let { id -> rooms.firstOrNull { it.id == id } }
     val scope = rememberCoroutineScope()
 
     // Loaded separately from the player config: from MA 2.10 these are queue
@@ -290,24 +279,6 @@ fun PlayerSettingsDialog(
                 .collect { v ->
                     syncDelayKey?.let { onSave(player.playerId, mapOf(it to v)) }
                 }
-        }
-    }
-
-    // Debounced apply of the LOCAL client-side nudge. The slider fires rapidly,
-    // and onSyncDelayChanged persists to DataStore + reanchors the engine, so
-    // coalesce drags into one apply (steppers benefit too).
-    if (isLocalPlayer && onSyncDelayChanged != null) {
-        // Restart with initialSyncDelayMs: the apply round-trips through DataStore
-        // and re-keys the syncDelayMs remember (new state object), so the
-        // snapshotFlow must re-bind. Without this the observer goes stale after
-        // the first apply and later changes (e.g. Reset) are silently dropped.
-        LaunchedEffect(player.playerId, isLoading, initialSyncDelayMs) {
-            if (isLoading) return@LaunchedEffect
-            @OptIn(kotlinx.coroutines.FlowPreview::class)
-            androidx.compose.runtime.snapshotFlow { syncDelayMs }
-                .drop(1)
-                .debounce(250L)
-                .collect { v -> onSyncDelayChanged?.invoke(v) }
         }
     }
 
@@ -501,31 +472,19 @@ fun PlayerSettingsDialog(
                         )
                     }
 
-                    // Delays and acoustic calibration are for the rare occasion when a
-                    // room is out of step, so they stay folded away rather than filling
-                    // the dialog every time someone opens it to rename a player.
-                    if (isLocalPlayer || hasServerStaticDelay || hasServerSyncDelay) {
+                    // Delays and calibration are for the rare occasion when a room is out
+                    // of step, so they stay folded away rather than filling the dialog
+                    // every time someone opens it to rename a player. The phone's own
+                    // player gets the Sync card for the output it plays on; a remote
+                    // player gets the delays its server config offers.
+                    if (isLocalPlayer && acoustic != null) {
+                        LocalSyncCard(acoustic)
+                    } else if (hasServerStaticDelay || hasServerSyncDelay) {
                         ExpandableSettingCard(
                             title = "Advanced timing",
                             icon = Icons.Default.Tune,
                             value = "Sync delays and calibration"
                         ) {
-                    if (isLocalPlayer) {
-                        // Sendspin sync delay (LOCAL client-side UX nudge,
-                        // DataStore-backed). Range -1000..+1000 ms, negative plays
-                        // sooner / positive later. Applied locally in
-                        // SendspinSyncEngine; not sent to the server.
-                        SyncDelayCard(
-                            label = "Sendspin sync delay",
-                            valueMs = syncDelayMs,
-                            defaultMs = 0,
-                            // Debounced via the LaunchedEffect below (the slider
-                            // fires rapidly and onSyncDelayChanged persists to
-                            // DataStore + reanchors the engine).
-                            onValueChange = { syncDelayMs = it.coerceIn(-1000, 1000) }
-                        )
-                    }
-
                     if (hasServerStaticDelay) {
                         // Static playback delay (SERVER-side spec field
                         // sendspin_static_delay, available only on MA servers
@@ -564,135 +523,6 @@ fun PlayerSettingsDialog(
                             defaultMs = syncDelayDefault,
                             onValueChange = { syncDelayServerMs = it.coerceIn(-1000, 1000) }
                         )
-                    }
-
-                    // Acoustic calibration for the active Bluetooth output route.
-                    // No phone-speaker row: phone, wired and USB paths sync at
-                    // the audio port via the AudioTrack pipeline measurement
-                    // (per the Sendspin spec), so an acoustic chirp would
-                    // double-count the listener air path. The BT row stays
-                    // visible on local-player settings regardless of the
-                    // current route, but the Calibrate button is enabled only
-                    // while a BT route is connected (so users can review or
-                    // reset a saved value even when BT is currently off).
-                    //
-                    // A second row reports the cached "mic path" reference
-                    // (the phone-side mic chain latency measured once on the
-                    // built-in speaker). It is reused across all BT speakers
-                    // by the two-pass algorithm. A Reset button forces a
-                    // re-measurement on the next BT calibration.
-                    if (isLocalPlayer && acoustic != null) {
-                        var showBtCalibrationDialog by remember { mutableStateOf(false) }
-                        val btDeviceName = btRouteName.ifBlank { "Bluetooth speaker" }
-
-                        // Built-in speaker self-calibration. Measures the true
-                        // acoustic output delay to correct HALs that under-report
-                        // getOutputLatency (e.g. Xiaomi). Auto-runs on group join
-                        // when missing; also tunable here.
-                        val speakerCalibrations by acoustic.acousticRouteCalibrations
-                            .collectAsStateWithLifecycle(initialValue = emptyMap())
-                        val speakerCal = speakerCalibrations[
-                            net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator.SPEAKER_ROUTE_KEY
-                        ]
-                        val speakerCorrectionMs = ((speakerCal?.correctionUs ?: 0L) / 1000L).toInt()
-                        var showSpeakerCalibrationDialog by remember { mutableStateOf(false) }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Speaker calibration", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    if (speakerCal != null) "This phone: ${speakerCorrectionMs}ms (${speakerCal.quality.lowercase()})"
-                                    else "Not calibrated (runs automatically on group join)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (speakerCal != null) {
-                                    MdTextButton(onClick = { acoustic.resetSpeakerCalibration() }) {
-                                        Text("Reset")
-                                    }
-                                }
-                                MdTextButton(onClick = { showSpeakerCalibrationDialog = true }) {
-                                    Text(if (speakerCal != null) "Recalibrate" else "Calibrate")
-                                }
-                            }
-                        }
-                        if (showSpeakerCalibrationDialog) {
-                            SpeakerCalibrationDialog(
-                                coordinator = acoustic,
-                                onDismiss = { showSpeakerCalibrationDialog = false }
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Bluetooth calibration", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    when {
-                                        !isBtRoute -> "Connect a Bluetooth device to calibrate"
-                                        acousticCorrectionMs > 0 -> "$btDeviceName: ${acousticCorrectionMs}ms"
-                                        else -> "$btDeviceName not calibrated"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isBtRoute && acousticCorrectionMs > 0) {
-                                    MdTextButton(onClick = { onResetBtCalibration?.invoke() }) {
-                                        Text("Reset")
-                                    }
-                                }
-                                MdTextButton(
-                                    enabled = isBtRoute,
-                                    onClick = { showBtCalibrationDialog = true }
-                                ) {
-                                    Text(if (acousticCorrectionMs > 0) "Recalibrate" else "Calibrate")
-                                }
-                            }
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Mic path reference", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    if (micPathCalibratedMs > 0L) {
-                                        "Calibrated: ${micPathCalibratedMs}ms (shared across BT routes)"
-                                    } else {
-                                        "Will be measured on the next BT calibration"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (micPathCalibratedMs > 0L) {
-                                MdTextButton(onClick = { onResetMicPath?.invoke() }) {
-                                    Text("Reset")
-                                }
-                            }
-                        }
-                        if (showBtCalibrationDialog) {
-                            AcousticCalibrationDialog(
-                                routeName = btDeviceName,
-                                isPlaybackActive = isPlaybackActive,
-                                coordinator = acoustic,
-                                onPausePlayback = { onPausePlayback?.invoke() },
-                                onResumePlayback = { onResumePlayback?.invoke() },
-                                onDismiss = { showBtCalibrationDialog = false }
-                            )
-                        }
                     }
                         }
                     }
@@ -849,14 +679,14 @@ fun PlayerSettingsDialog(
                                     target == null || target.playerId == player.playerId -> Unit
                                     // Every room has a player, so picking one always takes it
                                     // from whoever has it now. Ask before that happens.
-                                    else -> roomToReassign = target
+                                    else -> roomToReassignId = target.id
                                 }
                             }
                         )
 
                         roomToReassign?.let { target ->
                             AlertDialog(
-                                onDismissRequest = { roomToReassign = null },
+                                onDismissRequest = { roomToReassignId = null },
                                 title = { Text("Move room") },
                                 text = {
                                     Text(
@@ -868,12 +698,12 @@ fun PlayerSettingsDialog(
                                     MdTextButton(
                                         onClick = {
                                             onAssignRoom(target.id)
-                                            roomToReassign = null
+                                            roomToReassignId = null
                                         }
                                     ) { Text("Move") }
                                 },
                                 dismissButton = {
-                                    MdTextButton(onClick = { roomToReassign = null }) {
+                                    MdTextButton(onClick = { roomToReassignId = null }) {
                                         Text("Cancel")
                                     }
                                 }
@@ -1268,6 +1098,139 @@ private fun SettingsSectionHeader(title: String, caption: String? = null) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+/**
+ * The phone's own timing, for the output it plays on now: that output's
+ * measured calibration with Calibrate and Reset, and one fine-tune slider.
+ * Other calibrated outputs are only listed; each is tuned while it plays.
+ */
+@Composable
+private fun LocalSyncCard(acoustic: AcousticCalibrationCoordinator) {
+    val output by acoustic.currentOutput.collectAsStateWithLifecycle(initialValue = null)
+    val calibrations by acoustic.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val fineTunes by acoustic.outputFineTuneMs.collectAsStateWithLifecycle(initialValue = emptyMap())
+    // Saveable and held outside the folded card, so a running calibration
+    // survives a rotation, which collapses the card.
+    var calibrating by rememberSaveable { mutableStateOf<OutputCalibrationTarget?>(null) }
+    val current = output
+    val routeKey = current?.routeKey
+    val calibration = routeKey?.let { calibrations[it] }
+    val summary = when {
+        current == null -> null
+        calibration != null -> "${current.name} · calibrated"
+        current.canCalibrate && routeKey != null -> "${current.name} · not calibrated"
+        else -> current.name
+    }
+    ExpandableSettingCard(title = "Sync", icon = Icons.Default.Tune, value = summary) {
+        if (current != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val target = current.kind.calibrationTarget()?.takeIf { current.canCalibrate }
+                OutputCalibrationRow(
+                    title = current.name,
+                    status = when {
+                        calibration != null -> "Calibrated · ${calibration.correctionUs / 1000} ms"
+                        target != null && routeKey != null -> "Not calibrated"
+                        else -> null
+                    },
+                    calibrated = calibration != null,
+                    onReset = routeKey?.let { key -> { acoustic.resetCalibration(key) } },
+                    onCalibrate = target?.let { t -> { calibrating = t } },
+                )
+                if (routeKey != null) {
+                    OutputFineTuneCard(
+                        routeKey = routeKey,
+                        storedMs = fineTunes[routeKey] ?: 0,
+                        onApply = acoustic::setOutputFineTuneMs,
+                    )
+                }
+                val others = calibrations.keys.filter { it != routeKey }.map(::outputNameForRouteKey).sorted()
+                if (others.isNotEmpty()) {
+                    Text(
+                        "Also calibrated: ${others.joinToString()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+    calibrating?.let { target ->
+        OutputCalibrationDialog(
+            coordinator = acoustic,
+            target = target,
+            routeName = current?.name.orEmpty(),
+            onDismiss = { calibrating = null },
+        )
+    }
+}
+
+/**
+ * The fine-tune of output [routeKey], in the range the settings allow,
+ * debounced like the other delay sliders because each write reaches DataStore
+ * and the engine.
+ */
+@Composable
+private fun OutputFineTuneCard(routeKey: String, storedMs: Int, onApply: (String, Int) -> Unit) {
+    val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
+    var value by remember(routeKey, storedMs) { mutableIntStateOf(storedMs) }
+    // Restarted with storedMs: the apply round-trips through DataStore and
+    // re-keys the state above, so the snapshotFlow must bind to the new one.
+    LaunchedEffect(routeKey, storedMs) {
+        @OptIn(kotlinx.coroutines.FlowPreview::class)
+        androidx.compose.runtime.snapshotFlow { value }
+            .drop(1)
+            .debounce(250L)
+            .collect { onApply(routeKey, it) }
+    }
+    SyncDelayCard(
+        label = "Fine-tune",
+        valueMs = value,
+        defaultMs = 0,
+        minMs = -max,
+        maxMs = max,
+        onValueChange = { value = it.coerceIn(-max, max) },
+    )
+}
+
+/**
+ * One output's name and calibration state, with Reset and Calibrate where they
+ * apply: an output that cannot be calibrated shows only its name.
+ */
+@Composable
+private fun OutputCalibrationRow(
+    title: String,
+    status: String?,
+    calibrated: Boolean,
+    onReset: (() -> Unit)?,
+    onCalibrate: (() -> Unit)?,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            status?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (calibrated && onReset != null) {
+                MdTextButton(onClick = onReset) { Text("Reset") }
+            }
+            if (onCalibrate != null) {
+                MdTextButton(onClick = onCalibrate) {
+                    Text(if (calibrated) "Recalibrate" else "Calibrate")
+                }
+            }
         }
     }
 }

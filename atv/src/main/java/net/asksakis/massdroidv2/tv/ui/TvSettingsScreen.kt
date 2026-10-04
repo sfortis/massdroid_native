@@ -22,7 +22,7 @@ import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 
 @Composable
 fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
-    val syncDelay by viewModel.syncDelayMs.collectAsStateWithLifecycle()
+    val outputDelay by viewModel.outputDelay.collectAsStateWithLifecycle()
     val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -49,7 +49,7 @@ fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
             }
 
             Spacer(Modifier.height(40.dp))
-            SyncDelayControl(valueMs = syncDelay, onChange = viewModel::setSyncDelay)
+            OutputDelayControl(outputDelay = outputDelay, onChange = viewModel::setOutputDelay)
         }
     }
 }

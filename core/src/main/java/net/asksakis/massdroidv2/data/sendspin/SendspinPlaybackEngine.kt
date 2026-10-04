@@ -288,7 +288,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     override var onSyncSample: ((errorMs: Float, outputLatencyMs: Float, filterErrorMs: Float, dacAbsoluteMs: Float?) -> Unit)? = null
     override var clockSynchronizer: ClockSynchronizer? = null
     override var syncDelayMs: Int = 0
-    override var routeAcousticExtraUs: Long = 0L
+    override var routeAcousticExtraUs: Long? = null
     override val measuredOutputLatencyUs: Long get() = nativeOutput.outputLatencyUs()
     final override var syncState: SyncState = SyncState.IDLE
         private set
@@ -626,7 +626,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     override fun onOutputRouteChanged(reason: String) {
-        Log.d(TAG, "Output route changed: $reason acoustic=${routeAcousticExtraUs / 1000}ms")
+        Log.d(TAG, "Output route changed: $reason acoustic=${routeAcousticExtraUs?.div(1000)}ms")
         onRouteChangeBoundary()
     }
 
@@ -1122,7 +1122,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         Log.d(
             TAG,
             "Synchronized codec=$activeCodec buf=${bufferDurationMs()}ms bytes=${bufferedBytes()} " +
-                "measuredLat=${measuredOutputLatencyUs / 1000}ms staticDelay=${routeAcousticExtraUs / 1000}ms " +
+                "measuredLat=${measuredOutputLatencyUs / 1000}ms staticDelay=${(routeAcousticExtraUs ?: 0L) / 1000}ms " +
                 "syncDelay=${syncDelayMs}ms ${clockDebug()}"
         )
     }
@@ -1341,7 +1341,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // acoustic (~400 ms) would otherwise schedule the first frame in the PAST
         // (lead < 0), making the native anchor chase a moving/past target. Solo is
         // pure FIFO: present = local anchor + headroom (+ the client UX nudge).
-        val staticDelayUs = if (isSync) routeAcousticExtraUs.coerceAtLeast(0L) else 0L
+        val staticDelayUs = if (isSync) (routeAcousticExtraUs ?: 0L).coerceAtLeast(0L) else 0L
         val unreportedLatencyUs = unreportedLatencyUs(outputLatencyUs)
         // Intended presentation time: timeline + headroom, shifted earlier by the
         // external acoustic/BT delay, the unreported HAL gap, and the UX nudge.
@@ -1357,15 +1357,17 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
      * Output latency beyond what the native alignment already covers
      * (calculateLatencyMillis), subtracted from the play time in SYNC.
      *
-     * On Bluetooth this is the gap up to AudioManager.getOutputLatency, because
-     * the A2DP path is longer than Oboe reports. It is not applied to the other
-     * routes: getOutputLatency describes the primary mixer output rather than the
-     * LowLatency stream we play on, and on the S25 speaker the sync probe found
-     * it about 95 ms too long (2026-10-02), so subtracting it played the phone
-     * early. The Bluetooth gap has not been measured yet.
+     * On an uncalibrated Bluetooth route this is the gap up to
+     * AudioManager.getOutputLatency, the best guess for an A2DP path that is
+     * longer than Oboe reports. A calibrated route needs no guess: the output
+     * calibration measures everything beyond getTimestamp, and that value is
+     * applied as [routeAcousticExtraUs] instead. The gap is never applied to the
+     * other routes: getOutputLatency describes the primary mixer output rather
+     * than the LowLatency stream we play on, and on the S25 speaker the sync
+     * probe found it about 95 ms too long (2026-10-02).
      */
     private fun unreportedLatencyUs(outputLatencyUs: Long): Long =
-        if (isSync && isBluetoothSink(routedDeviceType)) {
+        if (isSync && routeAcousticExtraUs == null && isBluetoothSink(routedDeviceType)) {
             (halOutputLatencyUs - outputLatencyUs).coerceAtLeast(0L)
         } else {
             0L
@@ -1395,7 +1397,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             TAG,
             "Timing/start-wait reason=$reason mode=$correctionMode buf=${bufferDurationMs()}ms " +
                 "need=${neededMs}ms bytes=${bufferedBytes()} codec=$activeCodec " +
-                "measuredLat=${measuredOutputLatencyUs / 1000}ms staticDelay=${routeAcousticExtraUs / 1000}ms " +
+                "measuredLat=${measuredOutputLatencyUs / 1000}ms staticDelay=${(routeAcousticExtraUs ?: 0L) / 1000}ms " +
                 "syncDelay=${syncDelayMs}ms ${clockDebug()}"
         )
     }

@@ -33,9 +33,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
+import net.asksakis.massdroidv2.data.sendspin.OutputFineTune
 import net.asksakis.massdroidv2.domain.model.FormatOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 /**
  * Dedicated multi-speaker tuner for a sync group: one card per member so the
@@ -43,8 +45,8 @@ import net.asksakis.massdroidv2.domain.model.PlayerConfig
  * the speakers up acoustically by ear, and the output channel selector
  * (stereo/left/right/mono) that turns two members into a stereo pair. Remote
  * members write their server-side `sendspin_static_delay` (per-player config);
- * our own player uses the local client-side nudge. Sliders are debounced; the
- * channel selector applies on tap.
+ * our own player writes the fine-tune of the output it plays on. Sliders are
+ * debounced; the channel selector applies on tap.
  *
  * The members' configs are loaded here, once per member, so the cards can be
  * ordered by channel (left, right, then the rest by name) before any is drawn.
@@ -54,8 +56,8 @@ import net.asksakis.massdroidv2.domain.model.PlayerConfig
 internal fun SyncSpeakersSheet(
     members: List<Player>,
     ourPlayerId: String?,
-    localSyncDelayMs: Int,
-    onLocalSyncDelayChanged: (Int) -> Unit,
+    localFineTune: OutputFineTune?,
+    onLocalFineTuneChanged: (routeKey: String, ms: Int) -> Unit,
     onLoadConfig: suspend (playerId: String) -> PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDismiss: () -> Unit,
@@ -118,8 +120,8 @@ internal fun SyncSpeakersSheet(
                         player = member,
                         isOurPlayer = member.playerId == ourPlayerId,
                         config = loaded[member.playerId],
-                        localSyncDelayMs = localSyncDelayMs,
-                        onLocalSyncDelayChanged = onLocalSyncDelayChanged,
+                        localFineTune = localFineTune,
+                        onLocalFineTuneChanged = onLocalFineTuneChanged,
                         onSave = onSave,
                     )
                 }
@@ -133,8 +135,8 @@ private fun SyncSpeakerCard(
     player: Player,
     isOurPlayer: Boolean,
     config: PlayerConfig?,
-    localSyncDelayMs: Int,
-    onLocalSyncDelayChanged: (Int) -> Unit,
+    localFineTune: OutputFineTune?,
+    onLocalFineTuneChanged: (routeKey: String, ms: Int) -> Unit,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
 ) {
     // Which source channels this member renders (stereo/left/right/mono). Applied on
@@ -165,23 +167,35 @@ private fun SyncSpeakerCard(
         }
 
     if (isOurPlayer) {
-        // Our own player has no server-side delay (we are the client); use the
-        // local client-side nudge, debounced as the slider fires rapidly.
-        var value by remember(player.playerId, localSyncDelayMs) { mutableIntStateOf(localSyncDelayMs) }
-        // Restart with localSyncDelayMs: the apply round-trips through DataStore
+        // Our own player has no server-side delay (we are the client); it moves
+        // by the fine-tune of the output it plays on, debounced as the slider
+        // fires rapidly.
+        if (localFineTune == null) {
+            SpeakerNoteCard(
+                title = "${player.displayName} · this device$channelSuffix",
+                note = "Can't fine-tune while several Bluetooth devices are connected",
+                footer = channelsFooter
+            )
+            return
+        }
+        val routeKey = localFineTune.routeKey
+        var value by remember(routeKey, localFineTune.ms) { mutableIntStateOf(localFineTune.ms) }
+        // Restart with the stored value: the apply round-trips through DataStore
         // and re-keys the remember above (new state object), so the snapshotFlow
         // must re-bind to it. Without this the observer goes stale after the
         // first apply and later changes (e.g. Reset) are silently dropped.
-        LaunchedEffect(player.playerId, localSyncDelayMs) {
+        LaunchedEffect(routeKey, localFineTune.ms) {
             @OptIn(FlowPreview::class)
-            snapshotFlow { value }.drop(1).debounce(250L).collect { onLocalSyncDelayChanged(it) }
+            snapshotFlow { value }.drop(1).debounce(250L).collect { onLocalFineTuneChanged(routeKey, it) }
         }
         SyncDelayCard(
-            label = "${player.displayName} · this device$channelSuffix",
+            label = "${player.displayName} · Fine-tune$channelSuffix",
             valueMs = value,
             defaultMs = 0,
-            onValueChange = { value = it.coerceIn(-1000, 1000) },
+            onValueChange = { value = it.coerceIn(-FINE_TUNE_MAX_MS, FINE_TUNE_MAX_MS) },
             compact = true,
+            minMs = -FINE_TUNE_MAX_MS,
+            maxMs = FINE_TUNE_MAX_MS,
             footer = channelsFooter
         )
         return
@@ -223,22 +237,35 @@ private fun SyncSpeakerCard(
         // A client whose firmware does not take a delay from the server (the ESPHome
         // Sendspin component, for one): it is still a member, in the same card as the
         // others, with the note where the slider would be.
-        SettingsCardContainer {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(player.displayName + channelSuffix, style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "Sync delay is set on the device",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                channelsFooter?.invoke()
-            }
+        SpeakerNoteCard(
+            title = player.displayName + channelSuffix,
+            note = "Sync delay is set on the device",
+            footer = channelsFooter
+        )
+    }
+}
+
+/** A member card with a note where its delay slider would be. */
+@Composable
+private fun SpeakerNoteCard(title: String, note: String, footer: (@Composable () -> Unit)?) {
+    SettingsCardContainer {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            footer?.invoke()
         }
     }
 }
+
+/** Range of this phone's fine-tune either side of 0. */
+private const val FINE_TUNE_MAX_MS = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
 
 /** MA's range for `sendspin_static_delay`. */
 private const val STATIC_DELAY_MIN_MS = 0

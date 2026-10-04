@@ -74,8 +74,11 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_CAR_AUDIO_BT_DEVICES = stringPreferencesKey("car_audio_bt_devices")
         private val KEY_PINNED_PLAYLISTS = stringPreferencesKey("pinned_playlists")
         private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
-        private val KEY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
+        private val KEY_LEGACY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
+        private val KEY_LEGACY_ACOUSTIC_PHONE_BASELINE_US = stringPreferencesKey("acoustic_phone_baseline_us")
         private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
+        private val KEY_OUTPUT_FINE_TUNE_MS = stringPreferencesKey("output_fine_tune_ms")
+        private val KEY_LEGACY_SYNC_DELAY_RESET = booleanPreferencesKey("legacy_sync_delay_reset")
         private val KEY_RECENT_SEED_CLUSTERS = stringPreferencesKey("recent_seed_cluster_genres")
         private val KEY_RECENT_MIX_TRACKS = stringPreferencesKey("recent_mix_track_uris")
         private val KEY_RECENT_MIX_ARTISTS = stringPreferencesKey("recent_mix_artist_keys")
@@ -356,14 +359,6 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_AUDIO_FORMAT] = format }
     }
 
-    override val sendspinSyncDelayMs: Flow<Int> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_SYNC_DELAY_MS]?.toIntOrNull()?.coerceIn(-1000, 1000) ?: 0
-    }
-
-    override suspend fun setSendspinSyncDelayMs(delayMs: Int) {
-        context.dataStore.edit { it[KEY_SENDSPIN_SYNC_DELAY_MS] = delayMs.coerceIn(-1000, 1000).toString() }
-    }
-
     override val sendspinClockOffsetUs: Flow<Long> = safeData.map { prefs ->
         prefs[KEY_SENDSPIN_CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
     }
@@ -528,48 +523,83 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_LAST_VOLUME] = volume.coerceIn(0, 100).toString() }
     }
 
-    override val acousticMicPathUs: Flow<Long> = safeData.map { prefs ->
-        prefs[KEY_ACOUSTIC_MIC_PATH_US]?.toLongOrNull() ?: 0L
-    }
-
-    override suspend fun setAcousticMicPathUs(valueUs: Long) {
-        context.dataStore.edit { it[KEY_ACOUSTIC_MIC_PATH_US] = valueUs.coerceAtLeast(0L).toString() }
-    }
-
     override val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>> = safeData.map { prefs ->
-        val raw = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] ?: return@map emptyMap()
-        try {
-            Json.decodeFromString(calibrationSerializer, raw)
-        } catch (_: Exception) { emptyMap() }
+        decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS])
     }
 
     private val calibrationSerializer = MapSerializer(String.serializer(), AcousticRouteCalibration.serializer())
+
+    /**
+     * The stored calibrations, without the round-trip ones from before the
+     * absolute method: those measured a different quantity and are not applied.
+     * Manual values (the TV's output delay) are kept.
+     */
+    private fun decodeCalibrations(raw: String?): Map<String, AcousticRouteCalibration> {
+        if (raw == null) return emptyMap()
+        val all = try {
+            Json.decodeFromString(calibrationSerializer, raw)
+        } catch (_: Exception) { emptyMap() }
+        return all.filterValues {
+            it.method == AcousticRouteCalibration.METHOD_ABSOLUTE || it.method == AcousticRouteCalibration.METHOD_MANUAL
+        }
+    }
 
     private fun encodeCalibrations(map: Map<String, AcousticRouteCalibration>): String =
         Json.encodeToString(calibrationSerializer, map)
 
     override suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration) {
         context.dataStore.edit { prefs ->
-            val current = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]?.let { raw ->
-                try {
-                    Json.decodeFromString(calibrationSerializer, raw).toMutableMap()
-                } catch (_: Exception) { mutableMapOf() }
-            } ?: mutableMapOf()
+            val current = decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]).toMutableMap()
             current[routeKey] = calibration
             prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
+            // Left by the round-trip calibration; nothing reads them any more.
+            prefs.remove(KEY_LEGACY_ACOUSTIC_MIC_PATH_US)
+            prefs.remove(KEY_LEGACY_ACOUSTIC_PHONE_BASELINE_US)
         }
     }
 
     override suspend fun removeAcousticRouteCalibration(routeKey: String) {
         context.dataStore.edit { prefs ->
-            val current = prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]?.let { raw ->
-                try {
-                    Json.decodeFromString(calibrationSerializer, raw).toMutableMap()
-                } catch (_: Exception) { mutableMapOf() }
-            } ?: return@edit
+            val current = decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]).toMutableMap()
             current.remove(routeKey)
             prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
         }
+    }
+
+    override val outputFineTuneMs: Flow<Map<String, Int>> = safeData.map { prefs ->
+        decodeFineTunes(prefs[KEY_OUTPUT_FINE_TUNE_MS])
+    }
+
+    private val fineTuneSerializer = MapSerializer(String.serializer(), Int.serializer())
+
+    private fun decodeFineTunes(raw: String?): Map<String, Int> {
+        if (raw == null) return emptyMap()
+        val all = try {
+            Json.decodeFromString(fineTuneSerializer, raw)
+        } catch (_: Exception) { emptyMap() }
+        val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
+        return all.mapValues { (_, ms) -> ms.coerceIn(-max, max) }.filterValues { it != 0 }
+    }
+
+    override suspend fun setOutputFineTuneMs(routeKey: String, ms: Int) {
+        val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
+        val clamped = ms.coerceIn(-max, max)
+        context.dataStore.edit { prefs ->
+            val current = decodeFineTunes(prefs[KEY_OUTPUT_FINE_TUNE_MS]).toMutableMap()
+            if (clamped == 0) current.remove(routeKey) else current[routeKey] = clamped
+            prefs[KEY_OUTPUT_FINE_TUNE_MS] = Json.encodeToString(fineTuneSerializer, current)
+        }
+    }
+
+    override suspend fun resetLegacySyncDelayOnce(): Int? {
+        var previous: Int? = null
+        context.dataStore.edit { prefs ->
+            if (prefs[KEY_LEGACY_SYNC_DELAY_RESET] == true) return@edit
+            previous = prefs[KEY_SENDSPIN_SYNC_DELAY_MS]?.toIntOrNull() ?: 0
+            prefs.remove(KEY_SENDSPIN_SYNC_DELAY_MS)
+            prefs[KEY_LEGACY_SYNC_DELAY_RESET] = true
+        }
+        return previous
     }
 
     override val libraryFavoritesOnly: Flow<Map<Int, Boolean>> = safeData.map { prefs ->

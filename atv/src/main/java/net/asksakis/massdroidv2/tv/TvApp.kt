@@ -11,7 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
@@ -54,6 +56,23 @@ class TvApp : Application(), ImageLoaderFactory {
                 wsClient.setSavedCredentials(username, password)
             }
             wsClient.markStartupReady()
+        }
+
+        // The global sync delay became an output delay per output. A negative
+        // value (played earlier) carries over to HDMI, the output it was set
+        // for; a positive one cannot be an output delay and is dropped.
+        appScope.launch {
+            val previousMs = settingsRepository.resetLegacySyncDelayOnce() ?: return@launch
+            if (previousMs < 0) {
+                val delayMs = (-previousMs).coerceAtMost(SettingsRepository.MANUAL_OUTPUT_DELAY_MAX_MS)
+                settingsRepository.setAcousticRouteCalibration(
+                    OutputRouteKeys.SPEAKER,
+                    AcousticRouteCalibration.manual(delayMs),
+                )
+                Log.i(TAG, "Legacy sync delay ${previousMs}ms moved to the HDMI output delay (${delayMs}ms)")
+            } else if (previousMs > 0) {
+                Log.i(TAG, "Legacy sync delay ${previousMs}ms dropped: an output delay cannot play later")
+            }
         }
     }
 

@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.data.sendspin
 
+import android.media.AudioDeviceInfo
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -840,15 +841,20 @@ class SendspinManager(
 
     private fun sendCurrentState(syncState: String) {
         // Per the Sendspin spec, static_delay_ms reports the device's known
-        // external delay beyond the audio port so the server can adjust
-        // buffer headroom. The acoustic calibration measures exactly that
-        // (route-specific BT/external speaker latency), so we report it as
-        // the spec field. Clamped to spec range 0..5000. The local UX nudge
-        // (syncDelayMs) does NOT propagate to the server — it is purely a
-        // client-side scheduling adjustment.
-        val specStaticDelayMs = (audio.routeAcousticExtraUs / 1000L)
-            .coerceIn(0L, 5000L)
-            .toInt()
+        // external delay beyond the audio port; the server sends chunks that
+        // much earlier and judges lateness with it. The output calibration of a
+        // Bluetooth or other external route measures exactly that, so it is
+        // reported, clamped to the spec range 0..5000. The built-in speaker's
+        // value (tens of ms) is not: MA writes every reported value into the
+        // player's config, where it outlived the route it was measured on
+        // (a Bluetooth speaker's 401 ms stayed there, 2026-10-03). The local UX
+        // nudge (syncDelayMs) never propagates to the server.
+        val onBuiltInSpeaker = audio.getRoutedDeviceType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        val specStaticDelayMs = if (onBuiltInSpeaker) {
+            0
+        } else {
+            ((audio.routeAcousticExtraUs ?: 0L) / 1000L).coerceIn(0L, 5000L).toInt()
+        }
         client.sendClientState(
             volume = currentVolume,
             muted = muted,
@@ -885,14 +891,18 @@ class SendspinManager(
         (engine as? SendspinPlaybackEngine)?.outputAllowed = allowed
     }
 
-    fun setRouteAcousticExtraUs(valueUs: Long) {
+    /** The current route's calibrated output latency, or null when it has none. */
+    fun setRouteAcousticExtraUs(valueUs: Long?) {
         audio.routeAcousticExtraUs = valueUs
-        Log.d(TAG, "Acoustic extra: ${valueUs / 1000}ms")
+        Log.d(TAG, "Acoustic extra: ${valueUs?.div(1000)?.let { "${it}ms" } ?: "not calibrated"}")
     }
 
     fun getRoutedDeviceProductName(): String? = audio.getRoutedDeviceProductName()
 
-    fun acousticExtraMs(): Long = audio.routeAcousticExtraUs / 1000
+    fun acousticExtraMs(): Long = (audio.routeAcousticExtraUs ?: 0L) / 1000
+
+    /** The sync delay the engine plays with now, fine-tune included (positive = later). */
+    fun syncDelayMs(): Int = audio.syncDelayMs
 
     fun bufferedAudioMs(): Long = audio.bufferDurationMs()
     fun outputLatencyMs(): Long = audio.measuredOutputLatencyUs / 1000

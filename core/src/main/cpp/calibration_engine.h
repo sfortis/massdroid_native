@@ -3,109 +3,88 @@
 #include <oboe/Oboe.h>
 #include <atomic>
 #include <condition_variable>
-#include <functional>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
 
-#include "dsp_pipeline.h"
-#include "tone_generator.h"
-
 namespace acoustic {
 
-using ProgressCallback = std::function<void(int toneIndex, int total)>;
+constexpr int SAMPLE_RATE = 48000;
 
+// Output of one playback run. outputFrame0Nanos places the played signal on
+// the CLOCK_MONOTONIC axis as the output stream's getTimestamp reports it, so
+// the caller can measure how much later the signal reached the microphone.
+struct PlayResult {
+    bool ok = false;
+    // Presentation time of signal frame 0 (median over the run).
+    int64_t outputFrame0Nanos = 0;
+    // Largest distance of a single timestamp sample from the median.
+    int64_t outputSpreadNanos = 0;
+    int timestampSamples = 0;
+    int xRuns = 0;
+    int routedOutputDeviceId = 0;
+    int sampleRate = 0;
+    // Stream frames written before signal frame 0 (normally 0).
+    int64_t frameOffset = 0;
+};
+
+/**
+ * Plays mono test signals through an output stream opened exactly like the
+ * Sendspin output (Shared, LowLatency, I16, stereo, Media/Music), so they take
+ * the same mixer and effect path as the music, and reports when the output says
+ * it presented each signal's first frame.
+ *
+ * The stream stays open between signals and plays silence, so a calibration
+ * can measure repeatedly while the output path keeps running: some Bluetooth
+ * speakers grow their own buffer for minutes after audio starts, and only a
+ * path that keeps running reaches the delay the music will have.
+ */
 class CalibrationEngine : public oboe::AudioStreamDataCallback,
                           public oboe::AudioStreamErrorCallback {
 public:
-    CalibrationEngine();
-    ~CalibrationEngine();
+    CalibrationEngine() = default;
+    ~CalibrationEngine() override;
 
-    // Blocking call: runs entire calibration cycle (~4-5 seconds).
-    // Called from JNI thread (Dispatchers.Default), waits on condition_variable.
-    //
-    // outputDeviceId: AAudio device id to route the output stream to. Pass 0
-    // (the AAudio "unspecified" value) to let the framework pick the default
-    // route (used when calibrating whatever output the user is on, e.g.
-    // BT). Pass a built-in speaker device id to force a phone-speaker
-    // reference pass (used to characterize mic_path independent of the
-    // active BT output). Setting a device id is best-effort: the framework
-    // may silently ignore it, so callers must verify the actual routed
-    // device on the returned result.
-    CalibrationResult measureRoundTrip(int maxDelayMs, int outputDeviceId,
-                                       ProgressCallback progress);
+    // Opens and starts the stream, which plays silence until a signal is
+    // queued. outputDeviceId 0 leaves the route to the framework; a device id
+    // pins it (best effort, check routedOutputDeviceId).
+    bool open(int outputDeviceId);
 
-    // Oboe callbacks (run on SCHED_FIFO audio threads)
+    // Blocking: plays the signal from the next callback on and returns after it
+    // has been presented, or on error or timeout. Requires open().
+    PlayResult playSignal(const std::vector<int16_t>& signal);
+
+    void close();
+
     oboe::DataCallbackResult onAudioReady(
         oboe::AudioStream* stream, void* audioData, int32_t numFrames) override;
 
-    void onErrorBeforeClose(
-        oboe::AudioStream* stream, oboe::Result error) override;
+    void onErrorBeforeClose(oboe::AudioStream* stream, oboe::Result error) override;
 
 private:
-    bool openStreams(int outputDeviceId);
-    void closeStreams();
-    void updateProgress(int32_t playPos);
+    static constexpr int TIMESTAMP_CAPACITY = 128;
 
-    // Output-stream latency anchor captured from Oboe getTimestamp while
-    // playback is RUNNING. (position, time) pair lets the host extrapolate
-    // when frame 0 left the DAC, which combined with requestStart() time
-    // gives the OUTPUT path latency. Useful only when the routed device is
-    // an in-phone DAC: BT output reports the time when frames were handed
-    // to the BT transport, not when the BT speaker played them, so this
-    // value is meaningless for BT.
-    std::atomic<int64_t> outputAnchorFramePosition_{-1};
-    std::atomic<int64_t> outputAnchorTimeNanos_{0};
-    std::atomic<int64_t> outputStartRequestTimeNanos_{0};
-    std::atomic<int>     outputTimestampQueryAttempts_{0};
-    static constexpr int MAX_OUTPUT_TIMESTAMP_ATTEMPTS = 10;
-    // Resolved AAudio device id of each stream after open() succeeded — used
-    // by callers to verify that an outputDeviceId routing request actually
-    // took effect.
-    int32_t routedOutputDeviceId_{0};
-    int32_t routedInputDeviceId_{0};
+    // What the callback plays: silence, a signal waiting for the next callback,
+    // or a signal in progress.
+    enum class BlockState { SILENT, PENDING, PLAYING, DONE };
 
-    // Oboe streams
-    std::shared_ptr<oboe::AudioStream> outputStream_;
-    std::shared_ptr<oboe::AudioStream> inputStream_;
+    void sampleTimestamp(oboe::AudioStream* stream);
+    bool medianFrame0(int64_t& value, int64_t& spread) const;
 
-    // Playback state
-    ToneSequence toneSeq_;
-    std::atomic<int32_t> playPos_{0};
-    std::atomic<bool> playbackDone_{false};
+    std::shared_ptr<oboe::AudioStream> stream_;
+    std::vector<int16_t> signal_;
+    std::atomic<BlockState> state_{BlockState::SILENT};
+    int64_t playPos_ = 0;
+    int64_t frameOffset_ = -1;
+    int blockCallbacks_ = 0;
 
-    // Recording state
-    std::vector<int16_t> recordBuffer_;
-    std::atomic<int32_t> recordPos_{0};
-    std::atomic<bool> recordingDone_{false};
+    int64_t frame0Nanos_[TIMESTAMP_CAPACITY] = {};
+    std::atomic<int> timestampCount_{0};
 
-    // Sync anchor: recording position when output starts
-    std::atomic<int32_t> recordPosAtPlayStart_{-1};
-    std::atomic<bool> outputStarted_{false};
-
-    // Input-path latency captured from the input stream while it is RUNNING.
-    // AAudio's getTimestamp() (and therefore calculateLatencyMillis) returns
-    // ErrorInvalidState once the data callback returns Stop, so we cannot
-    // query after wait_for completes — we have to grab it from inside the
-    // input callback. capLatencyAttempts caps how many callbacks we spend
-    // trying so a permanently-unsupported stream doesn't keep retrying.
-    std::atomic<int64_t> capturedInputLatencyUs_{0};
-    std::atomic<int>     latencyQueryAttempts_{0};
-    static constexpr int MAX_LATENCY_QUERY_ATTEMPTS = 10;
-
-    // Error flag
-    std::atomic<bool> errorOccurred_{false};
-
-    // Completion signaling
-    std::mutex completionMutex_;
-    std::condition_variable completionCv_;
-
-    // Progress
-    ProgressCallback progressCallback_;
-    std::atomic<int> lastReportedTone_{0};
-
-    // Tone sample count (for progress tracking)
-    int toneSamples_ = 0;
+    std::atomic<bool> error_{false};
+    std::mutex mutex_;
+    std::condition_variable cv_;
 };
 
 } // namespace acoustic

@@ -190,7 +190,6 @@ class NowPlayingViewModel @Inject constructor(
     val elapsedTime = playerRepository.elapsedTime
     val sendspinClientId = settingsRepository.sendspinClientId
     val sendspinAudioFormat = settingsRepository.sendspinAudioFormat
-    val sendspinSyncDelayMs = settingsRepository.sendspinSyncDelayMs
     val sendspinSyncHistory = sendspinManager.syncHistory
 
     /** Follow Me rooms, so the player settings dialog can show which room this player serves. */
@@ -316,7 +315,6 @@ class NowPlayingViewModel @Inject constructor(
 
     var cachedSendspinClientId: String? = null; private set
     var cachedSendspinAudioFormat = SendspinAudioFormat.AUTOMATIC.name; private set
-    private var cachedSendspinSyncDelayMs = 0
     private var lastSendspinStatusLogAtMs = 0L
     private var lastLoggedSendspinStatusKey: String? = null
 
@@ -364,7 +362,7 @@ class NowPlayingViewModel @Inject constructor(
             networkMode = netMode,
             activeBufferMs = sendspinManager.bufferedAudioMs().coerceAtLeast(0L),
             bufferBytes = sendspinManager.bufferedAudioBytes().coerceAtLeast(0L),
-            syncDelayMs = cachedSendspinSyncDelayMs,
+            syncDelayMs = sendspinManager.syncDelayMs(),
             outputLatencyMs = sendspinManager.outputLatencyMs(),
             acousticCorrectionMs = sendspinManager.acousticExtraMs(),
             absoluteSyncMs = sendspinManager.absoluteSyncMs(),
@@ -511,9 +509,6 @@ class NowPlayingViewModel @Inject constructor(
         }
         viewModelScope.launch {
             sendspinAudioFormat.collect { cachedSendspinAudioFormat = it }
-        }
-        viewModelScope.launch {
-            sendspinSyncDelayMs.collect { cachedSendspinSyncDelayMs = it }
         }
         viewModelScope.launch {
             currentLyricsTrackFlow.collectLatest { track: Track? ->
@@ -988,12 +983,6 @@ class NowPlayingViewModel @Inject constructor(
         }
         pendingChapterTarget = target
         seek(chs[target].start)
-    }
-
-    fun setSendspinSyncDelayMs(delayMs: Int) {
-        viewModelScope.launch {
-            settingsRepository.setSendspinSyncDelayMs(delayMs)
-        }
     }
 
     fun setPlayerPower(playerId: String, powered: Boolean) {

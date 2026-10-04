@@ -96,6 +96,16 @@ class MassDroidApp : Application(), ImageLoaderFactory {
             wsClient.markStartupReady()
         }
 
+        // The phone replaced the global Sendspin sync delay with a fine-tune per
+        // output, so the old value is removed once. Not in :core, because the TV
+        // app carries its old value over into an output delay instead.
+        appScope.launch {
+            val previousMs = settingsRepository.resetLegacySyncDelayOnce()
+            if (previousMs != null && previousMs != 0) {
+                Log.i("MassDroidApp", "Legacy Sendspin sync delay of ${previousMs}ms reset to 0")
+            }
+        }
+
         // Clean up old play history entries
         appScope.launch {
             try {

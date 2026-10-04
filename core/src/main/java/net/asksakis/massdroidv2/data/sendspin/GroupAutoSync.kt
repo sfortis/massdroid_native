@@ -37,6 +37,7 @@ class GroupAutoSync @Inject constructor(
     private val sendspinManager: SendspinManager,
     private val playerRepository: PlayerRepository,
     private val settingsRepository: SettingsRepository,
+    private val acoustic: AcousticCalibrationCoordinator,
 ) {
     sealed interface State {
         data object Idle : State
@@ -69,6 +70,8 @@ class GroupAutoSync @Inject constructor(
         // A member quieter than this is raised to it while it is measured, so it
         // stands well above the room noise, and put back afterwards.
         private const val MIN_MEASURE_VOLUME = 40
+        // A residual this large on this phone means the fine-tune range ran out.
+        private const val FINE_TUNE_SHORTFALL_US = 2_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -107,12 +110,16 @@ class GroupAutoSync @Inject constructor(
         if (players.none { it.playerId == ourPlayerId }) {
             return State.Failed("Couldn't sync the speakers. This phone is not in the group.")
         }
+        // This phone is moved by the fine-tune of the output it plays on. An output
+        // that cannot be named (several Bluetooth sinks) has none, so it is only reported.
+        val ourRouteKey = acoustic.currentOutput.first().routeKey
         val members = players.map { player ->
             if (player.playerId == ourPlayerId) {
-                Member(
-                    player.playerId, player.displayName,
-                    DelayControl.Signed(settingsRepository.sendspinSyncDelayMs.first()), key = null
-                )
+                val control = ourRouteKey?.let { key ->
+                    val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
+                    DelayControl.Signed(settingsRepository.outputFineTuneMs.first()[key] ?: 0, minMs = -max, maxMs = max)
+                } ?: DelayControl.None
+                Member(player.playerId, player.displayName, control, key = null)
             } else {
                 val config = playerRepository.getPlayerConfig(player.playerId)
                 val syncKey = config?.sendspinSyncDelayKey
@@ -153,7 +160,10 @@ class GroupAutoSync @Inject constructor(
         }
 
         val plan = SyncDelayPlanner.plan(members.map { MemberMeasurement(it.id, lags[it.id], it.control) })
-        apply(plan, members)
+        plan.members.firstOrNull { it.playerId == ourPlayerId }?.residualUs
+            ?.takeIf { kotlin.math.abs(it) >= FINE_TUNE_SHORTFALL_US }
+            ?.let { Log.w(TAG, "This phone needs ${it / 1000} ms beyond what its fine-tune allows (route $ourRouteKey)") }
+        apply(plan, members, ourRouteKey)
         Log.i(TAG, "target=${plan.targetUs / 1000.0}ms " + plan.members.joinToString { p ->
             "${p.playerId}: lag=${p.lagUs?.div(1000.0)}ms new=${p.newValueMs} residual=${p.residualUs?.div(1000.0)}ms"
         })
@@ -232,7 +242,7 @@ class GroupAutoSync @Inject constructor(
         return strongest.lagUs
     }
 
-    private suspend fun apply(plan: SyncDelayPlan, members: List<Member>) {
+    private suspend fun apply(plan: SyncDelayPlan, members: List<Member>, ourRouteKey: String?) {
         val byId = members.associateBy { it.id }
         plan.members.forEach { p ->
             val member = byId[p.playerId] ?: return@forEach
@@ -244,7 +254,7 @@ class GroupAutoSync @Inject constructor(
             }
             if (value == current) return@forEach
             if (member.key == null) {
-                settingsRepository.setSendspinSyncDelayMs(value)
+                ourRouteKey?.let { settingsRepository.setOutputFineTuneMs(it, value) }
             } else {
                 playerRepository.savePlayerConfig(member.id, mapOf(member.key to value))
             }

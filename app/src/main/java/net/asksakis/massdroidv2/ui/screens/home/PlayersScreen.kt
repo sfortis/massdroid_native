@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -175,10 +176,23 @@ fun PlayersScreen(
                 }
                 is ConnectionState.Connecting -> { /* handled above */ }
                 is ConnectionState.Connected -> {
-                    var iconPickerPlayer by remember { mutableStateOf<Player?>(null) }
-                    var queueMenuPlayer by remember { mutableStateOf<Player?>(null) }
-                    var settingsPlayer by remember { mutableStateOf<Player?>(null) }
-                    var nfcWriteFor by remember { mutableStateOf<Player?>(null) }
+                    // Only the player ids are saved, so an open sheet or dialog survives
+                    // rotation; each one closes if its player is no longer listed.
+                    var iconPickerPlayerId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var queueMenuPlayerId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var settingsPlayerId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var nfcWriteForId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var groupPlayerId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var syncSpeakersForId by rememberSaveable { mutableStateOf<String?>(null) }
+                    var showCreateGroup by rememberSaveable { mutableStateOf(false) }
+                    fun findPlayer(id: String?): Player? =
+                        id?.let { wanted -> players.firstOrNull { it.playerId == wanted } }
+                    val iconPickerPlayer = findPlayer(iconPickerPlayerId)
+                    val queueMenuPlayer = findPlayer(queueMenuPlayerId)
+                    val settingsPlayer = findPlayer(settingsPlayerId)
+                    val nfcWriteFor = findPlayer(nfcWriteForId)
+                    val groupPlayer = findPlayer(groupPlayerId)
+                    val syncSpeakersFor = findPlayer(syncSpeakersForId)
                     // Offered only where there is a chip to write with.
                     val nfcContext = androidx.compose.ui.platform.LocalContext.current
                     val hasNfc = remember(nfcContext) {
@@ -190,12 +204,9 @@ fun PlayersScreen(
                         NfcWriteSheet(
                             choices = speakerTagChoices(target),
                             fixedPlayer = target,
-                            onDismiss = { nfcWriteFor = null }
+                            onDismiss = { nfcWriteForId = null }
                         )
                     }
-                    var groupPlayer by remember { mutableStateOf<Player?>(null) }
-                    var syncSpeakersFor by remember { mutableStateOf<Player?>(null) }
-                    var showCreateGroup by remember { mutableStateOf(false) }
 
                     val groupCandidates = remember(players) {
                         players.filter { it.available && it.type != PlayerType.GROUP }
@@ -235,8 +246,8 @@ fun PlayersScreen(
                                     roomNames = playerRoomMap[player.playerId] ?: emptyList(),
                                     syncedToName = syncedToName[player.playerId],
                                     onClick = { viewModel.selectPlayer(player) },
-                                    onIconLongPress = { iconPickerPlayer = player },
-                                    onQueueMenuClick = { queueMenuPlayer = player },
+                                    onIconLongPress = { iconPickerPlayerId = player.playerId },
+                                    onQueueMenuClick = { queueMenuPlayerId = player.playerId },
                                     onVolumeChange = { viewModel.setVolume(player.playerId, it) }
                                 )
                                 Spacer(modifier = Modifier.height(10.dp))
@@ -259,8 +270,8 @@ fun PlayersScreen(
                                     isGroup = true,
                                     members = groupMembers[group.playerId].orEmpty(),
                                     onClick = { viewModel.selectPlayer(group) },
-                                    onIconLongPress = { iconPickerPlayer = group },
-                                    onQueueMenuClick = { queueMenuPlayer = group },
+                                    onIconLongPress = { iconPickerPlayerId = group.playerId },
+                                    onQueueMenuClick = { queueMenuPlayerId = group.playerId },
                                     onVolumeChange = { viewModel.setGroupVolume(group.playerId, it) },
                                     onMemberVolumeChange = { memberId, volume ->
                                         viewModel.onMemberVolumeChanged(group.playerId, memberId, volume)
@@ -277,9 +288,9 @@ fun PlayersScreen(
                             currentIcon = player.icon,
                             onIconSelected = { mdiName ->
                                 viewModel.updatePlayerIcon(player.playerId, mdiName)
-                                iconPickerPlayer = null
+                                iconPickerPlayerId = null
                             },
-                            onDismiss = { iconPickerPlayer = null }
+                            onDismiss = { iconPickerPlayerId = null }
                         )
                     }
 
@@ -290,24 +301,24 @@ fun PlayersScreen(
                             sendspinClientId = sendspinClientId,
                             playerRoomMap = playerRoomMap,
                             onPlayerSettings = {
-                                settingsPlayer = player
-                                queueMenuPlayer = null
+                                settingsPlayerId = player.playerId
+                                queueMenuPlayerId = null
                             },
                             onConfigureRoom = playerRoomIdMap[player.playerId]?.let { roomId ->
                                 { onNavigateToRoomSetup(roomId) }
                             },
                             onGroupWith = {
-                                groupPlayer = player
-                                queueMenuPlayer = null
+                                groupPlayerId = player.playerId
+                                queueMenuPlayerId = null
                             },
                             onSyncSpeakers = {
-                                syncSpeakersFor = player
-                                queueMenuPlayer = null
+                                syncSpeakersForId = player.playerId
+                                queueMenuPlayerId = null
                             },
                             onWriteNfcTag = if (hasNfc) {
                                 {
-                                    nfcWriteFor = player
-                                    queueMenuPlayer = null
+                                    nfcWriteForId = player.playerId
+                                    queueMenuPlayerId = null
                                 }
                             } else {
                                 null
@@ -315,7 +326,7 @@ fun PlayersScreen(
                             onDeleteGroup = if (player.type == PlayerType.GROUP) {
                                 {
                                     viewModel.deleteGroup(player.playerId)
-                                    queueMenuPlayer = null
+                                    queueMenuPlayerId = null
                                 }
                             } else null,
                             // Show "Break sync" when the protocol sync is active OUTSIDE
@@ -330,49 +341,39 @@ fun PlayersScreen(
                             ) {
                                 {
                                     viewModel.breakSyncForPlayer(player.playerId)
-                                    queueMenuPlayer = null
+                                    queueMenuPlayerId = null
                                 }
                             } else null,
                             onPowerToggle = if ("power" in player.supportedFeatures) {
                                 { powered ->
                                     viewModel.setPlayerPower(player.playerId, powered)
-                                    queueMenuPlayer = null
+                                    queueMenuPlayerId = null
                                 }
                             } else null,
                             onClearQueue = {
                                 viewModel.clearQueue(player.playerId)
-                                queueMenuPlayer = null
+                                queueMenuPlayerId = null
                             },
                             onTransferQueue = { targetId ->
                                 viewModel.transferQueue(player.playerId, targetId)
-                                queueMenuPlayer = null
+                                queueMenuPlayerId = null
                             },
                             onStartSongRadio = {
                                 player.currentMedia?.uri?.let { uri ->
                                     viewModel.startSongRadio(player.playerId, uri)
                                 }
                             },
-                            onDismiss = { queueMenuPlayer = null }
+                            onDismiss = { queueMenuPlayerId = null }
                         )
                     }
 
                     settingsPlayer?.let { player ->
                         val audioFormat by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
-                        val syncDelayMs by viewModel.sendspinSyncDelayMs.collectAsStateWithLifecycle(initialValue = 0)
                         val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
-                        // Acoustic calibration shares the same coordinator that
-                        // backs the NowPlaying player-settings sheet, so the
-                        // Players screen surfaces an identical Bluetooth row
-                        // and saves are visible to both screens immediately.
-                        // isBtRoute / route name come from the routed AudioTrack
-                        // device (SendspinManager's snapshot), not from a UI
-                        // flag, so they reflect the actual output path.
+                        // Output calibration shares the coordinator that backs the
+                        // NowPlaying player-settings sheet, so both screens show the
+                        // same rows and see each other's saves immediately.
                         val isLocal = sendspinClientId != null && player.playerId == sendspinClientId
-                        val isBt = viewModel.acoustic.isBtRoute()
-                        val calibrations by viewModel.acoustic.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
-                        val micPathUs by viewModel.acoustic.acousticMicPathUs.collectAsStateWithLifecycle(initialValue = 0L)
-                        val btRouteKey = viewModel.acoustic.getBtRouteKey()
-                        val acousticCorrectionMs = (calibrations[btRouteKey]?.correctionUs ?: 0L) / 1000
                         if (audioFormat == null) return@let // wait for DataStore
                         net.asksakis.massdroidv2.ui.components.PlayerSettingsDialog(
                             player = player,
@@ -380,7 +381,6 @@ fun PlayersScreen(
                             isSendspinPlayer = player.provider == "sendspin",
                             isLocalPlayer = isLocal,
                             initialAudioFormat = net.asksakis.massdroidv2.domain.model.SendspinAudioFormat.fromStored(audioFormat!!),
-                            initialSyncDelayMs = syncDelayMs,
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
                             onAutoplayEnabledChanged = { viewModel.setAutoplayEnabled(player.playerId, it) },
@@ -396,23 +396,13 @@ fun PlayersScreen(
                                 viewModel.setQueueConfigValue(player.playerId, key, value)
                             },
                             onAudioFormatChanged = { viewModel.setAudioFormat(it) },
-                            onSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
-                            isBtRoute = isBt,
-                            acousticCorrectionMs = acousticCorrectionMs.toInt(),
                             acoustic = viewModel.acoustic,
-                            micPathCalibratedMs = micPathUs / 1000,
-                            isPlaybackActive = viewModel.acoustic.isPlaybackActive(),
-                            onPausePlayback = { viewModel.acoustic.pauseForCalibration() },
-                            onResumePlayback = { viewModel.acoustic.resumeAfterCalibration() },
-                            btRouteName = viewModel.acoustic.getBtRouteName(),
-                            onResetBtCalibration = { viewModel.acoustic.resetCalibration() },
-                            onResetMicPath = { viewModel.acoustic.resetMicPath() },
                             syncHistory = syncHistory,
                             rooms = proximityConfig.rooms,
                             onAssignRoom = { roomId ->
                                 viewModel.assignPlayerToRoom(roomId, player)
                             },
-                            onDismiss = { settingsPlayer = null }
+                            onDismiss = { settingsPlayerId = null }
                         )
                     }
 
@@ -427,7 +417,7 @@ fun PlayersScreen(
                             onJoinLeader = { leaderId ->
                                 viewModel.addPlayerToGroup(leaderId, player.playerId)
                             },
-                            onDismiss = { groupPlayer = null }
+                            onDismiss = { groupPlayerId = null }
                         )
                     }
 
@@ -447,8 +437,7 @@ fun PlayersScreen(
                         val members = remember(groupIds, players) {
                             players.filter { it.playerId in groupIds && it.available }
                         }
-                        val localSyncDelayMs by viewModel.sendspinSyncDelayMs
-                            .collectAsStateWithLifecycle(initialValue = 0)
+                        val localFineTune by viewModel.localOutputFineTune.collectAsStateWithLifecycle()
                         val autoSyncState by viewModel.autoSyncState.collectAsStateWithLifecycle()
                         // Reload the member configs after an auto sync rewrote the delays.
                         var configRevision by remember { mutableIntStateOf(0) }
@@ -459,11 +448,11 @@ fun PlayersScreen(
                         net.asksakis.massdroidv2.ui.components.SyncSpeakersSheet(
                             members = members,
                             ourPlayerId = sendspinClientId,
-                            localSyncDelayMs = localSyncDelayMs,
-                            onLocalSyncDelayChanged = { viewModel.setSendspinSyncDelayMs(it) },
+                            localFineTune = localFineTune,
+                            onLocalFineTuneChanged = { routeKey, ms -> viewModel.setOutputFineTuneMs(routeKey, ms) },
                             onLoadConfig = { viewModel.getPlayerConfig(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
-                            onDismiss = { syncSpeakersFor = null },
+                            onDismiss = { syncSpeakersForId = null },
                             configRevision = configRevision,
                             autoSync = if (BuildConfig.DEBUG && ourId != null && members.any { it.playerId == ourId }) {
                                 {
@@ -909,7 +898,7 @@ private fun PlayerQueueSheet(
     onStartSongRadio: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var showTransferList by remember { mutableStateOf(false) }
+    var showTransferList by rememberSaveable { mutableStateOf(false) }
     val sheetState = SheetDefaults.sheetState()
     val otherPlayers = remember(allPlayers, player.playerId) {
         allPlayers.filter { it.playerId != player.playerId }.sortedBy { it.displayName.lowercase() }

@@ -37,7 +37,11 @@ interface SendspinAudioEngine {
      * acoustic calibration when reporting client/state to the server).
      */
     var syncDelayMs: Int
-    var routeAcousticExtraUs: Long
+    /**
+     * Measured output latency of the current route beyond what getTimestamp
+     * covers (output calibration), or null when the route is not calibrated.
+     */
+    var routeAcousticExtraUs: Long?
 
     // Correction mode
     fun setCorrectionMode(mode: CorrectionMode)

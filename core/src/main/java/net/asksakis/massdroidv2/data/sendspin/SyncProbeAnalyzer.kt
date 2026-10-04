@@ -71,13 +71,15 @@ object SyncProbeAnalyzer {
     private const val MIN_OVERLAP_US = 2_000_000L
 
     /**
-     * Returns null when the two signals overlap by less than two seconds once
-     * the lag window is allowed for.
+     * Returns null when the two signals overlap by less than [minOverlapUs]
+     * (two seconds unless the caller knows better) once the lag window is
+     * allowed for.
      */
     fun analyze(
         reference: SyncProbeSignal,
         recording: SyncProbeSignal,
         windowUs: LongRange = DEFAULT_WINDOW_US,
+        minOverlapUs: Long = MIN_OVERLAP_US,
     ): SyncProbeAnalysis? {
         val minLagUs = windowUs.first
         val maxLagUs = windowUs.last
@@ -87,7 +89,7 @@ object SyncProbeAnalyzer {
         val micStart = max(recording.startServerUs, reference.startServerUs + maxLagUs)
         val micEnd = min(recording.endServerUs, reference.endServerUs + minLagUs)
         val overlapUs = micEnd - micStart
-        if (overlapUs < MIN_OVERLAP_US) return null
+        if (overlapUs < minOverlapUs) return null
 
         val gridUs = 1_000_000.0 / GRID_RATE_HZ
         val micLen = (overlapUs / gridUs).toInt()
