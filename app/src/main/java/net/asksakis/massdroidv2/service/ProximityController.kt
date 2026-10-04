@@ -123,6 +123,8 @@ class ProximityController(
     private var highAccuracyUntilMs = 0L
     private var highAccuracyStartedAtMs = 0L
     private var lastMotionBoostMs = 0L
+    /** Away mode may not start before this wall-clock time; set when the car is left. */
+    private var awayModeHeldUntilMs = 0L
     private var suppressNextProximityRoomAction = false
     private var lastConfirmedWifiRoomId: String? = null
     private var lastConfirmedWifiBssid: String? = null
@@ -254,13 +256,13 @@ class ProximityController(
     }
 
     /**
-     * Whether an entry point may start BLE scanning right now: inside the schedule and not
-     * in doze. Both the engine start and the startup warm-up ask this; the warm-up used to
+     * Whether an entry point may start BLE scanning right now: inside the schedule, not in
+     * doze and not in the car. Both the engine start and the startup warm-up ask this; the warm-up used to
      * check only the schedule and started scans in doze that the loop's doze gate then
      * stopped on its first pass, one start and one stop against the budget for no data.
      * On doze exit the loop starts the motion gate and the active branches resume scans.
      */
-    private fun radioAllowed(): Boolean = isWithinSchedule() && !isDeviceInDoze()
+    private fun radioAllowed(): Boolean = isWithinSchedule() && !isDeviceInDoze() && !carAudioConnected.value
 
     private fun isDeviceInDoze(): Boolean {
         val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
@@ -401,6 +403,18 @@ class ProximityController(
                 // again. While in doze the doze gate handles the wait; the resume happens
                 // on the first pass after doze exit.
                 if (scheduleSuspended && radioAllowed()) { resumeProximityAfterSchedule(); scheduleSuspended = false }
+
+                // ── Gate: car audio ──
+                // A device the user marked as car audio switches Follow Me off for as long as
+                // it is connected. Driving fires significant motion every few seconds, which
+                // kept the motion fast path (wakelock, LOW_LATENCY scan, two reads) running
+                // for the whole trip with nothing to hear.
+                if (carAudioConnected.value) {
+                    enterCarDormancy()
+                    carAudioConnected.first { !it }
+                    leaveCarDormancy()
+                    continue
+                }
 
                 // ── Gate: doze ──
                 if (isDeviceInDoze()) {
@@ -870,9 +884,37 @@ class ProximityController(
         return true
     }
 
+    /**
+     * Stop scanning and motion for the car, and forget the room: the phone has left it, and
+     * a room kept through the drive would make coming back to it no change at all. Clearing
+     * it also lets the no-room stop controller pause a room set to stop on leave.
+     */
+    private fun enterCarDormancy() {
+        suspendScanning()
+        motionGate.stop()
+        highAccuracyUntilMs = 0L; highAccuracyStartedAtMs = 0L
+        roomDetector.reset()
+        Log.d(TAG, "Car audio connected: Follow Me dormant, room cleared")
+    }
+
+    /**
+     * Leaving the car is an arrival, so the loop starts on the settle tail, as after a walk.
+     * Away mode is held off for its full timeout: the room was cleared on the way in and the
+     * last confirmation is from before the drive, so without the hold the first empty read
+     * on the walk in would drop straight to the one-read-a-minute away cadence.
+     */
+    private fun leaveCarDormancy() {
+        val now = System.currentTimeMillis()
+        awayModeHeldUntilMs = now + AWAY_MODE_TIMEOUT_MS
+        lastMotionSeenMs = now
+        if (radioAllowed()) motionGate.start()
+        Log.d(TAG, "Car audio released: Follow Me active again")
+    }
+
     /** No room detected for 5+ minutes: likely not at home. */
     private fun isInAwayMode(): Boolean {
         if (roomDetector.currentRoom.value != null) return false
+        if (System.currentTimeMillis() < awayModeHeldUntilMs) return false
         if (roomDetector.noMatchStreak == 0) return false
         val ref = roomDetector.lastConfirmedAtMs.takeIf { it > 0 } ?: highAccuracyStartedAtMs
         return System.currentTimeMillis() - ref > AWAY_MODE_TIMEOUT_MS
