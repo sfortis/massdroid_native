@@ -41,7 +41,7 @@ import net.asksakis.massdroidv2.util.LogRedaction
 
 private const val TAG = "ProximityVM"
 private const val FINGERPRINTS_PER_ROOM = 8
-private const val MIN_WEIGHT = 0.15
+private const val MIN_WEIGHT = net.asksakis.massdroidv2.data.proximity.BEACON_WEIGHT_FLOOR
 private const val MAX_WEIGHT = 2.5
 private const val STRONG_LOCAL_RSSI_DBM = -65.0
 private const val GOOD_LOCAL_RSSI_DBM = -72.0

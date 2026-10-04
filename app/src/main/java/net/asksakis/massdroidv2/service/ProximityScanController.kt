@@ -5,6 +5,7 @@ import kotlinx.coroutines.delay
 import net.asksakis.massdroidv2.data.proximity.AnchorType
 import net.asksakis.massdroidv2.data.proximity.ProximityConfig
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
+import net.asksakis.massdroidv2.data.proximity.ScanAnchors
 import net.asksakis.massdroidv2.data.proximity.ScanStartResult
 
 class ProximityScanController(
@@ -39,10 +40,8 @@ class ProximityScanController(
         private const val RECOVERY_BACKOFF_MAX_MS = 5 * 60_000L
     }
 
-    private data class AnchorFilters(val macs: Set<String>, val names: Set<String>)
-
     private var persistentScanLowPower: Boolean? = null
-    private var persistentAnchors: AnchorFilters? = null
+    private var persistentAnchors: ScanAnchors? = null
     private var lastScanRestartMs = 0L
     private var startBackoffMs = 0L
     private var nextStartAttemptMs = 0L
@@ -62,7 +61,7 @@ class ProximityScanController(
 
     private fun ensurePersistentScan(lowPower: Boolean, config: ProximityConfig) {
         val now = System.currentTimeMillis()
-        val wanted = anchorFilters(config)
+        val wanted = ScanAnchors.from(config)
         val running = proximityScanner.isPersistentScanRunning
         if (running && persistentScanLowPower == lowPower && persistentAnchors == wanted) return
         if (!running && persistentScanLowPower != null) {
@@ -97,19 +96,6 @@ class ProximityScanController(
             ScanStartResult.DEFERRED -> Unit // budget; the next cycle asks again
             ScanStartResult.FAILED -> scheduleStartBackoff(now)
         }
-    }
-
-    private fun anchorFilters(config: ProximityConfig): AnchorFilters {
-        val bleRooms = config.rooms.filter { it.wifiMatchMode == null }
-        val macs = bleRooms
-            .flatMap { room -> room.beaconProfiles.filter { it.anchorType == AnchorType.MAC }.map { it.address } }
-            .filter { !it.startsWith("wifi:") }
-            .toSet()
-        val names = bleRooms
-            .flatMap { room -> room.beaconProfiles.filter { it.anchorType == AnchorType.NAME }.map { it.name } }
-            .filter { it.isNotBlank() }
-            .toSet()
-        return AnchorFilters(macs, names)
     }
 
     private fun scheduleStartBackoff(now: Long) {
