@@ -84,7 +84,8 @@ class ProximityController(
         /** How long the buffer must stay quiet before a read. */
         private const val BUFFER_QUIET_MS = 1_000L
         private const val HIGH_ACCURACY_MAX_MS = 60_000L
-        private const val BG_CONFIRM_MIN_DEVICES = 4
+        /** Fewest devices a quick retry may commit a room on. */
+        private const val QUICK_RETRY_MIN_DEVICES = 4
         private const val MOTION_BOOST_DEBOUNCE_MS = 1_000L
         /** A skipped motion boost is logged at most this often, not once per trigger. */
         private const val GATE_LOG_INTERVAL_MS = 60_000L
@@ -130,12 +131,6 @@ class ProximityController(
 
     fun start() {
         createNotificationChannel()
-        androidx.core.content.ContextCompat.registerReceiver(
-            service,
-            bleScanReceiver,
-            android.content.IntentFilter(ProximityScanner.BLE_SCAN_ACTION),
-            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
-        )
         // A protected system broadcast, so it must be registered as exported.
         androidx.core.content.ContextCompat.registerReceiver(
             service,
@@ -150,7 +145,6 @@ class ProximityController(
     fun stop() {
         stopEngine()
         noRoomStopController.stop()
-        try { service.unregisterReceiver(bleScanReceiver) } catch (_: Exception) { }
         try { service.unregisterReceiver(dozeReceiver) } catch (_: Exception) { }
     }
 
@@ -175,47 +169,6 @@ class ProximityController(
             if (intent?.action == android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED) {
                 dozeChanged.tryEmit(Unit)
             }
-        }
-    }
-
-    private val bleScanReceiver = object : android.content.BroadcastReceiver() {
-        @android.annotation.SuppressLint("InlinedApi")
-        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
-            val errorCode = intent?.getIntExtra(android.bluetooth.le.BluetoothLeScanner.EXTRA_ERROR_CODE, 0) ?: 0
-            if (errorCode != 0) {
-                // Nothing is delivered after an error; the next ensureScans restarts the scan.
-                proximityScanner.onBackgroundScanError(errorCode)
-                return
-            }
-            val results = intent?.getParcelableArrayListExtra<android.bluetooth.le.ScanResult>(
-                android.bluetooth.le.BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT
-            ) ?: return
-            proximityScanner.handleBackgroundScanResult(results)
-
-            // Only detect from receiver when screen is OFF (main loop handles screen-on)
-            val dm = getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
-            val screenOn = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state == android.view.Display.STATE_ON
-            if (screenOn) return
-
-            val config = proximityConfigStore.config.value
-            if (!config.enabled || !isWithinSchedule()) return
-            if (System.currentTimeMillis() - lastRoomSwitchMs < COOLDOWN_AFTER_SWITCH_MS) return
-            val backgroundDevices = results.mapNotNull { result ->
-                proximityScanner.toScannedDevice(result)
-            }
-            scanController.logBleDevices("bg-receiver", backgroundDevices, config)
-            // Decide from the SAME picture the main loop sees. The raw batch is MAC-only
-            // (the offloaded filter cannot match names), so judging it alone let the
-            // receiver and the loop vote for different rooms on the same walk.
-            val merged = scanController.readDetectionSnapshot(preferFresh = true)
-            evaluateSnapshot(
-                trigger = "bg-merged",
-                devices = merged,
-                config = config,
-                wifi = currentConnectedWifi(),
-                motionActive = motionGate.isMoving.value,
-                minDevicesToCommit = BG_CONFIRM_MIN_DEVICES
-            )
         }
     }
 
@@ -334,7 +287,9 @@ class ProximityController(
             // controller defers a mode flip within 10 s of a restart, so the whole cold
             // start ran at the low duty cycle and took 27 s to hear all eight anchors.
             ensureScans(lowPower = false)
-            scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
+            // Earlier builds kept an offloaded batch scan registered next to this one, and a
+            // PendingIntent scan survives the process that started it.
+            scanController.stopBackgroundScan()
         }
 
         proximityJob = scope.launch {
@@ -491,8 +446,7 @@ class ProximityController(
                 // restarted, finds it still cold, and sleeps AWAY_MODE_SCAN_INTERVAL_MS,
                 // which outlasts MotionGate's 30 s window. The next pass would then find no
                 // motion and no tail, suspend both scans, and throw away the buffer that had
-                // meanwhile filled. A room whose anchors are names only would be unreachable,
-                // because the batch scan's offloaded filters match addresses and not names.
+                // meanwhile filled, and a suspended scan hears nothing until the next motion.
                 val settling = !isDetectionSettled() &&
                     lastMotionSeenMs > 0L &&
                     nowMs - lastMotionSeenMs < SETTLE_AFTER_MOTION_MAX_MS
@@ -567,8 +521,8 @@ class ProximityController(
                     }
 
                     // Screen OFF idle, or a transient cooldown state.
-                    // Detection while idle is handled by the PendingIntent bg-receiver and the
-                    // dedicated motion collectors, so the loop need not spin. When truly idle
+                    // Detection while idle is handled by the dedicated motion collectors, so the
+                    // loop need not spin. When truly idle
                     // (screen off, no motion) wait for motion (instant wake, preserves the fast
                     // path) or the idle poll interval, instead of waking the CPU every 2s.
                     // Transient cooldown states keep the short poll so normal cadence resumes fast.
@@ -702,7 +656,7 @@ class ProximityController(
 
     /**
      * The one place a snapshot becomes a room decision. Every trigger (main-loop burst,
-     * screen-off motion fast path, motion boost, quick retry, batch receiver) used to carry
+     * screen-off motion fast path, motion boost, quick retry) used to carry
      * its own copy of this block and the copies drifted: paths that skipped empty snapshots
      * never evaluated Wi-Fi-only rooms, and a path that withheld the BLE commit dropped the
      * Wi-Fi answer with it.
@@ -845,7 +799,6 @@ class ProximityController(
         proximityQuickRetryJob?.cancel()
         proximityQuickRetryJob = null
         scanController.stopPersistentScan(clearBuffers = false)
-        scanController.stopBackgroundScan()
         Log.d(TAG, "Scanning suspended: phone still and room settled")
     }
 
@@ -853,7 +806,6 @@ class ProximityController(
     private fun resumeScanning() {
         if (!scanningSuspended) return
         scanningSuspended = false
-        scanController.startBackgroundScanForConfig(proximityConfigStore.config.value)
         Log.d(TAG, "Scanning resumed")
     }
 
@@ -1001,8 +953,8 @@ class ProximityController(
     /**
      * Away cadence: one low-power read a minute instead of the active branches' seconds.
      * Away from every anchor the scan legitimately hears nothing, so a faster read only
-     * costs radio and wake locks. The room returns through this read or through the batch
-     * scan's receiver, and either one confirms a room and so ends away mode.
+     * costs radio and wake locks. The room returns through this read or through a motion
+     * boost, and either one confirms a room and so ends away mode.
      */
     private suspend fun awayModeScanCycle() {
         ensureScans(lowPower = true)
@@ -1061,11 +1013,11 @@ class ProximityController(
                         "Quick retry ($reason): 0 devices " +
                             "(buffer=${snapshot.bufferSize}, freshest=${snapshot.freshestAgeMs}ms, " +
                             "oldest=${snapshot.oldestAgeMs}ms, lastPersistent=${snapshot.lastPersistentCallbackAgeMs}ms, " +
-                            "lastBackground=${snapshot.lastBackgroundDeliveryAgeMs}ms, running=${snapshot.persistentRunning})"
+                            "running=${snapshot.persistentRunning})"
                     )
                 }
-                // Same commit floor as the batch receiver. This retry re-reads the buffer that a
-                // receiver read may have just rejected as too small, and it used to commit by
+                // A commit floor on the device count. This retry re-reads the buffer that the
+                // read before it may have just rejected as too small, and it used to commit by
                 // default, so the rejection could be undone 1.5 s later by the very read it had
                 // scheduled.
                 val result = evaluateSnapshot(
@@ -1074,7 +1026,7 @@ class ProximityController(
                     config = config,
                     wifi = currentConnectedWifi(),
                     motionActive = motionGate.isMoving.value,
-                    minDevicesToCommit = BG_CONFIRM_MIN_DEVICES
+                    minDevicesToCommit = QUICK_RETRY_MIN_DEVICES
                 )
                 val outcome = when (result) {
                     is DetectResult.Confirmed -> "confirmed ${result.room.roomName}"
@@ -1189,7 +1141,6 @@ class ProximityController(
         scanningSuspended = false
         motionGate.stop()
         scanController.stopPersistentScan()
-        scanController.stopBackgroundScan()
         proximityScanner.stopWifiMonitor()
         roomDetector.reset()
         proximityQuickRetryJob?.cancel()

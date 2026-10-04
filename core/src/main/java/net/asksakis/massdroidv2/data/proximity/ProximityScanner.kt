@@ -50,41 +50,12 @@ private const val DEVICE_RETAIN_MS = 30_000L
 /** One calibration sample window. Twenty of them make one fingerprint set (see [ProximityScanner.calibrationWindows]). */
 private const val CALIBRATION_WINDOW_MS = SCAN_DURATION_MS / 2
 
-/**
- * Above this, a scan result's own timestamp is treated as unusable rather than as
- * a very old reading. Real batched results are at most one report interval old;
- * anything beyond a minute means the controller reported something meaningless.
- */
-private const val MAX_TRUSTED_RESULT_AGE_MS = 60_000L
-
 /** RSSI jitter on a still phone is a couple of dB; below this a change is noise, not news. */
 private const val RSSI_CHANGE_DB = 4
 
 /** Floor on a budget wait, so a wake at the exact boundary cannot spin. */
 private const val MIN_BUDGET_WAIT_MS = 50L
 
-/**
- * How often the offloaded batch scan hands its results to us.
- *
- * This is the one scan that stays registered while the phone is still, so its
- * interval is what wakes the application processor through an idle night. It used to
- * be three seconds, which the controller rounded to about five and a half, and that
- * was the single largest source of wakeups in a measured day.
- *
- * The ceiling is [DEVICE_RETAIN_MS]: a reading is dropped from the buffer once it is
- * that old, so a batch interval near it would deliver readings already at the edge of
- * being discarded and leave the buffer empty between deliveries. Half the retain
- * window leaves every reading a further half window of useful life. Detection while
- * MOVING does not depend on this value at all, because the persistent scan runs then
- * and delivers continuously.
- *
- * Measured caveat: once the device is properly idle the platform coalesces delivery to
- * about 22 s on its own, and a control build requesting 3 s was delivered on exactly the
- * same 22 s cadence. So this value does not govern the deepest idle state. It governs the
- * lighter screen-off state, which is where a full day of measurement found the batch
- * being delivered every 5.5 s against a requested 3 s.
- */
-private const val BACKGROUND_BATCH_INTERVAL_MS = DEVICE_RETAIN_MS / 2
 private const val MIN_VALID_RSSI = -126
 private const val MAX_VALID_RSSI = 20
 private const val INVALID_WIFI_BSSID = "02:00:00:00:00:00"
@@ -117,7 +88,6 @@ class ProximityScanner @Inject constructor(
         val freshestAgeMs: Long?,
         val oldestAgeMs: Long?,
         val lastPersistentCallbackAgeMs: Long?,
-        val lastBackgroundDeliveryAgeMs: Long?,
         val persistentRunning: Boolean
     )
 
@@ -416,7 +386,6 @@ class ProximityScanner @Inject constructor(
     @Volatile private var lastScanFailureMs = 0L
     @Volatile private var lastNewDeviceMs = 0L
     private val seenSinceScanStart = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    @Volatile private var lastBackgroundDeliveryMs = 0L
 
     @Volatile var zeroDeviceStreak = 0
 
@@ -435,10 +404,8 @@ class ProximityScanner @Inject constructor(
     }
 
     val isPersistentScanRunning: Boolean get() = persistentRunning
-    val isBackgroundScanRunning: Boolean get() = backgroundScanPending != null
     private var persistentAnchorAddresses: Set<String> = emptySet()
     private var persistentAnchorNames: Set<String> = emptySet()
-    private var backgroundAddresses: Set<String>? = null
     @Volatile var uiHighAccuracyRequested = false
 
     @SuppressLint("MissingPermission")
@@ -575,126 +542,29 @@ class ProximityScanner @Inject constructor(
         )
     }
 
-    // --- PendingIntent-based background scan (works with screen off) ---
-
-    private var backgroundScanPending: PendingIntent? = null
-
     /**
-     * Batch scan for known beacon addresses, delivered via PendingIntent.
+     * Cancel the offloaded PendingIntent batch scan that earlier builds kept registered
+     * next to the persistent scan.
      *
-     * Requires at least one address: a match-all batch scan reports every
-     * advertisement in range, which the OS counts as an unoptimized scan and which
-     * wakes the process continuously for devices we can never anchor on. Callers
-     * with only name anchors rely on [startPersistentScan] instead, which can carry
-     * real name filters.
+     * Follow Me no longer starts it. Both scans carried nearly the same MAC filters, so
+     * together they took 46 of the controller's 64 hardware filter slots, and the
+     * platform then refused to offload the persistent scan's filters ("Blocked: 25
+     * filters ... only 4 slots left") for a quarter of an hour at a time. The persistent
+     * scan's filters are a superset of the batch's, and it runs in every state the batch
+     * ran in, so the batch added nothing the detector scores.
      *
-     * A start with the address set already running is a no-op. The PendingIntent
-     * variant of `startScan` reports most refusals as a RETURN CODE, not an exception,
-     * so the code is checked; a later error arrives as `EXTRA_ERROR_CODE` on the
-     * broadcast and is reported through [onBackgroundScanError].
+     * A PendingIntent scan outlives the process that registered it, so the registration
+     * is looked up by its intent rather than by a field this process may never have set.
      */
-    @SuppressLint("MissingPermission")
-    fun startBackgroundScan(beaconAddresses: Set<String>): ScanStartResult {
-        val scanner = getScanner() ?: return ScanStartResult.FAILED
-        if (beaconAddresses.isEmpty()) {
-            stopBackgroundScan()
-            Log.d(TAG, "Background scan skipped: no MAC anchors to filter on")
-            return ScanStartResult.STARTED
-        }
-        if (backgroundScanPending != null && beaconAddresses == backgroundAddresses) return ScanStartResult.STARTED
-        // Reserved before the running scan is torn down, so a deferral costs nothing.
-        val now = SystemClock.elapsedRealtime()
-        if (!startBudget.tryAcquire(now)) {
-            Log.d(TAG, "Background scan start deferred ${startBudget.msUntilAllowed(now)}ms: scan-start budget")
-            return ScanStartResult.DEFERRED
-        }
-        stopBackgroundScan()
-
-        val intent = Intent(BLE_SCAN_ACTION).setPackage(context.packageName)
-        val pending = PendingIntent.getBroadcast(
-            context, 0, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val filters = beaconAddresses.map { addr ->
-            ScanFilter.Builder().setDeviceAddress(addr).build()
-        }
-
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-            .setReportDelay(BACKGROUND_BATCH_INTERVAL_MS)
-            .build()
-
-        return try {
-            val code = scanner.startScan(filters, settings, pending)
-            if (code != 0) {
-                Log.w(TAG, "Background scan refused: code=$code")
-                ScanStartResult.FAILED
-            } else {
-                backgroundScanPending = pending
-                backgroundAddresses = beaconAddresses
-                Log.d(TAG, "Background PendingIntent scan started for ${beaconAddresses.size} beacons")
-                ScanStartResult.STARTED
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Background scan failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            ScanStartResult.FAILED
-        }
-    }
-
-    /** The platform reported an error on the PendingIntent scan. Nothing is delivered after it. */
-    fun onBackgroundScanError(errorCode: Int) {
-        Log.w(TAG, "Background scan error: code=$errorCode")
-        backgroundScanPending = null
-        backgroundAddresses = null
-    }
-
     @SuppressLint("MissingPermission")
     fun stopBackgroundScan() {
-        backgroundScanPending?.let { pi ->
-            try { getScanner()?.stopScan(pi) } catch (_: Exception) { }
-            backgroundScanPending = null
-        }
-        backgroundAddresses = null
-    }
-
-    /**
-     * When [result] was actually heard, in wall-clock time.
-     *
-     * A batched result can be a whole report interval old by the time the broadcast
-     * arrives, so stamping it with the delivery time makes a stale reading look
-     * fresh, and the detector reads freshness to decide which room wins. The error
-     * was bounded by the report interval and therefore invisible while that interval
-     * was three seconds; it stops being invisible as the interval grows.
-     *
-     * `timestampNanos` is on the elapsed-realtime clock, so it is converted rather
-     * than used directly. A controller that reports nothing usable (0, or a value in
-     * the future) falls back to [now] rather than inventing an age.
-     */
-    private fun observedAtMs(result: ScanResult, now: Long): Long {
-        val ageMs = (SystemClock.elapsedRealtimeNanos() - result.timestampNanos) / 1_000_000
-        if (ageMs < 0 || ageMs > MAX_TRUSTED_RESULT_AGE_MS) return now
-        return now - ageMs
-    }
-
-    /** Called from BroadcastReceiver when background scan results arrive */
-    fun handleBackgroundScanResult(results: List<ScanResult>) {
-        val now = System.currentTimeMillis()
-        for (result in results) {
-            try {
-                val device = toScannedDevice(result) ?: continue
-                val observedAt = observedAtMs(result, now)
-                // One batch routinely carries several readings for the same address.
-                // Without the real timestamps the last one in the list won, which was
-                // not necessarily the most recent one.
-                val previous = persistentLastSeen[device.address]
-                if (previous != null && previous > observedAt) continue
-                persistentDevices[device.address] = device
-                persistentLastSeen[device.address] = observedAt
-                noteObservation(device, now)
-            } catch (e: Exception) { Log.w(TAG, "BLE callback error: ${e.javaClass.simpleName}") }
-        }
-        lastBackgroundDeliveryMs = now
-        Log.d(TAG, "Background scan: ${results.size} results, total=${persistentDevices.size}")
+        val intent = Intent(BLE_SCAN_ACTION).setPackage(context.packageName)
+        val pending = PendingIntent.getBroadcast(
+            context, 0, intent, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_NO_CREATE
+        ) ?: return
+        try { getScanner()?.stopScan(pending) } catch (_: Exception) { }
+        pending.cancel()
+        Log.d(TAG, "Background PendingIntent scan cancelled")
     }
 
     /**
@@ -741,7 +611,6 @@ class ProximityScanner @Inject constructor(
             freshestAgeMs = ages.minOrNull(),
             oldestAgeMs = ages.maxOrNull(),
             lastPersistentCallbackAgeMs = lastPersistentCallbackMs.takeIf { it > 0L }?.let { now - it },
-            lastBackgroundDeliveryAgeMs = lastBackgroundDeliveryMs.takeIf { it > 0L }?.let { now - it },
             persistentRunning = persistentRunning
         )
     }

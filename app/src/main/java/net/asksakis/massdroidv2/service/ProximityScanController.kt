@@ -44,8 +44,6 @@ class ProximityScanController(
     private var persistentScanLowPower: Boolean? = null
     private var persistentAnchors: AnchorFilters? = null
     private var lastScanRestartMs = 0L
-    private var backgroundWanted = false
-    private var backgroundAddresses: Set<String>? = null
     private var startBackoffMs = 0L
     private var nextStartAttemptMs = 0L
     private var recoveryBackoffMs = MIN_SCAN_RESTART_INTERVAL_MS
@@ -53,14 +51,12 @@ class ProximityScanController(
 
     /**
      * Reconcile what is wanted with what runs: the persistent scan in the requested mode with
-     * the config's current anchor filters, the background scan if one is wanted, and a restart
-     * when the persistent scan has died or gone silent. Called on every main-loop cycle and on
+     * the config's current anchor filters, and a restart when it has died or gone silent. Called on every main-loop cycle and on
      * every motion path, which is what turns a deferred or failed start into a retry, and what
      * picks up a calibration save (new anchors) without restarting the engine.
      */
     fun ensureScans(lowPower: Boolean, config: ProximityConfig) {
         ensurePersistentScan(lowPower, config)
-        ensureBackgroundScan(config)
         recoverScannerIfNeeded(highAccuracy = !lowPower, config = config)
     }
 
@@ -103,28 +99,6 @@ class ProximityScanController(
         }
     }
 
-    private fun ensureBackgroundScan(config: ProximityConfig) {
-        if (!backgroundWanted) return
-        val wanted = macAnchors(config)
-        val running = proximityScanner.isBackgroundScanRunning
-        if (wanted == backgroundAddresses && (running || wanted.isEmpty())) return
-        val now = System.currentTimeMillis()
-        if (now < nextStartAttemptMs) return
-        when (proximityScanner.startBackgroundScan(wanted)) {
-            ScanStartResult.STARTED -> {
-                backgroundAddresses = wanted
-                startBackoffMs = 0L
-            }
-            ScanStartResult.DEFERRED -> Unit
-            ScanStartResult.FAILED -> scheduleStartBackoff(now)
-        }
-    }
-
-    private fun scheduleStartBackoff(now: Long) {
-        startBackoffMs = (startBackoffMs * 2).coerceIn(START_BACKOFF_MIN_MS, START_BACKOFF_MAX_MS)
-        nextStartAttemptMs = now + startBackoffMs
-    }
-
     private fun anchorFilters(config: ProximityConfig): AnchorFilters {
         val bleRooms = config.rooms.filter { it.wifiMatchMode == null }
         val macs = bleRooms
@@ -138,10 +112,10 @@ class ProximityScanController(
         return AnchorFilters(macs, names)
     }
 
-    private fun macAnchors(config: ProximityConfig): Set<String> = config.rooms
-        .flatMap { room -> room.beaconProfiles.filter { it.anchorType == AnchorType.MAC }.map { it.address } }
-        .filter { !it.startsWith("wifi:") }
-        .toSet()
+    private fun scheduleStartBackoff(now: Long) {
+        startBackoffMs = (startBackoffMs * 2).coerceIn(START_BACKOFF_MIN_MS, START_BACKOFF_MAX_MS)
+        nextStartAttemptMs = now + startBackoffMs
+    }
 
     fun stopPersistentScan(clearBuffers: Boolean = true) {
         proximityScanner.stopPersistentScan(clearBuffers = clearBuffers)
@@ -179,28 +153,8 @@ class ProximityScanController(
         // warmup grace the streak could not survive long enough to reach its threshold.
     }
 
-    /**
-     * Want the PendingIntent batch scan running for the config's MAC anchors, and start it
-     * now if the budget allows; [ensureScans] finishes a deferred or refused start later.
-     *
-     * Batch scan filters are offloaded to the BLE controller, and that hardware can
-     * only match addresses/UUIDs, not advertised names. This used to fall back to a
-     * match-all filter whenever ANY room had a NAME anchor, which made the app an
-     * always-on unoptimized scanner: it woke the process for every advertisement in
-     * range (233k results / 34h on-battery, flagged by the OS as unoptimized) purely
-     * to catch the handful of name anchors. Those name anchors are already covered by
-     * the regular persistent scan, which carries real name filters and therefore also
-     * survives screen-off (see ProximityScanner.startPersistentScan). Both scans feed
-     * the same device buffer, so dropping the match-all fallback loses no coverage.
-     */
-    fun startBackgroundScanForConfig(config: ProximityConfig) {
-        backgroundWanted = true
-        ensureBackgroundScan(config)
-    }
-
+    /** Cancel the batch scan an earlier build left registered; see [ProximityScanner.stopBackgroundScan]. */
     fun stopBackgroundScan() {
-        backgroundWanted = false
-        backgroundAddresses = null
         proximityScanner.stopBackgroundScan()
     }
 
@@ -217,7 +171,7 @@ class ProximityScanController(
             "$logPrefix ($detailPrefix): empty snapshot, warming " +
                 "(buffer=${before.bufferSize}, freshest=${before.freshestAgeMs}ms, " +
                 "oldest=${before.oldestAgeMs}ms, lastPersistent=${before.lastPersistentCallbackAgeMs}ms, " +
-                "lastBackground=${before.lastBackgroundDeliveryAgeMs}ms, running=${before.persistentRunning})"
+                "running=${before.persistentRunning})"
         )
 
         delay(750)
@@ -229,7 +183,7 @@ class ProximityScanController(
                 "$logPrefix ($detailPrefix): still empty after warm retry " +
                     "(buffer=${after.bufferSize}, freshest=${after.freshestAgeMs}ms, " +
                     "oldest=${after.oldestAgeMs}ms, lastPersistent=${after.lastPersistentCallbackAgeMs}ms, " +
-                    "lastBackground=${after.lastBackgroundDeliveryAgeMs}ms, running=${after.persistentRunning})"
+                    "running=${after.persistentRunning})"
             )
         }
         return devices
