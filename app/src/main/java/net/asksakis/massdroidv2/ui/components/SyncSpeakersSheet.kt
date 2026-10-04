@@ -3,7 +3,9 @@ package net.asksakis.massdroidv2.ui.components
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -40,15 +42,19 @@ import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 /**
- * Dedicated multi-speaker tuner for a sync group: one card per member so the
- * whole group is set up from one place. Each card has a delay slider to line
+ * Dedicated multi-speaker tuner for a sync group: one section per member so the
+ * whole group is set up from one place. Each section has a delay slider to line
  * the speakers up acoustically by ear, and the output channel selector
  * (stereo/left/right/mono) that turns two members into a stereo pair. Remote
  * members write their server-side `sendspin_static_delay` (per-player config);
  * our own player writes the fine-tune of the output it plays on. Sliders are
  * debounced; the channel selector applies on tap.
  *
- * The members' configs are loaded here, once per member, so the cards can be
+ * The members are sections rather than cards, with a divider between them, for the
+ * reason the settings rows have no cards: on the grayscale palette a column of cards
+ * reads as one grey slab.
+ *
+ * The members' configs are loaded here, once per member, so the sections can be
  * ordered by channel (left, right, then the rest by name) before any is drawn.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -62,7 +68,7 @@ internal fun SyncSpeakersSheet(
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
     onDismiss: () -> Unit,
     // Bumped when something outside the sliders rewrote the delays (Auto sync),
-    // so the cards reload the configs and show the new values.
+    // so the sections reload the configs and show the new values.
     configRevision: Int = 0,
     autoSync: (@Composable () -> Unit)? = null,
 ) {
@@ -82,20 +88,26 @@ internal fun SyncSpeakersSheet(
         sheetState = sheetState,
         containerColor = SheetDefaults.containerColor()
     ) {
+        // The section headers carry the settings row inset themselves, so the sheet adds
+        // only the rest of its 20dp edge and everything else takes the inset explicitly.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = SHEET_EDGE_PADDING, vertical = 8.dp)
         ) {
-            SheetDefaults.HeaderTitle(text = "Sync speakers")
-            Text(
-                "Line the group up by ear with a delay per speaker, and pick which channel each one plays.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            autoSync?.invoke()
+            Column(
+                modifier = Modifier.padding(horizontal = SETTINGS_ROW_INSET),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SheetDefaults.HeaderTitle(text = "Sync speakers")
+                Text(
+                    "Line the group up by ear with a delay per speaker, and pick which channel each one plays.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                autoSync?.invoke()
+            }
             val loaded = configs
             if (loaded == null) {
                 Box(
@@ -108,15 +120,17 @@ internal fun SyncSpeakersSheet(
                 }
             } else {
                 // Ordered once from the loaded configs, so a tap on a channel does not
-                // move the card out from under the finger; the new order shows on reopen.
+                // move the section out from under the finger; the new order shows on reopen.
                 val ordered = remember(memberIds, loaded) {
                     members.sortedWith(
                         compareBy<Player>({ channelRank(loaded[it.playerId]?.outputChannels) })
                             .thenBy { it.displayName.lowercase() }
                     )
                 }
-                ordered.forEach { member ->
-                    SyncSpeakerCard(
+                Spacer(modifier = Modifier.height(8.dp))
+                ordered.forEachIndexed { index, member ->
+                    if (index > 0) SettingsSectionDivider()
+                    SyncSpeakerSection(
                         player = member,
                         isOurPlayer = member.playerId == ourPlayerId,
                         config = loaded[member.playerId],
@@ -130,8 +144,9 @@ internal fun SyncSpeakersSheet(
     }
 }
 
+/** One member of the group: its name as the section header, its controls underneath. */
 @Composable
-private fun SyncSpeakerCard(
+private fun SyncSpeakerSection(
     player: Player,
     isOurPlayer: Boolean,
     config: PlayerConfig?,
@@ -166,46 +181,76 @@ private fun SyncSpeakerCard(
             null
         }
 
-    if (isOurPlayer) {
-        // Our own player has no server-side delay (we are the client); it moves
-        // by the fine-tune of the output it plays on, debounced as the slider
-        // fires rapidly.
-        if (localFineTune == null) {
-            SpeakerNoteCard(
-                title = "${player.displayName} · this device$channelSuffix",
-                note = "Can't fine-tune while several Bluetooth devices are connected",
+    val deviceSuffix = if (isOurPlayer) " · this device" else ""
+    SettingsSectionHeader(title = player.displayName + deviceSuffix + channelSuffix)
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = SETTINGS_ROW_INSET)) {
+        if (isOurPlayer) {
+            LocalSpeakerControls(
+                localFineTune = localFineTune,
+                onLocalFineTuneChanged = onLocalFineTuneChanged,
                 footer = channelsFooter
             )
-            return
+        } else {
+            RemoteSpeakerControls(
+                player = player,
+                config = config,
+                onSave = onSave,
+                footer = channelsFooter
+            )
         }
-        val routeKey = localFineTune.routeKey
-        var value by remember(routeKey, localFineTune.ms) { mutableIntStateOf(localFineTune.ms) }
-        // Restart with the stored value: the apply round-trips through DataStore
-        // and re-keys the remember above (new state object), so the snapshotFlow
-        // must re-bind to it. Without this the observer goes stale after the
-        // first apply and later changes (e.g. Reset) are silently dropped.
-        LaunchedEffect(routeKey, localFineTune.ms) {
-            @OptIn(FlowPreview::class)
-            snapshotFlow { value }.drop(1).debounce(250L).collect { onLocalFineTuneChanged(routeKey, it) }
-        }
-        SyncDelayCard(
-            label = "${player.displayName} · Fine-tune$channelSuffix",
-            valueMs = value,
-            defaultMs = 0,
-            onValueChange = { value = it.coerceIn(-FINE_TUNE_MAX_MS, FINE_TUNE_MAX_MS) },
-            compact = true,
-            minMs = -FINE_TUNE_MAX_MS,
-            maxMs = FINE_TUNE_MAX_MS,
-            footer = channelsFooter
-        )
+    }
+}
+
+/**
+ * Our own player has no server-side delay (we are the client); it moves by the
+ * fine-tune of the output it plays on, debounced as the slider fires rapidly.
+ */
+@Composable
+private fun LocalSpeakerControls(
+    localFineTune: OutputFineTune?,
+    onLocalFineTuneChanged: (routeKey: String, ms: Int) -> Unit,
+    footer: (@Composable () -> Unit)?,
+) {
+    if (localFineTune == null) {
+        SpeakerNote(note = "Can't fine-tune while several Bluetooth devices are connected", footer = footer)
         return
     }
+    val routeKey = localFineTune.routeKey
+    var value by remember(routeKey, localFineTune.ms) { mutableIntStateOf(localFineTune.ms) }
+    // Restart with the stored value: the apply round-trips through DataStore
+    // and re-keys the remember above (new state object), so the snapshotFlow
+    // must re-bind to it. Without this the observer goes stale after the
+    // first apply and later changes (e.g. Reset) are silently dropped.
+    LaunchedEffect(routeKey, localFineTune.ms) {
+        @OptIn(FlowPreview::class)
+        snapshotFlow { value }.drop(1).debounce(250L).collect { onLocalFineTuneChanged(routeKey, it) }
+    }
+    SyncDelayControl(
+        label = "Fine-tune",
+        valueMs = value,
+        defaultMs = 0,
+        onValueChange = { value = it.coerceIn(-FINE_TUNE_MAX_MS, FINE_TUNE_MAX_MS) },
+        compact = true,
+        minMs = -FINE_TUNE_MAX_MS,
+        maxMs = FINE_TUNE_MAX_MS,
+        footer = footer
+    )
+}
 
-    // Remote member: its server-side delay, written back under the exact key the load
-    // found (a universal player wraps it per protocol), debounced; MA applies it to the
-    // live group. A server that offers the signed sync delay (-1000..1000) gets that;
-    // otherwise the static playback delay (0..5000), which MA offers only for a client
-    // that declares set_static_delay in its hello, so the key may be absent altogether.
+/**
+ * A remote member's server-side delay, written back under the exact key the load found
+ * (a universal player wraps it per protocol), debounced; MA applies it to the live group.
+ * A server that offers the signed sync delay (-1000..1000) gets that; otherwise the static
+ * playback delay (0..5000), which MA offers only for a client that declares
+ * set_static_delay in its hello, so the key may be absent altogether.
+ */
+@Composable
+private fun RemoteSpeakerControls(
+    player: Player,
+    config: PlayerConfig?,
+    onSave: (playerId: String, values: Map<String, Any>) -> Unit,
+    footer: (@Composable () -> Unit)?,
+) {
     val syncKey = config?.sendspinSyncDelayKey
     val key = syncKey ?: config?.sendspinStaticDelayKey
     val isStatic = syncKey == null
@@ -223,46 +268,45 @@ private fun SyncSpeakerCard(
                 onSave(player.playerId, mapOf(key to v))
             }
         }
-        SyncDelayCard(
-            label = player.displayName + channelSuffix,
+        SyncDelayControl(
+            label = if (isStatic) "Static playback delay" else "Sync delay",
             valueMs = value,
             defaultMs = defaultMs,
             onValueChange = { value = it.coerceIn(minMs, maxMs) },
             compact = true,
             minMs = minMs,
             maxMs = maxMs,
-            footer = channelsFooter
+            footer = footer
         )
     } else {
         // A client whose firmware does not take a delay from the server (the ESPHome
-        // Sendspin component, for one): it is still a member, in the same card as the
+        // Sendspin component, for one): it is still a member, in a section like the
         // others, with the note where the slider would be.
-        SpeakerNoteCard(
-            title = player.displayName + channelSuffix,
-            note = "Sync delay is set on the device",
-            footer = channelsFooter
-        )
+        SpeakerNote(note = "Sync delay is set on the device", footer = footer)
     }
 }
 
-/** A member card with a note where its delay slider would be. */
+/** A note where a member's delay slider would be, above its channel selector. */
 @Composable
-private fun SpeakerNoteCard(title: String, note: String, footer: (@Composable () -> Unit)?) {
-    SettingsCardContainer {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                note,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            footer?.invoke()
-        }
+private fun SpeakerNote(note: String, footer: (@Composable () -> Unit)?) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            note,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        footer?.invoke()
     }
 }
+
+/**
+ * The sheet's own horizontal padding. With the settings row inset inside it, content
+ * sits at the 20dp edge the sheet has always used.
+ */
+private val SHEET_EDGE_PADDING = 4.dp
 
 /** Range of this phone's fine-tune either side of 0. */
 private const val FINE_TUNE_MAX_MS = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
@@ -277,7 +321,7 @@ private const val SYNC_DELAY_MAX_MS = 1000
 
 internal const val OUTPUT_CHANNELS_STEREO = "stereo"
 
-/** Sort key for the member cards: the stereo pair first, in room order, then everyone else. */
+/** Sort key for the member sections: the stereo pair first, in room order, then everyone else. */
 private fun channelRank(value: String?): Int = when (value) {
     "left" -> 0
     "right" -> 1
@@ -287,7 +331,7 @@ private fun channelRank(value: String?): Int = when (value) {
 /**
  * A one-word name for an output channel value. The server's full titles ("Stereo (both
  * channels)", "Left channel only") wrap a chip row onto three lines, in the player
- * settings as much as in a member card here. Unknown values keep the server title.
+ * settings as much as in a member section here. Unknown values keep the server title.
  */
 internal fun outputChannelsShortTitle(value: String, options: List<FormatOption>): String =
     when (value) {

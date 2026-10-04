@@ -53,51 +53,49 @@ internal fun AutoSyncSection(
     val detail = MaterialTheme.typography.bodySmall
     val detailColor = MaterialTheme.colorScheme.onSurfaceVariant
 
-    SettingsCardContainer {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            when (state) {
-                GroupAutoSync.State.Idle -> {
-                    Text("Auto sync (debug)", style = MaterialTheme.typography.bodyMedium)
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        when (state) {
+            GroupAutoSync.State.Idle -> {
+                Text("Auto sync (debug)", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (permissionRefused) {
+                        "Couldn't start. The microphone permission was refused."
+                    } else {
+                        "Hold the phone where you listen. Each speaker plays alone for a few " +
+                            "seconds, at 40% volume or more, while the phone listens; then every " +
+                            "delay is set and the volumes are put back."
+                    },
+                    style = detail, color = detailColor
+                )
+                MdFilledTonalButton(onClick = start) { Text("Auto sync") }
+            }
+            is GroupAutoSync.State.Measuring -> {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     Text(
-                        if (permissionRefused) {
-                            "Couldn't start. The microphone permission was refused."
-                        } else {
-                            "Hold the phone where you listen. Each speaker plays alone for a few " +
-                                "seconds, at 40% volume or more, while the phone listens; then every " +
-                                "delay is set and the volumes are put back."
-                        },
-                        style = detail, color = detailColor
+                        "Listening to ${state.playerName} (${state.index} of ${state.total})",
+                        style = MaterialTheme.typography.bodyMedium
                     )
-                    MdFilledTonalButton(onClick = start) { Text("Auto sync") }
                 }
-                is GroupAutoSync.State.Measuring -> {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text(
-                            "Listening to ${state.playerName} (${state.index} of ${state.total})",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    MdTextButton(onClick = onCancel) { Text("Cancel") }
+                MdTextButton(onClick = onCancel) { Text("Cancel") }
+            }
+            is GroupAutoSync.State.Done -> {
+                Text("Auto sync finished", style = MaterialTheme.typography.bodyMedium)
+                state.plan.members.forEach { member ->
+                    Text(memberLine(state.names[member.playerId] ?: member.playerId, member), style = detail)
                 }
-                is GroupAutoSync.State.Done -> {
-                    Text("Auto sync finished", style = MaterialTheme.typography.bodyMedium)
-                    state.plan.members.forEach { member ->
-                        Text(memberLine(state.names[member.playerId] ?: member.playerId, member), style = detail)
-                    }
-                    Text(
-                        "A speaker running sendspin-cli moves to its new delay slowly; stop and play to apply it at once.",
-                        style = detail, color = detailColor
-                    )
-                    MdTextButton(onClick = onDismiss) { Text("Done") }
-                }
-                is GroupAutoSync.State.Failed -> {
-                    Text(state.reason, style = MaterialTheme.typography.bodyMedium)
-                    MdTextButton(onClick = onDismiss) { Text("Close") }
-                }
+                Text(
+                    "A speaker running sendspin-cli moves to its new delay slowly; stop and play to apply it at once.",
+                    style = detail, color = detailColor
+                )
+                MdTextButton(onClick = onDismiss) { Text("Done") }
+            }
+            is GroupAutoSync.State.Failed -> {
+                Text(state.reason, style = MaterialTheme.typography.bodyMedium)
+                MdTextButton(onClick = onDismiss) { Text("Close") }
             }
         }
     }

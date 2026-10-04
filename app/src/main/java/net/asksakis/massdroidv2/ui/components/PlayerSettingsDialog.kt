@@ -1,41 +1,45 @@
 package net.asksakis.massdroidv2.ui.components
 
-
-import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
+import android.util.Log
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Merge
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SurroundSound
 import androidx.compose.material.icons.filled.Tune
-import net.asksakis.massdroidv2.domain.model.QueueConfigOption
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AlertDialogDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -44,7 +48,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,30 +56,30 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
-import android.util.Log
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
-import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.proximity.RoomConfig
+import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
+import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.outputNameForRouteKey
-import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.domain.model.AutoplayConfig
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
-import net.asksakis.massdroidv2.domain.model.QueueChoice
-import net.asksakis.massdroidv2.domain.model.QueueSettings
+import net.asksakis.massdroidv2.domain.model.FormatOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.model.QueueChoice
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
+import net.asksakis.massdroidv2.domain.model.QueueSettings
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
-import androidx.compose.material.icons.filled.Sensors
-import net.asksakis.massdroidv2.data.proximity.RoomConfig
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -182,10 +185,6 @@ fun PlayerSettingsDialog(
     var syncDelayDefault by remember(player.playerId) { mutableIntStateOf(0) }
     var hasServerSyncDelay by remember(player.playerId) { mutableStateOf(false) }
     var queueSettings by remember(player.playerId) { mutableStateOf<QueueSettings?>(null) }
-    // The room a pick would take away from another player, held until that is confirmed.
-    // Saved by id so the confirmation survives rotation; it closes if the room is gone.
-    var roomToReassignId by rememberSaveable(player.playerId) { mutableStateOf<String?>(null) }
-    val roomToReassign = roomToReassignId?.let { id -> rooms.firstOrNull { it.id == id } }
     val scope = rememberCoroutineScope()
 
     // Loaded separately from the player config: from MA 2.10 these are queue
@@ -285,6 +284,19 @@ fun PlayerSettingsDialog(
         }
     }
 
+    /**
+     * Show a new Autoplay source at once, then keep it only if the server accepted it.
+     * Writing queue config needs an admin account, so a refusal is a normal outcome and
+     * must not leave the UI claiming a change that did not happen.
+     */
+    suspend fun applyAutoplaySource(config: AutoplayConfig, mode: String, playlistUri: String?) {
+        val previous = queueSettings
+        queueSettings = previous?.copy(autoplay = config.copy(mode = mode, playlistUri = playlistUri))
+        if (onAutoplayChanged?.invoke(mode, playlistUri) != true) {
+            queueSettings = previous
+        }
+    }
+
     // BasicAlertDialog + custom layout so the action buttons don't eat the
     // vertical space that the Material3 AlertDialog reserves for its default
     // title/content/buttons sections.
@@ -292,10 +304,10 @@ fun PlayerSettingsDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier
             .widthIn(min = 320.dp, max = 480.dp)
-            // Bumped from 560 → 720 so calibration rows at the bottom of the
+            // Bumped from 560 to 720 so calibration rows at the bottom of the
             // scrollable content aren't clipped on phones with ~800-900 dp
             // available height. Adaptive devices (tablets, foldables) cap at
-            // 720 still — generous but not full-screen.
+            // 720 still: generous but not full-screen.
             .heightIn(max = 720.dp)
             .windowInsetsPadding(
                 WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(
@@ -307,23 +319,22 @@ fun PlayerSettingsDialog(
         )
     ) {
         androidx.compose.material3.Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            // The ground the setting cards sit on, so it has to stay below them. It used
-            // to be surfaceContainerHigh, the colour of the cards themselves, which left
-            // them nothing to stand out against. Measured on this device: the cards are
-            // 42,42,42, plain surface was 18,18,18 (Edit Room's ground, too dark for a
-            // dialog), and this token sits between the two.
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            // Tonal elevation would tint that ground back up and undo the separation; the
-            // dialog lifts off the dimmed screen with a shadow instead.
-            tonalElevation = 0.dp,
-            shadowElevation = 6.dp
+            // The surface Material's AlertDialog draws, so this dialog looks like every other
+            // dialog in the app. It used to sit a step lower so the setting cards had a ground
+            // to stand out against; the rows have no container that needs one.
+            shape = AlertDialogDefaults.shape,
+            color = AlertDialogDefaults.containerColor,
+            tonalElevation = AlertDialogDefaults.TonalElevation
         ) {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
+            // The rows carry ListItem's own inset, so the dialog adds only enough to bring
+            // their content to the 24dp edge an AlertDialog uses.
+            Column(modifier = Modifier.padding(horizontal = DIALOG_EDGE_PADDING, vertical = 20.dp)) {
                 Text(
                     "Player Settings",
                     style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(bottom = 18.dp)
+                    modifier = Modifier
+                        .padding(horizontal = SETTINGS_ROW_INSET)
+                        .padding(bottom = 10.dp)
                 )
                 if (isLoading) {
                     Box(
@@ -336,22 +347,21 @@ fun PlayerSettingsDialog(
                     }
                 } else {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier
                             // weight(1f) (fill = true, default): claim all the
                             // remaining vertical space inside the dialog so the
                             // verticalScroll has a bounded viewport. With the
                             // earlier fill = false, the column took only its
-                            // measured (intrinsic) height — fine until content
-                            // exceeded that — and the bottom Cancel/Save row
+                            // measured (intrinsic) height, fine until content
+                            // exceeded that, and the bottom Cancel/Save row
                             // could push it up so the last items got clipped
                             // without engaging the scroll.
                             .weight(1f)
                             .verticalScroll(rememberScrollState())
                             // Applied INSIDE the scroll, so it is trailing space in the
                             // content rather than a smaller viewport: without it the last
-                            // card ends flush against the clip and its bottom edge and
-                            // ripple are cut where the Save row begins.
+                            // row ends flush against the clip and its ripple is cut where
+                            // the Save row begins.
                             .padding(bottom = 6.dp)
                     ) {
                     // Two groups, because they are saved in two different ways. Player
@@ -368,36 +378,35 @@ fun PlayerSettingsDialog(
                         queue?.volumeNormalization != null ||
                         queue?.smartShuffle != null
 
-                    SettingsSectionLabel("Player", caption = "Saved with the Save button")
+                    SettingsSectionHeader("Player", caption = "Saved with the Save button")
 
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
                         label = { Text("Player name") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = SETTINGS_ROW_INSET, vertical = 4.dp)
                     )
 
                     // Where this server still keeps them: before MA 2.10 both are player
                     // config, saved with the button below rather than on selection, so
-                    // they belong in this group and not the one above.
+                    // they belong in this group and not the queue one.
                     if (queueCrossfade == null) {
-                        QueueChoiceCard(
+                        SettingsChoiceRow(
                             title = "Crossfade",
                             icon = Icons.Default.GraphicEq,
-                            choice = QueueChoice(
-                                key = QueueChoice.KEY_CROSSFADE_MODE,
-                                value = crossfadeMode.apiValue,
-                                options = CrossfadeMode.entries.map {
-                                    QueueConfigOption(value = it.apiValue, title = it.label)
-                                }
-                            ),
+                            options = CrossfadeMode.entries.map {
+                                QueueConfigOption(value = it.apiValue, title = it.label)
+                            },
+                            selectedValue = crossfadeMode.apiValue,
                             onSelect = { value -> crossfadeMode = CrossfadeMode.fromApi(value) }
                         )
                     }
 
                     if (queue?.volumeNormalization == null) {
-                        SettingsSwitchCard(
+                        SettingsSwitchRow(
                             title = "Volume normalization",
                             icon = Icons.AutoMirrored.Filled.VolumeUp,
                             checked = volumeNormalization,
@@ -409,19 +418,16 @@ fun PlayerSettingsDialog(
                     // player and stays with it in and out of groups, which is how two
                     // speakers become a stereo pair: one set to left, the other to right.
                     if (outputChannelsOptions.isNotEmpty()) {
-                        QueueChoiceCard(
+                        SettingsChoiceRow(
                             title = "Output channels",
                             icon = Icons.Default.SurroundSound,
-                            choice = QueueChoice(
-                                key = "output_channels",
-                                value = outputChannels.orEmpty(),
-                                options = outputChannelsOptions.map {
-                                    QueueConfigOption(
-                                        value = it.value,
-                                        title = outputChannelsShortTitle(it.value, outputChannelsOptions)
-                                    )
-                                }
-                            ),
+                            options = outputChannelsOptions.map {
+                                QueueConfigOption(
+                                    value = it.value,
+                                    title = outputChannelsShortTitle(it.value, outputChannelsOptions)
+                                )
+                            },
+                            selectedValue = outputChannels,
                             onSelect = { outputChannels = it }
                         )
                     }
@@ -429,30 +435,10 @@ fun PlayerSettingsDialog(
                     // Offered wherever the config has it: a universal player carries the
                     // Sendspin format under its protocol entry and is not provider "sendspin".
                     if (formatOptions.isNotEmpty()) {
-                        // "automatic" lets the client decide. This app decides by network, so
-                        // on the phone's own player the option says what it will pick.
-                        val allOptions = if (isLocalPlayer) {
-                            formatOptions.map {
-                                if (it.value == SendspinAudioFormat.SERVER_AUTOMATIC) it.copy(title = "Automatic") else it
-                            }
-                        } else {
-                            formatOptions
-                        }
-                        val currentValue = selectedFormatValue ?: SendspinAudioFormat.SERVER_AUTOMATIC
-                        // A dropdown, not chips: the server offers up to seven formats with
-                        // long titles, and as chips they filled the height of the dialog.
-                        SettingsDropdownCard(
-                            title = "Audio format",
-                            icon = Icons.Default.HighQuality,
-                            value = currentValue,
-                            options = allOptions.map {
-                                QueueConfigOption(
-                                    value = it.value,
-                                    title = it.title,
-                                    description = "FLAC on Wi-Fi, Opus on mobile data"
-                                        .takeIf { _ -> isLocalPlayer && it.value == SendspinAudioFormat.SERVER_AUTOMATIC }
-                                )
-                            },
+                        AudioFormatRow(
+                            formatOptions = formatOptions,
+                            selectedValue = selectedFormatValue ?: SendspinAudioFormat.SERVER_AUTOMATIC,
+                            isLocalPlayer = isLocalPlayer,
                             onSelect = { selectedFormatValue = it }
                         )
                     }
@@ -460,17 +446,13 @@ fun PlayerSettingsDialog(
                     // Generic per-provider output codec (e.g. Sonos: flac/mp3/aac/wav).
                     // Shown for any non-Sendspin player whose MA config exposes it.
                     if (!isSendspinPlayer && outputCodecOptions.isNotEmpty()) {
-                        QueueChoiceCard(
+                        SettingsChoiceRow(
                             title = "Output codec",
                             icon = Icons.Default.AudioFile,
-                            choice = QueueChoice(
-                                key = "output_codec",
-                                value = outputCodec
-                                    ?: outputCodecOptions.firstOrNull()?.value.orEmpty(),
-                                options = outputCodecOptions.map {
-                                    QueueConfigOption(value = it.value, title = it.title)
-                                }
-                            ),
+                            options = outputCodecOptions.map {
+                                QueueConfigOption(value = it.value, title = it.title)
+                            },
+                            selectedValue = outputCodec ?: outputCodecOptions.firstOrNull()?.value,
                             onSelect = { outputCodec = it }
                         )
                     }
@@ -478,256 +460,68 @@ fun PlayerSettingsDialog(
                     // Delays and calibration are for the rare occasion when a room is out
                     // of step, so they stay folded away rather than filling the dialog
                     // every time someone opens it to rename a player. The phone's own
-                    // player gets the Sync card for the output it plays on; a remote
+                    // player gets the Sync row for the output it plays on; a remote
                     // player gets the delays its server config offers.
                     if (isLocalPlayer && acoustic != null) {
-                        LocalSyncCard(acoustic)
+                        LocalSyncRow(acoustic)
                     } else if (hasServerStaticDelay || hasServerSyncDelay) {
-                        ExpandableSettingCard(
-                            title = "Advanced timing",
-                            icon = Icons.Default.Tune,
-                            value = "Sync delays and calibration"
-                        ) {
-                    if (hasServerStaticDelay) {
-                        // Static playback delay (SERVER-side spec field
-                        // sendspin_static_delay, available only on MA servers
-                        // with PR #3689 deployed). Range 0..5000 ms, positive
-                        // compensates for external delay beyond the audio
-                        // port (spec sign). Saved via player config; affects
-                        // ALL clients of this player.
-                        DelayStepperCard(
-                            label = "Static playback delay",
-                            helperText = "Server-side spec compensation for external device delay. Affects all clients of this player.",
-                            valueMs = staticDelayMs,
-                            minValue = 0,
-                            maxValue = 5000,
-                            onDecrement = {
-                                staticDelayMs = (staticDelayMs - 2).coerceAtLeast(0)
-                            },
-                            onIncrement = {
-                                staticDelayMs = (staticDelayMs + 2).coerceAtMost(5000)
-                            },
-                            onReset = {
-                                if (staticDelayMs != 0) {
-                                    staticDelayMs = 0
-                                }
-                            }
+                        RemoteTimingRow(
+                            staticDelayMs = staticDelayMs.takeIf { hasServerStaticDelay },
+                            onStaticDelayChange = { staticDelayMs = it },
+                            syncDelayMs = syncDelayServerMs.takeIf { hasServerSyncDelay },
+                            syncDelayDefaultMs = syncDelayDefault,
+                            onSyncDelayChange = { syncDelayServerMs = it }
                         )
-                    }
-
-                    if (hasServerSyncDelay) {
-                        // Per-player Sendspin sync delay (server-side
-                        // sendspin_sync_delay, -1000..1000 ms; negative = earlier,
-                        // positive = later, matching the MA web UI). Slider for a
-                        // quick sweep, 1 ms steppers for fine acoustic alignment;
-                        // Reset returns to the server default. MA applies it live.
-                        SyncDelayCard(
-                            valueMs = syncDelayServerMs,
-                            defaultMs = syncDelayDefault,
-                            onValueChange = { syncDelayServerMs = it.coerceIn(-1000, 1000) }
-                        )
-                    }
-                        }
                     }
 
                     if (hasQueueSection) {
-                        SettingsSectionLabel("Queue", caption = "Changes apply immediately")
-
-                            // Crossfade, volume normalization and smart shuffle moved from
-                            // the player to the queue in MA 2.10. Which set of controls is
-                            // shown follows what the server actually sent rather than a
-                            // version number: a queue that reports these settings gets them
-                            // here, anything older keeps the player-config pair below.
+                        SettingsSectionDivider()
+                        SettingsSectionHeader("Queue", caption = "Changes apply immediately")
+                        QueueChoiceRows(
+                            queue = queue,
                             // initialCrossfadeEnabled stays null until the queue toggles are
                             // seeded. Drawing the switch then would show "off" over a
-                            // crossfade that may be on, so the card waits for a real answer.
+                            // crossfade that may be on, so the row waits for a real answer.
                             // The player-config pair does NOT step in meanwhile: on a server
                             // that keeps crossfade on the queue, that key is dead.
-                            if (queueCrossfade != null && onCrossfadeEnabledChanged != null &&
-                                initialCrossfadeEnabled != null
-                            ) {
-                                QueueChoiceCard(
-                                    title = "Crossfade",
-                                    icon = Icons.Default.GraphicEq,
-                                    // The type only matters while crossfade is on, which is
-                                    // also why the server no longer offers "off" as a type.
-                                    choice = queueCrossfade.takeIf { crossfadeOn }?.withShortTitles(),
-                                    onSelect = { value -> applyQueueChoice(queueCrossfade, value) },
-                                    trailing = {
-                                        Switch(
-                                            checked = crossfadeOn,
-                                            onCheckedChange = {
-                                                crossfadeOn = it
-                                                onCrossfadeEnabledChanged(it)
-                                            }
-                                        )
-                                    }
-                                )
-                            }
-
-                            queue?.volumeNormalization?.let { normalization ->
-                                QueueChoiceCard(
-                                    title = "Volume normalization",
-                                    icon = Icons.AutoMirrored.Filled.VolumeUp,
-                                    choice = normalization,
-                                    onSelect = { value -> applyQueueChoice(normalization, value) }
-                                )
-                            }
-
-                            // No older counterpart: smart shuffle arrived with the queue
-                            // config, so it shows only where the server offers it.
-                            queue?.smartShuffle?.let { smartShuffle ->
-                                QueueChoiceCard(
-                                    title = "Smart shuffle",
-                                    icon = Icons.Default.Shuffle,
-                                    choice = smartShuffle,
-                                    onSelect = { value -> applyQueueChoice(smartShuffle, value) }
-                                )
-                            }
-
-                            if (initialAutoplayEnabled != null && dynamicSource != null) {
-                                SettingsSwitchCard(
-                                    title = "Autoplay",
-                                    icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                                    checked = autoplayOn,
-                                    onCheckedChange = {},
-                                    description = autoplayRefillText(dynamicSource.name),
-                                    enabled = false
-                                )
-                            } else if (initialAutoplayEnabled != null) {
-                                val autoplaySwitch: @Composable () -> Unit = {
-                                    Switch(
-                                        checked = autoplayOn,
-                                        onCheckedChange = {
-                                            autoplayOn = it
-                                            // Sent now rather than on Save, so the whole
-                                            // group behaves the one way its heading promises.
-                                            onAutoplayEnabledChanged?.invoke(it)
-                                        }
-                                    )
-                                }
-                                // The sources are whole phrases from the server ("Automatic,
-                                // similar tracks falling back to your library"), too long for
-                                // chips, so they stay a list that opens under the row.
-                                val autoplayConfig = queue?.autoplay
-                                    ?.takeIf { autoplayOn && onAutoplayChanged != null }
-                                if (autoplayConfig == null) {
-                                    SettingsSwitchCard(
-                                        title = "Autoplay",
-                                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                                        checked = autoplayOn,
-                                        onCheckedChange = {
-                                            autoplayOn = it
-                                            onAutoplayEnabledChanged?.invoke(it)
-                                        }
-                                    )
-                                } else {
-                                    ExpandableSettingCard(
-                                        title = "Autoplay",
-                                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                                        value = autoplayConfig.summary(),
-                                        trailing = autoplaySwitch
-                                    ) {
-                                        AutoplaySourceSection(
-                                            config = autoplayConfig,
-                                            onChanged = { mode, playlistUri ->
-                                                // Show the choice immediately, then keep it
-                                                // only if the server accepted it. Writing
-                                                // queue config needs an admin account, so a
-                                                // refusal is a normal outcome and must not
-                                                // leave the UI claiming a change that did
-                                                // not happen.
-                                                val previous = queueSettings
-                                                queueSettings = previous?.copy(
-                                                    autoplay = autoplayConfig.copy(
-                                                        mode = mode,
-                                                        playlistUri = playlistUri
-                                                    )
-                                                )
-                                                if (onAutoplayChanged?.invoke(mode, playlistUri) != true) {
-                                                    queueSettings = previous
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                    }
-
-                    // Which Follow Me room this player serves. It is app state rather than
-                    // player or queue config, so it gets a group of its own: the pick is
-                    // written the moment it is made and the Save button does not cover it.
-                    // Setting a room up and calibrating it stays in Settings > Follow Me;
-                    // this only moves an existing room onto another speaker.
-                    if (rooms.isNotEmpty() && onAssignRoom != null) {
-                        SettingsSectionLabel("Follow Me", caption = "Applies immediately")
-
-                        val assignedRooms = rooms.filter { it.playerId == player.playerId }
-                        // The card shows the option whose value matches, so a single room is
-                        // passed by id and also gets the checkmark in the list. Two rooms can
-                        // name the same player, and no single id describes that, so the names
-                        // are shown instead. A player in no room shows plain text as well.
-                        val roomValue = when (assignedRooms.size) {
-                            0 -> "Not assigned"
-                            1 -> assignedRooms.first().id
-                            else -> assignedRooms.joinToString(", ") { it.name }
-                        }
-                        SettingsDropdownCard(
-                            title = "Room",
-                            icon = Icons.Default.Sensors,
-                            value = roomValue,
-                            options = rooms.map { room ->
-                                QueueConfigOption(
-                                    value = room.id,
-                                    title = room.name,
-                                    description = room.playerName
-                                        .takeIf { room.playerId != player.playerId }
-                                        ?.let { "Now on $it" }
-                                )
+                            crossfadeOn = crossfadeOn.takeIf {
+                                onCrossfadeEnabledChanged != null && initialCrossfadeEnabled != null
                             },
-                            onSelect = { roomId ->
-                                val target = rooms.firstOrNull { it.id == roomId }
-                                when {
-                                    target == null || target.playerId == player.playerId -> Unit
-                                    // Every room has a player, so picking one always takes it
-                                    // from whoever has it now. Ask before that happens.
-                                    else -> roomToReassignId = target.id
-                                }
-                            }
+                            onCrossfadeToggle = {
+                                crossfadeOn = it
+                                onCrossfadeEnabledChanged?.invoke(it)
+                            },
+                            onChoice = { choice, value -> applyQueueChoice(choice, value) }
                         )
-
-                        roomToReassign?.let { target ->
-                            AlertDialog(
-                                onDismissRequest = { roomToReassignId = null },
-                                title = { Text("Move room") },
-                                text = {
-                                    Text(
-                                        "\"${target.name}\" plays on ${target.playerName}. " +
-                                            "Use ${player.displayName} for it instead?"
-                                    )
+                        if (initialAutoplayEnabled != null) {
+                            AutoplayRow(
+                                autoplayOn = autoplayOn,
+                                dynamicSource = dynamicSource,
+                                sourceConfig = queue?.autoplay
+                                    ?.takeIf { autoplayOn && onAutoplayChanged != null },
+                                onToggle = {
+                                    autoplayOn = it
+                                    // Sent now rather than on Save, so the whole group
+                                    // behaves the one way its heading promises.
+                                    onAutoplayEnabledChanged?.invoke(it)
                                 },
-                                confirmButton = {
-                                    MdTextButton(
-                                        onClick = {
-                                            onAssignRoom(target.id)
-                                            roomToReassignId = null
-                                        }
-                                    ) { Text("Move") }
-                                },
-                                dismissButton = {
-                                    MdTextButton(onClick = { roomToReassignId = null }) {
-                                        Text("Cancel")
-                                    }
+                                onSourceChanged = { config, mode, playlistUri ->
+                                    applyAutoplaySource(config, mode, playlistUri)
                                 }
                             )
                         }
+                    }
+
+                    if (rooms.isNotEmpty() && onAssignRoom != null) {
+                        SettingsSectionDivider()
+                        FollowMeRoomSection(player = player, rooms = rooms, onAssignRoom = onAssignRoom)
                     }
                     }
                 }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp),
+                        .padding(top = 6.dp, end = SETTINGS_ROW_INSET),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -787,8 +581,268 @@ fun PlayerSettingsDialog(
     }
 }
 
+/**
+ * The Sendspin audio format. "automatic" lets the client decide, and this app decides by
+ * network, so on the phone's own player the option is renamed and says what it will pick.
+ */
 @Composable
-private fun DelayStepperCard(
+private fun AudioFormatRow(
+    formatOptions: List<FormatOption>,
+    selectedValue: String,
+    isLocalPlayer: Boolean,
+    onSelect: (String) -> Unit
+) {
+    SettingsChoiceRow(
+        title = "Audio format",
+        icon = Icons.Default.HighQuality,
+        options = formatOptions.map {
+            val isAutomatic = it.value == SendspinAudioFormat.SERVER_AUTOMATIC
+            QueueConfigOption(
+                value = it.value,
+                title = if (isLocalPlayer && isAutomatic) "Automatic" else it.title,
+                description = "FLAC on Wi-Fi, Opus on mobile data".takeIf { isLocalPlayer && isAutomatic }
+            )
+        },
+        selectedValue = selectedValue,
+        onSelect = onSelect
+    )
+}
+
+/**
+ * The queue settings MA 2.10 moved from the player to the queue: crossfade, volume
+ * normalization and smart shuffle. Which ones show follows what the server actually sent
+ * rather than a version number.
+ *
+ * [crossfadeOn] is null while the crossfade switch cannot be drawn truthfully, and the
+ * crossfade rows are then left out.
+ */
+@Composable
+private fun QueueChoiceRows(
+    queue: QueueSettings?,
+    crossfadeOn: Boolean?,
+    onCrossfadeToggle: (Boolean) -> Unit,
+    onChoice: (QueueChoice, String) -> Unit
+) {
+    val crossfade = queue?.crossfadeMode
+    if (crossfade != null && crossfadeOn != null) {
+        SettingsSwitchRow(
+            title = "Crossfade",
+            icon = Icons.Default.GraphicEq,
+            checked = crossfadeOn,
+            onCheckedChange = onCrossfadeToggle
+        )
+        // The type only matters while crossfade is on, which is also why the server no
+        // longer offers "off" as a type.
+        if (crossfadeOn) {
+            SettingsChoiceRow(
+                title = "Crossfade type",
+                icon = Icons.Default.Merge,
+                choice = crossfade.withShortTitles(),
+                onSelect = { value -> onChoice(crossfade, value) }
+            )
+        }
+    }
+
+    queue?.volumeNormalization?.let { normalization ->
+        SettingsChoiceRow(
+            title = "Volume normalization",
+            icon = Icons.AutoMirrored.Filled.VolumeUp,
+            choice = normalization,
+            onSelect = { value -> onChoice(normalization, value) }
+        )
+    }
+
+    // No older counterpart: smart shuffle arrived with the queue config, so it shows only
+    // where the server offers it.
+    queue?.smartShuffle?.let { smartShuffle ->
+        SettingsChoiceRow(
+            title = "Smart shuffle",
+            icon = Icons.Default.Shuffle,
+            choice = smartShuffle,
+            onSelect = { value -> onChoice(smartShuffle, value) }
+        )
+    }
+}
+
+/**
+ * Autoplay, with its refill source opening underneath while it is on and the server lets
+ * the source be changed. [sourceConfig] is null when there is no source to show.
+ */
+@Composable
+private fun AutoplayRow(
+    autoplayOn: Boolean,
+    dynamicSource: DynamicQueueSource?,
+    sourceConfig: AutoplayConfig?,
+    onToggle: (Boolean) -> Unit,
+    onSourceChanged: suspend (config: AutoplayConfig, mode: String, playlistUri: String?) -> Unit
+) {
+    val title = "Autoplay"
+    val icon = Icons.AutoMirrored.Filled.PlaylistPlay
+    when {
+        // The server refills a dynamic queue whether Autoplay is on or not, so there is
+        // nothing to switch and the row only says so. A disabled switch here rendered as a
+        // lone dark dot on the grayscale palette and looked broken.
+        dynamicSource != null -> SettingsRow(
+            title = title,
+            icon = icon,
+            supporting = autoplayRefillText(dynamicSource.name)
+        )
+        sourceConfig == null -> SettingsSwitchRow(
+            title = title,
+            icon = icon,
+            checked = autoplayOn,
+            onCheckedChange = onToggle
+        )
+        // The sources are whole phrases from the server ("Automatic, similar tracks falling
+        // back to your library"), so they stay a list that opens under the row.
+        else -> SettingsExpandableRow(
+            title = title,
+            icon = icon,
+            supporting = sourceConfig.summary(),
+            trailing = { Switch(checked = autoplayOn, onCheckedChange = onToggle) }
+        ) {
+            AutoplaySourceSection(
+                config = sourceConfig,
+                onChanged = { mode, playlistUri -> onSourceChanged(sourceConfig, mode, playlistUri) }
+            )
+        }
+    }
+}
+
+/**
+ * Which Follow Me room this player serves. It is app state rather than player or queue
+ * config, so it gets a group of its own: the pick is written the moment it is made and the
+ * Save button does not cover it. Setting a room up and calibrating it stays in
+ * Settings > Follow Me; this only moves an existing room onto another speaker.
+ */
+@Composable
+private fun FollowMeRoomSection(
+    player: Player,
+    rooms: List<RoomConfig>,
+    onAssignRoom: (roomId: String) -> Unit
+) {
+    // The room a pick would take away from another player, held until that is confirmed.
+    // Saved by id so the confirmation survives rotation; it closes if the room is gone.
+    var roomToReassignId by rememberSaveable(player.playerId) { mutableStateOf<String?>(null) }
+    val roomToReassign = roomToReassignId?.let { id -> rooms.firstOrNull { it.id == id } }
+
+    SettingsSectionHeader("Follow Me", caption = "Applies immediately")
+
+    val assignedRooms = rooms.filter { it.playerId == player.playerId }
+    SettingsChoiceRow(
+        title = "Room",
+        icon = Icons.Default.Sensors,
+        options = rooms.map { room ->
+            QueueConfigOption(
+                value = room.id,
+                title = room.name,
+                description = room.playerName
+                    .takeIf { room.playerId != player.playerId }
+                    ?.let { "Now on $it" }
+            )
+        },
+        // A single room is passed as the selection, so it is named on the row and gets the
+        // radio in the list. Two rooms can name the same player and no single option
+        // describes that, so their names are shown instead, as is a player in no room.
+        selectedValue = assignedRooms.singleOrNull()?.id,
+        supporting = when (assignedRooms.size) {
+            0 -> "Not assigned"
+            1 -> null
+            else -> assignedRooms.joinToString(", ") { it.name }
+        },
+        onSelect = { roomId ->
+            val target = rooms.firstOrNull { it.id == roomId }
+            when {
+                target == null || target.playerId == player.playerId -> Unit
+                // Every room has a player, so picking one always takes it from whoever
+                // has it now. Ask before that happens.
+                else -> roomToReassignId = target.id
+            }
+        }
+    )
+
+    roomToReassign?.let { target ->
+        AlertDialog(
+            onDismissRequest = { roomToReassignId = null },
+            title = { Text("Move room") },
+            text = {
+                Text(
+                    "\"${target.name}\" plays on ${target.playerName}. " +
+                        "Use ${player.displayName} for it instead?"
+                )
+            },
+            confirmButton = {
+                MdTextButton(
+                    onClick = {
+                        onAssignRoom(target.id)
+                        roomToReassignId = null
+                    }
+                ) { Text("Move") }
+            },
+            dismissButton = {
+                MdTextButton(onClick = { roomToReassignId = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+/**
+ * The server-side delays of a remote player, folded away under one row. A null value
+ * means the server does not offer that delay for this player.
+ */
+@Composable
+private fun RemoteTimingRow(
+    staticDelayMs: Int?,
+    onStaticDelayChange: (Int) -> Unit,
+    syncDelayMs: Int?,
+    syncDelayDefaultMs: Int,
+    onSyncDelayChange: (Int) -> Unit
+) {
+    SettingsExpandableRow(
+        title = "Advanced timing",
+        icon = Icons.Default.Tune,
+        supporting = "Sync delays and calibration"
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            staticDelayMs?.let { ms ->
+                // Static playback delay (SERVER-side spec field sendspin_static_delay,
+                // available only on MA servers with PR #3689 deployed). Range 0..5000 ms,
+                // positive compensates for external delay beyond the audio port (spec
+                // sign). Saved via player config; affects ALL clients of this player.
+                DelayStepperControl(
+                    label = "Static playback delay",
+                    helperText = "Server-side spec compensation for external device delay. Affects all clients of this player.",
+                    valueMs = ms,
+                    minValue = 0,
+                    maxValue = STATIC_DELAY_MAX_MS,
+                    onDecrement = { onStaticDelayChange((ms - STATIC_DELAY_STEP_MS).coerceAtLeast(0)) },
+                    onIncrement = { onStaticDelayChange((ms + STATIC_DELAY_STEP_MS).coerceAtMost(STATIC_DELAY_MAX_MS)) },
+                    onReset = { if (ms != 0) onStaticDelayChange(0) }
+                )
+            }
+            syncDelayMs?.let { ms ->
+                // Per-player Sendspin sync delay (server-side sendspin_sync_delay,
+                // -1000..1000 ms; negative = earlier, positive = later, matching the MA web
+                // UI). Slider for a quick sweep, 1 ms steppers for fine acoustic alignment;
+                // Reset returns to the server default. MA applies it live.
+                SyncDelayControl(
+                    valueMs = ms,
+                    defaultMs = syncDelayDefaultMs,
+                    onValueChange = { onSyncDelayChange(it.coerceIn(-1000, 1000)) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A delay with a Reset and two steppers, and a line explaining it. Drawn without a
+ * container: it sits in the detail of a row, which already says what it belongs to.
+ */
+@Composable
+private fun DelayStepperControl(
     label: String,
     helperText: String,
     valueMs: Int,
@@ -800,58 +854,56 @@ private fun DelayStepperCard(
     valueText: String? = null,
     resetValue: Int = 0,
 ) {
-    SettingsCardContainer {
-        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(label, style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        text = valueText ?: "${valueMs}ms",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                MdTextButton(
-                    onClick = onReset,
-                    enabled = valueMs != resetValue,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 6.dp, vertical = 0.dp
-                    )
-                ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
-                RepeatingIconButton(
-                    onClick = onDecrement,
-                    enabled = valueMs > minValue,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Remove,
-                        contentDescription = "Decrease $label",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                RepeatingIconButton(
-                    onClick = onIncrement,
-                    enabled = valueMs < maxValue,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "Increase $label",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = valueText ?: "${valueMs}ms",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
-            Text(
-                helperText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+            MdTextButton(
+                onClick = onReset,
+                enabled = valueMs != resetValue,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 6.dp, vertical = 0.dp
+                )
+            ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
+            RepeatingIconButton(
+                onClick = onDecrement,
+                enabled = valueMs > minValue,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Remove,
+                    contentDescription = "Decrease $label",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            RepeatingIconButton(
+                onClick = onIncrement,
+                enabled = valueMs < maxValue,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Increase $label",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
+        Text(
+            helperText,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp)
+        )
     }
 }
 
@@ -859,9 +911,12 @@ private fun DelayStepperCard(
  * Per-player Sendspin sync delay tuner: a coarse slider (earlier..later) plus
  * 1 ms steppers for fine acoustic alignment, a signed value, and Reset to the
  * server default. Range -1000..1000 ms; negative = earlier, positive = later.
+ *
+ * Drawn without a container or a horizontal inset of its own, so the place it sits in (the
+ * detail of a settings row, a speaker's section in the sync sheet) decides its alignment.
  */
 @Composable
-internal fun SyncDelayCard(
+internal fun SyncDelayControl(
     valueMs: Int,
     defaultMs: Int,
     onValueChange: (Int) -> Unit,
@@ -869,102 +924,99 @@ internal fun SyncDelayCard(
     compact: Boolean = false,
     minMs: Int = -1000,
     maxMs: Int = 1000,
-    /** Extra controls for the same speaker, drawn at the bottom of the card. */
+    /** Extra controls for the same speaker, drawn at the bottom of the control. */
     footer: (@Composable () -> Unit)? = null,
 ) {
     // Signed (+/-) presentation + earlier/later hints only make sense for a
     // bipolar range (sync delay); a positive-only range (static playback delay,
     // 0..5000) shows a plain "X ms".
     val signed = minMs < 0
-    SettingsCardContainer {
-        Column(
-            modifier = Modifier.padding(
-                horizontal = 16.dp,
-                vertical = if (compact) 8.dp else 12.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 6.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = if (compact) 4.dp else 8.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = if (signed && valueMs > 0) "+$valueMs ms" else "$valueMs ms",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Slider(
-                value = valueMs.toFloat().coerceIn(minMs.toFloat(), maxMs.toFloat()),
-                onValueChange = { onValueChange(Math.round(it)) },
-                valueRange = minMs.toFloat()..maxMs.toFloat(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(28.dp)
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f)
             )
-            // earlier/later hints are redundant in compact rows (the signed
-            // value + steppers already convey direction); drop them to save
-            // vertical space when many speakers are stacked.
-            if (!compact && signed) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        "earlier",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "later",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            Text(
+                text = if (signed && valueMs > 0) "+$valueMs ms" else "$valueMs ms",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Slider(
+            value = valueMs.toFloat().coerceIn(minMs.toFloat(), maxMs.toFloat()),
+            onValueChange = { onValueChange(Math.round(it)) },
+            valueRange = minMs.toFloat()..maxMs.toFloat(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(28.dp)
+        )
+        // earlier/later hints are redundant in compact rows (the signed
+        // value + steppers already convey direction); drop them to save
+        // vertical space when many speakers are stacked.
+        if (!compact && signed) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                RepeatingIconButton(
-                    onClick = { onValueChange(valueMs - 1) },
-                    enabled = valueMs > minMs,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Remove,
-                        contentDescription = "1 ms earlier",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                RepeatingIconButton(
-                    onClick = { onValueChange(valueMs + 1) },
-                    enabled = valueMs < maxMs,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "1 ms later",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                MdTextButton(
-                    onClick = { onValueChange(defaultMs) },
-                    enabled = valueMs != defaultMs,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 6.dp, vertical = 0.dp
-                    )
-                ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
+                Text(
+                    "earlier",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "later",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            footer?.invoke()
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            RepeatingIconButton(
+                onClick = { onValueChange(valueMs - 1) },
+                enabled = valueMs > minMs,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Remove,
+                    contentDescription = "1 ms earlier",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            RepeatingIconButton(
+                onClick = { onValueChange(valueMs + 1) },
+                enabled = valueMs < maxMs,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "1 ms later",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            MdTextButton(
+                onClick = { onValueChange(defaultMs) },
+                enabled = valueMs != defaultMs,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 6.dp, vertical = 0.dp
+                )
+            ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
+        }
+        footer?.invoke()
     }
 }
 
@@ -1091,41 +1143,17 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
 }
 
 /**
- * Names a group of settings and, where it matters, says when the group is written.
- *
- * The queue group goes to the server on selection and the player group waits for Save, a
- * difference the dialog otherwise gave no way to see.
- */
-@Composable
-private fun SettingsSectionHeader(title: String, caption: String? = null) {
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary
-        )
-        caption?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/**
  * The phone's own timing, for the output it plays on now: that output's
  * measured calibration with Calibrate and Reset, and one fine-tune slider.
  * Other calibrated outputs are only listed; each is tuned while it plays.
  */
 @Composable
-private fun LocalSyncCard(acoustic: AcousticCalibrationCoordinator) {
+private fun LocalSyncRow(acoustic: AcousticCalibrationCoordinator) {
     val output by acoustic.currentOutput.collectAsStateWithLifecycle(initialValue = null)
     val calibrations by acoustic.acousticRouteCalibrations.collectAsStateWithLifecycle(initialValue = emptyMap())
     val fineTunes by acoustic.outputFineTuneMs.collectAsStateWithLifecycle(initialValue = emptyMap())
-    // Saveable and held outside the folded card, so a running calibration
-    // survives a rotation, which collapses the card.
+    // Saveable and held outside the folded row, so a running calibration
+    // survives a rotation, which collapses the row.
     var calibrating by rememberSaveable { mutableStateOf<OutputCalibrationTarget?>(null) }
     val current = output
     val routeKey = current?.routeKey
@@ -1136,7 +1164,7 @@ private fun LocalSyncCard(acoustic: AcousticCalibrationCoordinator) {
         current.canCalibrate && routeKey != null -> "${current.name} · not calibrated"
         else -> current.name
     }
-    ExpandableSettingCard(title = "Sync", icon = Icons.Default.Tune, value = summary) {
+    SettingsExpandableRow(title = "Sync", icon = Icons.Default.Tune, supporting = summary) {
         if (current != null) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val target = current.kind.calibrationTarget()?.takeIf { current.canCalibrate }
@@ -1152,7 +1180,7 @@ private fun LocalSyncCard(acoustic: AcousticCalibrationCoordinator) {
                     onCalibrate = target?.let { t -> { calibrating = t } },
                 )
                 if (routeKey != null) {
-                    OutputFineTuneCard(
+                    OutputFineTuneControl(
                         routeKey = routeKey,
                         storedMs = fineTunes[routeKey] ?: 0,
                         onApply = acoustic::setOutputFineTuneMs,
@@ -1185,7 +1213,7 @@ private fun LocalSyncCard(acoustic: AcousticCalibrationCoordinator) {
  * and the engine.
  */
 @Composable
-private fun OutputFineTuneCard(routeKey: String, storedMs: Int, onApply: (String, Int) -> Unit) {
+private fun OutputFineTuneControl(routeKey: String, storedMs: Int, onApply: (String, Int) -> Unit) {
     val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
     var value by remember(routeKey, storedMs) { mutableIntStateOf(storedMs) }
     // Restarted with storedMs: the apply round-trips through DataStore and
@@ -1197,7 +1225,7 @@ private fun OutputFineTuneCard(routeKey: String, storedMs: Int, onApply: (String
             .debounce(250L)
             .collect { onApply(routeKey, it) }
     }
-    SyncDelayCard(
+    SyncDelayControl(
         label = "Fine-tune",
         valueMs = value,
         defaultMs = 0,
@@ -1246,3 +1274,13 @@ private fun OutputCalibrationRow(
         }
     }
 }
+
+/**
+ * The dialog's own horizontal padding. The rows add ListItem's 16dp inset inside it, which
+ * puts their content at the 24dp edge Material's AlertDialog uses.
+ */
+private val DIALOG_EDGE_PADDING = 8.dp
+
+/** MA's range for `sendspin_static_delay`, and the step of its steppers. */
+private const val STATIC_DELAY_MAX_MS = 5000
+private const val STATIC_DELAY_STEP_MS = 2
