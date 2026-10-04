@@ -46,11 +46,28 @@ class NowPlayingWidgetPublisher @Inject constructor(
 
     /** A widget was just placed: give it the current state instead of waiting for a change. */
     suspend fun publishCurrent() {
-        publish(playerRepository.selectedPlayer.value, wsClient.connectionState.value is ConnectionState.Connected)
+        publish(
+            playerRepository.selectedPlayer.value,
+            wsClient.connectionState.value is ConnectionState.Connected,
+            force = true
+        )
     }
 
-    private suspend fun publish(player: net.asksakis.massdroidv2.domain.model.Player?, connected: Boolean) {
-        val snapshot = NowPlayingWidgetSnapshot.next(store.load(), player, connected) ?: return
+    /**
+     * The selected player changes far more often than anything the widget shows (elapsed
+     * time, volume, every server update), so a snapshot equal to the stored one is not
+     * published: each update opens a Glance session through WorkManager, and in one day
+     * 761 of 1108 updates redrew exactly the same card. [force] is for a newly placed
+     * widget, which has to be drawn whatever the store holds.
+     */
+    private suspend fun publish(
+        player: net.asksakis.massdroidv2.domain.model.Player?,
+        connected: Boolean,
+        force: Boolean = false
+    ) {
+        val previous = store.load()
+        val snapshot = NowPlayingWidgetSnapshot.next(previous, player, connected) ?: return
+        if (!force && snapshot == previous) return
         val placed = try {
             GlanceAppWidgetManager(context).getGlanceIds(NowPlayingWidget::class.java).isNotEmpty()
         } catch (e: Exception) {
