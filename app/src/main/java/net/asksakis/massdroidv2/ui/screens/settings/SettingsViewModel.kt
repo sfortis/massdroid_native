@@ -18,11 +18,16 @@ import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
 import net.asksakis.massdroidv2.domain.repository.GenreScore
+import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
+import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.repository.TrackScore
+import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
+import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import net.asksakis.massdroidv2.domain.whatsnew.WhatsNewRelease
+import net.asksakis.massdroidv2.ui.failureMessage
 import javax.inject.Inject
 
 data class UpdateUiState(
@@ -47,7 +52,10 @@ class SettingsViewModel @Inject constructor(
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository,
-    private val whatsNewRepository: WhatsNewRepository
+    private val whatsNewRepository: WhatsNewRepository,
+    private val playerRepository: PlayerRepository,
+    private val musicRepository: MusicRepository,
+    private val shortcutDispatcher: ShortcutActionDispatcher
 ) : ViewModel() {
 
     /**
@@ -102,13 +110,12 @@ class SettingsViewModel @Inject constructor(
     suspend fun startHomeAssistantOAuth(url: String): String? {
         val normalized = normalizeUrl(url)
         if (normalized.isBlank()) {
-            _loginError.value = "Enter a server URL"
+            _loginError.value = "Couldn't sign in with Home Assistant. Enter the server URL."
             return null
         }
-        if (!isUrlValid(normalized)) {
-            _loginError.value = "Add http:// or https:// to the URL"
-            return null
-        }
+        // No message of its own: the URL field already says the scheme is missing and
+        // offers the fix, so a second copy under the form only repeated it.
+        if (!isUrlValid(normalized)) return null
         viewModelScope.launch { settingsRepository.setServerUrl(normalized) }
         return maAuthRepository.startHomeAssistantOAuth(normalized)
     }
@@ -259,13 +266,11 @@ class SettingsViewModel @Inject constructor(
         val user = username.trim()
         val pass = password.trim()
         if (u.isBlank() || user.isBlank() || pass.isBlank()) {
-            _loginError.value = "Fill in all fields"
+            _loginError.value = "Couldn't sign in. Fill in the server, username and password."
             return
         }
-        if (!isUrlValid(u)) {
-            _loginError.value = "Add http:// or https:// to the URL"
-            return
-        }
+        // The URL field already says the scheme is missing (see startHomeAssistantOAuth).
+        if (!isUrlValid(u)) return
         _loginError.value = null
         viewModelScope.launch {
             settingsRepository.setServerUrl(u)
@@ -284,15 +289,13 @@ class SettingsViewModel @Inject constructor(
         val connectUrl = normalizeUrl((url ?: serverUrl.value))
         val token = authToken.value
         if (connectUrl.isBlank()) {
-            _loginError.value = "Enter a server URL"
+            _loginError.value = "Couldn't sign in. Enter the server URL."
             return
         }
-        if (!isUrlValid(connectUrl)) {
-            _loginError.value = "Add http:// or https:// to the URL"
-            return
-        }
+        // The URL field already says the scheme is missing (see startHomeAssistantOAuth).
+        if (!isUrlValid(connectUrl)) return
         if (token.isBlank()) {
-            _loginError.value = "No saved token. Login with credentials first."
+            _loginError.value = "Couldn't sign in with the saved token. Sign in with your username and password."
             return
         }
         _loginError.value = null
@@ -358,11 +361,14 @@ class SettingsViewModel @Inject constructor(
                     }
                 }
                 is AppUpdateChecker.CheckResult.Error -> {
+                    // The checker's text is a log line ("GitHub returned 403"), so it goes
+                    // to the log and the row says what did not happen.
+                    Log.w(TAG, "Update check failed: ${result.message}")
                     _updateUiState.update {
                         it.copy(
                             availableUpdate = null,
                             isChecking = false,
-                            message = result.message
+                            message = "Couldn't check for updates"
                         )
                     }
                 }
@@ -408,11 +414,15 @@ class SettingsViewModel @Inject constructor(
                 }
                 appContext.startActivity(appUpdateChecker.buildInstallIntent(file))
             }.onFailure { error ->
+                // No reason appended: the checker's messages are log lines ("Download failed
+                // with 404"), and failureMessage would describe a network error as the Music
+                // Assistant server being unreachable, which this download never talks to.
+                Log.w(TAG, "Update download failed: ${error.message}")
                 _updateUiState.update {
                     it.copy(
                         isDownloading = false,
                         downloadProgress = null,
-                        message = error.message ?: "Failed to download update"
+                        message = "Couldn't download the update"
                     )
                 }
             }
@@ -540,7 +550,7 @@ class SettingsViewModel @Inject constructor(
                 loadRecommendationData()
             } catch (e: Exception) {
                 Log.e(TAG, "refreshRecommendationData failed: ${e.message}")
-                _recommendationMessage.value = "Failed to load recommendation stats"
+                _recommendationMessage.value = "Couldn't load the recommendation stats"
             } finally {
                 _recommendationBusy.value = false
             }
@@ -562,10 +572,10 @@ class SettingsViewModel @Inject constructor(
                 settingsRepository.setRecentMixGenres(emptyList())
                 settingsRepository.setRecentSeedClusterGenres(emptyList())
                 loadRecommendationData()
-                _recommendationMessage.value = "Recommendation DB reset completed"
+                _recommendationMessage.value = "Recommendation data reset"
             } catch (e: Exception) {
                 Log.e(TAG, "resetRecommendationDatabase failed: ${e.message}")
-                _recommendationMessage.value = "Failed to reset recommendation DB"
+                _recommendationMessage.value = "Couldn't reset the recommendation data"
             } finally {
                 _recommendationBusy.value = false
             }
@@ -584,10 +594,10 @@ class SettingsViewModel @Inject constructor(
             try {
                 smartListeningRepository.clearBlockedArtists()
                 loadRecommendationData()
-                _recommendationMessage.value = "Blocked artists cleared"
+                _recommendationMessage.value = "All artists unblocked"
             } catch (e: Exception) {
                 Log.e(TAG, "resetBlockedArtists failed: ${e.message}")
-                _recommendationMessage.value = "Failed to clear blocked artists"
+                _recommendationMessage.value = "Couldn't unblock all artists"
             } finally {
                 _recommendationBusy.value = false
             }
@@ -604,11 +614,39 @@ class SettingsViewModel @Inject constructor(
                 _recommendationMessage.value = "Artist unblocked"
             } catch (e: Exception) {
                 Log.e(TAG, "unblockArtist failed: ${e.message}")
-                _recommendationMessage.value = "Failed to unblock artist"
+                _recommendationMessage.value = "Couldn't unblock that artist"
             } finally {
                 _recommendationBusy.value = false
             }
         }
+    }
+
+    /**
+     * Plays a track from the Insights ranking on the selected player, the same primary play
+     * Search uses. No option is sent, so the server applies its default for a track, which
+     * is "play": the track starts now and the rest of the queue is kept.
+     */
+    fun playInsightsTrack(trackUri: String) {
+        val queueId = playerRepository.requireSelectedPlayerId() ?: return
+        viewModelScope.launch {
+            try {
+                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
+                musicRepository.playMedia(queueId, trackUri)
+            } catch (e: Exception) {
+                Log.w(TAG, "playInsightsTrack failed: ${e.message}")
+                _recommendationMessage.value = e.failureMessage("Couldn't play that track")
+            }
+        }
+    }
+
+    /**
+     * Starts the Genre Radio for a genre from the Insights ranking. It goes through the
+     * shortcut dispatcher, as Android Auto does, because DiscoverViewModel owns the radio
+     * (the player check, the spam guard and the overlay) and a second start path here
+     * would bypass them.
+     */
+    fun startInsightsGenreRadio(genre: String) {
+        shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(genre))
     }
 
     private suspend fun loadRecommendationData() = coroutineScope {

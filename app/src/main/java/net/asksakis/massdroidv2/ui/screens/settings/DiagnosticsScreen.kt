@@ -9,21 +9,12 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -41,7 +32,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.BuildConfig
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
-import net.asksakis.massdroidv2.ui.components.MdTextButton
+import net.asksakis.massdroidv2.ui.components.SettingsConfirmDialog
+import net.asksakis.massdroidv2.ui.components.SettingsRow
+import net.asksakis.massdroidv2.ui.components.SettingsSectionDivider
+import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
+import net.asksakis.massdroidv2.ui.components.SettingsTone
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
 /**
@@ -56,15 +51,12 @@ fun DiagnosticsScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifie
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val serverVersion = (connectionState as? ConnectionState.Connected)?.serverInfo?.serverVersion
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-    ) {
+    SettingsScreenColumn(modifier = modifier) {
+        SettingsSectionHeader("Bug reports")
         VersionsItem(serverVersion = serverVersion)
-        HorizontalDivider()
         ShareLogsItem(serverVersion = serverVersion)
-        HorizontalDivider()
+        SettingsSectionDivider()
+        SettingsSectionHeader("Battery")
         BatteryOptimizationItem()
     }
 }
@@ -78,12 +70,14 @@ private fun VersionsItem(serverVersion: String?) {
     val summary = "App ${BuildConfig.VERSION_NAME}, " +
         "server ${serverVersion ?: "not connected"}, " +
         "Android ${Build.VERSION.RELEASE}"
-    ListItem(
-        headlineContent = { Text("Versions") },
-        supportingContent = { Text(summary) },
-        leadingContent = { Icon(Icons.Default.Info, contentDescription = null) },
-        trailingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
-        modifier = Modifier.clickable { copyToClipboard(context, summary) }
+    // The click is set here rather than through onClick so it can carry a label: a
+    // screen reader announces "Copy versions" instead of a bare "double tap to activate".
+    SettingsRow(
+        title = "Versions",
+        icon = Icons.Default.Info,
+        supporting = summary,
+        modifier = Modifier.clickable(onClickLabel = "Copy versions") { copyToClipboard(context, summary) },
+        trailing = { Icon(Icons.Default.ContentCopy, contentDescription = null) }
     )
 }
 
@@ -111,58 +105,51 @@ private fun ShareLogsItem(serverVersion: String?) {
     // The warning sits in the dialog rather than under the row. What the zip holds
     // matters at the moment of sending it, and as a permanent paragraph it was the
     // longest thing on the screen.
+    // Not destructive, so the action keeps the plain colour: sharing loses nothing.
     if (confirming) {
-        AlertDialog(
-            onDismissRequest = { confirming = false },
-            title = { Text("Share logs") },
-            text = {
-                Text(
-                    "The zip holds what you played, your players and rooms and your " +
-                        "server address. Send it only to someone you trust."
-                )
-            },
-            confirmButton = {
-                MdTextButton(onClick = {
-                    confirming = false
-                    building = true
-                    scope.launch {
-                        val intent = try {
-                            PersistentLogcatWriter.buildShareIntent(context, serverVersion)
-                        } finally {
-                            building = false
-                        }
-                        if (intent == null) {
-                            status = "No logs to share. Android does not always let an app " +
-                                "read its own logcat."
-                            return@launch
-                        }
-                        status = null
-                        runCatching {
-                            context.startActivity(
-                                Intent.createChooser(intent, "Share MassDroid logs")
-                            )
-                        }.onFailure { status = "Share failed: ${it.message}" }
+        SettingsConfirmDialog(
+            title = "Share logs?",
+            text = "The zip holds what you played, your players and rooms and your " +
+                "server address. Send it only to someone you trust.",
+            confirmLabel = "Share",
+            confirmTone = SettingsTone.NORMAL,
+            onConfirm = {
+                confirming = false
+                building = true
+                scope.launch {
+                    val intent = try {
+                        PersistentLogcatWriter.buildShareIntent(context, serverVersion)
+                    } finally {
+                        building = false
                     }
-                }) { Text("Share") }
+                    if (intent == null) {
+                        status = "Couldn't share the logs. Android does not always let an " +
+                            "app read its own logcat."
+                        return@launch
+                    }
+                    status = null
+                    runCatching {
+                        context.startActivity(
+                            Intent.createChooser(intent, "Share MassDroid logs")
+                        )
+                    }.onFailure {
+                        status = "Couldn't share the logs. ${it.message ?: "No app could receive them."}"
+                    }
+                }
             },
-            dismissButton = {
-                MdTextButton(onClick = { confirming = false }) { Text("Cancel") }
-            }
+            onDismiss = { confirming = false }
         )
     }
 
-    ListItem(
-        headlineContent = { Text(if (building) "Collecting logs…" else "Share logs") },
-        supportingContent = {
-            val message = status
-            if (message == null) {
-                Text("A zip of the last day")
-            } else {
-                Text(message, color = MaterialTheme.colorScheme.error)
-            }
-        },
-        leadingContent = { Icon(Icons.Default.BugReport, contentDescription = null) },
-        modifier = Modifier.clickable(enabled = !building) { confirming = true }
+    // A failure replaces the supporting line rather than sitting in a line of its own
+    // under the row, so the row is the one place that says what happened to the share.
+    SettingsRow(
+        title = if (building) "Collecting logs" else "Share logs",
+        icon = Icons.Default.Share,
+        supporting = status ?: "A zip of the last day",
+        onClick = { confirming = true },
+        enabled = !building,
+        tone = if (status != null) SettingsTone.ERROR else SettingsTone.NORMAL
     )
 }
 
@@ -197,18 +184,14 @@ private fun BatteryOptimizationItem() {
         }
         Unit
     }
-    ListItem(
-        headlineContent = { Text("Battery optimization") },
-        supportingContent = {
-            Text(
-                if (excluded) {
-                    "Excluded. Background reconnects survive deep doze."
-                } else {
-                    "Not excluded. Playback and room detection still work. Tap to exclude."
-                }
-            )
+    SettingsRow(
+        title = "Battery optimization",
+        icon = Icons.Default.BatteryChargingFull,
+        supporting = if (excluded) {
+            "Excluded, so background reconnects survive deep doze"
+        } else {
+            "Playback and room detection work either way, and excluding the app keeps it reconnecting in deep doze"
         },
-        leadingContent = { Icon(Icons.Default.BatteryChargingFull, contentDescription = null) },
-        modifier = if (excluded) Modifier else Modifier.clickable(onClick = openSystemScreen)
+        onClick = if (excluded) null else openSystemScreen
     )
 }

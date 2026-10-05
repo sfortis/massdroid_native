@@ -1,11 +1,18 @@
 package net.asksakis.massdroidv2.ui.screens.settings
 
-import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
+import net.asksakis.massdroidv2.ui.components.SETTINGS_ROW_INSET
+import net.asksakis.massdroidv2.ui.components.SETTINGS_SCREEN_BOTTOM_PADDING
+import net.asksakis.massdroidv2.ui.components.SETTINGS_TEXT_INSET
+import net.asksakis.massdroidv2.ui.components.SettingsBadge
+import net.asksakis.massdroidv2.ui.components.SettingsChoiceRow
+import net.asksakis.massdroidv2.ui.components.SettingsNavigationRow
+import net.asksakis.massdroidv2.ui.components.SettingsRow
+import net.asksakis.massdroidv2.ui.components.SettingsSectionDivider
+import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
+import net.asksakis.massdroidv2.ui.components.SettingsSwitchRow
+import net.asksakis.massdroidv2.ui.components.SettingsTone
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,22 +30,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
@@ -52,20 +55,22 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import net.asksakis.massdroidv2.data.proximity.CalibrationQuality
+import net.asksakis.massdroidv2.data.proximity.ProximityConfig
+import net.asksakis.massdroidv2.data.proximity.ProximitySchedule
 import net.asksakis.massdroidv2.data.proximity.ProximityScanner
 import net.asksakis.massdroidv2.data.proximity.ProximityTransferMode
 import net.asksakis.massdroidv2.data.proximity.effectiveTransferMode
 import net.asksakis.massdroidv2.data.proximity.RoomConfig
 import net.asksakis.massdroidv2.data.proximity.formatMinuteOfDay
 import net.asksakis.massdroidv2.domain.model.Player
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import net.asksakis.massdroidv2.service.FollowMeService
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
 import net.asksakis.massdroidv2.ui.permissions.AppPermissionRationales
@@ -87,10 +92,7 @@ fun ProximitySettingsScreen(
         if (!canEvaluateMissingSpeakers) emptyList()
         else config.rooms.filter { room -> players.none { player -> player.playerId == room.playerId } }
     }
-    // Saved by room id so the delete confirmation survives rotation.
-    var deleteTargetId by rememberSaveable { mutableStateOf<String?>(null) }
-    val deleteTarget = deleteTargetId?.let { id -> config.rooms.firstOrNull { it.id == id } }
-    // rememberSaveable so the "Calibrate Rooms" wizard stays open across an Activity recreation
+    // rememberSaveable so the "Calibrate rooms" wizard stays open across an Activity recreation
     // (e.g. screen rotation). The scan/step state itself lives in the ViewModel and already survives;
     // only this visibility flag was being reset to false, which closed the dialog mid-flow.
     var showTuningWizard by rememberSaveable { mutableStateOf(false) }
@@ -142,397 +144,97 @@ fun ProximitySettingsScreen(
         return
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-        ) {
-            val btEnabled by viewModel.bluetoothEnabled.collectAsStateWithLifecycle()
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                shape = MaterialTheme.shapes.medium,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-            ) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = { Text("Enable Follow Me") },
-                    supportingContent = {
-                        Text(
-                            if (!btEnabled && !config.enabled) "Follow Me is disabled because Bluetooth is off."
-                            else if (!btEnabled) "Bluetooth is off. Turn it on to detect room changes."
-                            else if (config.enabled && !hasAllFollowMePermissions) "Follow Me is enabled, but some required permissions are missing."
-                            else "Detect room changes and control speaker hand-offs."
-                        )
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = config.enabled,
-                            enabled = btEnabled || config.enabled,
-                            onCheckedChange = { enabled ->
-                                if (!enabled) {
-                                    viewModel.setEnabled(false)
-                                } else if (btEnabled) {
-                                    if (hasAllFollowMePermissions) viewModel.setEnabled(true)
-                                    else showFollowMePermissionDialog = true
-                                }
-                            }
-                        )
-                    }
-                )
-            }
-
-            if (config.enabled) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-                ) {
-                  Column {
-                    ListItem(
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        headlineContent = { Text("On room change") },
-                    supportingContent = {
-                        Column {
-                            val mode = config.effectiveTransferMode()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                val options = listOf(
-                                    ProximityTransferMode.ASK to "Ask",
-                                    ProximityTransferMode.AUTO_TRANSFER to "Move here",
-                                    ProximityTransferMode.SELECT_ONLY to "Select only"
-                                )
-                                options.forEach { (m, label) ->
-                                    val selected = mode == m
-                                    androidx.compose.material3.FilterChip(
-                                        selected = selected,
-                                        onClick = { viewModel.setTransferMode(m) },
-                                        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
-                                        leadingIcon = if (selected) {
-                                            { Icon(Icons.Default.Check, null, Modifier.size(14.dp)) }
-                                        } else null,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                when (mode) {
-                                    ProximityTransferMode.ASK ->
-                                        "Show a notification to move or play in the detected room."
-                                    ProximityTransferMode.AUTO_TRANSFER ->
-                                        "Move current playback to the room automatically."
-                                    ProximityTransferMode.SELECT_ONLY ->
-                                        "Just select the room's player so its controls (mini player, " +
-                                            "volume keys) are ready. No transfer, no prompt."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                )
-
-                    // Schedule
-                    ListItem(
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        headlineContent = { Text("Schedule") },
-                        supportingContent = {
-                            if (config.schedule.enabled) {
-                            val dayNames = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-                            val activeDays = config.schedule.days.sorted().map { dayNames[it - 1] }.joinToString(", ")
-                            Text(
-                                "$activeDays, ${formatMinuteOfDay(config.schedule.effectiveStartMinuteOfDay)}\u2013" +
-                                    formatMinuteOfDay(config.schedule.effectiveEndMinuteOfDay)
-                            )
-                        } else {
-                            Text("Always active")
-                        }
-                    },
-                    trailingContent = {
-                        Switch(
-                            checked = config.schedule.enabled,
-                            onCheckedChange = { viewModel.updateSchedule { s -> s.copy(enabled = it) } }
-                        )
-                    }
-                )
-
-                    if (config.schedule.enabled) {
-                        ScheduleConfig(config.schedule, viewModel)
-                    }
-                  }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "Rooms",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                if (canEvaluateMissingSpeakers && missingSpeakerRooms.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.ErrorOutline,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    if (missingSpeakerRooms.size == 1) "1 room needs attention" else "${missingSpeakerRooms.size} rooms need attention",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Text(
-                                    missingSpeakerRooms.joinToString { it.name } + " assigned to missing speaker.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                if (config.rooms.isEmpty()) {
-                    Text(
-                        "No rooms configured. Tap + to add one.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
-                    )
-                } else {
-                    config.rooms.forEach { room ->
-                        RoomCard(
-                            room = room,
-                            players = players,
-                            canEvaluateMissingPlayer = canEvaluateMissingSpeakers,
-                            isCurrentRoom = currentRoom?.roomId == room.id,
-                            onEdit = { onSetupRoom(room.id) },
-                            onDelete = { deleteTargetId = room.id }
-                        )
-                    }
-                    if (config.rooms.size >= 2) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        MdOutlinedButton(
-                            onClick = {
-                                viewModel.clearTuning()
-                                showTuningWizard = true
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Calibrate Rooms")
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(80.dp))
-            }
-        }
-        if (config.enabled) {
-            FloatingActionButton(
-                onClick = { onSetupRoom(null) },
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Room")
-            }
-        }
-    }
-
-    deleteTarget?.let { room ->
-        AlertDialog(
-            onDismissRequest = { deleteTargetId = null },
-            title = { Text("Delete Room") },
-            text = { Text("Delete \"${room.name}\"?") },
-            confirmButton = {
-                MdTextButton(onClick = {
-                    viewModel.deleteRoom(room.id)
-                    deleteTargetId = null
-                }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        val btEnabled by viewModel.bluetoothEnabled.collectAsStateWithLifecycle()
+        GeneralSection(
+            config = config,
+            btEnabled = btEnabled,
+            hasAllPermissions = hasAllFollowMePermissions,
+            onEnabledChange = { enabled ->
+                if (!enabled) {
+                    viewModel.setEnabled(false)
+                } else if (btEnabled) {
+                    if (hasAllFollowMePermissions) viewModel.setEnabled(true)
+                    else showFollowMePermissionDialog = true
                 }
             },
-            dismissButton = {
-                MdTextButton(onClick = { deleteTargetId = null }) { Text("Cancel") }
-            }
+            viewModel = viewModel
         )
+
+        if (config.enabled) {
+            SettingsSectionDivider()
+            RoomsSection(
+                rooms = config.rooms,
+                players = players,
+                canEvaluateMissingSpeakers = canEvaluateMissingSpeakers,
+                missingSpeakerRooms = missingSpeakerRooms,
+                currentRoomId = currentRoom?.roomId,
+                onEditRoom = { onSetupRoom(it) },
+                onAddRoom = { onSetupRoom(null) },
+                onCalibrateRooms = {
+                    viewModel.clearTuning()
+                    showTuningWizard = true
+                }
+            )
+        }
+        // Outside the condition, so the screen ends with the same space whether or not
+        // Follow Me is on.
+        Spacer(modifier = Modifier.height(SETTINGS_SCREEN_BOTTOM_PADDING))
     }
 
     if (showTuningWizard) {
         val scannedRoomIds = tuningSnapshots.map { it.roomId }.toSet()
         val nextRoom = config.rooms.firstOrNull { it.id !in scannedRoomIds }
         val isScanning = tuningStep != null
+        val closeWizard = {
+            showTuningWizard = false
+            viewModel.clearTuning()
+        }
 
         AlertDialog(
-            onDismissRequest = { if (!isScanning) { showTuningWizard = false; viewModel.clearTuning() } },
-            title = {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null,
-                        modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Calibrate Rooms")
-                }
-            },
+            // A scan in progress cannot be stopped, so the dialog stays until it ends.
+            onDismissRequest = { if (!isScanning) closeWizard() },
+            title = { Text("Calibrate rooms") },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     config.rooms.forEach { room ->
-                        val done = room.id in scannedRoomIds
-                        val current = nextRoom?.id == room.id && isScanning
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                when {
-                                    done -> Icons.Default.Check
-                                    current -> Icons.AutoMirrored.Filled.BluetoothSearching
-                                    else -> Icons.Default.LocationOn
-                                },
-                                contentDescription = null,
-                                tint = when {
-                                    done -> MaterialTheme.colorScheme.primary
-                                    current -> MaterialTheme.colorScheme.tertiary
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                room.name,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = if (current || done) FontWeight.Bold else FontWeight.Normal,
-                                color = when {
-                                    done -> MaterialTheme.colorScheme.primary
-                                    else -> MaterialTheme.colorScheme.onSurface
-                                }
-                            )
-                            if (done) {
-                                Spacer(modifier = Modifier.weight(1f))
-                                Text("Done", style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold)
-                            }
-                        }
+                        TuningRoomRow(
+                            name = room.name,
+                            done = room.id in scannedRoomIds,
+                            scanning = isScanning && nextRoom?.id == room.id
+                        )
                     }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (autoProgress != null) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("Scanning ($autoProgress/${ProximityScanner.AUTO_FINGERPRINT_CYCLES})...",
-                                style = MaterialTheme.typography.bodyLarge)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("Walk to 2\u20133 spots in the room",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.tertiary)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("Keep phone in hand, avoid doorways",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        } else if (nextRoom != null) {
-                            Icon(Icons.Default.LocationOn, contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(36.dp))
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("Go to ${nextRoom.name}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("then tap Scan",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        } else {
-                            Icon(Icons.Default.Check, contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(36.dp))
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("All rooms scanned",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("Tap Apply to build fingerprints",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        MdTextButton(
-                            onClick = { showTuningWizard = false; viewModel.clearTuning() },
-                            enabled = !isScanning
-                        ) { Text("Cancel") }
-                        if (nextRoom != null) {
-                            MdTextButton(
-                                onClick = {
-                                    viewModel.collectRoomSnapshot(nextRoom.id, nextRoom.name) {}
-                                },
-                                enabled = !isScanning
-                            ) { Text("Scan ${nextRoom.name}") }
-                        } else {
-                            MdTextButton(onClick = {
-                                viewModel.applyTuning()
-                                showTuningWizard = false
-                            }) { Text("Apply") }
-                        }
-                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(tuningInstruction(autoProgress, nextRoom?.name))
                 }
             },
-            confirmButton = {}
+            confirmButton = {
+                if (nextRoom != null) {
+                    MdTextButton(
+                        onClick = { viewModel.collectRoomSnapshot(nextRoom.id, nextRoom.name) {} },
+                        enabled = !isScanning
+                    ) { Text("Scan") }
+                } else {
+                    MdTextButton(onClick = {
+                        viewModel.applyTuning()
+                        showTuningWizard = false
+                    }) { Text("Apply") }
+                }
+            },
+            dismissButton = {
+                MdTextButton(onClick = closeWizard, enabled = !isScanning) { Text("Cancel") }
+            }
         )
     }
 
     tuningResult?.let { result ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissTuningResult() },
-            title = { Text("Calibration Results") },
+            title = { Text("Calibration results") },
             text = {
                 Column {
                     config.rooms.forEach { room ->
@@ -544,14 +246,14 @@ fun ProximitySettingsScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(room.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(room.name)
+                            // Only a weak room is coloured: it is the one to act on.
                             val (label, color) = when (quality) {
-                                CalibrationQuality.GOOD -> "Good" to MaterialTheme.colorScheme.primary
+                                CalibrationQuality.GOOD -> "Good" to MaterialTheme.colorScheme.onSurfaceVariant
                                 CalibrationQuality.WEAK -> "Weak" to MaterialTheme.colorScheme.error
                                 CalibrationQuality.UNCALIBRATED -> "N/A" to MaterialTheme.colorScheme.onSurfaceVariant
                             }
-                            Text(label, style = MaterialTheme.typography.labelMedium, color = color,
-                                fontWeight = FontWeight.Bold)
+                            Text(label, color = color)
                         }
                     }
                     if (result.warnings.isNotEmpty()) {
@@ -559,8 +261,7 @@ fun ProximitySettingsScreen(
                         result.warnings.forEach { warning ->
                             Text(
                                 warning,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(vertical = 2.dp)
                             )
                         }
@@ -568,7 +269,8 @@ fun ProximitySettingsScreen(
                 }
             },
             confirmButton = {
-                MdTextButton(onClick = { viewModel.dismissTuningResult() }) { Text("OK") }
+                // The results only report, so a single Close, as every informational dialog has.
+                MdTextButton(onClick = { viewModel.dismissTuningResult() }) { Text("Close") }
             }
         )
     }
@@ -595,71 +297,214 @@ fun ProximitySettingsScreen(
     }
 }
 
+/**
+ * One room in the calibration wizard: scanned, being scanned, or still to do. The icon
+ * carries the state, so the text keeps the dialog's own type and colour.
+ */
+@Composable
+private fun TuningRoomRow(name: String, done: Boolean, scanning: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            when {
+                done -> Icons.Default.Check
+                scanning -> Icons.AutoMirrored.Filled.BluetoothSearching
+                else -> Icons.Default.LocationOn
+            },
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(24.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(name, modifier = Modifier.weight(1f))
+        when {
+            done -> Text("Done", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            scanning -> Text("Scanning", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** What the wizard asks for next: walking through the room being scanned, the next room, or Apply. */
+private fun tuningInstruction(progress: Int?, nextRoomName: String?): String = when {
+    progress != null ->
+        "Scanning $progress of ${ProximityScanner.AUTO_FINGERPRINT_CYCLES}. " +
+            "Walk to 2 or 3 spots in the room with the phone in hand, away from doorways."
+    nextRoomName != null -> "Go to $nextRoomName, then tap Scan."
+    else -> "All rooms are scanned. Tap Apply to build the fingerprints."
+}
+
+/**
+ * The switch that turns Follow Me on, and once it is on, what a room change does and when
+ * detection runs.
+ */
+@Composable
+private fun GeneralSection(
+    config: ProximityConfig,
+    btEnabled: Boolean,
+    hasAllPermissions: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    viewModel: ProximityViewModel
+) {
+    SettingsSectionHeader("General")
+    SettingsSwitchRow(
+        title = "Enable Follow Me",
+        icon = Icons.Default.Sensors,
+        checked = config.enabled,
+        onCheckedChange = onEnabledChange,
+        supporting = when {
+            !btEnabled && !config.enabled -> "Turn on Bluetooth to use Follow Me."
+            !btEnabled -> "Bluetooth is off, so room changes are not detected."
+            config.enabled && !hasAllPermissions -> "Some permissions Follow Me needs are missing."
+            else -> "Detect room changes and control speaker hand-offs."
+        },
+        // Turning it off always works; turning it on needs Bluetooth.
+        enabled = btEnabled || config.enabled,
+        tone = if (config.enabled && btEnabled && !hasAllPermissions) SettingsTone.ERROR else SettingsTone.NORMAL
+    )
+    if (!config.enabled) return
+
+    val transferModes = transferModeOptions()
+    SettingsChoiceRow(
+        title = "On room change",
+        icon = Icons.Default.SwapHoriz,
+        options = transferModes.map { it.second },
+        selectedValue = config.effectiveTransferMode().name,
+        onSelect = { value ->
+            transferModes.firstOrNull { it.second.value == value }
+                ?.let { viewModel.setTransferMode(it.first) }
+        }
+    )
+
+    SettingsSwitchRow(
+        title = "Schedule",
+        icon = Icons.Default.Schedule,
+        checked = config.schedule.enabled,
+        onCheckedChange = { viewModel.updateSchedule { s -> s.copy(enabled = it) } },
+        supporting = scheduleSummary(config.schedule)
+    )
+    if (config.schedule.enabled) {
+        ScheduleConfig(config.schedule, viewModel)
+    }
+}
+
+/**
+ * The room-change modes as choices. What each one does is the option's description, so it
+ * is read in the dialog where the choice is made.
+ */
+private fun transferModeOptions(): List<Pair<ProximityTransferMode, QueueConfigOption>> = listOf(
+    ProximityTransferMode.ASK to QueueConfigOption(
+        value = ProximityTransferMode.ASK.name,
+        title = "Ask",
+        description = "Show a notification to move or play in the detected room."
+    ),
+    ProximityTransferMode.AUTO_TRANSFER to QueueConfigOption(
+        value = ProximityTransferMode.AUTO_TRANSFER.name,
+        title = "Move here",
+        description = "Move current playback to the room automatically."
+    ),
+    ProximityTransferMode.SELECT_ONLY to QueueConfigOption(
+        value = ProximityTransferMode.SELECT_ONLY.name,
+        title = "Select only",
+        description = "Just select the room's player so its controls (mini player, " +
+            "volume keys) are ready. No transfer, no prompt."
+    )
+)
+
+/** The hours of an enabled schedule. Its days are the chips under the row, so they are not repeated here. */
+private fun scheduleSummary(schedule: ProximitySchedule): String {
+    if (!schedule.enabled) return "Always active"
+    return "Active ${formatMinuteOfDay(schedule.effectiveStartMinuteOfDay)}-" +
+        formatMinuteOfDay(schedule.effectiveEndMinuteOfDay)
+}
+
+/**
+ * The days and hours of an enabled schedule, under the Schedule row and indented to its
+ * text so they read as part of that setting.
+ */
 @Composable
 private fun ScheduleConfig(
-    schedule: net.asksakis.massdroidv2.data.proximity.ProximitySchedule,
+    schedule: ProximitySchedule,
     viewModel: ProximityViewModel
 ) {
     val dayLabels = listOf("M" to 1, "T" to 2, "W" to 3, "T" to 4, "F" to 5, "S" to 6, "S" to 7)
 
-    // Day chips
+    // Day chips. Seven independent toggles have no single-choice row to map onto, so they
+    // stay chips. They start at the row inset rather than the rows' text: indented to the
+    // text and 4dp apart, seven chips were about 35dp wide on a 360dp phone. From the inset
+    // with a 2dp gap each is about 45dp. Seven cannot reach 48dp wide on that phone (that
+    // needs 336dp of the 328dp left), so the chip keeps the 48dp touch height and stays
+    // just under 48dp wide.
+    // The default selected fill is secondaryContainer, one step from the light background, so
+    // a selected day looked like an unselected one. Selected days are filled with primary
+    // instead; unselected ones keep the default outline.
+    val dayChipColors = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = MaterialTheme.colorScheme.primary,
+        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly
+            .padding(horizontal = SETTINGS_ROW_INSET),
+        horizontalArrangement = Arrangement.spacedBy(DAY_CHIP_GAP)
     ) {
         dayLabels.forEach { (label, day) ->
             val active = day in schedule.days
-            androidx.compose.material3.FilterChip(
+            // No fixed height: the chip keeps Material's 48dp touch target around its 32dp
+            // body. The equal weights keep all seven on one line on a narrow phone.
+            FilterChip(
                 selected = active,
                 onClick = {
                     val newDays = if (active) schedule.days - day else schedule.days + day
                     if (newDays.isNotEmpty()) viewModel.updateSchedule { it.copy(days = newDays) }
                 },
-                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                modifier = Modifier.height(32.dp)
+                label = {
+                    Text(label, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                },
+                colors = dayChipColors,
+                modifier = Modifier.weight(1f)
             )
         }
     }
 
-    // Time range as clickable chips
     var showStartPicker by rememberSaveable { mutableStateOf(false) }
     var showEndPicker by rememberSaveable { mutableStateOf(false) }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        androidx.compose.material3.AssistChip(
-            onClick = { showStartPicker = true },
-            label = { Text(formatMinuteOfDay(schedule.effectiveStartMinuteOfDay), style = MaterialTheme.typography.titleSmall) },
-            leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp)) }
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Text("\u2014", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(modifier = Modifier.width(12.dp))
-        androidx.compose.material3.AssistChip(
-            onClick = { showEndPicker = true },
-            label = { Text(formatMinuteOfDay(schedule.effectiveEndMinuteOfDay), style = MaterialTheme.typography.titleSmall) },
-            leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp)) }
-        )
-    }
+    // The rows carry no icon of their own, so they are indented to the Schedule row's text.
+    val timeRowIndent = Modifier.padding(start = SETTINGS_TEXT_INSET - SETTINGS_ROW_INSET)
+    SettingsRow(
+        title = "Start",
+        modifier = timeRowIndent,
+        supporting = formatMinuteOfDay(schedule.effectiveStartMinuteOfDay),
+        onClick = { showStartPicker = true }
+    )
+    SettingsRow(
+        title = "End",
+        modifier = timeRowIndent,
+        supporting = formatMinuteOfDay(schedule.effectiveEndMinuteOfDay),
+        onClick = { showEndPicker = true }
+    )
 
     if (showStartPicker) {
         TimePickerDialog(
             currentMinuteOfDay = schedule.effectiveStartMinuteOfDay,
-            onSelect = { minute -> viewModel.updateSchedule { s -> s.copy(startMinuteOfDay = minute, startHour = null) }; showStartPicker = false },
+            onSelect = { minute ->
+                viewModel.updateSchedule { s -> s.copy(startMinuteOfDay = minute, startHour = null) }
+                showStartPicker = false
+            },
             onDismiss = { showStartPicker = false }
         )
     }
     if (showEndPicker) {
         TimePickerDialog(
             currentMinuteOfDay = schedule.effectiveEndMinuteOfDay,
-            onSelect = { minute -> viewModel.updateSchedule { s -> s.copy(endMinuteOfDay = minute, endHour = null) }; showEndPicker = false },
+            onSelect = { minute ->
+                viewModel.updateSchedule { s -> s.copy(endMinuteOfDay = minute, endHour = null) }
+                showEndPicker = false
+            },
             onDismiss = { showEndPicker = false }
         )
     }
@@ -679,7 +524,7 @@ private fun TimePickerDialog(
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Time") },
+        title = { Text("Select time") },
         text = {
             Box(
                 modifier = Modifier.fillMaxWidth(),
@@ -697,118 +542,112 @@ private fun TimePickerDialog(
     )
 }
 
+/**
+ * The configured rooms as rows, with a warning above them when a room's speaker is gone,
+ * the calibration wizard once there are two rooms to tell apart, and the row that adds one.
+ */
 @Composable
-private fun RoomCard(
+private fun RoomsSection(
+    rooms: List<RoomConfig>,
+    players: List<Player>,
+    canEvaluateMissingSpeakers: Boolean,
+    missingSpeakerRooms: List<RoomConfig>,
+    currentRoomId: String?,
+    onEditRoom: (roomId: String) -> Unit,
+    onAddRoom: () -> Unit,
+    onCalibrateRooms: () -> Unit
+) {
+    SettingsSectionHeader("Rooms")
+
+    if (canEvaluateMissingSpeakers && missingSpeakerRooms.isNotEmpty()) {
+        MissingSpeakerWarning(missingSpeakerRooms.size)
+    }
+
+    rooms.forEach { room ->
+        RoomRow(
+            room = room,
+            players = players,
+            canEvaluateMissingPlayer = canEvaluateMissingSpeakers,
+            isCurrentRoom = currentRoomId == room.id,
+            onEdit = { onEditRoom(room.id) }
+        )
+    }
+    if (rooms.size >= 2) {
+        SettingsRow(
+            title = "Calibrate rooms",
+            icon = Icons.AutoMirrored.Filled.BluetoothSearching,
+            supporting = "Scan each room in turn so they are easier to tell apart.",
+            onClick = onCalibrateRooms
+        )
+    }
+    // It opens the room setup screen, so it carries the chevron of a row that navigates.
+    SettingsNavigationRow(
+        title = "Add room",
+        onClick = onAddRoom,
+        icon = Icons.Default.Add,
+        supporting = "Add the rooms Follow Me should detect.".takeIf { rooms.isEmpty() }
+    )
+}
+
+/**
+ * The count of rooms whose speaker no longer exists. Each of them carries its own badge, so
+ * this row only says how many and what to do.
+ */
+@Composable
+private fun MissingSpeakerWarning(count: Int) {
+    SettingsRow(
+        title = if (count == 1) "1 room has lost its speaker" else "$count rooms have lost their speaker",
+        icon = Icons.Default.ErrorOutline,
+        supporting = "Open each marked room and choose a new speaker.",
+        tone = SettingsTone.ERROR
+    )
+}
+
+/**
+ * One room as a row: its name with a badge for where you are or a missing speaker, then its
+ * speaker, and under that its beacons and how well it is calibrated. Tapping it opens the room, where it can
+ * also be deleted.
+ */
+@Composable
+private fun RoomRow(
     room: RoomConfig,
     players: List<Player>,
     canEvaluateMissingPlayer: Boolean,
-    isCurrentRoom: Boolean = false,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
+    isCurrentRoom: Boolean,
+    onEdit: () -> Unit
 ) {
-    val livePlayer = players.find { it.playerId == room.playerId }
-    val playerLabel = livePlayer?.displayName ?: room.playerName
-    val isMissingPlayer = canEvaluateMissingPlayer && livePlayer == null
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clickable(onClick = onEdit),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                Icons.Default.LocationOn,
-                contentDescription = null,
-                tint = if (isCurrentRoom) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(32.dp)
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(room.name, style = MaterialTheme.typography.titleSmall)
-                    if (isCurrentRoom) {
-                        Text(
-                            "HERE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .background(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.shapes.extraSmall
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                    if (isMissingPlayer) {
-                        Text(
-                            "Missing speaker",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onError,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .background(
-                                    MaterialTheme.colorScheme.error,
-                                    MaterialTheme.shapes.extraSmall
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Speaker, contentDescription = null, modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        if (isMissingPlayer) "$playerLabel (missing)" else playerLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isMissingPlayer) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("${room.beaconProfiles.size} beacons", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    val (qualityLabel, qualityColor) = when (room.calibrationQuality) {
-                        CalibrationQuality.GOOD -> "Calibrated" to MaterialTheme.colorScheme.primary
-                        CalibrationQuality.WEAK -> "Weak" to MaterialTheme.colorScheme.error
-                        CalibrationQuality.UNCALIBRATED -> "Not calibrated" to MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                    Text(
-                        qualityLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = qualityColor
-                    )
-                }
-            }
-            MdIconButton(onClick = onDelete) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete",
-                    tint = MaterialTheme.colorScheme.error)
-            }
-        }
+    val isMissingPlayer = canEvaluateMissingPlayer && players.none { it.playerId == room.playerId }
+    val qualityLabel = when (room.calibrationQuality) {
+        CalibrationQuality.GOOD -> "Calibrated"
+        CalibrationQuality.WEAK -> "Weak calibration"
+        CalibrationQuality.UNCALIBRATED -> "Not calibrated"
     }
+    // A room without beacons has nothing to count, so its second line is the state alone.
+    val calibrationLine = if (room.beaconProfiles.isEmpty()) {
+        qualityLabel
+    } else {
+        "${countLabel(room.beaconProfiles.size, "beacon")} · $qualityLabel"
+    }
+    // A row carries one badge. A missing speaker wins over "Here" because it is the one the
+    // user has to act on, and the current room still has its own icon.
+    val badge = when {
+        isMissingPlayer -> SettingsBadge("Missing speaker", SettingsTone.ERROR)
+        isCurrentRoom -> SettingsBadge("Here")
+        else -> null
+    }
+
+    SettingsNavigationRow(
+        title = room.name,
+        onClick = onEdit,
+        // The room you are in gets its own icon, since a row's icon has no accent colour.
+        icon = if (isCurrentRoom) Icons.Default.MyLocation else Icons.Default.LocationOn,
+        // The speaker on the first line and the calibration on the second, rather than three
+        // facts chained on one line. The live name while the speaker exists, the stored one
+        // once it is gone; the badge already says that it is missing.
+        supporting = (players.firstOrNull { it.playerId == room.playerId }?.displayName ?: room.playerName) +
+            "\n" + calibrationLine,
+        badge = badge
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -834,6 +673,9 @@ private fun UnavailableScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(24.dp))
-            MdTextButton(onClick = onBack) { Text("Go Back") }
+            MdTextButton(onClick = onBack) { Text("Go back") }
     }
 }
+
+/** Space between the day chips, kept small so seven fit a narrow phone at a usable width. */
+private val DAY_CHIP_GAP = 2.dp

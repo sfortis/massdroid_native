@@ -24,26 +24,24 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SurroundSound
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AlertDialogDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,8 +56,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.debounce
@@ -329,12 +327,14 @@ fun PlayerSettingsDialog(
             // The rows carry ListItem's own inset, so the dialog adds only enough to bring
             // their content to the 24dp edge an AlertDialog uses.
             Column(modifier = Modifier.padding(horizontal = DIALOG_EDGE_PADDING, vertical = 20.dp)) {
+                // The type and gap of an AlertDialog title, so this dialog's heading
+                // matches every other dialog in the app.
                 Text(
-                    "Player Settings",
-                    style = MaterialTheme.typography.titleMedium,
+                    "Player settings",
+                    style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier
                         .padding(horizontal = SETTINGS_ROW_INSET)
-                        .padding(bottom = 10.dp)
+                        .padding(bottom = 16.dp)
                 )
                 if (isLoading) {
                     Box(
@@ -665,8 +665,13 @@ private fun QueueChoiceRows(
 }
 
 /**
- * Autoplay, with its refill source opening underneath while it is on and the server lets
- * the source be changed. [sourceConfig] is null when there is no source to show.
+ * Autoplay on or off, with its refill source as a row of its own underneath while it is on
+ * and the server lets the source be changed. [sourceConfig] is null when there is no source
+ * to show.
+ *
+ * The switch and the source are two rows, the way Crossfade and its type are. A switch
+ * inside the row that opened the source list gave one setting two click targets, and the
+ * switch had none of the feedback every other switch gives.
  */
 @Composable
 private fun AutoplayRow(
@@ -677,33 +682,36 @@ private fun AutoplayRow(
     onSourceChanged: suspend (config: AutoplayConfig, mode: String, playlistUri: String?) -> Unit
 ) {
     val title = "Autoplay"
-    val icon = Icons.AutoMirrored.Filled.PlaylistPlay
-    when {
-        // The server refills a dynamic queue whether Autoplay is on or not, so there is
-        // nothing to switch and the row only says so. A disabled switch here rendered as a
-        // lone dark dot on the grayscale palette and looked broken.
-        dynamicSource != null -> SettingsRow(
+    // The icon Now Playing gives Autoplay, so the setting is recognisable in both places.
+    val icon = Icons.Default.AllInclusive
+    // The server refills a dynamic queue whether Autoplay is on or not, so there is
+    // nothing to switch and the row only says so. A disabled switch here rendered as a
+    // lone dark dot on the grayscale palette and looked broken.
+    if (dynamicSource != null) {
+        SettingsRow(
             title = title,
             icon = icon,
             supporting = autoplayRefillText(dynamicSource.name)
         )
-        sourceConfig == null -> SettingsSwitchRow(
-            title = title,
-            icon = icon,
-            checked = autoplayOn,
-            onCheckedChange = onToggle
-        )
-        // The sources are whole phrases from the server ("Automatic, similar tracks falling
-        // back to your library"), so they stay a list that opens under the row.
-        else -> SettingsExpandableRow(
-            title = title,
-            icon = icon,
-            supporting = sourceConfig.summary(),
-            trailing = { Switch(checked = autoplayOn, onCheckedChange = onToggle) }
+        return
+    }
+    SettingsSwitchRow(
+        title = title,
+        icon = icon,
+        checked = autoplayOn,
+        onCheckedChange = onToggle
+    )
+    // The sources are whole phrases from the server ("Automatic, similar tracks falling
+    // back to your library"), so they stay a list that opens under the row.
+    sourceConfig?.let { config ->
+        SettingsExpandableRow(
+            title = "Autoplay source",
+            icon = Icons.AutoMirrored.Filled.QueueMusic,
+            supporting = config.summary()
         ) {
             AutoplaySourceSection(
-                config = sourceConfig,
-                onChanged = { mode, playlistUri -> onSourceChanged(sourceConfig, mode, playlistUri) }
+                config = config,
+                onChanged = { mode, playlistUri -> onSourceChanged(config, mode, playlistUri) }
             )
         }
     }
@@ -731,7 +739,7 @@ private fun FollowMeRoomSection(
     val assignedRooms = rooms.filter { it.playerId == player.playerId }
     SettingsChoiceRow(
         title = "Room",
-        icon = Icons.Default.Sensors,
+        icon = Icons.Default.LocationOn,
         options = rooms.map { room ->
             QueueConfigOption(
                 value = room.id,
@@ -762,28 +770,19 @@ private fun FollowMeRoomSection(
     )
 
     roomToReassign?.let { target ->
-        AlertDialog(
-            onDismissRequest = { roomToReassignId = null },
-            title = { Text("Move room") },
-            text = {
-                Text(
-                    "\"${target.name}\" plays on ${target.playerName}. " +
-                        "Use ${player.displayName} for it instead?"
-                )
+        // NORMAL tone: the move can be undone by picking the room again on the other player,
+        // so it is not drawn as a destructive action.
+        SettingsConfirmDialog(
+            title = "Move room",
+            text = "\"${target.name}\" plays on ${target.playerName}. " +
+                "Use ${player.displayName} for it instead?",
+            confirmLabel = "Move",
+            onConfirm = {
+                onAssignRoom(target.id)
+                roomToReassignId = null
             },
-            confirmButton = {
-                MdTextButton(
-                    onClick = {
-                        onAssignRoom(target.id)
-                        roomToReassignId = null
-                    }
-                ) { Text("Move") }
-            },
-            dismissButton = {
-                MdTextButton(onClick = { roomToReassignId = null }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { roomToReassignId = null },
+            confirmTone = SettingsTone.NORMAL
         )
     }
 }
@@ -813,7 +812,7 @@ private fun RemoteTimingRow(
                 // sign). Saved via player config; affects ALL clients of this player.
                 DelayStepperControl(
                     label = "Static playback delay",
-                    helperText = "Server-side spec compensation for external device delay. Affects all clients of this player.",
+                    helperText = "Makes up for the delay of a device after this player, such as an amplifier.",
                     valueMs = ms,
                     minValue = 0,
                     maxValue = STATIC_DELAY_MAX_MS,
@@ -860,12 +859,13 @@ private fun DelayStepperControl(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // The type scale of a settings row: the value is information, not an accent.
             Column(modifier = Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.bodyMedium)
+                Text(label, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = valueText ?: "${valueMs}ms",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    text = valueText ?: "$valueMs ms",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
             MdTextButton(
@@ -878,7 +878,7 @@ private fun DelayStepperControl(
             RepeatingIconButton(
                 onClick = onDecrement,
                 enabled = valueMs > minValue,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(STEPPER_TOUCH_TARGET)
             ) {
                 Icon(
                     Icons.Default.Remove,
@@ -889,7 +889,7 @@ private fun DelayStepperControl(
             RepeatingIconButton(
                 onClick = onIncrement,
                 enabled = valueMs < maxValue,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(STEPPER_TOUCH_TARGET)
             ) {
                 Icon(
                     Icons.Default.Add,
@@ -900,7 +900,7 @@ private fun DelayStepperControl(
         }
         Text(
             helperText,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp)
         )
@@ -924,8 +924,6 @@ internal fun SyncDelayControl(
     compact: Boolean = false,
     minMs: Int = -1000,
     maxMs: Int = 1000,
-    /** Extra controls for the same speaker, drawn at the bottom of the control. */
-    footer: (@Composable () -> Unit)? = null,
 ) {
     // Signed (+/-) presentation + earlier/later hints only make sense for a
     // bipolar range (sync delay); a positive-only range (static playback delay,
@@ -943,22 +941,25 @@ internal fun SyncDelayControl(
         ) {
             Text(
                 label,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f)
             )
             Text(
                 text = if (signed && valueMs > 0) "+$valueMs ms" else "$valueMs ms",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
             )
         }
-        Slider(
+        // The app slider at its natural height. A fixed 28dp height shrank the touch area
+        // below the 48dp minimum that every other slider keeps. The value still follows the
+        // drag, because the callers apply or debounce it themselves. The empty finish
+        // callback is there only so the drag ends with the same haptic as the other sliders.
+        MdSlider(
             value = valueMs.toFloat().coerceIn(minMs.toFloat(), maxMs.toFloat()),
             onValueChange = { onValueChange(Math.round(it)) },
+            onValueChangeFinished = {},
             valueRange = minMs.toFloat()..maxMs.toFloat(),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(28.dp)
+            modifier = Modifier.fillMaxWidth()
         )
         // earlier/later hints are redundant in compact rows (the signed
         // value + steppers already convey direction); drop them to save
@@ -988,7 +989,7 @@ internal fun SyncDelayControl(
             RepeatingIconButton(
                 onClick = { onValueChange(valueMs - 1) },
                 enabled = valueMs > minMs,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(STEPPER_TOUCH_TARGET)
             ) {
                 Icon(
                     Icons.Default.Remove,
@@ -999,7 +1000,7 @@ internal fun SyncDelayControl(
             RepeatingIconButton(
                 onClick = { onValueChange(valueMs + 1) },
                 enabled = valueMs < maxMs,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(STEPPER_TOUCH_TARGET)
             ) {
                 Icon(
                     Icons.Default.Add,
@@ -1016,19 +1017,28 @@ internal fun SyncDelayControl(
                 )
             ) { Text("Reset", style = MaterialTheme.typography.labelMedium) }
         }
-        footer?.invoke()
     }
 }
 
+/**
+ * The sync error of the last samples against the lock band (5 ms) and the correction
+ * threshold (20 ms).
+ *
+ * The three states are told apart by line style, not by colour. The palette is grayscale,
+ * so primary and tertiary drew "locked" and "converging" in two greys that could not be
+ * told apart and only the error colour read. Locked is a solid trace, converging a dashed
+ * one, and only an error past the threshold is coloured. The two guide lines are dotted
+ * (lock band) and dashed (threshold) for the same reason.
+ */
 @Composable
 internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
     val maxAbsError = samples.maxOfOrNull { kotlin.math.abs(it.errorMs) } ?: 0f
     val rangeMs = maxOf(25f, kotlin.math.ceil(maxAbsError / 10f).toInt() * 10f).coerceAtMost(250f)
     val latest = samples.lastOrNull()
-    val goodColor = MaterialTheme.colorScheme.primary
-    val warnColor = MaterialTheme.colorScheme.tertiary
+    val traceColor = MaterialTheme.colorScheme.onSurface
     val badColor = MaterialTheme.colorScheme.error
     val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val guideColor = MaterialTheme.colorScheme.outline
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val labelStyle = MaterialTheme.typography.labelSmall
 
@@ -1055,14 +1065,19 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                 val centerY = topInset + graphHeight / 2f
                 val stepX = size.width / (samples.size.coerceAtLeast(2) - 1).toFloat()
 
-                // Grid: center line (0ms), lock band (±5ms), correction threshold (±20ms).
+                // Grid: center line (0 ms), lock band (±5 ms, dotted), correction
+                // threshold (±20 ms, dashed).
                 drawLine(gridColor, Offset(0f, centerY), Offset(size.width, centerY), 1.dp.toPx())
-                val lockMsY = graphHeight / 2f * (5f / rangeMs)
-                drawLine(goodColor.copy(alpha = 0.45f), Offset(0f, centerY - lockMsY), Offset(size.width, centerY - lockMsY), 0.5.dp.toPx())
-                drawLine(goodColor.copy(alpha = 0.45f), Offset(0f, centerY + lockMsY), Offset(size.width, centerY + lockMsY), 0.5.dp.toPx())
-                val twentyMsY = graphHeight / 2f * (20f / rangeMs)
-                drawLine(warnColor.copy(alpha = 0.6f), Offset(0f, centerY - twentyMsY), Offset(size.width, centerY - twentyMsY), 0.5.dp.toPx())
-                drawLine(warnColor.copy(alpha = 0.6f), Offset(0f, centerY + twentyMsY), Offset(size.width, centerY + twentyMsY), 0.5.dp.toPx())
+                val guideWidth = 1.dp.toPx()
+                val dotted = PathEffect.dashPathEffect(floatArrayOf(1.dp.toPx(), 3.dp.toPx()))
+                val dashed = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))
+                val lockMsY = graphHeight / 2f * (SYNC_LOCK_MS / rangeMs)
+                val twentyMsY = graphHeight / 2f * (SYNC_WARN_MS / rangeMs)
+                listOf(lockMsY to dotted, twentyMsY to dashed).forEach { (dy, effect) ->
+                    listOf(centerY - dy, centerY + dy).forEach { y ->
+                        drawLine(guideColor, Offset(0f, y), Offset(size.width, y), guideWidth, pathEffect = effect)
+                    }
+                }
 
                 // Actual sync convergence: anchor error moving toward 0ms.
                 val points = samples.mapIndexed { i, s ->
@@ -1084,15 +1099,13 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                     }
                     path.lineTo(points.last().x, points.last().y)
 
-                    // Color based on latest error magnitude
+                    // Style from the latest error: solid when locked, dashed while
+                    // converging, and the error colour only past the threshold.
                     val absErr = kotlin.math.abs(latest?.errorMs ?: 0f)
-                    val lineColor = when {
-                        absErr < 5f -> goodColor
-                        absErr < 20f -> warnColor
-                        else -> badColor
-                    }
+                    val lineColor = if (absErr < SYNC_WARN_MS) traceColor else badColor
+                    val traceEffect = if (absErr >= SYNC_LOCK_MS && absErr < SYNC_WARN_MS) dashed else null
 
-                    drawPath(path, lineColor, style = Stroke(width = 2.dp.toPx()))
+                    drawPath(path, lineColor, style = Stroke(width = 2.dp.toPx(), pathEffect = traceEffect))
 
                     // Endpoint dot
                     drawCircle(lineColor, radius = 3.dp.toPx(), center = points.last())
@@ -1113,14 +1126,9 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
                 modifier = Modifier.align(Alignment.BottomStart)
             )
             latest?.let {
-                val absErr = kotlin.math.abs(it.errorMs)
-                val errColor = when {
-                    absErr < 5f -> goodColor
-                    absErr < 20f -> warnColor
-                    else -> badColor
-                }
+                val errColor = if (kotlin.math.abs(it.errorMs) < SYNC_WARN_MS) labelColor else badColor
                 Text(
-                    text = "${"%.1f".format(it.errorMs)}ms",
+                    text = "${"%.1f".format(it.errorMs)} ms",
                     style = labelStyle,
                     color = errColor,
                     modifier = Modifier.align(Alignment.CenterEnd)
@@ -1128,16 +1136,21 @@ internal fun SyncErrorGraph(samples: List<SendspinManager.SyncSample>) {
             }
         }
 
-        // Output latency + filter error info line
+        // The latest sync error, output latency and clock filter error, each as its own
+        // label spread across the width rather than one dot-joined string.
         latest?.let {
-            Text(
-                text = "Sync=${"%.1f".format(it.errorMs)}ms  " +
-                    "Output=${"%.0f".format(it.outputLatencyMs)}ms  Clock=${"%.1f".format(it.filterErrorMs)}ms",
-                style = MaterialTheme.typography.bodySmall,
-                color = labelColor,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                listOf(
+                    "Sync ${"%.1f".format(it.errorMs)} ms",
+                    "Output ${"%.0f".format(it.outputLatencyMs)} ms",
+                    "Clock ${"%.1f".format(it.filterErrorMs)} ms"
+                ).forEach { metric ->
+                    Text(metric, style = MaterialTheme.typography.bodySmall, color = labelColor)
+                }
+            }
         }
     }
 }
@@ -1158,27 +1171,27 @@ private fun LocalSyncRow(acoustic: AcousticCalibrationCoordinator) {
     val current = output
     val routeKey = current?.routeKey
     val calibration = routeKey?.let { calibrations[it] }
+    // One short phrase rather than "name · state": the row's supporting line has room for a
+    // sentence, and a dot-joined list of facts reads as notes rather than a status.
     val summary = when {
         current == null -> null
-        calibration != null -> "${current.name} · calibrated"
-        current.canCalibrate && routeKey != null -> "${current.name} · not calibrated"
+        calibration != null -> "Calibrated for ${current.name}"
+        current.canCalibrate && routeKey != null -> "${current.name} is not calibrated"
         else -> current.name
     }
     SettingsExpandableRow(title = "Sync", icon = Icons.Default.Tune, supporting = summary) {
         if (current != null) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val target = current.kind.calibrationTarget()?.takeIf { current.canCalibrate }
-                OutputCalibrationRow(
-                    title = current.name,
-                    status = when {
-                        calibration != null -> "Calibrated · ${calibration.correctionUs / 1000} ms"
-                        target != null && routeKey != null -> "Not calibrated"
-                        else -> null
-                    },
-                    calibrated = calibration != null,
-                    onReset = routeKey?.let { key -> { acoustic.resetCalibration(key) } },
-                    onCalibrate = target?.let { t -> { calibrating = t } },
-                )
+                // The collapsed row already names the output and whether it is calibrated,
+                // so the detail adds only what it does not say: the measured correction.
+                if (calibration != null || target != null) {
+                    OutputCalibrationRow(
+                        correctionMs = calibration?.let { it.correctionUs / 1000 },
+                        onReset = routeKey?.let { key -> { acoustic.resetCalibration(key) } },
+                        onCalibrate = target?.let { t -> { calibrating = t } },
+                    )
+                }
                 if (routeKey != null) {
                     OutputFineTuneControl(
                         routeKey = routeKey,
@@ -1236,28 +1249,28 @@ private fun OutputFineTuneControl(routeKey: String, storedMs: Int, onApply: (Str
 }
 
 /**
- * One output's name and calibration state, with Reset and Calibrate where they
- * apply: an output that cannot be calibrated shows only its name.
+ * The current output's calibration: the measured [correctionMs], or null before it has
+ * been measured, with Reset and Calibrate where they apply. The output's name and state are
+ * on the row above, so they are not repeated here.
  */
 @Composable
 private fun OutputCalibrationRow(
-    title: String,
-    status: String?,
-    calibrated: Boolean,
+    correctionMs: Long?,
     onReset: (() -> Unit)?,
     onCalibrate: (() -> Unit)?,
 ) {
+    val calibrated = correctionMs != null
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
-            status?.let {
+            Text("Calibration", style = MaterialTheme.typography.bodyLarge)
+            correctionMs?.let {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
+                    "$it ms",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -1280,6 +1293,17 @@ private fun OutputCalibrationRow(
  * puts their content at the 24dp edge Material's AlertDialog uses.
  */
 private val DIALOG_EDGE_PADDING = 8.dp
+
+/**
+ * The size of a delay stepper. The icon inside stays small, but the button keeps Material's
+ * 48dp minimum: at 36dp the steppers were the smallest targets in the dialog, and they are
+ * the ones pressed repeatedly.
+ */
+private val STEPPER_TOUCH_TARGET = 48.dp
+
+/** The sync graph's lock band and correction threshold, either side of 0. */
+private const val SYNC_LOCK_MS = 5f
+private const val SYNC_WARN_MS = 20f
 
 /** MA's range for `sendspin_static_delay`, and the step of its steppers. */
 private const val STATIC_DELAY_MAX_MS = 5000

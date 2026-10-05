@@ -4,78 +4,98 @@ import net.asksakis.massdroidv2.ui.components.LabeledSlider
 import net.asksakis.massdroidv2.ui.components.MdSlider
 import kotlin.math.roundToInt
 import net.asksakis.massdroidv2.ui.components.MdButton
-import net.asksakis.massdroidv2.ui.components.MdFilledTonalButton
 import net.asksakis.massdroidv2.ui.components.MdIconButton
-import net.asksakis.massdroidv2.ui.components.MdOutlinedButton
-import net.asksakis.massdroidv2.ui.components.MdSwitch
+import net.asksakis.massdroidv2.ui.components.SETTINGS_ROW_INSET
+import net.asksakis.massdroidv2.ui.components.SETTINGS_SCREEN_BOTTOM_PADDING
+import net.asksakis.massdroidv2.ui.components.SETTINGS_TEXT_INSET
+import net.asksakis.massdroidv2.ui.components.SettingsChoiceRow
+import net.asksakis.massdroidv2.ui.components.SettingsConfirmDialog
+import net.asksakis.massdroidv2.ui.components.SettingsBadge
+import net.asksakis.massdroidv2.ui.components.SettingsExpandableRow
+import net.asksakis.massdroidv2.ui.components.SettingsNavigationRow
+import net.asksakis.massdroidv2.ui.components.SettingsRow
+import net.asksakis.massdroidv2.ui.components.SettingsSectionDivider
+import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
+import net.asksakis.massdroidv2.ui.components.SettingsSwitchRow
+import net.asksakis.massdroidv2.ui.components.SettingsTone
 
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.semantics
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Coffee
+import androidx.compose.material.icons.filled.Compress
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Grain
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Login
-import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.SystemUpdate
 import net.asksakis.massdroidv2.ui.components.WhatsNewItems
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -96,6 +116,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
@@ -114,6 +136,7 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -199,10 +222,10 @@ fun SettingsScreen(
                     Text(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
-                            SettingsCategory.PHONE_AS_SPEAKER -> "Phone as Speaker"
+                            SettingsCategory.PHONE_AS_SPEAKER -> "Phone as speaker"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
-                            SettingsCategory.NFC_TAGS -> "NFC Tags"
+                            SettingsCategory.NFC_TAGS -> "NFC tags"
                             SettingsCategory.DIAGNOSTICS -> "Diagnostics"
                             SettingsCategory.ABOUT -> "About"
                             null -> "Settings"
@@ -265,6 +288,14 @@ fun SettingsScreen(
 
 // region Category List
 
+/**
+ * The top of Settings: where the server stands, then one row per category.
+ *
+ * The rows are grouped in sections like every other settings surface, with no divider
+ * between rows inside a group. The connection status used to sit in a coloured card
+ * above the list; it is now the first row of the Server group. The list scrolls because
+ * the section headers make it taller than a phone held sideways.
+ */
 @Composable
 private fun CategoryList(
     viewModel: SettingsViewModel,
@@ -273,101 +304,101 @@ private fun CategoryList(
 ) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
 
-    Column(modifier = modifier.fillMaxSize()) {
-        ConnectionStatusCard(connectionState = connectionState, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-
-        ListItem(
-            headlineContent = { Text("Connection") },
-            supportingContent = { Text("Server URL, authentication, and certificates") },
-            leadingContent = {
-                Icon(Icons.Default.Wifi, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.CONNECTION) }
+    SettingsScreenColumn(modifier = modifier) {
+        SettingsSectionHeader("Server")
+        ConnectionStatusRow(connectionState = connectionState)
+        SettingsNavigationRow(
+            title = "Connection",
+            icon = Icons.Default.Dns,
+            supporting = "Server URL, authentication, and certificates",
+            onClick = { onSelect(SettingsCategory.CONNECTION) }
         )
-        HorizontalDivider()
-        ListItem(
-            headlineContent = { Text("Phone as Speaker") },
-            supportingContent = { Text("Stream audio to this phone via Sendspin") },
-            leadingContent = {
-                Icon(Icons.Default.Speaker, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.PHONE_AS_SPEAKER) }
+        SettingsSectionDivider()
+        SettingsSectionHeader("Playback")
+        SettingsNavigationRow(
+            title = "Phone as speaker",
+            icon = Icons.Default.Speaker,
+            supporting = "Stream audio to this phone via Sendspin",
+            onClick = { onSelect(SettingsCategory.PHONE_AS_SPEAKER) }
         )
-        HorizontalDivider()
-        ListItem(
-            headlineContent = { Text("Recommendations") },
-            supportingContent = { Text("Personalized music discovery and genre enrichment") },
-            leadingContent = {
-                Icon(Icons.Default.MusicNote, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.RECOMMENDATIONS) }
+        SettingsNavigationRow(
+            title = "Follow Me",
+            icon = Icons.Default.Sensors,
+            supporting = "Music follows you between rooms",
+            onClick = { onSelect(SettingsCategory.PROXIMITY) }
         )
-        HorizontalDivider()
-        ListItem(
-            headlineContent = { Text("Follow Me") },
-            supportingContent = { Text("Music follows you between rooms") },
-            leadingContent = {
-                Icon(Icons.Default.LocationOn, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.PROXIMITY) }
-        )
-        HorizontalDivider()
         // Offered only where there is a chip, because everything behind it is about
         // writing and reading tags.
         if (LocalContext.current.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC)) {
-            ListItem(
-                headlineContent = { Text("NFC Tags") },
-                supportingContent = { Text("Tap a tag to start an album or playlist on a speaker") },
-                leadingContent = {
-                    Icon(Icons.Default.Nfc, contentDescription = null)
-                },
-                modifier = Modifier.clickable { onSelect(SettingsCategory.NFC_TAGS) }
+            SettingsNavigationRow(
+                title = "NFC tags",
+                icon = Icons.Default.Nfc,
+                supporting = "Tap a tag to start an album or playlist on a speaker",
+                onClick = { onSelect(SettingsCategory.NFC_TAGS) }
             )
-            HorizontalDivider()
         }
-        ThemeSelector(viewModel)
-        HorizontalDivider()
-        ListItem(
-            headlineContent = { Text("Diagnostics") },
-            supportingContent = { Text("Versions, logs, and battery optimization") },
-            leadingContent = {
-                Icon(Icons.Default.BugReport, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.DIAGNOSTICS) }
+        SettingsSectionDivider()
+        SettingsSectionHeader("Discovery")
+        SettingsNavigationRow(
+            title = "Recommendations",
+            icon = Icons.Default.Explore,
+            supporting = "Personalized music discovery and genre enrichment",
+            onClick = { onSelect(SettingsCategory.RECOMMENDATIONS) }
         )
-        HorizontalDivider()
-        ListItem(
-            headlineContent = { Text("About") },
-            supportingContent = { Text("Version, updates, and what's new") },
-            leadingContent = {
-                Icon(Icons.Default.Info, contentDescription = null)
-            },
-            modifier = Modifier.clickable { onSelect(SettingsCategory.ABOUT) }
+        SettingsSectionDivider()
+        SettingsSectionHeader("App")
+        ThemeRow(viewModel)
+        SettingsNavigationRow(
+            title = "Diagnostics",
+            icon = Icons.Default.BugReport,
+            supporting = "Versions, logs, and battery optimization",
+            onClick = { onSelect(SettingsCategory.DIAGNOSTICS) }
+        )
+        SettingsNavigationRow(
+            title = "About",
+            icon = Icons.Default.Info,
+            supporting = "Version, updates, and what's new",
+            onClick = { onSelect(SettingsCategory.ABOUT) }
         )
     }
 }
 
 @Composable
-private fun ThemeSelector(viewModel: SettingsViewModel) {
+private fun ThemeRow(viewModel: SettingsViewModel) {
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle(initialValue = "auto")
-    val options = listOf("auto" to "Auto", "dark" to "Dark", "light" to "Light")
+    SettingsChoiceRow(
+        title = "Theme",
+        icon = Icons.Default.Palette,
+        options = THEME_OPTIONS,
+        selectedValue = themeMode,
+        onSelect = viewModel::setThemeMode
+    )
+}
 
-    ListItem(
-        headlineContent = { Text("Theme") },
-        supportingContent = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                options.forEach { (value, label) ->
-                    androidx.compose.material3.FilterChip(
-                        selected = themeMode == value,
-                        onClick = { viewModel.setThemeMode(value) },
-                        label = { Text(label) }
-                    )
-                }
-            }
-        },
-        leadingContent = {
-            Icon(Icons.Default.DarkMode, contentDescription = null)
-        }
+/** The stored theme values with their labels. */
+private val THEME_OPTIONS = listOf(
+    QueueConfigOption(value = "auto", title = "Auto", description = "Follows the system setting"),
+    QueueConfigOption(value = "dark", title = "Dark"),
+    QueueConfigOption(value = "light", title = "Light")
+)
+
+/**
+ * The scrolling column every settings page here is drawn in. It adds no side padding,
+ * because the rows carry `ListItem`'s own inset and anything that is not a row aligns
+ * with their text through [SETTINGS_TEXT_INSET], or with their icons through
+ * [SETTINGS_ROW_INSET].
+ */
+@Composable
+internal fun SettingsScreenColumn(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = SETTINGS_SCREEN_BOTTOM_PADDING),
+        content = content
     )
 }
 
@@ -378,18 +409,11 @@ private fun ThemeSelector(viewModel: SettingsViewModel) {
 @Composable
 private fun ConnectionScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
-    val isConnected = connectionState is ConnectionState.Connected
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        ConnectionStatusCard(connectionState = connectionState)
-        ServerConnectionCard(viewModel = viewModel, connectionState = connectionState)
-        ClientCertCard(viewModel = viewModel)
+    SettingsScreenColumn(modifier = modifier) {
+        ServerSection(viewModel = viewModel, connectionState = connectionState)
+        SettingsSectionDivider()
+        ClientCertSection(viewModel = viewModel)
     }
 }
 
@@ -398,43 +422,29 @@ private fun PhoneAsSpeakerScreen(viewModel: SettingsViewModel, modifier: Modifie
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isConnected = connectionState is ConnectionState.Connected
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    SettingsScreenColumn(modifier = modifier) {
         if (isConnected) {
-            SendspinCard(viewModel = viewModel)
+            SendspinSection(viewModel = viewModel)
             // The sub-settings only affect the phone-as-speaker output, so show
             // them only while it is enabled (consistent gating for all of them).
             val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
             if (sendspinEnabled) {
-                OutputQualityCard(viewModel = viewModel)
-                DspEffectsCard(viewModel = viewModel)
-                CarAudioCard(viewModel = viewModel)
-                if (BuildConfig.DEBUG) SyncProbeCard(viewModel = viewModel)
-            }
-        } else {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                )
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "Connect to your Music Assistant server first to enable Phone as Speaker.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                SettingsSectionDivider()
+                AudioSection(viewModel = viewModel)
+                SettingsSectionDivider()
+                CarAudioSection(viewModel = viewModel)
+                if (BuildConfig.DEBUG) {
+                    SettingsSectionDivider()
+                    SyncProbeSection(viewModel = viewModel)
                 }
             }
+        } else {
+            Text(
+                "Connect to your Music Assistant server first to enable Phone as speaker.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 16.dp)
+            )
         }
     }
 }
@@ -449,17 +459,10 @@ private fun RecommendationsScreen(
     modifier: Modifier = Modifier,
     onOpenInsights: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        SmartListeningCard(viewModel = viewModel)
-        SmartMixTuningCard(viewModel = viewModel)
-        InsightsCard(viewModel = viewModel, onOpen = onOpenInsights)
-        GenreEnrichmentCard(viewModel = viewModel)
+    SettingsScreenColumn(modifier = modifier) {
+        LearningSection(viewModel = viewModel, onOpenInsights = onOpenInsights)
+        SettingsSectionDivider()
+        SmartMixTuningSection(viewModel = viewModel)
     }
 }
 
@@ -480,12 +483,7 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.collectAsStateWithLifecycle()
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 24.dp)
-    ) {
+    SettingsScreenColumn(modifier = modifier) {
         AboutHero()
         // The in-app updater is github-flavor only; F-Droid handles updates itself.
         if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
@@ -496,22 +494,16 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
                 state = updateUiState,
                 onCheck = { viewModel.checkForUpdates(force = true) }
             )
-            HorizontalDivider()
+            SettingsSectionDivider()
         }
         // The entries in place rather than behind a row. The sheet still interrupts once
         // after an update, and this is the same list, so there is nothing to tap to read
         // it again. Nothing is drawn until the notes have been read off the assets, which
         // is a file read and not a request, so the wait is not worth a placeholder.
         whatsNew?.let { news ->
-            // Heavier than the Added/Improved/Fixed headings inside the list, which carry
-            // the settings section style. Leaving both at labelLarge in primary read as
-            // four headings of the same rank instead of a title with sections under it.
-            Text(
-                text = "New in ${news.versionName}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp)
-            )
+            // A section header like every other group on the settings screens, so the
+            // support button stays the only accented element on About.
+            SettingsSectionHeader("New in ${news.versionName}")
             WhatsNewItems(
                 release = news,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -571,33 +563,31 @@ private fun AboutHero() {
 @Composable
 private fun UpdateCheckItem(state: UpdateUiState, onCheck: () -> Unit) {
     val busy = state.isChecking || state.isDownloading
-    val spinner: (@Composable () -> Unit)? = if (state.isChecking) {
-        { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
-    } else {
-        null
-    }
     Column {
-        ListItem(
-            headlineContent = {
-                Text(
-                    when {
-                        state.isDownloading -> "Downloading ${state.downloadProgress ?: 0}%"
-                        state.isChecking -> "Checking for updates"
-                        else -> "Check for updates"
-                    }
-                )
+        SettingsRow(
+            title = when {
+                state.isDownloading -> "Downloading ${state.downloadProgress ?: 0}%"
+                state.isChecking -> "Checking for updates"
+                else -> "Check for updates"
             },
-            supportingContent = { Text(state.message ?: "Current version ${state.appVersion}") },
-            leadingContent = { Icon(Icons.Default.SystemUpdate, contentDescription = null) },
-            trailingContent = spinner,
-            modifier = Modifier.clickable(enabled = !busy, onClick = onCheck)
+            icon = Icons.Default.SystemUpdate,
+            supporting = state.message ?: "Current version ${state.appVersion}",
+            // No click while busy, but not dimmed either: the row is reporting progress,
+            // not refusing.
+            onClick = onCheck.takeUnless { busy },
+            trailing = if (state.isChecking) {
+                { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
+            } else {
+                null
+            }
         )
         if (state.isDownloading) {
             LinearProgressIndicator(
                 progress = { (state.downloadProgress ?: 0) / 100f },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    // Under the row's text rather than its icon, as the detail of a row is.
+                    .padding(start = SETTINGS_TEXT_INSET, end = SETTINGS_ROW_INSET, top = 4.dp, bottom = 4.dp)
             )
         }
     }
@@ -621,473 +611,524 @@ private val SUPPORT_ON_ORANGE = Color(0xFF1F1F1F)
 
 // endregion
 
-// region Card Components
+// region Sections
 
+/**
+ * Where the connection to the server stands, as a row. An error names itself in the title
+ * and carries the server's message underneath; otherwise [detail] fills that line. This is
+ * the one place a connection error is shown: the sign-in form under it shows only its own
+ * validation errors, so the server's message never appears twice.
+ *
+ * A live connection is said with a badge rather than a colour, because the palette has no
+ * colour for a good state.
+ */
 @Composable
-private fun ConnectionStatusCard(connectionState: ConnectionState, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = when (connectionState) {
-                is ConnectionState.Connected -> MaterialTheme.colorScheme.primaryContainer
-                is ConnectionState.Error -> MaterialTheme.colorScheme.errorContainer
-                else -> MaterialTheme.colorScheme.surfaceContainerHigh
-            }
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Icon(
-                when (connectionState) {
-                    is ConnectionState.Connected -> Icons.Default.Cloud
-                    is ConnectionState.Connecting -> Icons.Default.CloudSync
-                    else -> Icons.Default.CloudOff
-                },
-                contentDescription = null
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                when (connectionState) {
-                    is ConnectionState.Connected -> {
-                        val info = (connectionState as ConnectionState.Connected).serverInfo
-                        "Connected (v${info.serverVersion})"
-                    }
-                    is ConnectionState.Connecting -> "Connecting..."
-                    is ConnectionState.Error ->
-                        "Error: ${(connectionState as ConnectionState.Error).message}"
-                    is ConnectionState.Disconnected -> "Disconnected"
-                }
-            )
-        }
-    }
+private fun ConnectionStatusRow(connectionState: ConnectionState, detail: String? = null) {
+    SettingsRow(
+        title = when (connectionState) {
+            is ConnectionState.Connected -> "Music Assistant v${connectionState.serverInfo.serverVersion}"
+            is ConnectionState.Connecting -> "Connecting"
+            is ConnectionState.Error -> "Couldn't connect"
+            is ConnectionState.Disconnected -> "Disconnected"
+        },
+        icon = when (connectionState) {
+            is ConnectionState.Connected -> Icons.Default.Cloud
+            is ConnectionState.Connecting -> Icons.Default.CloudSync
+            else -> Icons.Default.CloudOff
+        },
+        supporting = (connectionState as? ConnectionState.Error)?.message ?: detail,
+        tone = if (connectionState is ConnectionState.Error) SettingsTone.ERROR else SettingsTone.NORMAL,
+        badge = SettingsBadge("Connected").takeIf { connectionState is ConnectionState.Connected }
+    )
 }
 
+/**
+ * The server this app talks to: its status, then either who is signed in or the form to
+ * sign in with.
+ */
 @Composable
-private fun ServerConnectionCard(
+private fun ServerSection(
     viewModel: SettingsViewModel,
     connectionState: ConnectionState
 ) {
     val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val isConnected = connectionState is ConnectionState.Connected
+    // Held here rather than in the form: the form leaves the composition while connected,
+    // and what was typed into it must still be there when it comes back after a disconnect.
+    val draft = rememberSignInDraft()
+
+    // Surface OAuth errors as login errors so the existing error row picks them up.
+    // Collected here rather than in the form, so it runs whatever the connection state.
+    LaunchedEffect(Unit) {
+        viewModel.oauthErrors.collect { msg -> viewModel.setLoginError(msg) }
+    }
+
+    SettingsSectionHeader("Server")
+    // The URL cannot be edited while connected, so it is the status row's second line.
+    ConnectionStatusRow(connectionState = connectionState, detail = serverUrl.takeIf { isConnected })
+    if (isConnected) {
+        // Saveable so the question is still open after a rotation. Signing out cannot be
+        // undone from here, because the password has to be typed again.
+        var confirmingSignOut by rememberSaveable { mutableStateOf(false) }
+        SettingsRow(
+            title = "Signed in as ${currentUser?.username ?: "unknown"}",
+            icon = Icons.Default.Person,
+            supporting = currentUser?.authMethod?.let { "via $it" }
+        )
+        SettingsRow(
+            title = "Sign out",
+            icon = Icons.AutoMirrored.Filled.Logout,
+            supporting = "Forgets your sign-in for this server and keeps its URL",
+            onClick = { confirmingSignOut = true },
+            tone = SettingsTone.DESTRUCTIVE
+        )
+        if (confirmingSignOut) {
+            SettingsConfirmDialog(
+                title = "Sign out?",
+                text = "You will need to sign in again to use the server.",
+                confirmLabel = "Sign out",
+                onConfirm = {
+                    confirmingSignOut = false
+                    viewModel.signOut()
+                },
+                onDismiss = { confirmingSignOut = false }
+            )
+        }
+    } else {
+        SignInForm(
+            viewModel = viewModel,
+            connectionState = connectionState,
+            serverUrl = serverUrl,
+            draft = draft
+        )
+    }
+}
+
+/**
+ * The editable URL and the sign-in options, shown while disconnected (or connecting, or
+ * failed). A form is not a row, so it sits in the section aligned with the rows through
+ * [SETTINGS_ROW_INSET] rather than in a container of its own.
+ */
+@Composable
+private fun SignInForm(
+    viewModel: SettingsViewModel,
+    connectionState: ConnectionState,
+    serverUrl: String,
+    draft: SignInDraft
+) {
     val authToken by viewModel.authToken.collectAsStateWithLifecycle()
     val loginError by viewModel.loginError.collectAsStateWithLifecycle()
     val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
     val savedPassword by viewModel.savedPassword.collectAsStateWithLifecycle()
 
-    var editUrl by remember(serverUrl) {
-        mutableStateOf(TextFieldValue(serverUrl, TextRange(serverUrl.length)))
-    }
-    var username by remember(savedUsername) { mutableStateOf(savedUsername) }
-    var password by remember(savedPassword) { mutableStateOf(savedPassword) }
-    var showPassword by remember { mutableStateOf(false) }
-
-    val reconnecting by viewModel.isReconnecting.collectAsStateWithLifecycle()
-    val isConnected = connectionState is ConnectionState.Connected
-    val isConnecting = connectionState is ConnectionState.Connecting
-    val isRetryingConnection = isConnecting || (connectionState is ConnectionState.Error && reconnecting)
+    // An untouched field shows the saved value, which also covers the saved values arriving
+    // a frame after the first composition.
+    val editUrl = draft.url ?: TextFieldValue(serverUrl, TextRange(serverUrl.length))
+    val username = draft.username ?: savedUsername
+    val password = draft.password ?: savedPassword
     val hasToken = authToken.isNotBlank()
 
     // Auth providers exposed by the server (only HA OAuth is treated specially;
     // the built-in credentials path always falls through).
     val providers by viewModel.availableAuthProviders.collectAsStateWithLifecycle()
     val oauthInProgress by viewModel.oauthInProgress.collectAsStateWithLifecycle()
-    val haProviderAvailable = providers.any { it.isHomeAssistant }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Probe the server's providers as the URL stabilises (debounced).
-    LaunchedEffect(editUrl.text, isConnected) {
-        if (isConnected) return@LaunchedEffect
+    // Probe the server's providers as the URL stabilises (debounced). The form is only
+    // composed while disconnected, so there is no connected state to skip.
+    LaunchedEffect(editUrl.text) {
         if (editUrl.text.isBlank()) return@LaunchedEffect
         kotlinx.coroutines.delay(400)
         viewModel.probeAuthProviders(editUrl.text)
     }
-    // Surface OAuth errors as login errors so the existing error row picks them up.
-    LaunchedEffect(Unit) {
-        viewModel.oauthErrors.collect { msg -> viewModel.setLoginError(msg) }
-    }
-    val primaryConnectionButtonLabel = when {
-        isConnected -> "Disconnect"
-        isRetryingConnection -> "Abort"
-        connectionState is ConnectionState.Error -> "Retry"
-        else -> "Connect"
-    }
 
-    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "Server",
-            style = MaterialTheme.typography.titleSmall
+        ServerUrlField(value = editUrl, onValueChange = { draft.url = it })
+
+        if (providers.any { it.isHomeAssistant }) {
+            HomeAssistantSignIn(
+                inProgress = oauthInProgress,
+                onClick = {
+                    viewModel.clearLoginError()
+                    coroutineScope.launch {
+                        val authUrl = viewModel.startHomeAssistantOAuth(editUrl.text)
+                        if (authUrl != null) launchCustomTab(context, authUrl)
+                    }
+                }
+            )
+        }
+
+        CredentialFields(
+            username = username,
+            onUsernameChange = {
+                draft.username = it
+                viewModel.clearLoginError()
+            },
+            password = password,
+            onPasswordChange = {
+                draft.password = it
+                viewModel.clearLoginError()
+            }
         )
 
-        if (isConnected) {
-            // Read-only URL display + signed-in identity + Sign out.
+        // Only the form's own errors (validation, Home Assistant sign-in). A connection
+        // error is already in the status row above the form.
+        loginError?.let { error ->
             Text(
-                text = serverUrl,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                text = error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
             )
-            HorizontalDivider()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Cloud,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = "Signed in as ${currentUser?.username ?: "unknown"}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    currentUser?.authMethod?.let {
-                        Text(
-                            text = "via $it",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-            MdButton(
-                onClick = { viewModel.signOut() },
-                modifier = Modifier.fillMaxWidth(),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
-            ) {
-                Icon(Icons.Default.Logout, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Sign out")
-            }
-            Text(
-                text = "Sign out wipes your saved sign-in for this server. " +
-                    "The server URL is kept so you can sign back in.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            // Disconnected (or connecting / error). Show editable URL and the
-            // sign-in options.
-            val urlMissingScheme = editUrl.text.isNotBlank() && !editUrl.text.contains("://")
-            OutlinedTextField(
-                value = editUrl,
-                onValueChange = { editUrl = it },
-                label = { Text("Server URL") },
-                placeholder = { Text("https://ma.example.com") },
-                singleLine = true,
-                isError = urlMissingScheme,
-                supportingText = if (urlMissingScheme) {
-                    { Text("Add http:// or https:// to the URL") }
-                } else null,
-                modifier = Modifier.fillMaxWidth()
-            )
-            if (urlMissingScheme) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.SuggestionChip(
-                        onClick = {
-                            val next = applyUrlScheme("http://", editUrl.text)
-                            editUrl = TextFieldValue(next, TextRange(next.length))
-                        },
-                        label = { Text("Use http://") }
-                    )
-                    androidx.compose.material3.SuggestionChip(
-                        onClick = {
-                            val next = applyUrlScheme("https://", editUrl.text)
-                            editUrl = TextFieldValue(next, TextRange(next.length))
-                        },
-                        label = { Text("Use https://") }
-                    )
-                }
-            }
+        }
 
-            if (haProviderAvailable) {
-                MdButton(
-                    onClick = {
-                        viewModel.clearLoginError()
-                        coroutineScope.launch {
-                            val authUrl = viewModel.startHomeAssistantOAuth(editUrl.text)
-                            if (authUrl != null) launchCustomTab(context, authUrl)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !oauthInProgress
-                ) {
-                    if (oauthInProgress) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Waiting for sign in...")
-                    } else {
-                        Icon(Icons.Default.Home, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sign in with Home Assistant")
-                    }
-                }
-                Text(
-                    text = "or use credentials",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center
-                )
-            }
-
-            OutlinedTextField(
-                value = username,
-                onValueChange = {
-                    username = it
-                    viewModel.clearLoginError()
-                },
-                label = { Text("Username") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth()
-                    .semantics { contentType = ContentType.Username }
-            )
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = {
-                    password = it
-                    viewModel.clearLoginError()
-                },
-                label = { Text("Password") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                visualTransformation = if (showPassword) VisualTransformation.None
-                    else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = {
-                    MdIconButton(onClick = { showPassword = !showPassword }) {
-                        Icon(
-                            if (showPassword) Icons.Default.VisibilityOff
-                            else Icons.Default.Visibility,
-                            contentDescription = "Toggle password"
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-                    .semantics { contentType = ContentType.Password }
-            )
-
-            val displayError = loginError
-                ?: (connectionState as? ConnectionState.Error)?.message
-            displayError?.let { error ->
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            MdButton(
-                onClick = {
-                    if (hasToken && username.isBlank() && password.isBlank()) {
-                        viewModel.connectWithToken(editUrl.text)
-                    } else {
-                        viewModel.login(editUrl.text, username, password)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = connectionState !is ConnectionState.Connecting
-            ) {
-                if (connectionState is ConnectionState.Connecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Connecting...")
+        SignInButton(
+            connecting = connectionState is ConnectionState.Connecting,
+            onClick = {
+                if (hasToken && username.isBlank() && password.isBlank()) {
+                    viewModel.connectWithToken(editUrl.text)
                 } else {
-                    Icon(Icons.Default.Login, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Sign in")
+                    viewModel.login(editUrl.text, username, password)
                 }
+            }
+        )
+    }
+}
+
+/**
+ * What has been typed into the sign-in form. Each value is null until its field is edited,
+ * and an untouched field shows the saved value instead. Seeding the fields from the saved
+ * values at the first composition would capture the empty values the flows start with.
+ */
+@Stable
+private class SignInDraft(
+    url: MutableState<TextFieldValue?>,
+    username: MutableState<String?>,
+    password: MutableState<String?>
+) {
+    var url by url
+    var username by username
+    var password by password
+}
+
+/**
+ * A [SignInDraft] that survives a disconnect. The URL and the username also survive a
+ * rotation and process recreation; the password does not, because saved instance state is
+ * a Bundle the system may write to disk, and a typed password must not end up there.
+ */
+@Composable
+private fun rememberSignInDraft(): SignInDraft {
+    val url = rememberSaveable(stateSaver = OptionalTextFieldValueSaver) {
+        mutableStateOf<TextFieldValue?>(null)
+    }
+    val username = rememberSaveable { mutableStateOf<String?>(null) }
+    val password = remember { mutableStateOf<String?>(null) }
+    return remember(url, username, password) { SignInDraft(url, username, password) }
+}
+
+/** [TextFieldValue.Saver] for a value that may be absent, which is saved as nothing. */
+private val OptionalTextFieldValueSaver: Saver<TextFieldValue?, Any> = Saver(
+    save = { value -> value?.let { with(TextFieldValue.Saver) { save(it) } } },
+    restore = { TextFieldValue.Saver.restore(it) }
+)
+
+/** The server URL, with one-tap fixes when the scheme is missing. */
+@Composable
+private fun ServerUrlField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit) {
+    val urlMissingScheme = value.text.isNotBlank() && !value.text.contains("://")
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Server URL") },
+        placeholder = { Text("https://ma.example.com") },
+        singleLine = true,
+        isError = urlMissingScheme,
+        supportingText = if (urlMissingScheme) {
+            { Text("Add http:// or https:// to the URL") }
+        } else null,
+        modifier = Modifier.fillMaxWidth()
+    )
+    if (urlMissingScheme) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("http://", "https://").forEach { scheme ->
+                androidx.compose.material3.SuggestionChip(
+                    onClick = {
+                        val next = applyUrlScheme(scheme, value.text)
+                        onValueChange(TextFieldValue(next, TextRange(next.length)))
+                    },
+                    label = { Text("Use $scheme") }
+                )
             }
         }
-    }
     }
 }
 
 @Composable
-private fun ClientCertCard(viewModel: SettingsViewModel) {
+private fun HomeAssistantSignIn(inProgress: Boolean, onClick: () -> Unit) {
+    MdButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !inProgress
+    ) {
+        if (inProgress) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Waiting for sign in")
+        } else {
+            Icon(Icons.Default.Home, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Sign in with Home Assistant")
+        }
+    }
+    Text(
+        text = "or use credentials",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center
+    )
+}
+
+@Composable
+private fun CredentialFields(
+    username: String,
+    onUsernameChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit
+) {
+    var showPassword by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = username,
+        onValueChange = onUsernameChange,
+        label = { Text("Username") },
+        singleLine = true,
+        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+        modifier = Modifier.fillMaxWidth()
+            .semantics { contentType = ContentType.Username }
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = onPasswordChange,
+        label = { Text("Password") },
+        singleLine = true,
+        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+        visualTransformation = if (showPassword) VisualTransformation.None
+            else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        trailingIcon = {
+            MdIconButton(onClick = { showPassword = !showPassword }) {
+                Icon(
+                    if (showPassword) Icons.Default.VisibilityOff
+                    else Icons.Default.Visibility,
+                    contentDescription = if (showPassword) "Hide password" else "Show password"
+                )
+            }
+        },
+        modifier = Modifier.fillMaxWidth()
+            .semantics { contentType = ContentType.Password }
+    )
+}
+
+@Composable
+private fun SignInButton(connecting: Boolean, onClick: () -> Unit) {
+    MdButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !connecting
+    ) {
+        if (connecting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Connecting")
+        } else {
+            Icon(Icons.Default.Login, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Sign in")
+        }
+    }
+}
+
+/**
+ * The client certificate for servers behind mutual TLS. Choosing goes through the system
+ * KeyChain picker, which preselects the current certificate when there is one.
+ */
+@Composable
+private fun ClientCertSection(viewModel: SettingsViewModel) {
     val clientCertAlias by viewModel.clientCertAlias.collectAsStateWithLifecycle()
     val context = LocalContext.current
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Client Certificate (mTLS)", style = MaterialTheme.typography.titleSmall)
-
-            if (clientCertAlias != null) {
-                Text(
-                    "Certificate: $clientCertAlias",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MdOutlinedButton(onClick = {
-                        val activity = context as? Activity ?: return@MdOutlinedButton
-                        KeyChain.choosePrivateKeyAlias(
-                            activity,
-                            { alias -> viewModel.onCertificateSelected(alias, context) },
-                            null, null, null, -1, clientCertAlias
-                        )
-                    }) {
-                        Text("Change")
-                    }
-                    MdOutlinedButton(onClick = { viewModel.clearCertificate() }) {
-                        Text("Remove")
-                    }
-                }
-            } else {
-                Text(
-                    "No certificate selected",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                MdOutlinedButton(onClick = {
-                    val activity = context as? Activity ?: return@MdOutlinedButton
-                    KeyChain.choosePrivateKeyAlias(
-                        activity,
-                        { alias -> viewModel.onCertificateSelected(alias, context) },
-                        null, null, null, -1, null
-                    )
-                }) {
-                    Icon(Icons.Default.Security, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Select Certificate")
-                }
-            }
+    val chooseCertificate: (String?) -> Unit = { current ->
+        (context as? Activity)?.let { activity ->
+            KeyChain.choosePrivateKeyAlias(
+                activity,
+                { alias -> viewModel.onCertificateSelected(alias, context) },
+                null, null, null, -1, current
+            )
         }
     }
-}
 
-@Composable
-private fun SmartListeningCard(viewModel: SettingsViewModel) {
-    val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Smart Listening") },
-            supportingContent = { Text("Learns from skip/like/listen actions and improves recommendations.") },
-            trailingContent = {
-                MdSwitch(checked = smartListeningEnabled, onCheckedChange = { viewModel.toggleSmartListening(it) })
-            }
+    SettingsSectionHeader("Client certificate (mTLS)")
+    val alias = clientCertAlias
+    // Saveable so the question is still open after a rotation. Held outside the branch so
+    // it does not reset when the alias flow re-emits.
+    var confirmingRemoval by rememberSaveable { mutableStateOf(false) }
+    if (alias != null) {
+        SettingsRow(
+            title = "Certificate",
+            icon = Icons.Default.VerifiedUser,
+            supporting = alias,
+            onClick = { chooseCertificate(alias) }
+        )
+        SettingsRow(
+            title = "Remove certificate",
+            icon = Icons.Default.RemoveCircleOutline,
+            onClick = { confirmingRemoval = true },
+            tone = SettingsTone.DESTRUCTIVE
+        )
+        if (confirmingRemoval) {
+            SettingsConfirmDialog(
+                title = "Remove the certificate?",
+                text = "A server that requires a client certificate will refuse the connection " +
+                    "until you select one again.",
+                confirmLabel = "Remove",
+                onConfirm = {
+                    confirmingRemoval = false
+                    viewModel.clearCertificate()
+                },
+                onDismiss = { confirmingRemoval = false }
+            )
+        }
+    } else {
+        SettingsRow(
+            title = "Select certificate",
+            icon = Icons.Default.VerifiedUser,
+            supporting = "No certificate selected",
+            onClick = { chooseCertificate(null) }
         )
     }
 }
 
+/**
+ * What the app learns from listening: the switch, the screen that shows what it learned,
+ * and genre enrichment while it runs.
+ */
 @Composable
-private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
+private fun LearningSection(viewModel: SettingsViewModel, onOpenInsights: () -> Unit) {
+    val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
+
+    SettingsSectionHeader("Learning")
+    SettingsSwitchRow(
+        title = "Smart Listening",
+        icon = Icons.Default.Psychology,
+        checked = smartListeningEnabled,
+        onCheckedChange = { viewModel.toggleSmartListening(it) },
+        supporting = "Learns from skip/like/listen actions and improves recommendations"
+    )
+    SettingsNavigationRow(
+        title = "Recommendation insights",
+        icon = Icons.Default.Insights,
+        supporting = if (smartListeningEnabled) {
+            "Score stats, blocked artists, and recommendation DB actions"
+        } else {
+            "Enable Smart Listening first"
+        },
+        onClick = onOpenInsights,
+        enabled = smartListeningEnabled
+    )
+    GenreEnrichmentRow(viewModel = viewModel)
+}
+
+@Composable
+private fun SmartMixTuningSection(viewModel: SettingsViewModel) {
     val variety by viewModel.smartMixVariety.collectAsStateWithLifecycle()
     val discovery by viewModel.smartMixDiscovery.collectAsStateWithLifecycle()
     val length by viewModel.smartMixLength.collectAsStateWithLifecycle()
     val strictness by viewModel.smartMixStrictness.collectAsStateWithLifecycle()
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+
+    SettingsSectionHeader("Smart Mix tuning")
+    // Sliders are not rows, so they sit without a container, indented to the text of the
+    // icon rows around them.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = SETTINGS_TEXT_INSET, end = SETTINGS_ROW_INSET, top = 4.dp, bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Smart Mix tuning", style = MaterialTheme.typography.titleMedium)
-            LabeledSlider(
-                title = "Variety",
-                // Describes what the knob actually drives: which seed the mix is
-                // built around, and how likely it is to leave the kind of music
-                // the recent mixes were. It used to promise rotation of "tracks
-                // from the same artists", which is a different thing and is not
-                // what any of it does.
-                description = "How likely each new mix is to move to a different kind of music than the last ones.",
-                value = variety,
-                onValueChangeFinished = viewModel::setSmartMixVariety,
-                valueLabel = { v ->
-                    when {
-                        v < 0.33f -> "Low: stays close to your recent mixes"
-                        v < 0.66f -> "Medium: balanced"
-                        // Not "a different sound each run": this is the chance of
-                        // ASKING for a move, and the request is dropped when it
-                        // would leave too few seeds to choose from.
-                        else -> "High: usually a different sound"
-                    }
-                }
-            )
-            LabeledSlider(
-                title = "Discovery",
-                description = "How far the mix ventures from your familiar artists and genres.",
-                value = discovery,
-                onValueChangeFinished = viewModel::setSmartMixDiscovery,
-                valueLabel = { v ->
-                    when {
-                        v < 0.33f -> "Low: comfort, closest to your taste"
-                        v < 0.66f -> "Medium: some adjacent artists"
-                        else -> "High: more new and adjacent artists"
-                    }
-                }
-            )
-            LabeledSlider(
-                title = "Length",
-                description = "Roughly how many tracks each Smart Mix aims for.",
-                value = length,
-                onValueChangeFinished = viewModel::setSmartMixLength,
-                valueLabel = { v -> "~${smartMixTrackTarget(v)} tracks" }
-            )
-            LabeledSlider(
-                title = "Strictness",
-                description = "Which of your tracks are allowed to seed a mix, by how much you like them.",
-                value = strictness,
-                onValueChangeFinished = viewModel::setSmartMixStrictness,
-                valueLabel = { v ->
-                    when {
-                        v < 0.33f -> "Low: anything you've recently played"
-                        v < 0.66f -> "Medium: tracks you like"
-                        else -> "High: only your most-loved tracks"
-                    }
-                }
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                OutlinedButton(onClick = viewModel::resetSmartMixTuning) {
-                    Text("Reset to defaults")
+        LabeledSlider(
+            title = "Variety",
+            // Describes what the knob actually drives: which seed the mix is
+            // built around, and how likely it is to leave the kind of music
+            // the recent mixes were. It used to promise rotation of "tracks
+            // from the same artists", which is a different thing and is not
+            // what any of it does.
+            description = "How likely each new mix is to move to a different kind of music than the last ones",
+            value = variety,
+            onValueChangeFinished = viewModel::setSmartMixVariety,
+            valueLabel = { v ->
+                when {
+                    v < 0.33f -> "Low: stays close to your recent mixes"
+                    v < 0.66f -> "Medium: balanced"
+                    // Not "a different sound each run": this is the chance of
+                    // ASKING for a move, and the request is dropped when it
+                    // would leave too few seeds to choose from.
+                    else -> "High: usually a different sound"
                 }
             }
-        }
+        )
+        LabeledSlider(
+            title = "Discovery",
+            description = "How far the mix ventures from your familiar artists and genres",
+            value = discovery,
+            onValueChangeFinished = viewModel::setSmartMixDiscovery,
+            valueLabel = { v ->
+                when {
+                    v < 0.33f -> "Low: comfort, closest to your taste"
+                    v < 0.66f -> "Medium: some adjacent artists"
+                    else -> "High: more new and adjacent artists"
+                }
+            }
+        )
+        LabeledSlider(
+            title = "Length",
+            description = "Roughly how many tracks each Smart Mix aims for",
+            value = length,
+            onValueChangeFinished = viewModel::setSmartMixLength,
+            valueLabel = { v -> "~${smartMixTrackTarget(v)} tracks" }
+        )
+        LabeledSlider(
+            title = "Strictness",
+            description = "Which of your tracks are allowed to seed a mix, by how much you like them",
+            value = strictness,
+            onValueChangeFinished = viewModel::setSmartMixStrictness,
+            valueLabel = { v ->
+                when {
+                    v < 0.33f -> "Low: anything you've recently played"
+                    v < 0.66f -> "Medium: tracks you like"
+                    else -> "High: only your most-loved tracks"
+                }
+            }
+        )
     }
+    // A row like every other action on these screens, and not destructive: it only puts
+    // the four sliders back where they started.
+    SettingsRow(
+        title = "Reset to defaults",
+        icon = Icons.Default.RestartAlt,
+        supporting = "Puts the four sliders back to their starting values",
+        onClick = viewModel::resetSmartMixTuning
+    )
 }
 
 // Mirrors the DiscoverViewModel length mapping so the label matches the actual
@@ -1096,78 +1137,33 @@ private fun SmartMixTuningCard(viewModel: SettingsViewModel) {
 // build actually targets.
 private fun smartMixTrackTarget(length: Float): Int = smartMixTrackTargetFor(length.toDouble())
 
-@Composable
-private fun InsightsCard(viewModel: SettingsViewModel, onOpen: () -> Unit) {
-    val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Recommendation Insights") },
-            supportingContent = {
-                Column {
-                    Text("Score stats, blocked artists, and recommendation DB actions.")
-                    if (!smartListeningEnabled) {
-                        Text("Enable Smart Listening first.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            trailingContent = {
-                MdButton(onClick = onOpen, enabled = smartListeningEnabled) {
-                    Text("Open")
-                }
-            }
-        )
-    }
-}
-
 /**
  * Progress while genres are being filled in, and nothing at all otherwise.
  *
  * There used to be an API key to paste here. Now that genres come from Music
- * Assistant and MusicBrainz there is nothing to configure, and a card whose only
- * content is a sentence saying so is worse than no card: it takes up a settings
+ * Assistant and MusicBrainz there is nothing to configure, and a row whose only
+ * content is a sentence saying so is worse than no row: it takes up a settings
  * slot to tell the reader they have no decision to make.
  */
 @Composable
-private fun GenreEnrichmentCard(viewModel: SettingsViewModel) {
+private fun GenreEnrichmentRow(viewModel: SettingsViewModel) {
     val progress by viewModel.enrichmentProgress.collectAsStateWithLifecycle()
     if (!progress.isRunning && progress.total == 0) return
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (progress.isRunning) {
-                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                Text(
-                    "Enriching genres: ${progress.processed}/${progress.total} (${progress.enriched} new)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Text(
-                    "Genre enrichment complete: ${progress.enriched} artists enriched",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+    SettingsRow(
+        title = if (progress.isRunning) "Enriching genres" else "Genre enrichment complete",
+        icon = Icons.Default.Category,
+        supporting = if (progress.isRunning) {
+            "${progress.processed}/${progress.total} (${progress.enriched} new)"
+        } else {
+            "${progress.enriched} artists enriched"
+        },
+        trailing = if (progress.isRunning) {
+            { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
+        } else {
+            null
         }
-    }
+    )
 }
 
 private fun hasBtConnectPermission(context: Context): Boolean =
@@ -1193,50 +1189,143 @@ private fun pairedBtAudioRouteKeys(context: Context): List<String> {
 }
 
 @Composable
-private fun SendspinCard(viewModel: SettingsViewModel) {
+private fun SendspinSection(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+
+    SettingsSectionHeader("Sendspin")
+    SettingsSwitchRow(
+        title = "Enable",
+        icon = Icons.Default.Speaker,
+        checked = sendspinEnabled,
+        onCheckedChange = { viewModel.toggleSendspin(it) },
+        supporting = when (sendspinState) {
+            // The badge says it streams; the line says what that means.
+            SendspinState.STREAMING -> "This phone plays as a speaker"
+            SendspinState.SYNCING -> "Ready"
+            SendspinState.HANDSHAKING -> "Handshaking"
+            SendspinState.AUTHENTICATING -> "Authenticating"
+            SendspinState.CONNECTING -> "Connecting"
+            // The manager exposes the state only, not why it failed.
+            SendspinState.ERROR -> "Couldn't connect to the server"
+            SendspinState.DISCONNECTED -> if (sendspinEnabled) "Stopped" else "Disabled"
+        },
+        tone = if (sendspinState == SendspinState.ERROR) SettingsTone.ERROR else SettingsTone.NORMAL,
+        badge = SettingsBadge("Streaming").takeIf { sendspinState == SendspinState.STREAMING }
+    )
+}
+
+/**
+ * What the phone plays and how it is processed: the stream format, the compressor and
+ * dithering. All three act on this phone's own output only.
+ */
+@Composable
+private fun AudioSection(viewModel: SettingsViewModel) {
+    val dither by viewModel.sendspinDither.collectAsStateWithLifecycle()
+
+    SettingsSectionHeader("Audio", caption = "Applies to this phone's output")
+    OutputQualityRow(viewModel = viewModel)
+    CompressorControl(viewModel = viewModel)
+    SettingsSwitchRow(
+        title = "Output dithering",
+        icon = Icons.Default.Grain,
+        checked = dither,
+        onCheckedChange = { viewModel.setSendspinDither(it) },
+        supporting = "Noise-shaped dither on the 16-bit output for smoother quiet passages, fades and decays"
+    )
+}
+
+@Composable
+private fun OutputQualityRow(viewModel: SettingsViewModel) {
+    val formatStr by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
+    val current = SendspinAudioFormat.fromStored(formatStr)
+    SettingsChoiceRow(
+        title = "Output quality",
+        icon = Icons.Default.HighQuality,
+        options = OUTPUT_FORMATS.map {
+            QueueConfigOption(value = it.name, title = it.label, description = it.outputDescription())
+        },
+        selectedValue = current.name,
+        onSelect = { value ->
+            OUTPUT_FORMATS.firstOrNull { it.name == value }?.let { viewModel.setSendspinAudioFormat(it) }
+        }
+    )
+}
+
+/** The formats offered for the phone's own output, in the order they are listed. */
+private val OUTPUT_FORMATS = listOf(
+    SendspinAudioFormat.AUTOMATIC,
+    SendspinAudioFormat.FLAC,
+    SendspinAudioFormat.OPUS,
+    SendspinAudioFormat.PCM
+)
+
+private fun SendspinAudioFormat.outputDescription(): String = when (this) {
+    SendspinAudioFormat.AUTOMATIC -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile data"
+    SendspinAudioFormat.FLAC -> "Lossless. Highest fidelity, higher bandwidth."
+    SendspinAudioFormat.OPUS -> "Lossy and efficient. Ideal on mobile data."
+    SendspinAudioFormat.PCM -> "Uncompressed, no decode step. Highest bandwidth."
+}
+
+/**
+ * The compressor level: a row naming the level, with the slider and the level's
+ * description under it, indented to the row's text.
+ */
+@Composable
+private fun CompressorControl(viewModel: SettingsViewModel) {
+    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
+    val compNames = listOf("Off", "Soft", "Medium", "Hard")
+    val compDescriptions = listOf(
+        "No processing. Full original dynamic range.",
+        "Light leveling. Evens the volume and lifts quiet detail while keeping most dynamics.",
+        "Moderate leveling. A consistent level across quiet and loud passages.",
+        "Heavy leveling. A tight, dense level for noisy rooms or low-volume listening."
+    )
+    // Not a LabeledSlider: the level name sits in an icon row like the neighbouring
+    // settings, and both it and the description update live while dragging. The
+    // description sits below the slider so its length never shifts the slider.
+    var sliderPos by remember(compressorLevel) { mutableFloatStateOf(compressorLevel.toFloat()) }
+    val liveLevel = sliderPos.roundToInt().coerceIn(0, 3)
+    SettingsRow(
+        title = "Sound compressor",
+        icon = Icons.Default.Compress,
+        trailing = {
+            Text(
+                compNames[liveLevel],
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = SETTINGS_TEXT_INSET, end = SETTINGS_ROW_INSET, bottom = 8.dp)
     ) {
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Enable") },
-            supportingContent = {
-                Text(
-                    when (sendspinState) {
-                        SendspinState.STREAMING -> "Streaming"
-                        SendspinState.SYNCING -> "Ready"
-                        SendspinState.HANDSHAKING -> "Handshaking..."
-                        SendspinState.AUTHENTICATING -> "Authenticating..."
-                        SendspinState.CONNECTING -> "Connecting..."
-                        SendspinState.ERROR -> "Error"
-                        SendspinState.DISCONNECTED -> if (sendspinEnabled) "Stopped" else "Disabled"
-                    },
-                    color = when (sendspinState) {
-                        SendspinState.STREAMING -> MaterialTheme.colorScheme.primary
-                        SendspinState.ERROR -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            },
-            trailingContent = {
-                MdSwitch(checked = sendspinEnabled, onCheckedChange = { viewModel.toggleSendspin(it) })
-            }
+        MdSlider(
+            value = sliderPos,
+            onValueChange = { sliderPos = it },
+            onValueChangeFinished = { viewModel.setSendspinCompressorLevel(sliderPos.roundToInt()) },
+            valueRange = 0f..3f,
+            steps = 2,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            compDescriptions[liveLevel],
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
 
 /**
- * Per-device "full volume on connect (car audio)" in its own card, separate from
- * the main Sendspin enable toggle. Only relevant while phone-as-speaker is on, so
- * the card is hidden when Sendspin is disabled. A flagged BT device is pinned to
- * STREAM_MUSIC 100% on connect (its own dial does the attenuation) and left alone.
+ * Per-device "full volume on connect (car audio)", separate from the main Sendspin
+ * enable toggle. Only relevant while phone-as-speaker is on, so the section is hidden
+ * when Sendspin is disabled. A flagged BT device is pinned to STREAM_MUSIC 100% on
+ * connect (its own dial does the attenuation) and left alone.
  */
 @Composable
-private fun CarAudioCard(viewModel: SettingsViewModel) {
+private fun CarAudioSection(viewModel: SettingsViewModel) {
     val knownBtDevices by viewModel.knownBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val carAudioBtDevices by viewModel.carAudioBtDevices.collectAsStateWithLifecycle(initialValue = emptySet())
     val context = LocalContext.current
@@ -1245,81 +1334,80 @@ private fun CarAudioCard(viewModel: SettingsViewModel) {
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasBtPerm = granted }
     val pairedKeys = remember(hasBtPerm) { if (hasBtPerm) pairedBtAudioRouteKeys(context) else emptyList() }
-    var carAudioExpanded by remember { mutableStateOf(false) }
     val selectedCount = carAudioBtDevices.size
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        // Collapsed by default so the (potentially long) paired-device list does
-        // not dominate the screen; the header row expands it.
-        ListItem(
-            modifier = Modifier.clickable { carAudioExpanded = !carAudioExpanded },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Full volume on connect (car audio)") },
-            supportingContent = {
-                Text(
-                    if (selectedCount > 0) {
-                        "$selectedCount device${if (selectedCount == 1) "" else "s"} selected. " +
-                            "Tap to choose devices whose own dial controls the volume (e.g. your car)."
-                    } else {
-                        "Tap to choose Bluetooth devices whose own dial controls the volume " +
-                            "(e.g. your car); on connect the phone output is pinned to 100%."
-                    }
-                )
-            },
-            trailingContent = {
-                Icon(
-                    imageVector = if (carAudioExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (carAudioExpanded) "Collapse" else "Expand"
-                )
-            }
-        )
-        if (carAudioExpanded) {
-            // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
-            // ones the app has already routed to, plus anything already flagged.
-            val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
-            if (!hasBtPerm) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = { Text("Show paired Bluetooth devices") },
-                    supportingContent = {
-                        Text("Grant the Bluetooth permission to pick your car from the paired list.")
-                    },
-                    trailingContent = {
-                        MdFilledTonalButton(
-                            onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
-                        ) { Text("Allow") }
-                    }
-                )
-            }
-            displayDevices.forEach { key ->
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = { Text(key.removePrefix("bt:")) },
-                    trailingContent = {
-                        MdSwitch(
-                            checked = key in carAudioBtDevices,
-                            onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
-                        )
-                    }
-                )
-            }
-            if (hasBtPerm && displayDevices.isEmpty()) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    headlineContent = {
-                        Text(
-                            "No paired Bluetooth audio devices found.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                )
-            }
+    SettingsSectionHeader("Bluetooth")
+    // Collapsed by default so the (potentially long) paired-device list does
+    // not dominate the screen; the row expands it.
+    SettingsExpandableRow(
+        title = "Full volume on connect (car audio)",
+        icon = Icons.Default.DirectionsCar,
+        supporting = if (selectedCount > 0) {
+            "$selectedCount device${if (selectedCount == 1) "" else "s"} selected"
+        } else {
+            "Pins the phone output to 100% on devices with their own volume dial"
         }
+    ) {
+        // Paired BT audio devices (needs BLUETOOTH_CONNECT) unioned with the
+        // ones the app has already routed to, plus anything already flagged.
+        val displayDevices = (pairedKeys + knownBtDevices + carAudioBtDevices).distinct().sorted()
+        displayDevices.forEach { key ->
+            DetailSwitchRow(
+                title = key.removePrefix("bt:"),
+                checked = key in carAudioBtDevices,
+                onCheckedChange = { viewModel.setCarAudioBtDevice(key, it) }
+            )
+        }
+        if (hasBtPerm && displayDevices.isEmpty()) {
+            Text(
+                "No paired Bluetooth audio devices found.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+    }
+    // A row of the section rather than a line inside the detail above: a settings row in
+    // the detail would add ListItem's inset a second time. Placed here it is also visible
+    // without expanding, which is where the reason the list is short belongs.
+    if (!hasBtPerm) {
+        SettingsRow(
+            title = "Show paired Bluetooth devices",
+            icon = Icons.Default.Bluetooth,
+            supporting = "Allow the Bluetooth permission to pick your car from the paired list",
+            onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) },
+            tone = SettingsTone.ERROR
+        )
+    }
+}
+
+/**
+ * An on/off value inside the detail of a [SettingsExpandableRow]. A full settings row
+ * there would add `ListItem`'s inset a second time, so this is the compact form. As in
+ * [SettingsSwitchRow], the whole line toggles, the switch only shows the state, and the
+ * toggle gives the same haptic tick.
+ */
+@Composable
+private fun DetailSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onCheckedChange(it)
+            }),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // bodyLarge like the title of a settings row, so a device in the list reads at the
+        // same size as the row it expanded from.
+        Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -1328,7 +1416,7 @@ private fun CarAudioCard(viewModel: SettingsViewModel) {
  * plays relative to the server timestamp (see SyncProbe in :core).
  */
 @Composable
-private fun SyncProbeCard(viewModel: SettingsViewModel) {
+private fun SyncProbeSection(viewModel: SettingsViewModel) {
     val context = LocalContext.current
     val state by viewModel.syncProbe.collectAsStateWithLifecycle()
     var permissionRefused by remember { mutableStateOf(false) }
@@ -1339,33 +1427,29 @@ private fun SyncProbeCard(viewModel: SettingsViewModel) {
         if (granted) viewModel.runSyncProbe()
     }
     val running = state == SettingsViewModel.SyncProbeUiState.Running
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        ListItem(
-            modifier = Modifier.clickable(enabled = !running) {
-                val missing = AppPermissions.missing(context, AppPermissions.acousticCalibrationRequired())
-                if (missing.isEmpty()) viewModel.runSyncProbe()
-                else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Measure group sync (debug)") },
-            supportingContent = {
-                Text(
-                    when {
-                        running -> "Listening for 10 seconds. Keep the phone near the speakers."
-                        permissionRefused -> "Couldn't start. The microphone permission was refused."
-                        else -> "Records the room and shows where each speaker plays against the server timestamp."
-                    }
-                )
-            },
-            trailingContent = {
-                if (running) CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-            }
-        )
+    val startProbe: () -> Unit = {
+        val missing = AppPermissions.missing(context, AppPermissions.acousticCalibrationRequired())
+        if (missing.isEmpty()) viewModel.runSyncProbe()
+        else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
+
+    SettingsSectionHeader("Debug")
+    SettingsRow(
+        title = "Measure group sync",
+        icon = Icons.Default.Mic,
+        supporting = when {
+            running -> "Listening for 10 seconds. Keep the phone near the speakers."
+            permissionRefused -> "Couldn't start. The microphone permission was refused."
+            else -> "Records the room and shows where each speaker plays against the server timestamp"
+        },
+        // No click while listening, but not dimmed: the row is reporting progress.
+        onClick = startProbe.takeUnless { running },
+        trailing = if (running) {
+            { CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp) }
+        } else {
+            null
+        }
+    )
     (state as? SettingsViewModel.SyncProbeUiState.Finished)?.let { finished ->
         SyncProbeResultDialog(outcome = finished.outcome, onDismiss = viewModel::dismissSyncProbe)
     }
@@ -1422,124 +1506,6 @@ private fun SyncProbeResultDialog(outcome: SyncProbeOutcome, onDismiss: () -> Un
     )
 }
 
-@Composable
-private fun OutputQualityCard(viewModel: SettingsViewModel) {
-    val formatStr by viewModel.sendspinAudioFormat.collectAsStateWithLifecycle()
-    val current = SendspinAudioFormat.fromStored(formatStr)
-    val options = listOf(
-        SendspinAudioFormat.AUTOMATIC,
-        SendspinAudioFormat.FLAC,
-        SendspinAudioFormat.OPUS,
-        SendspinAudioFormat.PCM
-    )
-    val desc = when (current) {
-        SendspinAudioFormat.AUTOMATIC -> "Adapts to the network: FLAC on Wi-Fi, Opus on mobile data."
-        SendspinAudioFormat.FLAC -> "Lossless. Highest fidelity, higher bandwidth."
-        SendspinAudioFormat.OPUS -> "Lossy and efficient. Ideal on mobile data."
-        SendspinAudioFormat.PCM -> "Uncompressed, no decode step. Highest bandwidth."
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Output quality") },
-            supportingContent = {
-                Column {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        options.forEach { fmt ->
-                            androidx.compose.material3.FilterChip(
-                                selected = current == fmt,
-                                onClick = { viewModel.setSendspinAudioFormat(fmt) },
-                                label = { Text(fmt.label) }
-                            )
-                        }
-                    }
-                    Text(
-                        desc,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-            }
-        )
-    }
-}
-
-@Composable
-private fun DspEffectsCard(viewModel: SettingsViewModel) {
-    val compressorLevel by viewModel.sendspinCompressorLevel.collectAsStateWithLifecycle()
-    val dither by viewModel.sendspinDither.collectAsStateWithLifecycle()
-    val compNames = listOf("Off", "Soft", "Medium", "Hard")
-    val compDescriptions = listOf(
-        "No processing. Full original dynamic range.",
-        "Light leveling. Evens the volume and lifts quiet detail while keeping most dynamics.",
-        "Moderate leveling. A consistent level across quiet and loud passages.",
-        "Heavy leveling. A tight, dense level for noisy rooms or low-volume listening."
-    )
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("DSP Effects") },
-            supportingContent = { Text("Processing applied to the phone's speaker output.") }
-        )
-        // Custom compact control (shared MdSlider) so the level name AND the
-        // description update LIVE while dragging (LabeledSlider only commits on
-        // release). Description sits below the slider so its length never shifts
-        // the slider position. Small text styles keep the card compact.
-        var sliderPos by remember(compressorLevel) { mutableFloatStateOf(compressorLevel.toFloat()) }
-        val liveLevel = sliderPos.roundToInt().coerceIn(0, 3)
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Sound compressor",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    compNames[liveLevel],
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            MdSlider(
-                value = sliderPos,
-                onValueChange = { sliderPos = it },
-                onValueChangeFinished = { viewModel.setSendspinCompressorLevel(sliderPos.roundToInt()) },
-                valueRange = 0f..3f,
-                steps = 2,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                compDescriptions[liveLevel],
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-        ListItem(
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            headlineContent = { Text("Output dithering") },
-            supportingContent = {
-                Text(
-                    "Noise-shaped dither on the 16-bit output. Reduces quantization " +
-                        "noise for smoother quiet passages, fades and decays."
-                )
-            },
-            trailingContent = {
-                MdSwitch(checked = dither, onCheckedChange = { viewModel.setSendspinDither(it) })
-            }
-        )
-    }
-}
-
 // endregion
 
 // region Dialogs
@@ -1554,10 +1520,10 @@ private fun UpdateAvailableDialog(
     val fileSizeMb = updateInfo.fileSizeBytes / (1024 * 1024)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Update Available") },
+        title = { Text("Update available") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Version ${updateInfo.version} is available${if (fileSizeMb > 0) " (${fileSizeMb}MB)" else ""}.")
+                Text("Version ${updateInfo.version} is available${if (fileSizeMb > 0) " (${fileSizeMb} MB)" else ""}.")
                 Text(
                     updateInfo.releaseNotes.take(500).ifBlank { "No release notes." },
                     style = MaterialTheme.typography.bodySmall,
@@ -1565,15 +1531,13 @@ private fun UpdateAvailableDialog(
                 )
             }
         },
+        // Not a SettingsConfirmDialog, because the release notes do not fit its one
+        // sentence, but the same buttons: the action and Cancel.
         confirmButton = {
-            MdButton(onClick = onConfirm, enabled = !busy) {
-                Text("Download & Install")
-            }
+            MdTextButton(onClick = onConfirm, enabled = !busy) { Text("Install") }
         },
         dismissButton = {
-            MdOutlinedButton(onClick = onDismiss, enabled = !busy) {
-                Text("Later")
-            }
+            MdTextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
         }
     )
 }

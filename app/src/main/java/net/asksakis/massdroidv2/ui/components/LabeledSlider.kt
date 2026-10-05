@@ -13,9 +13,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 /**
- * Standard labelled slider used by settings / config cards (Smart Mix tuning,
- * room sensitivity, etc.): a title, an optional description, the app slider
- * ([MdSlider]), and an optional live value label below it.
+ * The labelled slider of the settings screens (Smart Mix tuning, room sensitivity and the
+ * like): a title, an optional one-line description, the app slider ([MdSlider]) and an
+ * optional live value. It uses the type scale of a settings row, so a slider in a section
+ * reads like the rows around it; the caller places it at the row inset.
  *
  * Dragging updates local state for smoothness; the committed value is forwarded
  * via [onValueChangeFinished] only when the drag ends, matching the rest of the
@@ -35,20 +36,18 @@ fun LabeledSlider(
 ) {
     var sliderValue by remember(value) { mutableFloatStateOf(value) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // Dimmed the way a disabled settings row is, rather than recoloured.
+        val alpha = if (enabled) 1f else DISABLED_SLIDER_ALPHA
         Text(
             title,
-            style = MaterialTheme.typography.titleSmall,
-            color = if (enabled) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
         )
         if (description != null) {
             Text(
                 description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)
             )
         }
         MdSlider(
@@ -62,9 +61,12 @@ fun LabeledSlider(
         if (valueLabel != null) {
             Text(
                 valueLabel(sliderValue),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
 }
+
+/** The same dimming as a disabled settings row. */
+private const val DISABLED_SLIDER_ALPHA = 0.6f

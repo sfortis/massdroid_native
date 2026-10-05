@@ -3,20 +3,17 @@ package net.asksakis.massdroidv2.ui.components
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SurroundSound
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,16 +36,17 @@ import net.asksakis.massdroidv2.data.sendspin.OutputFineTune
 import net.asksakis.massdroidv2.domain.model.FormatOption
 import net.asksakis.massdroidv2.domain.model.Player
 import net.asksakis.massdroidv2.domain.model.PlayerConfig
+import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 /**
  * Dedicated multi-speaker tuner for a sync group: one section per member so the
  * whole group is set up from one place. Each section has a delay slider to line
- * the speakers up acoustically by ear, and the output channel selector
+ * the speakers up acoustically by ear, and the output channel choice
  * (stereo/left/right/mono) that turns two members into a stereo pair. Remote
  * members write their server-side `sendspin_static_delay` (per-player config);
  * our own player writes the fine-tune of the output it plays on. Sliders are
- * debounced; the channel selector applies on tap.
+ * debounced; the channel choice applies when it is picked.
  *
  * The members are sections rather than cards, with a divider between them, for the
  * reason the settings rows have no cards: on the grayscale palette a column of cards
@@ -106,8 +104,10 @@ internal fun SyncSpeakersSheet(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                autoSync?.invoke()
             }
+            // Outside the inset column: Auto sync is drawn as settings rows, which carry
+            // the inset themselves.
+            autoSync?.invoke()
             val loaded = configs
             if (loaded == null) {
                 Box(
@@ -127,9 +127,10 @@ internal fun SyncSpeakersSheet(
                             .thenBy { it.displayName.lowercase() }
                     )
                 }
-                Spacer(modifier = Modifier.height(8.dp))
-                ordered.forEachIndexed { index, member ->
-                    if (index > 0) SettingsSectionDivider()
+                // A divider before every speaker, the first one included, so the intro
+                // is set off from the speakers the way the speakers are from each other.
+                ordered.forEach { member ->
+                    SettingsSectionDivider()
                     SyncSpeakerSection(
                         player = member,
                         isOurPlayer = member.playerId == ourPlayerId,
@@ -144,7 +145,14 @@ internal fun SyncSpeakersSheet(
     }
 }
 
-/** One member of the group: its name as the section header, its controls underneath. */
+/**
+ * One member of the group: its name as the section header, its delay underneath, and its
+ * output channels as a row below that.
+ *
+ * The header is the name alone. It used to carry "this device" and the channel as well,
+ * which made one line hold three facts; the channel now has its own row, and this phone is
+ * marked in the header's caption.
+ */
 @Composable
 private fun SyncSpeakerSection(
     player: Player,
@@ -154,51 +162,61 @@ private fun SyncSpeakerSection(
     onLocalFineTuneChanged: (routeKey: String, ms: Int) -> Unit,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
 ) {
-    // Which source channels this member renders (stereo/left/right/mono). Applied on
-    // tap like everything else in this sheet: MA writes it to the player and reloads it,
-    // so a pair is set up from one place, one member on left and the other on right.
-    val channelsKey = config?.outputChannelsKey
-    val channelOptions = config?.outputChannelsOptions.orEmpty()
-    var channels by remember(config) { mutableStateOf(config?.outputChannels) }
-    val channelSuffix = channels
-        ?.takeIf { channelsKey != null && it != OUTPUT_CHANNELS_STEREO }
-        ?.let { " · ${outputChannelsShortTitle(it, channelOptions)}" }
-        .orEmpty()
-    val channelsFooter: (@Composable () -> Unit)? =
-        if (channelsKey != null && channelOptions.isNotEmpty()) {
-            {
-                OutputChannelsSelector(
-                    value = channels,
-                    options = channelOptions,
-                    onSelect = { value ->
-                        if (value == channels) return@OutputChannelsSelector
-                        channels = value
-                        onSave(player.playerId, mapOf(channelsKey to value))
-                    }
-                )
-            }
-        } else {
-            null
-        }
-
-    val deviceSuffix = if (isOurPlayer) " · this device" else ""
-    SettingsSectionHeader(title = player.displayName + deviceSuffix + channelSuffix)
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = SETTINGS_ROW_INSET)) {
+    SettingsSectionHeader(
+        title = player.displayName,
+        caption = "This device".takeIf { isOurPlayer }
+    )
+    // Indented to the text of the channel row under it, so the delay reads as part of the
+    // same speaker's settings.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = SETTINGS_TEXT_INSET, end = SETTINGS_ROW_INSET)
+    ) {
         if (isOurPlayer) {
             LocalSpeakerControls(
                 localFineTune = localFineTune,
-                onLocalFineTuneChanged = onLocalFineTuneChanged,
-                footer = channelsFooter
+                onLocalFineTuneChanged = onLocalFineTuneChanged
             )
         } else {
-            RemoteSpeakerControls(
-                player = player,
-                config = config,
-                onSave = onSave,
-                footer = channelsFooter
-            )
+            RemoteSpeakerControls(player = player, config = config, onSave = onSave)
         }
     }
+    OutputChannelsRow(player = player, config = config, onSave = onSave)
+}
+
+/**
+ * Which source channels this member renders (stereo/left/right/mono), as the same choice
+ * row the Player settings dialog uses. Applied on selection like everything else in this
+ * sheet: MA writes it to the player and reloads it, so a pair is set up from one place, one
+ * member on left and the other on right. Left out when the member's config has no such
+ * entry.
+ *
+ * The same icon as the row in the Player settings dialog, and the delay above it is
+ * indented to this row's text.
+ */
+@Composable
+private fun OutputChannelsRow(
+    player: Player,
+    config: PlayerConfig?,
+    onSave: (playerId: String, values: Map<String, Any>) -> Unit,
+) {
+    val channelsKey = config?.outputChannelsKey ?: return
+    val channelOptions = config.outputChannelsOptions
+    if (channelOptions.isEmpty()) return
+    var channels by remember(config) { mutableStateOf(config.outputChannels) }
+    SettingsChoiceRow(
+        title = "Output channels",
+        icon = Icons.Default.SurroundSound,
+        options = channelOptions.map {
+            QueueConfigOption(value = it.value, title = outputChannelsShortTitle(it.value, channelOptions))
+        },
+        selectedValue = channels,
+        onSelect = { value ->
+            channels = value
+            onSave(player.playerId, mapOf(channelsKey to value))
+        }
+    )
 }
 
 /**
@@ -209,10 +227,9 @@ private fun SyncSpeakerSection(
 private fun LocalSpeakerControls(
     localFineTune: OutputFineTune?,
     onLocalFineTuneChanged: (routeKey: String, ms: Int) -> Unit,
-    footer: (@Composable () -> Unit)?,
 ) {
     if (localFineTune == null) {
-        SpeakerNote(note = "Can't fine-tune while several Bluetooth devices are connected", footer = footer)
+        SpeakerNote(note = "Can't fine-tune while several Bluetooth devices are connected")
         return
     }
     val routeKey = localFineTune.routeKey
@@ -232,8 +249,7 @@ private fun LocalSpeakerControls(
         onValueChange = { value = it.coerceIn(-FINE_TUNE_MAX_MS, FINE_TUNE_MAX_MS) },
         compact = true,
         minMs = -FINE_TUNE_MAX_MS,
-        maxMs = FINE_TUNE_MAX_MS,
-        footer = footer
+        maxMs = FINE_TUNE_MAX_MS
     )
 }
 
@@ -249,7 +265,6 @@ private fun RemoteSpeakerControls(
     player: Player,
     config: PlayerConfig?,
     onSave: (playerId: String, values: Map<String, Any>) -> Unit,
-    footer: (@Composable () -> Unit)?,
 ) {
     val syncKey = config?.sendspinSyncDelayKey
     val key = syncKey ?: config?.sendspinStaticDelayKey
@@ -275,31 +290,25 @@ private fun RemoteSpeakerControls(
             onValueChange = { value = it.coerceIn(minMs, maxMs) },
             compact = true,
             minMs = minMs,
-            maxMs = maxMs,
-            footer = footer
+            maxMs = maxMs
         )
     } else {
         // A client whose firmware does not take a delay from the server (the ESPHome
         // Sendspin component, for one): it is still a member, in a section like the
         // others, with the note where the slider would be.
-        SpeakerNote(note = "Sync delay is set on the device", footer = footer)
+        SpeakerNote(note = "Sync delay is set on the device")
     }
 }
 
-/** A note where a member's delay slider would be, above its channel selector. */
+/** A note where a member's delay slider would be, above its channel row. */
 @Composable
-private fun SpeakerNote(note: String, footer: (@Composable () -> Unit)?) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Text(
-            note,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        footer?.invoke()
-    }
+private fun SpeakerNote(note: String) {
+    Text(
+        note,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    )
 }
 
 /**
@@ -341,31 +350,3 @@ internal fun outputChannelsShortTitle(value: String, options: List<FormatOption>
         "mono" -> "Mono"
         else -> options.firstOrNull { it.value == value }?.title ?: value
     }
-
-/**
- * The channel choice as one row of segmented buttons: four short labels fit one line
- * at phone width, where chips with a leading label wrapped onto two.
- */
-@Composable
-private fun OutputChannelsSelector(
-    value: String?,
-    options: List<FormatOption>,
-    onSelect: (String) -> Unit,
-) {
-    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        options.forEachIndexed { index, option ->
-            SegmentedButton(
-                selected = option.value == value,
-                onClick = { onSelect(option.value) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
-                label = {
-                    Text(
-                        outputChannelsShortTitle(option.value, options),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1
-                    )
-                }
-            )
-        }
-    }
-}

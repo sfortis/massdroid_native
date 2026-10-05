@@ -9,10 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -45,6 +43,14 @@ import net.asksakis.massdroidv2.domain.model.AutoplayConfig
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.QueueConfigOption
+import androidx.compose.material3.Surface
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.ButtonDefaults
 
 /**
  * The shared building blocks for every settings surface in the app: the settings screens,
@@ -98,6 +104,23 @@ fun SettingsSectionHeader(
     }
 }
 
+/**
+ * What a row's colour says. Only danger is coloured: [ERROR] tints the icon and the
+ * supporting line of a failure, [DESTRUCTIVE] the title and the icon of an action that
+ * deletes or signs out. There is no positive tone, because the palette has no colour for it:
+ * primary is a light grey next to the grey of a normal row, and a "connected" row tinted
+ * with it looked like any other. A good state is said with a [SettingsBadge] instead.
+ */
+enum class SettingsTone { NORMAL, ERROR, DESTRUCTIVE }
+
+/**
+ * A short label beside a row's title, such as "Here" on the room the phone is in or
+ * "Connected" on the server. [SettingsTone.NORMAL] draws an outline only, which reads in both
+ * themes without a colour; [SettingsTone.ERROR] draws the error container for a state that
+ * needs action, such as a missing speaker.
+ */
+data class SettingsBadge(val text: String, val tone: SettingsTone = SettingsTone.NORMAL)
+
 /** The line between two sections. Rows inside one section are never divided. */
 @Composable
 fun SettingsSectionDivider(modifier: Modifier = Modifier) {
@@ -117,6 +140,8 @@ fun SettingsRow(
     supporting: String? = null,
     onClick: (() -> Unit)? = null,
     enabled: Boolean = true,
+    tone: SettingsTone = SettingsTone.NORMAL,
+    badge: SettingsBadge? = null,
     trailing: @Composable (() -> Unit)? = null
 ) {
     SettingsListItem(
@@ -124,11 +149,45 @@ fun SettingsRow(
         icon = icon,
         supporting = supporting,
         enabled = enabled,
+        tone = tone,
+        badge = badge,
         trailing = trailing,
         modifier = if (onClick != null) {
             modifier.clickable(enabled = enabled, onClick = onClick)
         } else {
             modifier
+        }
+    )
+}
+
+/**
+ * A row that opens another screen, with a chevron at the end so it is not mistaken for a
+ * choice row, which opens a dialog in place.
+ */
+@Composable
+fun SettingsNavigationRow(
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    supporting: String? = null,
+    enabled: Boolean = true,
+    badge: SettingsBadge? = null
+) {
+    SettingsRow(
+        title = title,
+        modifier = modifier,
+        icon = icon,
+        supporting = supporting,
+        onClick = onClick,
+        enabled = enabled,
+        badge = badge,
+        trailing = {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     )
 }
@@ -146,20 +205,36 @@ fun SettingsSwitchRow(
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     supporting: String? = null,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    tone: SettingsTone = SettingsTone.NORMAL,
+    badge: SettingsBadge? = null
 ) {
+    // Every switch in the app answers with the same tick, so it is given here once rather
+    // than by some callers and not others.
+    val haptic = LocalHapticFeedback.current
     SettingsListItem(
         title = title,
         icon = icon,
         supporting = supporting,
         enabled = enabled,
+        tone = tone,
+        badge = badge,
         modifier = modifier.toggleable(
             value = checked,
             enabled = enabled,
             role = Role.Switch,
-            onValueChange = onCheckedChange
+            onValueChange = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onCheckedChange(it)
+            }
         ),
-        trailing = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) }
+        // A disabled Material switch on this palette is a dark dot with no track and looks
+        // broken, so a switch that cannot be changed is not drawn; the supporting line says why.
+        trailing = if (enabled) {
+            { Switch(checked = checked, onCheckedChange = null) }
+        } else {
+            null
+        }
     )
 }
 
@@ -250,10 +325,10 @@ fun SettingsChoiceDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            // Scrolls on its own so a long list (seven audio formats, many rooms) never
-            // pushes the Cancel button off the screen.
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                options.forEach { option ->
+            // Lazy and bounded, so the same dialog serves seven audio formats and a library
+            // of hundreds of playlists, and a long list never pushes Cancel off the screen.
+            LazyColumn(modifier = Modifier.heightIn(max = CHOICE_DIALOG_MAX_HEIGHT)) {
+                items(options, key = { it.value }) { option ->
                     QueueOptionRow(
                         option = option,
                         selected = option.value == selectedValue,
@@ -264,6 +339,41 @@ fun SettingsChoiceDialog(
             }
         },
         confirmButton = {
+            MdTextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+/**
+ * The one confirmation every settings action that cannot be taken back goes through: a
+ * plain [title], one sentence of [text], the action as a text button and Cancel. The action
+ * is drawn in the error colour for [SettingsTone.DESTRUCTIVE] (delete, reset, sign out) and
+ * plain for [SettingsTone.NORMAL] (unblocking, which loses nothing).
+ */
+@Composable
+fun SettingsConfirmDialog(
+    title: String,
+    text: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    confirmTone: SettingsTone = SettingsTone.DESTRUCTIVE
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            MdTextButton(
+                onClick = onConfirm,
+                colors = if (confirmTone == SettingsTone.NORMAL) {
+                    ButtonDefaults.textButtonColors()
+                } else {
+                    ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                }
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
             MdTextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
@@ -327,26 +437,42 @@ private fun SettingsListItem(
     icon: ImageVector?,
     supporting: String?,
     enabled: Boolean,
+    tone: SettingsTone,
+    badge: SettingsBadge?,
     modifier: Modifier,
     trailing: @Composable (() -> Unit)?
 ) {
+    val colors = MaterialTheme.colorScheme
+    val accent = when (tone) {
+        SettingsTone.NORMAL -> null
+        SettingsTone.ERROR, SettingsTone.DESTRUCTIVE -> colors.error
+    }
     // ListItem has no enabled state of its own, so a disabled row dims its text the way
     // Material dims a disabled control.
-    val headlineColor = MaterialTheme.colorScheme.onSurface
-        .let { if (enabled) it else it.copy(alpha = DISABLED_ALPHA) }
-    val secondaryColor = MaterialTheme.colorScheme.onSurfaceVariant
-        .let { if (enabled) it else it.copy(alpha = DISABLED_ALPHA) }
+    fun Color.dimmedUnlessEnabled() = if (enabled) this else copy(alpha = DISABLED_ALPHA)
+    val headlineColor = (accent?.takeIf { tone == SettingsTone.DESTRUCTIVE } ?: colors.onSurface).dimmedUnlessEnabled()
+    val supportingColor = (accent?.takeIf { tone != SettingsTone.DESTRUCTIVE } ?: colors.onSurfaceVariant).dimmedUnlessEnabled()
+    val iconColor = (accent ?: colors.onSurfaceVariant).dimmedUnlessEnabled()
     ListItem(
         modifier = modifier,
         colors = ListItemDefaults.colors(
             containerColor = Color.Transparent,
             headlineColor = headlineColor,
-            supportingColor = secondaryColor,
-            leadingIconColor = secondaryColor
+            supportingColor = supportingColor,
+            leadingIconColor = iconColor
         ),
-        headlineContent = { Text(title) },
+        headlineContent = {
+            if (badge == null) {
+                Text(title)
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, modifier = Modifier.weight(1f, fill = false))
+                    SettingsBadgeLabel(badge, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+        },
         supportingContent = if (supporting != null) {
-            { Text(supporting, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            { Text(supporting, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         } else {
             null
         },
@@ -357,6 +483,31 @@ private fun SettingsListItem(
         },
         trailingContent = trailing
     )
+}
+
+/**
+ * A badge: small text in a thin outline, quieter than the title it sits beside. Not a
+ * filled chip, so a list of rooms with badges still reads as a list of rows.
+ */
+@Composable
+private fun SettingsBadgeLabel(badge: SettingsBadge, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val alert = badge.tone != SettingsTone.NORMAL
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.extraSmall,
+        // The tonal containers of this palette sit one step from the background, so a filled
+        // neutral badge vanished in the light theme. An outline reads in both.
+        color = if (alert) colors.errorContainer else Color.Transparent,
+        border = if (alert) null else BorderStroke(1.dp, colors.outline)
+    ) {
+        Text(
+            badge.text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (alert) colors.onErrorContainer else colors.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
 }
 
 /**
@@ -483,10 +634,16 @@ private val SETTINGS_ICON_SIZE = 24.dp
 internal val SETTINGS_TEXT_INSET = SETTINGS_ROW_INSET + SETTINGS_ICON_SIZE + 16.dp
 
 /** Material's alpha for disabled content. */
-private const val DISABLED_ALPHA = 0.38f
+private const val DISABLED_ALPHA = 0.6f
 
 /** Radio drawn smaller than default, so a list of them fits the dialog. */
 internal val QUEUE_RADIO_SIZE = 32.dp
+
+/** Space under the last row of every settings screen, so it clears the navigation bar. */
+internal val SETTINGS_SCREEN_BOTTOM_PADDING = 24.dp
+
+/** Tallest the choice dialog's list grows before it scrolls. */
+private val CHOICE_DIALOG_MAX_HEIGHT = 420.dp
 
 /** Material's minimum touch target, kept on the ROW rather than on the shrunken radio. */
 private val MIN_TOUCH_TARGET = 48.dp

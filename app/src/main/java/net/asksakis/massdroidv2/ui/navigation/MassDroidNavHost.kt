@@ -192,7 +192,23 @@ fun MassDroidNavHost(
         }
 
         composable(Routes.RECOMMENDATION_INSIGHTS) {
-            RecommendationInsightsScreen(onBack = { navController.popBackStack() })
+            RecommendationInsightsScreen(
+                onBack = { navController.popBackStack() },
+                onNavigateToArtist = { itemId, provider, name ->
+                    navController.navigate(Routes.artistDetail(itemId, provider, name))
+                },
+                onNavigateToAlbum = { itemId, provider, name ->
+                    navController.navigate(Routes.albumDetail(itemId, provider, name))
+                },
+                // Genre Radio is built by Discover's ViewModel, so its overlay and its outcome
+                // are on Discover; the listener is taken there rather than left on Insights.
+                onNavigateToDiscover = {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.HOME)
+                        launchSingleTop = true
+                    }
+                }
+            )
         }
 
         composable(
