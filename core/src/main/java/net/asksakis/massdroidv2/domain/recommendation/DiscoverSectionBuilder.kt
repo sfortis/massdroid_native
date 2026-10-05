@@ -50,8 +50,9 @@ class DiscoverSectionBuilder @Inject constructor() {
 
         // 1. Genre Radio (BLL-weighted, top 10)
         val sortedGenres = if (bllGenreScores.isNotEmpty()) {
-            val scoreMap = bllGenreScores.associate { normalizeGenre(it.genre) to it.score }
-            genreItems.sortedByDescending { scoreMap[normalizeGenre(it.name)] ?: 0.0 }
+            // Tiles may carry a provider spelling and scores the stored one.
+            val scoreMap = bllGenreScores.associate { genreKey(it.genre) to it.score }
+            genreItems.sortedByDescending { scoreMap[genreKey(it.name)] ?: 0.0 }
         } else {
             genreItems
         }.take(10)

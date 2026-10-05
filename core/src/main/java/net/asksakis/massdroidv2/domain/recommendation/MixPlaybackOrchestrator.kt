@@ -225,7 +225,8 @@ class MixPlaybackOrchestrator @Inject constructor(
     /**
      * Network-derived library maps the genre-engine fallback needs. The phone
      * already maintains these for the Discover screen and passes them in (no extra
-     * load); the car passes null and the orchestrator self-loads them.
+     * load); the car passes null and the orchestrator self-loads them. Both genre
+     * maps are keyed by [genreKey].
      */
     data class LibraryContext(
         val artistByUri: Map<String, Artist>,
@@ -404,8 +405,11 @@ class MixPlaybackOrchestrator @Inject constructor(
             ensureBllArtistScoresLoaded()
             ensureArtistDecadesLoaded()
 
-            val strictCandidates = filteredGenreCandidateUris(strictGenreArtists[genre])
-            val broadCandidates = filteredGenreCandidateUris(genreArtists[genre])
+            // [genre] arrives from a tile, a shortcut, Insights or a car browse id,
+            // any of which may spell it differently from the maps' source.
+            val genreMapKey = genreKey(genre)
+            val strictCandidates = filteredGenreCandidateUris(strictGenreArtists[genreMapKey])
+            val broadCandidates = filteredGenreCandidateUris(genreArtists[genreMapKey])
             val baseCandidateUris = when {
                 strictCandidates.size >= GENRE_RADIO_MIN_STRICT_CANDIDATES -> strictCandidates
                 strictCandidates.isNotEmpty() -> (strictCandidates + broadCandidates)
@@ -988,15 +992,19 @@ class MixPlaybackOrchestrator @Inject constructor(
             }
         }
 
+        // genreDaypartBoost is keyed like the context maps (genreKey); the scores
+        // keep their stored spelling, which is what the user is shown.
         val timeAwareGenreScores = blendedGenreScores.map { gs ->
             val genre = normalizeGenre(gs.genre)
-            val dayBoost = genreDaypartBoost[genre] ?: 0.0
+            val dayBoost = genreDaypartBoost[genreKey(genre)] ?: 0.0
             GenreScore(genre, gs.score + dayBoost * DAYPART_GENRE_BOOST_WEIGHT)
         }.sortedByDescending { it.score }
 
-        val recentlyPickedGenres = recentSmartMixGenres.toSet()
+        // The cool-down window is persisted, so it can hold a spelling from
+        // before the schema 21 merge: compare by key.
+        val recentlyPickedGenres = recentSmartMixGenres.mapTo(mutableSetOf()) { genreKey(it) }
         val genrePool = timeAwareGenreScores
-            .filter { normalizeGenre(it.genre) !in recentlyPickedGenres }
+            .filter { genreKey(it.genre) !in recentlyPickedGenres }
             .ifEmpty { timeAwareGenreScores }
         val triedGenres = mutableSetOf<String>()
         for (candidate in genrePool.take(5)) {
@@ -1059,7 +1067,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         val acceptedGenres = fallbackAcceptedGenres(blendedGenreScores, genreAdjacencyMap)
         val tracksByArtist = fetchTracksByArtist(artistOrder) { _, rawTracks ->
             rawTracks.filter { track ->
-                track.genres.isEmpty() || track.genres.any { normalizeGenre(it) in acceptedGenres }
+                track.genres.isEmpty() || track.genres.any { genreKey(it) in acceptedGenres }
             }
         }
         if (tracksByArtist.isEmpty()) return SmartMixResult(emptyList(), null)
@@ -1088,6 +1096,11 @@ class MixPlaybackOrchestrator @Inject constructor(
         )
     }
 
+    /**
+     * The genres a fallback track may carry, as [genreKey]s. The adjacency map is
+     * looked up by stored name, and the result is keyed because it is compared
+     * with the server's track genres, which spell them their own way.
+     */
     private fun fallbackAcceptedGenres(
         blendedGenreScores: List<GenreScore>,
         genreAdjacencyMap: Map<String, Set<String>>
@@ -1096,8 +1109,12 @@ class MixPlaybackOrchestrator @Inject constructor(
             .map { normalizeGenre(it.genre) }
             .take(FALLBACK_GENRE_BREADTH)
             .toSet()
-        if (smartMixDiscovery < DISCOVERY_ADJACENT_THRESHOLD) return top
-        return top + top.flatMap { genreAdjacencyMap[it]?.map(::normalizeGenre).orEmpty() }
+        val accepted = if (smartMixDiscovery < DISCOVERY_ADJACENT_THRESHOLD) {
+            top
+        } else {
+            top + top.flatMap { genreAdjacencyMap[it].orEmpty() }
+        }
+        return accepted.mapTo(mutableSetOf()) { genreKey(it) }
     }
 
     @Suppress("LongMethod", "CyclomaticComplexMethod", "LongParameterList")
@@ -1116,13 +1133,17 @@ class MixPlaybackOrchestrator @Inject constructor(
         excludedTrackUrisForMix: Set<String> = excludedTrackUris,
         bllForMix: Map<String, Double> = bllArtistScoreMap
     ): List<Track> {
-        val exactArtists = mixGenreArtists[pickedGenre] ?: emptyList()
-        val adjacentArtists = adjacentGenres.flatMap { mixGenreArtists[it] ?: emptyList() }
+        // pickedGenre and adjacentGenres are stored names; the context maps and
+        // the server's track genres are compared by genreKey.
+        val pickedKey = genreKey(pickedGenre)
+        val adjacentKeys = adjacentGenres.mapTo(mutableSetOf()) { genreKey(it) }
+        val exactArtists = mixGenreArtists[pickedKey] ?: emptyList()
+        val adjacentArtists = adjacentKeys.flatMap { mixGenreArtists[it] ?: emptyList() }
         val genreArtistKeys = (exactArtists + adjacentArtists).distinct().toSet()
-        val filteredGenreArtists = mapOf(pickedGenre to genreArtistKeys.toList())
+        val filteredGenreArtists = mapOf(pickedKey to genreArtistKeys.toList())
         val filteredGenreScores = timeAwareGenreScores.filter {
-            val g = normalizeGenre(it.genre)
-            g == pickedGenre || g in adjacentGenres
+            val g = genreKey(it.genre)
+            g == pickedKey || g in adjacentKeys
         }
         val filteredArtistScores = artistScores.filter { it.artistUri in genreArtistKeys }
 
@@ -1145,7 +1166,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         )
         if (artistOrder.isEmpty()) return emptyList()
 
-        val genreMatchSet = (adjacentGenres + pickedGenre).map { normalizeGenre(it) }.toSet()
+        val genreMatchSet = adjacentKeys + pickedKey
         val exactArtistKeys = exactArtists.toSet()
         val trackFilter = { artistUri: String, rawTracks: List<Track> ->
             val key = MediaIdentity.artistKeyFromUri(artistUri) ?: artistUri
@@ -1154,7 +1175,7 @@ class MixPlaybackOrchestrator @Inject constructor(
                 if (track.genres.isEmpty()) {
                     isExact
                 } else {
-                    track.genres.any { normalizeGenre(it) in genreMatchSet }
+                    track.genres.any { genreKey(it) in genreMatchSet }
                 }
             }
         }
@@ -1415,12 +1436,13 @@ class MixPlaybackOrchestrator @Inject constructor(
         }.distinctBy { MediaIdentity.artistKeyFromUri(it.uri) ?: it.uri }
         if (candidates.isEmpty()) return emptyList()
 
-        val normalizedTarget = normalizeGenre(genre)
+        // Provider genres of similar artists against the requested name: by key.
+        val targetKey = genreKey(genre)
         val discoveryUris = mutableListOf<String>()
         for (artist in candidates) {
             if (discoveryUris.size >= GENRE_RADIO_DISCOVERY_SEEDS) break
             val genres = artist.genres.ifEmpty { artistGenres(artist.name) }
-            if (genres.any { normalizeGenre(it) == normalizedTarget }) {
+            if (genres.any { genreKey(it) == targetKey }) {
                 discoveryUris += artist.uri
             }
         }
@@ -1708,12 +1730,12 @@ class MixPlaybackOrchestrator @Inject constructor(
     }
 
     private fun isGenreRelated(artistGenre: String, targetGenre: String): Boolean {
-        if (artistGenre == targetGenre) return true
+        val artistKey = genreKey(artistGenre)
+        val targetKey = genreKey(targetGenre)
+        if (artistKey == targetKey) return true
         if (artistGenre.contains(targetGenre) || targetGenre.contains(artistGenre)) return true
-        val normArtist = normalizeGenre(artistGenre)
-        val normTarget = normalizeGenre(targetGenre)
-        val artistFamilies = GENRE_FAMILIES.filter { normArtist in it }
-        val targetFamilies = GENRE_FAMILIES.filter { normTarget in it }
+        val artistFamilies = GENRE_FAMILY_KEYS.filter { artistKey in it }
+        val targetFamilies = GENRE_FAMILY_KEYS.filter { targetKey in it }
         return artistFamilies.any { it in targetFamilies }
     }
 
@@ -1912,5 +1934,9 @@ class MixPlaybackOrchestrator @Inject constructor(
             setOf("reggae", "ska", "dub"),
             setOf("world", "celtic", "latin", "mpb")
         )
+
+        /** [GENRE_FAMILIES] by [genreKey], so "post-punk" finds the "post punk" entry. */
+        private val GENRE_FAMILY_KEYS: List<Set<String>> =
+            GENRE_FAMILIES.map { family -> family.mapTo(mutableSetOf()) { genreKey(it) } }
     }
 }

@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.AppDatabase
+import net.asksakis.massdroidv2.data.database.GenreSpellingMigration
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
@@ -471,7 +472,7 @@ object AppModule {
      *
      * v10 is what the last release before v2.32.0 shipped, so v10 -> v17 is the path
      * every user coming from a release takes, followed by [MIGRATION_17_18],
-     * [MIGRATION_18_19] and [MIGRATION_19_20]. Stepping through v11 to v16 instead
+     * [MIGRATION_18_19], [MIGRATION_19_20] and `GenreSpellingMigration.MIGRATION_20_21`. Stepping through v11 to v16 instead
      * would only make that upgrade do pointless work, since one of those steps
      * empties a table the previous one had just created.
      *
@@ -541,7 +542,8 @@ object AppModule {
         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
         MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_11_12,
         MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-        MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20
+        MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
+        GenreSpellingMigration.MIGRATION_20_21
     )
 
     /**

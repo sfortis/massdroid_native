@@ -18,7 +18,6 @@ import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
-import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,7 +33,8 @@ class LibraryGenreEnricher @Inject constructor(
     private val dao: PlayHistoryDao,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val musicRepository: net.asksakis.massdroidv2.domain.repository.MusicRepository,
-    private val transactions: TransactionRunner
+    private val transactions: TransactionRunner,
+    private val genreSpellings: GenreSpellingResolver
 ) {
     data class EnrichmentProgress(
         val total: Int = 0,
@@ -120,7 +120,7 @@ class LibraryGenreEnricher @Inject constructor(
     private suspend fun writeArtistGenres(artistName: String, genres: List<String>) {
         val uris = dao.getArtistUrisByName(artistName)
         if (uris.isEmpty()) return
-        for (genre in genres.mapNotNull { normalizeGenre(it).ifBlank { null } }) {
+        for (genre in genreSpellings.spellingsToStore(genres)) {
             dao.insertGenre(GenreEntity(name = genre))
             for (uri in uris) {
                 dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))
@@ -134,7 +134,7 @@ class LibraryGenreEnricher @Inject constructor(
         artist.mbid?.let { dao.setArtistMbidIfMissing(artist.name, it) }
         val allUris = dao.getArtistUrisByName(artist.name).toMutableSet()
         allUris += primaryUri
-        val normalizedGenres = genres.mapNotNull { normalizeGenre(it).ifBlank { null } }
+        val normalizedGenres = genreSpellings.spellingsToStore(genres)
         for (genre in normalizedGenres) {
             dao.insertGenre(GenreEntity(name = genre))
             for (uri in allUris) {
@@ -368,6 +368,8 @@ class LibraryGenreEnricher @Inject constructor(
      */
     private suspend fun writeDiscoveryArtistGenres(gap: ArtistNeedingGenres, genres: List<String>) {
         if (gap.uri.isBlank()) return
+        // Resolved outside the transaction: the first call reads the database.
+        val genreNames = genreSpellings.spellingsToStore(genres)
         // All-or-nothing. These are several independent DAO writes, and a failure
         // part-way leaves the artist holding SOME genres - which is worse than
         // holding none, because both the gap query and stillWorthAsking then treat
@@ -377,7 +379,7 @@ class LibraryGenreEnricher @Inject constructor(
             dao.insertArtist(ArtistEntity(uri = gap.uri, name = gap.name, mbid = gap.mbid))
             val uris = dao.getArtistUrisByName(gap.name).toMutableSet()
             uris += gap.uri
-            for (genre in genres.mapNotNull { normalizeGenre(it).ifBlank { null } }) {
+            for (genre in genreNames) {
                 dao.insertGenre(GenreEntity(name = genre))
                 for (uri in uris) {
                     dao.insertArtistGenre(ArtistGenreEntity(artistUri = uri, genreName = genre))

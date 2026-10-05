@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
+import net.asksakis.massdroidv2.data.genre.GenreSpellingResolver
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
@@ -47,7 +48,8 @@ import kotlin.math.min
 class PlayHistoryRepositoryImpl @Inject constructor(
     private val dao: PlayHistoryDao,
     private val json: Json,
-    private val appDatabase: AppDatabase
+    private val appDatabase: AppDatabase,
+    private val genreSpellings: GenreSpellingResolver
 ) : PlayHistoryRepository {
 
     companion object {
@@ -100,6 +102,9 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             fallbackArtistKey?.let { listOf(it to fallbackArtistName) } ?: emptyList()
         }
 
+        // Resolved before the transaction: the first call reads the database.
+        val genreNames = genreSpellings.spellingsToStore(track.genres)
+
         val id = appDatabase.withTransaction {
             if (!albumKey.isNullOrBlank()) {
                 dao.insertAlbum(
@@ -139,14 +144,11 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             // from MusicBrainz per ENTITY rather than from whatever they were
             // credited on.
             val primaryArtistKey = artistsToPersist.firstOrNull()?.first
-            for (genre in track.genres) {
-                val normalized = normalizeGenre(genre)
-                if (normalized.isNotBlank()) {
-                    dao.insertGenre(GenreEntity(name = normalized))
-                    dao.insertTrackGenre(TrackGenreEntity(trackUri = trackKey, genreName = normalized))
-                    primaryArtistKey?.let {
-                        dao.insertArtistGenre(ArtistGenreEntity(artistUri = it, genreName = normalized))
-                    }
+            for (genre in genreNames) {
+                dao.insertGenre(GenreEntity(name = genre))
+                dao.insertTrackGenre(TrackGenreEntity(trackUri = trackKey, genreName = genre))
+                primaryArtistKey?.let {
+                    dao.insertArtistGenre(ArtistGenreEntity(artistUri = it, genreName = genre))
                 }
             }
 
@@ -284,7 +286,10 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun getTopDecadesForGenre(genre: String, days: Int, limit: Int): List<DecadeScore> {
         if (genre.isBlank()) return emptyList()
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
-        return dao.getTopDecadesForGenre(genre = genre, since = since, limit = limit)
+        // The query matches the stored name exactly, and the caller's name may be
+        // another spelling (a shortcut, a cached Discover tile, a provider genre).
+        val stored = genreSpellings.spellingToQuery(genre)
+        return dao.getTopDecadesForGenre(genre = stored, since = since, limit = limit)
             .map { DecadeScore(decade = it.decade, score = it.playCount.toDouble()) }
     }
 
@@ -512,7 +517,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>> =
-        dao.getArtistsByGenre(genre).map { it.name to it.uri }
+        dao.getArtistsByGenre(genreSpellings.spellingToQuery(genre)).map { it.name to it.uri }
 
     override suspend fun searchArtistUrisByGenre(query: String): List<String> =
         dao.searchArtistUrisByGenre(query)
@@ -526,7 +531,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun enrichArtistGenres(artistName: String, genres: List<String>) {
         val uris = dao.getArtistUrisByName(artistName)
         if (uris.isEmpty()) return
-        val normalizedGenres = genres.mapNotNull { normalizeGenre(it).ifBlank { null } }
+        val normalizedGenres = genreSpellings.spellingsToStore(genres)
         if (normalizedGenres.isEmpty()) return
         for (genre in normalizedGenres) {
             dao.insertGenre(GenreEntity(name = genre))

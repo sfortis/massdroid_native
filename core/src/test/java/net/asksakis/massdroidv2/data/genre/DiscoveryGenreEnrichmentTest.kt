@@ -40,6 +40,11 @@ class DiscoveryGenreEnrichmentTest {
     private val dao = mockk<PlayHistoryDao>(relaxed = true)
     private val resolver = mockk<MusicBrainzGenreResolver>(relaxed = true)
 
+    init {
+        // No genres stored yet, so the spelling resolver keeps every incoming name.
+        coEvery { dao.getGenreUsage() } returns emptyList()
+    }
+
     /** Pass-through: the production runner is Room's, which needs a device. */
     private val transactions = object : TransactionRunner {
         override suspend fun <R> inTransaction(block: suspend () -> R): R = block()
@@ -51,6 +56,7 @@ class DiscoveryGenreEnrichmentTest {
         settingsRepository = mockk(relaxed = true),
         musicRepository = mockk(relaxed = true),
         transactions = transactions,
+        genreSpellings = GenreSpellingResolver(dao),
     )
 
     private fun gap(name: String, uri: String, mbid: String? = null) =

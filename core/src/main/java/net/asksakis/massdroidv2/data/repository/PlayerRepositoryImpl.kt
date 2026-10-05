@@ -15,6 +15,8 @@ import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.repository.queue.QueueItemsCoordinator
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.distinctGenres
+import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -709,8 +711,7 @@ class PlayerRepositoryImpl @Inject constructor(
                 ?.flatMap { artistGenreCache[it.uri] ?: emptyList() }
                 ?.distinct()
                 ?: emptyList()
-            val initialGenres = (trackMetadataGenres + cachedGenres)
-                .distinct()
+            val initialGenres = distinctGenres(trackMetadataGenres + cachedGenres)
 
             val track = Track(
                 itemId = mediaItem.itemId,
@@ -948,16 +949,20 @@ class PlayerRepositoryImpl @Inject constructor(
         return fallback
     }
 
+    /**
+     * Normalized names, one per genre. Duplicates are judged by [genreKey], the
+     * rule Music Assistant uses, so a provider reporting both "synth-pop" and
+     * "synthpop" yields one genre; the first spelling is kept.
+     */
     private fun normalizeGenres(genres: List<String>?): List<String> {
         if (genres.isNullOrEmpty()) return emptyList()
         val seen = linkedSetOf<String>()
         val result = mutableListOf<String>()
         genres.forEach { raw ->
-            val value = raw.trim()
+            val value = normalizeGenre(raw)
             if (value.isEmpty()) return@forEach
-            val key = normalizeGenre(value)
-            if (seen.add(key)) {
-                result.add(key)
+            if (seen.add(genreKey(value))) {
+                result.add(value)
             }
         }
         return result

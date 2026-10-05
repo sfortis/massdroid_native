@@ -112,6 +112,7 @@ interface PlayHistoryRepository {
     suspend fun getScoredArtists(days: Int = 90, limit: Int = 50): List<ArtistScore>
     suspend fun getArtistDaypartAffinity(targetHour: Int, days: Int = 180): Map<String, Double>
     suspend fun getArtistDominantDecades(days: Int = 365): Map<String, Int>
+    /** [genre] may be any spelling: it is matched to the stored name by `genreKey`. */
     suspend fun getTopDecadesForGenre(genre: String, days: Int = 365, limit: Int = 3): List<DecadeScore>
     /**
      * Raw material for the anchor-family floor: per-track genre rows with play
@@ -120,7 +121,14 @@ interface PlayHistoryRepository {
      */
     suspend fun getGenrePlayRows(sinceMs: Long): List<GenrePlayRow>
     suspend fun getOrganicGenrePlayRows(sinceMs: Long): List<GenrePlayRow>
+    /** Keyed and valued by stored genre names, the same names [getScoredGenres] returns. */
     suspend fun getGenreAdjacencyMap(): Map<String, Set<String>>
+    /**
+     * Artist keys per genre, keyed by the STORED spelling (one per genre since
+     * schema 21), because callers also show the key as the genre's name. A caller
+     * that meets these keys with names from another source (provider genres, a
+     * persisted name) must compare them by `genreKey`, as `buildGenreData` does.
+     */
     suspend fun getGenreArtistMap(): Map<String, List<String>>
     suspend fun getRediscoverAlbums(limit: Int = 10): List<RecentAlbum>
     suspend fun getPlaysForTimeAnalysis(days: Int = 30): List<Long>
@@ -195,6 +203,7 @@ interface PlayHistoryRepository {
      * candidate pool at once.
      */
     suspend fun getArtistGenreMap(artistUris: List<String>): Map<String, List<String>>
+    /** [genre] may be any spelling: it is matched to the stored name by `genreKey`. */
     suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>>
     suspend fun searchArtistUrisByGenre(query: String): List<String>
     suspend fun resolveLibraryArtistUri(name: String): String?

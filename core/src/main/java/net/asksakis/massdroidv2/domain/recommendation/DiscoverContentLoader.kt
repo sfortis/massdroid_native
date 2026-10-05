@@ -26,7 +26,9 @@ data class DiscoverContentBundle(
     val enrichedFolders: List<RecommendationFolder>,
     val recommendationAlbums: List<Album>,
     val genreItems: List<GenreItem>,
+    /** Artist uris per genre, keyed by [genreKey] (see [DiscoverContentLoader.buildGenreData]). */
     val genreArtists: Map<String, List<String>>,
+    /** Keyed by [genreKey], like [genreArtists]. */
     val strictGenreArtists: Map<String, List<String>>,
     /** Playlists the server rebuilds when they are played, newest first. */
     val smartPlaylists: List<Playlist>
@@ -180,6 +182,17 @@ class DiscoverContentLoader(
         )
     }
 
+    /**
+     * The Discover genre tiles and the two genre to artist maps behind Genre Radio.
+     *
+     * Provider genres (each artist's `genres` from Music Assistant) and the stored
+     * genres of [historyGenreArtists] meet here, and they spell the same genre in
+     * different ways: on a real library on 2026-10-05 "synthpop", "synth-pop" and
+     * "synth pop" were three tiles. Both maps are therefore keyed by [genreKey],
+     * the rule Music Assistant uses, and a lookup must key its name the same way.
+     * Each tile is named with one spelling per genre: the stored one when the
+     * genre is in the history, else the spelling most of these artists carry.
+     */
     fun buildGenreData(
         artists: List<Artist>,
         historyGenreArtists: Map<String, List<String>>,
@@ -189,25 +202,38 @@ class DiscoverContentLoader(
         val enrichedArtistKeys = buildSet {
             historyGenreArtists.values.forEach { addAll(it) }
         }
-        val genreMap = mutableMapOf<String, MutableList<Artist>>()
+        val genreMap = mutableMapOf<String, LinkedHashSet<Artist>>()
+        val providerSpellingUses = mutableMapOf<String, Int>()
         for (artist in artists) {
             val key = artist.canonicalKey()
             if (key != null && key in enrichedArtistKeys) continue
             for (genre in artist.genres) {
-                genreMap.getOrPut(normalizeGenre(genre)) { mutableListOf() }.add(artist)
+                val spelling = normalizeGenre(genre)
+                if (spelling.isEmpty()) continue
+                genreMap.getOrPut(genreKey(spelling)) { linkedSetOf() }.add(artist)
+                providerSpellingUses[spelling] = (providerSpellingUses[spelling] ?: 0) + 1
             }
         }
+
+        val historyByKey = mutableMapOf<String, MutableList<String>>()
+        for ((genre, artistKeys) in historyGenreArtists) {
+            historyByKey.getOrPut(genreKey(genre)) { mutableListOf() }.addAll(artistKeys)
+        }
+        // The stored spelling wins over a provider one: it is what Insights, the
+        // library's Genres folder and the car's genre list already show.
+        val displayByKey = canonicalGenreSpellings(providerSpellingUses) +
+            canonicalGenreSpellings(historyGenreArtists.mapValues { (_, keys) -> keys.size })
 
         val strictGenreArtists = genreMap.mapValues { (_, artistList) ->
             artistList.map { it.uri }
         }
         val genreArtists = buildMap {
-            val allGenres = strictGenreArtists.keys + historyGenreArtists.keys
+            val allGenres = strictGenreArtists.keys + historyByKey.keys
             for (genre in allGenres) {
                 val merged = buildList {
                     addAll(strictGenreArtists[genre].orEmpty())
                     addAll(
-                        historyGenreArtists[genre]
+                        historyByKey[genre]
                             .orEmpty()
                             .mapNotNull { key -> artistByUri[key]?.uri }
                     )
@@ -218,11 +244,11 @@ class DiscoverContentLoader(
 
         val genreItems = genreArtists
             .filter { (_, uris) -> uris.isNotEmpty() }
-            .map { (name, uris) ->
+            .map { (key, uris) ->
                 GenreItem(
-                    name = name,
+                    name = displayByKey[key] ?: key,
                     count = uris.size,
-                    imageUrl = genreMap[name]?.firstOrNull()?.imageUrl
+                    imageUrl = genreMap[key]?.firstOrNull()?.imageUrl
                         ?: uris.firstNotNullOfOrNull { artistByUri[it]?.imageUrl }
                 )
             }

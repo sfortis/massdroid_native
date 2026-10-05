@@ -17,19 +17,25 @@ data class ResolvedArtist(
 @Singleton
 class GenreRepository @Inject constructor(
     private val dao: PlayHistoryDao,
-    private val playHistoryRepository: PlayHistoryRepository
+    private val playHistoryRepository: PlayHistoryRepository,
+    private val genreSpellings: GenreSpellingResolver
 ) {
     // --- Browse/Display: library artists only ---
 
     suspend fun libraryGenres(): List<String> = dao.getLibraryGenres()
 
+    /**
+     * [genre] may be any spelling. Browse ids outlive the data they were built
+     * from (a car head unit keeps "genre|synth-pop" across the schema 21 merge),
+     * so the name is matched to the stored one before the exact SQL lookup.
+     */
     suspend fun libraryArtistsForGenre(genre: String): List<ResolvedArtist> =
-        dao.getLibraryArtistsByGenre(genre).map { it.toResolved() }
+        dao.getLibraryArtistsByGenre(genreSpellings.spellingToQuery(genre)).map { it.toResolved() }
 
     // --- Algorithmic: all artists (library preferred) ---
 
     suspend fun allArtistsForGenre(genre: String): List<ResolvedArtist> =
-        dao.getArtistsByGenre(genre).map { it.toResolved() }
+        dao.getArtistsByGenre(genreSpellings.spellingToQuery(genre)).map { it.toResolved() }
 
     suspend fun genreArtistMap(): Map<String, List<String>> =
         playHistoryRepository.getGenreArtistMap()

@@ -363,21 +363,24 @@ internal fun mixLabel(seedGenres: List<List<String>>, family: String?): String? 
     // crossover prog) came out named "alternative", as did a post-rock one
     // around Pg.lost, which tells the listener nothing about either.
     val primary = seedGenres.firstOrNull()?.let { dominantGenre(it) }
-    if (primary != null && primary !in UMBRELLA_LABELS) return primary
+    if (primary != null && genreKey(primary) !in UMBRELLA_LABEL_KEYS) return primary
 
     // The primary itself is an umbrella (or has no mapped genre): fall back to
-    // what the rest of the cluster agrees on, then to the family.
-    val votes = seedGenres.drop(1).mapNotNull { dominantGenre(it) }
-        .filterNot { it in UMBRELLA_LABELS }
-        .groupingBy { it }
-        .eachCount()
+    // what the rest of the cluster agrees on, then to the family. A seed's genres
+    // come from MusicBrainz or from the database, which spell one genre in
+    // different ways, so the votes are counted per genreKey: "post-punk" and
+    // "post punk" are one vote of two, not two votes of one.
+    val labels = seedGenres.drop(1).mapNotNull { dominantGenre(it) }
+        .filterNot { genreKey(it) in UMBRELLA_LABEL_KEYS }
+    val votes = labels.groupingBy { genreKey(it) }.eachCount()
     // maxByOrNull on a map is order-dependent on ties; sort the tie away so the
     // same cluster always produces the same name.
     val winner = votes.entries
         .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
         .firstOrNull()
     return when {
-        winner != null && winner.value >= MIX_LABEL_MIN_AGREEMENT -> winner.key
+        winner != null && winner.value >= MIX_LABEL_MIN_AGREEMENT ->
+            canonicalGenreSpellings(labels.groupingBy { it }.eachCount())[winner.key] ?: winner.key
         else -> primary ?: family
     }
 }
@@ -389,10 +392,10 @@ private const val MIX_LABEL_MIN_AGREEMENT = 2
  * usable for gating; they just say nothing when shown to a listener, and they
  * are common enough as a lead tag to win any vote they take part in.
  */
-private val UMBRELLA_LABELS = setOf(
+private val UMBRELLA_LABEL_KEYS = setOf(
     "alternative", "alternative rock", "indie", "rock", "pop", "electronic",
     "electronica", "dance", "experimental", "instrumental", "world"
-)
+).mapTo(mutableSetOf()) { genreKey(it) }
 
 /**
  * Rows of the seed pool reserved for confirmed taste (replayed tracks), scaled
@@ -466,14 +469,13 @@ internal fun mergeRoutes(
 }
 
 /**
- * Comparable genre keys. Lowercased and de-hyphenated, because the two spellings
- * genuinely both occur: this library holds 65 artists tagged `post rock` and 33
- * tagged `post-rock`, and comparing them raw would treat the same scene as two.
- * [dominantFamily] already de-hyphenates for its own lookup; exact-genre
- * comparison needs the same treatment.
+ * Comparable genre keys, by [genreKey], because the spellings genuinely all occur:
+ * this library holds 65 artists tagged `post rock` and 33 tagged `post-rock`, and
+ * comparing them raw would treat the same scene as two. [genreKey] is Music
+ * Assistant's own rule, so it also joins `postrock` and accented variants.
  */
 private fun genreKeys(genres: Iterable<String>): Set<String> =
-    genres.mapTo(mutableSetOf()) { normalizeGenre(it).replace('-', ' ') }
+    genres.mapTo(mutableSetOf()) { genreKey(it) }
 
 /**
  * Splits the cluster into the seeds that share an exact genre with the primary and
@@ -525,7 +527,11 @@ internal fun seedJoinsCluster(
     primaryGenres: List<String>,
     primaryFamily: String?
 ): Boolean {
-    if (primaryFamily == null) return seedGenres.any { it in primaryGenres }
+    if (primaryFamily == null) {
+        // MusicBrainz tags on one side and stored genres on the other: by key.
+        val primaryKeys = genreKeys(primaryGenres)
+        return seedGenres.any { genreKey(it) in primaryKeys }
+    }
     return dominantFamily(seedGenres) == primaryFamily
 }
 
@@ -622,7 +628,10 @@ internal fun genreGatePasses(
 @VisibleForTesting
 internal fun seedMatchesGenre(artistGenres: List<String>, trackGenres: List<String>, target: String): Boolean {
     val source = artistGenres.ifEmpty { trackGenres }
-    return source.any { normalizeGenre(it) == target }
+    // [target] comes from a tile, a shortcut or a car browse id and the source from
+    // the database, so they are matched by key rather than by spelling.
+    val targetKey = genreKey(target)
+    return source.any { genreKey(it) == targetKey }
 }
 
 /**
@@ -1668,8 +1677,11 @@ class SeedTrackMixGenerator @Inject constructor(
         // and again. Variety now only ever pushes AWAY, never back.
         val recentFamilies = genreFamilies(recency.recentClusterGenres)
         val hop = shouldHopFamily(tuning.variety, random)
+        // The recent clusters are persisted and the seed genres may come from
+        // MusicBrainz, so the two are compared by key, not by spelling.
+        val recentClusterKeys = genreKeys(recency.recentClusterGenres)
         val exactFresh = primaryPool.filter { seed ->
-            coherenceGenres(seed).none { it in recency.recentClusterGenres }
+            coherenceGenres(seed).none { genreKey(it) in recentClusterKeys }
         }
         val preferred = if (hop) {
             exactFresh.filter { seed ->
@@ -1795,12 +1807,11 @@ class SeedTrackMixGenerator @Inject constructor(
         tuning: Tuning,
         random: kotlin.random.Random
     ): List<SeedTrack> {
-        val target = normalizeGenre(genre)
         val since = System.currentTimeMillis() - GENRE_SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
         // Relax on the IN-GENRE count (a strict score may leave plenty overall
         // but few in this genre).
         val inGenre = fetchSeedPool(since, GENRE_SEED_POOL_LIMIT, tuning) { pool ->
-            pool.filter { row -> seedMatchesGenre(row.artistGenres, row.genres, target) }
+            pool.filter { row -> seedMatchesGenre(row.artistGenres, row.genres, genre) }
         }
         return dedupeByArtist(inGenre).shuffled(random).take(SEED_COUNT)
     }

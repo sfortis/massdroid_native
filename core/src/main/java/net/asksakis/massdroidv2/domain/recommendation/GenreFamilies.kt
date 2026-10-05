@@ -99,6 +99,15 @@ private val GENRE_FAMILY: Map<String, String> = buildMap {
     family("rock", "noise pop")
 }
 
+/**
+ * [GENRE_FAMILY] keyed by [genreKey], the rule Music Assistant uses to tell genre
+ * names apart. The spaced lookup misses glued and accented spellings, and the
+ * glued-suffix rule then guessed from the last letters: "postpunk" fell to punk
+ * while "post punk" is rock. One genre must land in one family however it is
+ * spelled, so an exact key match is tried before any guessing.
+ */
+private val GENRE_FAMILY_BY_KEY: Map<String, String> = GENRE_FAMILY.mapKeys { (name, _) -> genreKey(name) }
+
 // Glued-suffix fallback for single-word genres outside the curated map
 // ("synthpop", "dubstep", "blackgaze"-style coinages). Order matters: more
 // specific suffixes first ("punk" before "rock" never collides here because
@@ -123,12 +132,14 @@ private val GLUED_SUFFIX_FAMILY: List<Pair<String, String>> = listOf(
 /**
  * Family of one normalized genre, or null. Resolution chain, from exact to
  * structural (so it generalizes to ANY user's provider/ID3 genres, not just
- * the curated ones): exact curated entry -> last significant word looked
- * up in the same map ("deep tech house" -> "house" -> electronic, "greek
- * rock" -> rock) -> glued suffix ("synthpop" -> pop).
+ * the curated ones): exact curated entry -> the same entry under another
+ * spelling ([GENRE_FAMILY_BY_KEY]) -> last significant word looked up in the
+ * map ("deep tech house" -> "house" -> electronic, "greek rock" -> rock) ->
+ * glued suffix ("dreampunk" -> punk).
  */
 private fun familyOf(normalized: String): String? {
     GENRE_FAMILY[normalized]?.let { return it }
+    GENRE_FAMILY_BY_KEY[genreKey(normalized)]?.let { return it }
     val lastWord = normalized.substringAfterLast(' ')
     if (lastWord != normalized) GENRE_FAMILY[lastWord]?.let { return it }
     return GLUED_SUFFIX_FAMILY.firstOrNull { (suffix, _) ->
@@ -136,10 +147,13 @@ private fun familyOf(normalized: String): String? {
     }?.second
 }
 
+/** [familyOf] for a raw genre name: lowercased, with hyphens read as spaces. */
+private fun familyOfGenre(genre: String): String? = familyOf(normalizeGenre(genre).replace('-', ' '))
+
 /** Families of the mapped tags in [genres]; unmapped tags contribute nothing. */
 @VisibleForTesting
 internal fun genreFamilies(genres: Iterable<String>): Set<String> =
-    genres.mapNotNull { familyOf(normalizeGenre(it).replace('-', ' ')) }.toSet()
+    genres.mapNotNull { familyOfGenre(it) }.toSet()
 
 /**
  * Families that sit next to each other closely enough that a mix anchored on
@@ -176,7 +190,7 @@ internal fun withAdjacentFamilies(families: Set<String>): Set<String> =
  */
 @VisibleForTesting
 internal fun dominantFamily(genres: Iterable<String>): String? =
-    genres.firstNotNullOfOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) }
+    genres.firstNotNullOfOrNull { familyOfGenre(it) }
 
 /**
  * How a candidate stands against the families a mix is anchored on.
@@ -222,7 +236,7 @@ internal fun classifyFamily(genres: Iterable<String>, coreFamilies: Set<String>)
  */
 @VisibleForTesting
 internal fun dominantGenre(genres: Iterable<String>): String? =
-    genres.firstOrNull { familyOf(normalizeGenre(it).replace('-', ' ')) != null }
+    genres.firstOrNull { familyOfGenre(it) != null }
         ?.let { normalizeGenre(it) }
 
 /**
@@ -239,6 +253,6 @@ internal fun dominantGenre(genres: Iterable<String>): String? =
 @VisibleForTesting
 internal fun orderByFamilyFrequency(genres: List<String>): List<String> {
     if (genres.size < 2) return genres
-    val counts = genres.groupingBy { familyOf(normalizeGenre(it).replace('-', ' ')) }.eachCount()
-    return genres.sortedByDescending { counts[familyOf(normalizeGenre(it).replace('-', ' '))] ?: 0 }
+    val counts = genres.groupingBy { familyOfGenre(it) }.eachCount()
+    return genres.sortedByDescending { counts[familyOfGenre(it)] ?: 0 }
 }

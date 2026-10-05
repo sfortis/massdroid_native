@@ -9,6 +9,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.database.AppDatabase
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.genre.GenreSpellingResolver
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.repository.MaAuthRepositoryImpl
 import net.asksakis.massdroidv2.data.repository.MusicRepositoryImpl
@@ -43,8 +44,9 @@ object RepositoryModule {
     fun providePlayHistoryRepository(
         dao: PlayHistoryDao,
         json: Json,
-        appDatabase: AppDatabase
-    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao, json, appDatabase)
+        appDatabase: AppDatabase,
+        genreSpellings: GenreSpellingResolver
+    ): PlayHistoryRepository = PlayHistoryRepositoryImpl(dao, json, appDatabase, genreSpellings)
 
     @Provides
     @Singleton

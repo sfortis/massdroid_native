@@ -33,6 +33,6 @@ abstract class AppDatabase : RoomDatabase() {
          * itself: inside onDestructiveMigration the file still carries the OLD
          * version, so reporting `db.version` there said "v1 -> v1".
          */
-        const val SCHEMA_VERSION = 20
+        const val SCHEMA_VERSION = 21
     }
 }

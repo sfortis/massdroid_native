@@ -27,6 +27,7 @@ import net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
+import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -511,7 +512,10 @@ class DiscoverViewModel @Inject constructor(
     fun startGenreRadio(genre: String) {
         val queueId = playerRepository.requireSelectedPlayerId() ?: return
         val nowMs = System.currentTimeMillis()
-        if (genreArtists[genre].isNullOrEmpty() && strictGenreArtists[genre].isNullOrEmpty()) {
+        // The maps are keyed by genreKey; the name may be any spelling (a tile
+        // cached before the schema 21 merge, a shortcut, a car browse id).
+        val key = genreKey(genre)
+        if (genreArtists[key].isNullOrEmpty() && strictGenreArtists[key].isNullOrEmpty()) {
             _uiState.value = _uiState.value.copy(smartMixMessage = "Not enough matching artists to start $genre radio")
             return
         }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.playlist.PlaylistMembershipController
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.distinctGenres
 import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -159,7 +160,8 @@ class AlbumDetailViewModel @Inject constructor(
             val musicBrainzGenres = musicBrainzGenreResolver.resolve(artistName, null)
             if (musicBrainzGenres.isNotEmpty()) {
                 _album.update { current ->
-                    val merged = (current?.genres.orEmpty() + musicBrainzGenres).distinctBy { it.lowercase() }
+                    // Music Assistant and MusicBrainz spell genres differently; one chip per genre.
+                    val merged = distinctGenres(current?.genres.orEmpty() + musicBrainzGenres)
                     current?.copy(genres = merged)
                 }
             }

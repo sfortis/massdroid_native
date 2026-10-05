@@ -379,8 +379,10 @@ class DiscoverRecommendationOrchestrator(
             val base = if (range > 0.0) (v - minScore) / range else 1.0
             (base + Random.nextDouble(-DISCOVERY_MMR_JITTER, DISCOVERY_MMR_JITTER)).coerceIn(0.0, 1.0)
         }
+        // Jaccard over genre identity: providers spell one genre several ways,
+        // and "synth-pop" against "synthpop" must count as overlap, not difference.
         val genresByPair = candidates.associateWith { (_, artist) ->
-            artist.genres.map { normalizeGenre(it) }.toSet()
+            artist.genres.mapTo(mutableSetOf()) { genreKey(it) }
         }
         return greedyMmrSelect(candidates, normalized, genresByPair, lambda).map { it.second }
     }
@@ -401,9 +403,9 @@ class DiscoverRecommendationOrchestrator(
         }
         // Album genres prefer album.genres, fall back to artist genres which were enriched via Last.fm
         val genresByTriple = candidates.associateWith { (_, artist, album) ->
-            val albumGenres = album.genres.map { normalizeGenre(it) }.toSet()
+            val albumGenres = album.genres.mapTo(mutableSetOf()) { genreKey(it) }
             if (albumGenres.isNotEmpty()) albumGenres
-            else artist.genres.map { normalizeGenre(it) }.toSet()
+            else artist.genres.mapTo(mutableSetOf()) { genreKey(it) }
         }
         return greedyMmrSelect(candidates, normalized, genresByTriple, lambda).map { it.third }
     }
@@ -472,44 +474,54 @@ class DiscoverRecommendationOrchestrator(
         return if (kept.size >= target) kept else kept + overflow.take(target - kept.size)
     }
 
+    /**
+     * A coarse family for grouping. The word rules read hyphens as spaces, and the
+     * curated sets and the fallback compare by [genreKey], so "singer-songwriter"
+     * and "singer songwriter", or "post-punk" and "post punk", group together.
+     * A glued spelling ("synthpop") still misses the " pop" word rule.
+     */
     private fun genreFamily(genre: String): String {
-        val n = normalizeGenre(genre)
+        val n = normalizeGenre(genre).replace('-', ' ')
+        val key = genreKey(n)
         return when {
             n.isBlank() -> ""
             n == "metal" || n.endsWith(" metal") -> "metal"
             n == "rock" || n.endsWith(" rock") -> "rock"
             n == "pop" || n.endsWith(" pop") -> "pop"
-            n in ELECTRONIC_GENRES -> "electronic"
-            n in SOUL_BLUES_GENRES -> "soul-blues"
-            n in JAZZ_GENRES -> "jazz"
-            n in FOLK_GENRES -> "folk"
-            n in HIP_HOP_GENRES -> "hip-hop"
-            n in CLASSICAL_GENRES -> "classical"
-            n in REGGAE_GENRES -> "reggae"
+            key in ELECTRONIC_GENRES -> "electronic"
+            key in SOUL_BLUES_GENRES -> "soul-blues"
+            key in JAZZ_GENRES -> "jazz"
+            key in FOLK_GENRES -> "folk"
+            key in HIP_HOP_GENRES -> "hip-hop"
+            key in CLASSICAL_GENRES -> "classical"
+            key in REGGAE_GENRES -> "reggae"
             n == "indie" -> "indie"
-            else -> n
+            else -> key
         }
     }
 
     private companion object {
-        private val ELECTRONIC_GENRES = setOf(
+        /** Matched by [genreKey], like the genre they are tested against. */
+        private fun genreKeySet(vararg names: String): Set<String> = names.mapTo(mutableSetOf()) { genreKey(it) }
+
+        private val ELECTRONIC_GENRES = genreKeySet(
             "electronic", "ambient", "new age", "synthwave", "trance", "house",
             "techno", "edm", "downtempo", "dance", "electronica", "idm", "drum and bass"
         )
-        private val SOUL_BLUES_GENRES = setOf(
+        private val SOUL_BLUES_GENRES = genreKeySet(
             "blues", "soul", "rhythm and blues", "r&b", "rnb", "funk", "motown", "neo soul"
         )
-        private val JAZZ_GENRES = setOf(
+        private val JAZZ_GENRES = genreKeySet(
             "jazz", "fusion", "smooth jazz", "swing", "bebop", "free jazz", "jazz fusion"
         )
-        private val FOLK_GENRES = setOf(
+        private val FOLK_GENRES = genreKeySet(
             "folk", "singer songwriter", "country", "americana", "bluegrass", "celtic"
         )
-        private val HIP_HOP_GENRES = setOf("hip hop", "rap", "trap", "hip-hop")
-        private val CLASSICAL_GENRES = setOf(
+        private val HIP_HOP_GENRES = genreKeySet("hip hop", "rap", "trap")
+        private val CLASSICAL_GENRES = genreKeySet(
             "classical", "symphony", "orchestral", "opera", "baroque", "romantic"
         )
-        private val REGGAE_GENRES = setOf("reggae", "ska", "dub", "dancehall")
+        private val REGGAE_GENRES = genreKeySet("reggae", "ska", "dub", "dancehall")
     }
 
     /**

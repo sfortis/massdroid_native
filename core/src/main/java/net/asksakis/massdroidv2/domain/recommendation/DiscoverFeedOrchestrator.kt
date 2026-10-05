@@ -50,7 +50,8 @@ class DiscoverFeedOrchestrator @Inject constructor(
 
     /**
      * The built feed plus the library maps the mix paths reuse (so the phone VM does
-     * not reload them). Genre maps are already exclusion-filtered.
+     * not reload them). Genre maps are already exclusion-filtered and keyed by
+     * [genreKey].
      */
     data class DiscoverFeed(
         val sections: List<DiscoverSection>,
@@ -92,7 +93,8 @@ class DiscoverFeedOrchestrator @Inject constructor(
                 key != null && key in excludedArtistUris
             }
         }
-        val genreItems = content.genreItems.filter { it.name in genreArtists.keys }
+        // The maps are keyed by genreKey and the tiles carry a display spelling.
+        val genreItems = content.genreItems.filter { genreKey(it.name) in genreArtists.keys }
 
         val discovery = try {
             recommendationOrchestrator.buildDiscovery(

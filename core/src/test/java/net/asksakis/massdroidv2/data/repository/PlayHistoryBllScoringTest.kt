@@ -17,6 +17,7 @@ class PlayHistoryBllScoringTest {
         dao = mockk(relaxed = true),
         json = Json { ignoreUnknownKeys = true },
         appDatabase = mockk(relaxed = true),
+        genreSpellings = mockk(relaxed = true),
     )
 
     private val hourMs = 3_600_000L

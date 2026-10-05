@@ -149,6 +149,19 @@ interface PlayHistoryDao {
     @Query("SELECT name FROM genres ORDER BY name")
     suspend fun getAllGenreNames(): List<String>
 
+    /**
+     * Every stored genre name with the number of track and artist rows using it,
+     * which is what decides the spelling a genre is stored under (see
+     * `GenreSpellingResolver`). Both link tables are indexed on `genre_name`.
+     */
+    @Query("""
+        SELECT g.name AS name,
+               (SELECT COUNT(*) FROM track_genres tg WHERE tg.genre_name = g.name) +
+               (SELECT COUNT(*) FROM artist_genres ag WHERE ag.genre_name = g.name) AS uses
+        FROM genres g
+    """)
+    suspend fun getGenreUsage(): List<GenreUsageRow>
+
     @Query("""
         SELECT DISTINCT g.name
         FROM genres g
@@ -1095,6 +1108,11 @@ data class TrackGenrePlayRow(
 data class GenrePlayCount(
     val genre: String,
     val playCount: Int
+)
+
+data class GenreUsageRow(
+    val name: String,
+    val uses: Int
 )
 
 data class ArtistPlayCount(

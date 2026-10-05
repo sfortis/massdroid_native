@@ -76,6 +76,7 @@ sealed class MixMode {
     data class SmartMix(
         val artistScores: List<ArtistScore>,
         val genreScores: List<GenreScore>,
+        /** Artist keys per genre, keyed by [genreKey]. */
         val genreArtists: Map<String, List<String>>,
         val recentArtistScoreMap: Map<String, Double>,
         val daypartAffinityByArtist: Map<String, Double>,
@@ -400,7 +401,8 @@ class MixEngine @Inject constructor() {
             ).toInt().coerceAtLeast(DISCOVERY_COMFORT_MIN)
         val exploreTarget = (DISCOVERY_EXPLORE_MIN + discoveryClamped * DISCOVERY_EXPLORE_SPAN).toInt()
         val artistScoreMap = mode.artistScores.toScoreMap()
-        val topGenres = mode.genreScores.take(TOP_GENRES_LIMIT).map { normalizeGenre(it.genre) }
+        // Keys, because mode.genreArtists is keyed by genreKey (see LibraryContext).
+        val topGenres = mode.genreScores.take(TOP_GENRES_LIMIT).map { genreKey(it.genre) }
         val scoreByUri = mutableMapOf<String, Double>()
         val comfortCandidates = linkedSetOf<String>()
         val genreCandidates = linkedSetOf<String>()
