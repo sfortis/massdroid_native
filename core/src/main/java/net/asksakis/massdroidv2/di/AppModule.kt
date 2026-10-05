@@ -310,6 +310,70 @@ object AppModule {
     }
 
     /**
+     * The score "Not for me" wrote up to schema 19. Frozen here rather than read
+     * from the live constant, so a later change to that value cannot change which
+     * old rows this migration recognises as dislikes.
+     */
+    private const val V19_DISLIKE_TRACK_SCORE = -2.0
+
+    /** How long schema 19 kept `smart_feedback` rows. Frozen for the same reason. */
+    private const val V19_FEEDBACK_RETENTION_DAYS = 120L
+
+    private const val MILLIS_PER_DAY = 86_400_000L
+
+    /**
+     * Gives the track score a time, so it can fade, and turns "Not for me" into an
+     * explicit mark.
+     *
+     * Until now the score was a running sum that never forgot, so one skip kept a
+     * track out of mixes for good: on a real database 2202 of 19580 tracks were
+     * suppressed, 1158 of them with no feedback left to explain it.
+     *
+     * - `disliked_at` goes on every track at or below the dislike score, dated by
+     *   its latest dislike row, or by now when retention has pruned that row. The
+     *   stored score is left as it is, so the undo's compare-and-set still matches.
+     * - `score_updated_at` is the latest feedback or play of the track. A track
+     *   with neither is at least as old as the feedback retention, so it is dated
+     *   that far back and has already mostly faded, which is what releases the
+     *   tracks a long-gone skip had buried.
+     *
+     * Two-argument `MAX` returns NULL when either side is NULL, hence the
+     * COALESCE to 0 and the NULLIF back.
+     */
+    private val MIGRATION_19_20 = object : Migration(19, 20) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val now = System.currentTimeMillis()
+            db.execSQL("ALTER TABLE `tracks` ADD COLUMN `score_updated_at` INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE `tracks` ADD COLUMN `disliked_at` INTEGER")
+            db.execSQL(
+                """
+                UPDATE `tracks` SET `disliked_at` = COALESCE(
+                    (SELECT MAX(sf.`created_at`) FROM `smart_feedback` sf
+                     WHERE sf.`track_uri` = `tracks`.`uri` AND sf.`action` = 'dislike'),
+                    ?
+                )
+                WHERE `score` <= ?
+                """.trimIndent(),
+                arrayOf<Any>(now, V19_DISLIKE_TRACK_SCORE)
+            )
+            db.execSQL(
+                """
+                UPDATE `tracks` SET `score_updated_at` = COALESCE(
+                    NULLIF(MAX(
+                        COALESCE((SELECT MAX(sf.`created_at`) FROM `smart_feedback` sf
+                                  WHERE sf.`track_uri` = `tracks`.`uri`), 0),
+                        COALESCE((SELECT MAX(ph.`played_at`) FROM `play_history` ph
+                                  WHERE ph.`track_uri` = `tracks`.`uri`), 0)
+                    ), 0),
+                    ?
+                )
+                """.trimIndent(),
+                arrayOf<Any>(now - V19_FEEDBACK_RETENTION_DAYS * MILLIS_PER_DAY)
+            )
+        }
+    }
+
+    /**
      * Adds the `similar_tracks` cache. Applies to everyone, including upgrades from
      * a release, which reach it as a second hop after [MIGRATION_10_17].
      *
@@ -406,10 +470,10 @@ object AppModule {
      * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
      *
      * v10 is what the last release before v2.32.0 shipped, so v10 -> v17 is the path
-     * every user coming from a release takes, followed by [MIGRATION_17_18] and
-     * [MIGRATION_18_19]. Stepping through v11 to v16 instead would only make that
-     * upgrade do pointless work, since one of those steps empties a table the
-     * previous one had just created.
+     * every user coming from a release takes, followed by [MIGRATION_17_18],
+     * [MIGRATION_18_19] and [MIGRATION_19_20]. Stepping through v11 to v16 instead
+     * would only make that upgrade do pointless work, since one of those steps
+     * empties a table the previous one had just created.
      *
      * This hop does NOT make v11 to v14 unreachable states. They never reached a
      * release, but CI did publish a dev-latest build for each of them, so they have
@@ -477,7 +541,7 @@ object AppModule {
         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
         MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_11_12,
         MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-        MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
+        MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20
     )
 
     /**

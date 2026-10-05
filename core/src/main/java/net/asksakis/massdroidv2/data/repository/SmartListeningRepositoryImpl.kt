@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
+import net.asksakis.massdroidv2.data.database.SuppressedTrackRow
 import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
@@ -23,6 +24,10 @@ import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
+import net.asksakis.massdroidv2.domain.recommendation.addTrackSignal
+import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
+import net.asksakis.massdroidv2.domain.recommendation.isTrackSuppressed
 import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
 import java.util.Locale
 import javax.inject.Inject
@@ -53,9 +58,12 @@ class SmartListeningRepositoryImpl @Inject constructor(
         private const val UNLIKE_ARTIST_SIGNAL = -0.70
 
         /**
-         * Where an explicitly disliked track lands. Comfortably under the
-         * suppression line (-0.15) so no later positive signal can drag it back
-         * into a mix by accident.
+         * Where an explicitly disliked track's score is set. It no longer does the
+         * suppressing: the `disliked_at` mark does that, permanently, while this
+         * score fades like any other. The value stays as the marker the undo
+         * compares against, and so that a track whose mark is lifted starts from
+         * a clear negative. Schema 20 also uses it, frozen in the migration, to
+         * recognise the dislikes written before the mark existed.
          */
         private const val DISLIKE_TRACK_SCORE = -2.0
 
@@ -168,9 +176,13 @@ class SmartListeningRepositoryImpl @Inject constructor(
         // the track would leave it playable with a negative mark against it.
         // The score is read in here too, so two dislikes of the same track
         // cannot both snapshot the same starting value and hand out receipts
-        // that undo to the wrong place.
+        // that undo to the wrong place. The receipt keeps the FADED score at
+        // this moment; the undo restores it stamped with this same time, so the
+        // score goes on fading as if the dislike had never happened.
         val previousScore = transactions.inTransaction {
-            val before = dao.getTrackScore(trackKey) ?: 0.0
+            val before = dao.getTrackScoreState(trackKey)
+                ?.let { effectiveTrackScore(it.score, it.scoreUpdatedAt, now) }
+                ?: 0.0
             insertArtistSignals(
                 track = track,
                 artists = artists,
@@ -179,9 +191,9 @@ class SmartListeningRepositoryImpl @Inject constructor(
                 trackSignalOverride = 0.0,
                 now = now
             )
-            // Set, not adjust: the track has to end up below the suppression
-            // line whatever it scored before, so it never comes back in a mix.
-            dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE)
+            // Set, not adjust, and marked: the mark keeps the track out of mixes
+            // whatever it scored before and however long ago this was.
+            dao.setTrackScore(trackKey, DISLIKE_TRACK_SCORE, dislikedAt = now)
             before
         }
         Log.d(TAG, "Disliked $trackKey (score $previousScore -> $DISLIKE_TRACK_SCORE)")
@@ -198,13 +210,16 @@ class SmartListeningRepositoryImpl @Inject constructor(
         val restored = transactions.inTransaction {
             // Compare-and-set, not a blind write: if anything has scored this
             // track since the dislike, that opinion is newer than the undo and
-            // keeps precedence. The feedback row goes either way, since the
-            // listener did take the dislike back.
+            // keeps precedence. The mark and the feedback row go either way,
+            // since the listener did take the dislike back; the mark only if it
+            // is this dislike's, so an older undo cannot lift a newer dislike.
             val changed = dao.restoreTrackScoreIfUnchanged(
                 trackUri = receipt.trackKey,
                 expected = DISLIKE_TRACK_SCORE,
+                dislikedAt = receipt.createdAt,
                 restore = receipt.previousScore,
             )
+            dao.clearTrackDislike(receipt.trackKey, receipt.createdAt)
             dao.deleteSmartFeedback(receipt.trackKey, "dislike", receipt.createdAt)
             changed > 0
         }
@@ -319,12 +334,23 @@ class SmartListeningRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getSuppressedTrackUris(): Set<String> =
-        dao.getSuppressedTrackUris().toSet()
+        suppressedTracks().mapTo(mutableSetOf()) { it.uri }
 
     override suspend fun getSuppressedTrackKeys(): Set<String> =
-        dao.getSuppressedTrackIdentities().mapNotNullTo(mutableSetOf()) { row ->
+        suppressedTracks().mapNotNullTo(mutableSetOf()) { row ->
             trackIdentityKey(row.artistName, row.trackName).takeIf { it.isNotBlank() }
         }
+
+    /**
+     * The decision happens here, not in SQL: it depends on the faded score, which
+     * a query cannot compute. The DAO narrows the rows with an exact prefilter.
+     */
+    private suspend fun suppressedTracks(): List<SuppressedTrackRow> {
+        val now = System.currentTimeMillis()
+        return dao.getSuppressionCandidates(TRACK_SUPPRESSION_THRESHOLD).filter { row ->
+            isTrackSuppressed(effectiveTrackScore(row.score, row.scoreUpdatedAt, now), row.dislikedAt)
+        }
+    }
 
     @VisibleForTesting
     internal fun scaleSkipSignal(listenedMs: Long?, durationSec: Double?): Double {
@@ -421,7 +447,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
             // because it sets the score absolutely instead, and issuing the
             // no-op write anyway just puts a second, contradictory-looking
             // statement about the same track in the same transaction.
-            if (trackScore != 0.0) dao.adjustTrackScore(trackKey, trackScore)
+            if (trackScore != 0.0) applyTrackSignal(trackKey, trackScore, now)
         }
         val artistNames = normalized.joinToString(", ") { it.second }
         val label = when {
@@ -446,6 +472,22 @@ class SmartListeningRepositoryImpl @Inject constructor(
             TAG,
             "[$label] \"${track.name}\" by $artistNames | signal=${String.format(Locale.US, "%+.2f", signalPerArtist)}$listenInfo"
         )
+    }
+
+    /**
+     * Read, fade, add, write. Runs inside the caller's transaction so a second
+     * signal for the same track cannot read the value this one is about to
+     * replace. The row exists because the caller has just inserted it.
+     */
+    private suspend fun applyTrackSignal(trackKey: String, delta: Double, now: Long) {
+        val state = dao.getTrackScoreState(trackKey)
+        val updated = addTrackSignal(
+            stored = state?.score ?: 0.0,
+            updatedAt = state?.scoreUpdatedAt ?: now,
+            delta = delta,
+            now = now
+        )
+        dao.updateTrackScore(trackKey, updated, updatedAt = now)
     }
 
     private fun normalizeArtists(

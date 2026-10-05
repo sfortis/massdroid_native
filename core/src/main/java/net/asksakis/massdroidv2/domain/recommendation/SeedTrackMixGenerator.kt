@@ -229,8 +229,9 @@ private const val MIN_SEEDS = 1
 // at first, it threw away valid hops: a mix asking for a different family had
 // four candidates, lost them to the net, and landed on the recent family again.
 private const val PRIMARY_PREFERENCE_MIN = 2
-// Strictness knob -> minimum tracks.score a seed must have. At 1.0 only "loved"
-// tracks (score > 0.5) qualify; at 0.0 any non-disliked track (score >= 0).
+// Strictness knob -> minimum effective (time-faded) track score a seed must
+// have. At 1.0 only "loved" tracks (score > 0.5) qualify; at 0.0 any track
+// whose score is not negative (score >= 0).
 private const val STRICTNESS_MAX_SCORE = 0.5
 // If the strict score filter leaves too small a pool, relax to score >= 0 so a
 // mix can still be built (cold-start / lightly-rated libraries).

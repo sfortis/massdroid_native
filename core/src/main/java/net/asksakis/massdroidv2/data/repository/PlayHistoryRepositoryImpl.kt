@@ -20,7 +20,9 @@ import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
+import net.asksakis.massdroidv2.domain.recommendation.storedTrackScoreFloor
 import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
@@ -367,8 +369,16 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         minListenedMs: Long,
         minScore: Double,
         limit: Int
-    ): List<SeedTrack> =
-        dao.getSeedTracks(sinceMs, minListenedMs, minScore, limit).map { it.toSeedTrack() }
+    ): List<SeedTrack> {
+        val now = System.currentTimeMillis()
+        // Ranked here rather than in SQL: the order is by the faded score, which
+        // a query cannot compute (see PlayHistoryDao.getSeedTrackCandidates).
+        return dao.getSeedTrackCandidates(sinceMs, minListenedMs, storedTrackScoreFloor(minScore))
+            .map { it.toSeedTrack(now) }
+            .filter { it.score >= minScore }
+            .sortedWith(compareByDescending<SeedTrack> { it.score }.thenByDescending { it.lastPlayedAt })
+            .take(limit.coerceAtLeast(0))
+    }
 
     override suspend fun getCachedMaSimilarArtists(
         artistUri: String,
@@ -446,24 +456,36 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         minListenedMs: Long,
         minScore: Double,
         limit: Int
-    ): List<SeedTrack> =
-        dao.getRecentSeedTracks(sinceMs, minListenedMs, minScore, limit).map { it.toSeedTrack() }
+    ): List<SeedTrack> {
+        val now = System.currentTimeMillis()
+        // The rows arrive in recency order; the floor is on the faded score, so it
+        // is applied here before the limit, not in SQL after it.
+        return dao.getRecentSeedTrackCandidates(sinceMs, minListenedMs, storedTrackScoreFloor(minScore))
+            .asSequence()
+            .map { it.toSeedTrack(now) }
+            .filter { it.score >= minScore }
+            .take(limit.coerceAtLeast(0))
+            .toList()
+    }
 
     override suspend fun getConfirmedSeedTracks(
         sinceMs: Long,
         minListenedMs: Long,
         minPlays: Int,
         limit: Int
-    ): List<SeedTrack> =
-        dao.getConfirmedSeedTracks(sinceMs, minListenedMs, minPlays, limit).map { it.toSeedTrack() }
+    ): List<SeedTrack> {
+        val now = System.currentTimeMillis()
+        return dao.getConfirmedSeedTracks(sinceMs, minListenedMs, minPlays, limit).map { it.toSeedTrack(now) }
+    }
 
-    private fun SeedTrackRow.toSeedTrack() = SeedTrack(
+    /** Carries the effective score: every seed consumer ranks by current taste. */
+    private fun SeedTrackRow.toSeedTrack(now: Long) = SeedTrack(
         trackUri = trackUri,
         trackName = trackName,
         artistName = artistName,
         artistUri = artistUri,
         lastPlayedAt = lastPlayedAt,
-        score = score,
+        score = effectiveTrackScore(score, scoreUpdatedAt, now),
         genres = genres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList(),
         artistGenres = artistGenres?.split(",")?.filter { g -> g.isNotBlank() } ?: emptyList()
     )

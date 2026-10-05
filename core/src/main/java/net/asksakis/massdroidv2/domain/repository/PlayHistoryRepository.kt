@@ -27,6 +27,7 @@ data class SeedTrack(
     /** MusicBrainz id of the artist when known, for unambiguous genre lookups. */
     val artistMbid: String? = null,
     val lastPlayedAt: Long,
+    /** The track's effective score: the stored one faded by its age. */
     val score: Double = 0.0,
     val genres: List<String> = emptyList(),
     /**
@@ -156,12 +157,17 @@ interface PlayHistoryRepository {
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
     /** Cached provider URI for an artist name resolved by the genre engine (null if absent or stale). */
     /**
-     * Seed-track seeds: listened tracks scored at or above [minScore], ordered
-     * by preference (score desc, then recency). minScore is the Strictness knob:
-     * 0 = any non-disliked recent track, higher = only your more-loved tracks.
+     * Seed-track seeds: listened tracks whose effective (time-faded) score is at
+     * or above [minScore], ordered by preference (effective score desc, then
+     * recency). minScore is the Strictness knob: 0 = any non-negative recent
+     * track, higher = only your more-loved tracks. [SeedTrack.score] is the
+     * effective score in every seed query.
      */
     suspend fun getSeedTracks(sinceMs: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrack>
-    /** Recently-played well-listened tracks ordered by recency (no score floor). */
+    /**
+     * Recently-played well-listened tracks ordered by recency, keeping those whose
+     * effective (time-faded) score is at or above [minScore].
+     */
     suspend fun getRecentSeedTracks(
         sinceMs: Long,
         minListenedMs: Long,
@@ -171,7 +177,8 @@ interface PlayHistoryRepository {
 
     /**
      * Seed candidates the listener has demonstrably come back to: at least
-     * [minPlays] plays all time, ordered by replay count then score. Recency
+     * [minPlays] plays all time, ordered by replay count then stored score (the
+     * returned score is the effective one). Recency
      * alone is owned by whatever generated the most plays (the mixes), so this
      * is the pool that carries actual taste.
      */

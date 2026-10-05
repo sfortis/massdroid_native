@@ -48,7 +48,19 @@ data class TrackEntity(
     @ColumnInfo(name = "album_uri") val albumUri: String? = null,
     val duration: Double? = null,
     @ColumnInfo(name = "image_url") val imageUrl: String? = null,
-    val score: Double = 0.0
+    /**
+     * Preference as last written, at [scoreUpdatedAt]. It fades with time, so read
+     * it through `effectiveTrackScore` wherever it stands for current taste.
+     */
+    val score: Double = 0.0,
+    /** When [score] was last written; the age the fading is computed from. */
+    @ColumnInfo(name = "score_updated_at", defaultValue = "0") val scoreUpdatedAt: Long = 0L,
+    /**
+     * When the listener said "Not for me", or null. Kept apart from [score]
+     * because it is an explicit instruction: it keeps the track out of mixes
+     * permanently, while the score is allowed to fade.
+     */
+    @ColumnInfo(name = "disliked_at") val dislikedAt: Long? = null
 )
 
 @Entity(

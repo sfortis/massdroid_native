@@ -10,8 +10,10 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
+import net.asksakis.massdroidv2.data.database.TrackScoreRow
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.Test
 
@@ -53,23 +55,25 @@ class DislikeSignalTest {
     private val artists = listOf("library://artist/9" to "Some Artist")
 
     @Test
-    fun `a dislike sets the score outright instead of nudging it`() = runTest {
+    fun `a dislike sets the score outright and marks the track`() = runTest {
         // A track the listener once loved can sit well above the suppression
-        // line, so a delta could not promise to bury it. Only an absolute
-        // write can.
-        coEvery { dao.getTrackScore(any()) } returns 4.2
+        // line, so a delta could not promise to bury it. The mark is what keeps
+        // it out for good; the absolute score is what the undo compares against.
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(4.2)
 
-        repo.recordDislike(track, artists)
+        val receipt = repo.recordDislike(track, artists)!!
 
         val score = slot<Double>()
-        coVerify { dao.setTrackScore("library://track/1", capture(score)) }
-        assertThat(score.captured).isLessThan(SUPPRESSION_THRESHOLD)
-        coVerify(exactly = 0) { dao.adjustTrackScore(any(), any()) }
+        val dislikedAt = slot<Long>()
+        coVerify { dao.setTrackScore("library://track/1", capture(score), capture(dislikedAt)) }
+        assertThat(score.captured).isLessThan(TRACK_SUPPRESSION_THRESHOLD)
+        assertThat(dislikedAt.captured).isEqualTo(receipt.createdAt)
+        coVerify(exactly = 0) { dao.updateTrackScore(any(), any(), any()) }
     }
 
     @Test
     fun `the artist is only brushed, never condemned`() = runTest {
-        coEvery { dao.getTrackScore(any()) } returns 0.0
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(0.0)
 
         val receipt = repo.recordDislike(track, artists)!!
 
@@ -84,18 +88,30 @@ class DislikeSignalTest {
 
     @Test
     fun `the receipt carries the score the track had before`() = runTest {
-        coEvery { dao.getTrackScore(any()) } returns 1.75
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(1.75)
 
         val receipt = repo.recordDislike(track, artists)!!
 
-        assertThat(receipt.previousScore).isWithin(TOLERANCE).of(1.75)
+        assertThat(receipt.previousScore).isWithin(CLOCK_TOLERANCE).of(1.75)
         assertThat(receipt.trackKey).isEqualTo("library://track/1")
         assertThat(receipt.artistUris).containsExactly("library://artist/9")
     }
 
     @Test
+    fun `the receipt carries the faded score, not the stored one`() = runTest {
+        // Stored 60 days ago, so it counts for half now. Restoring the stored
+        // value would hand the track back weight it had already lost.
+        val sixtyDaysAgo = System.currentTimeMillis() - 60 * MILLIS_PER_DAY
+        coEvery { dao.getTrackScoreState(any()) } returns TrackScoreRow(1.75, sixtyDaysAgo)
+
+        val receipt = repo.recordDislike(track, artists)!!
+
+        assertThat(receipt.previousScore).isWithin(CLOCK_TOLERANCE).of(0.875)
+    }
+
+    @Test
     fun `an unscored track is treated as starting from zero`() = runTest {
-        coEvery { dao.getTrackScore(any()) } returns null
+        coEvery { dao.getTrackScoreState(any()) } returns null
 
         val receipt = repo.recordDislike(track, artists)!!
 
@@ -104,15 +120,19 @@ class DislikeSignalTest {
 
     @Test
     fun `undo restores the exact score and removes exactly the rows written`() = runTest {
-        coEvery { dao.getTrackScore(any()) } returns 1.75
-        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any()) } returns 1
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(1.75)
+        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any(), any()) } returns 1
         val receipt = repo.recordDislike(track, artists)!!
 
         repo.undoDislike(receipt)
 
-        // Conditional on the score still being the one the dislike wrote, so a
-        // newer opinion is never silently rolled back by an older undo.
-        coVerify { dao.restoreTrackScoreIfUnchanged("library://track/1", -2.0, 1.75) }
+        // Conditional on the score and its time still being the ones the dislike
+        // wrote, so a newer opinion is never silently rolled back by an older undo.
+        coVerify {
+            dao.restoreTrackScoreIfUnchanged("library://track/1", -2.0, receipt.createdAt, receipt.previousScore)
+        }
+        // Only this dislike's mark, so an older undo cannot lift a newer dislike.
+        coVerify { dao.clearTrackDislike("library://track/1", receipt.createdAt) }
         // Matched on the same timestamp the rows were written with, so an undo
         // cannot take out an older dislike of the same track.
         coVerify { dao.deleteSmartFeedback("library://track/1", "dislike", receipt.createdAt) }
@@ -120,7 +140,7 @@ class DislikeSignalTest {
 
     @Test
     fun `the rows written carry the timestamp the undo will look for`() = runTest {
-        coEvery { dao.getTrackScore(any()) } returns 0.0
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(0.0)
 
         val rows = slot<List<SmartFeedbackEntity>>()
         val receipt = repo.recordDislike(track, artists)!!
@@ -136,16 +156,19 @@ class DislikeSignalTest {
         // Found in review: the undo used to write the old score unconditionally,
         // so disliking a track, listening to it again and then undoing threw
         // away the listen.
-        coEvery { dao.getTrackScore(any()) } returns 0.0
-        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any()) } returns 0
+        coEvery { dao.getTrackScoreState(any()) } returns freshState(0.0)
+        coEvery { dao.restoreTrackScoreIfUnchanged(any(), any(), any(), any()) } returns 0
         val receipt = repo.recordDislike(track, artists)!!
 
         repo.undoDislike(receipt)
 
-        // The feedback row still goes: the listener did take the dislike back.
+        // The feedback row and the mark still go: the listener did take the
+        // dislike back.
         coVerify { dao.deleteSmartFeedback("library://track/1", "dislike", receipt.createdAt) }
+        coVerify { dao.clearTrackDislike("library://track/1", receipt.createdAt) }
         // But no blind write to the score.
-        coVerify(exactly = 1) { dao.setTrackScore(any(), any()) }   // only the dislike itself
+        coVerify(exactly = 1) { dao.setTrackScore(any(), any(), any()) }   // only the dislike itself
+        coVerify(exactly = 0) { dao.updateTrackScore(any(), any(), any()) }
     }
 
     @Test
@@ -153,12 +176,19 @@ class DislikeSignalTest {
         every { settings.smartListeningEnabled } returns flowOf(false)
 
         assertThat(repo.recordDislike(track, artists)).isNull()
-        coVerify(exactly = 0) { dao.setTrackScore(any(), any()) }
+        coVerify(exactly = 0) { dao.setTrackScore(any(), any(), any()) }
     }
 
+    /** A score written just now, so it has not faded by the time it is read. */
+    private fun freshState(score: Double) = TrackScoreRow(score, System.currentTimeMillis())
+
     private companion object {
-        /** `PlayHistoryDao.getSuppressedTrackUris` hides anything below this. */
-        const val SUPPRESSION_THRESHOLD = -0.15
         const val TOLERANCE = 1e-9
+        /**
+         * The repository reads its own clock a few milliseconds after the test
+         * does; over a 60-day half-life that moves a score by about 1e-10.
+         */
+        const val CLOCK_TOLERANCE = 1e-6
+        const val MILLIS_PER_DAY = 86_400_000L
     }
 }

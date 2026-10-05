@@ -331,8 +331,13 @@ interface PlayHistoryDao {
     )
     suspend fun getUnnamedBlockedArtists(): List<BlockedArtistRow>
 
-    @Query("UPDATE tracks SET score = score + :delta WHERE uri = :trackUri")
-    suspend fun adjustTrackScore(trackUri: String, delta: Double)
+    /**
+     * Writes a signal's result. The caller computes [score] from the faded value
+     * (see `addTrackSignal`) because SQLite on Android has no `pow`, so the old
+     * `score = score + delta` could not apply the decay.
+     */
+    @Query("UPDATE tracks SET score = :score, score_updated_at = :updatedAt WHERE uri = :trackUri")
+    suspend fun updateTrackScore(trackUri: String, score: Double, updatedAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertBlockedArtists(rows: List<BlockedArtistEntity>)
@@ -341,28 +346,50 @@ interface PlayHistoryDao {
     @Query("DELETE FROM blocked_artists WHERE artist_name = :artistName")
     suspend fun deleteBlockedArtistsByName(artistName: String)
 
-    @Query("SELECT score FROM tracks WHERE uri = :trackUri")
-    suspend fun getTrackScore(trackUri: String): Double?
+    @Query("SELECT score, score_updated_at AS scoreUpdatedAt FROM tracks WHERE uri = :trackUri")
+    suspend fun getTrackScoreState(trackUri: String): TrackScoreRow?
 
     /**
-     * Sets a score outright rather than nudging it. An explicit dislike has to
-     * bury the track whatever it scored before, which a delta cannot promise:
-     * a track the listener once loved can sit well above the suppression line.
+     * The dislike write: sets the score outright and marks the track disliked at
+     * [dislikedAt]. The mark is what keeps the track out of mixes, permanently;
+     * the absolute score gives the undo a value to compare against and starts the
+     * track from a clear negative should the mark ever be lifted.
      */
-    @Query("UPDATE tracks SET score = :score WHERE uri = :trackUri")
-    suspend fun setTrackScore(trackUri: String, score: Double)
+    @Query(
+        """
+        UPDATE tracks SET score = :score, score_updated_at = :dislikedAt, disliked_at = :dislikedAt
+        WHERE uri = :trackUri
+        """
+    )
+    suspend fun setTrackScore(trackUri: String, score: Double, dislikedAt: Long)
 
     /**
-     * Restores a score only if nothing has touched it since.
+     * Restores a score only if nothing has touched it since the dislike written
+     * at [dislikedAt].
      *
      * An undo puts back an absolute value, so it would otherwise silently
      * discard whatever happened in between: dislike a track at 0.0, listen to it
      * again for +0.5, then undo, and the score returns to 0.0 rather than 0.5.
-     * Comparing against the value the dislike wrote makes the update a
-     * compare-and-set, so a newer opinion always wins over an older undo.
+     * Comparing against the value and the time the dislike wrote makes the update
+     * a compare-and-set, so a newer opinion always wins over an older undo.
+     *
+     * `score_updated_at` stays at [dislikedAt]: [restore] is the faded score the
+     * track had at that moment, so it goes on fading from there.
      */
-    @Query("UPDATE tracks SET score = :restore WHERE uri = :trackUri AND score = :expected")
-    suspend fun restoreTrackScoreIfUnchanged(trackUri: String, expected: Double, restore: Double): Int
+    @Query(
+        """
+        UPDATE tracks SET score = :restore
+        WHERE uri = :trackUri AND score = :expected AND score_updated_at = :dislikedAt
+        """
+    )
+    suspend fun restoreTrackScoreIfUnchanged(trackUri: String, expected: Double, dislikedAt: Long, restore: Double): Int
+
+    /**
+     * Lifts the dislike mark, but only the one written at [dislikedAt], so the
+     * undo of an older dislike cannot lift a newer one.
+     */
+    @Query("UPDATE tracks SET disliked_at = NULL WHERE uri = :trackUri AND disliked_at = :dislikedAt")
+    suspend fun clearTrackDislike(trackUri: String, dislikedAt: Long): Int
 
     /** Undo support: removes exactly the rows one action wrote. */
     @Query("DELETE FROM smart_feedback WHERE track_uri = :trackUri AND action = :action AND created_at = :createdAt")
@@ -431,11 +458,16 @@ interface PlayHistoryDao {
     """)
     suspend fun getOrganicGenrePlayRows(since: Long): List<TrackGenrePlayRow>
 
-    @Query("SELECT uri FROM tracks WHERE score < :threshold")
-    suspend fun getSuppressedTrackUris(threshold: Double = -0.15): List<String>
-
     /**
-     * Suppressed tracks with enough to identify the RECORDING, not just the row.
+     * Tracks that MAY be suppressed, with what the decision needs and enough to
+     * identify the RECORDING, not just the row. The caller decides with
+     * `isTrackSuppressed` on the effective score, since the decay cannot be
+     * computed in SQL.
+     *
+     * Filtering on the stored score is exact as a prefilter: fading only moves a
+     * score toward zero, so a track whose stored score is not below
+     * [storedThreshold] cannot have an effective score below it either. Disliked
+     * tracks are always candidates, whatever their score.
      *
      * A uri identifies one copy; the same song routinely exists under several. Of 22
      * tracks a real listener had explicitly disliked, 5 were also stored under a
@@ -445,14 +477,15 @@ interface PlayHistoryDao {
      * Returns the lead artist only, which is what [trackIdentityKey] uses.
      */
     @Query("""
-        SELECT t.uri AS uri, t.name AS trackName, MIN(a.name) AS artistName
+        SELECT t.uri AS uri, t.name AS trackName, MIN(a.name) AS artistName,
+               t.score AS score, t.score_updated_at AS scoreUpdatedAt, t.disliked_at AS dislikedAt
         FROM tracks t
         LEFT JOIN track_artists ta ON ta.track_uri = t.uri
         LEFT JOIN artists a ON a.uri = ta.artist_uri
-        WHERE t.score < :threshold AND t.name != ''
+        WHERE t.score < :storedThreshold OR t.disliked_at IS NOT NULL
         GROUP BY t.uri
     """)
-    suspend fun getSuppressedTrackIdentities(threshold: Double = -0.15): List<SuppressedTrackRow>
+    suspend fun getSuppressionCandidates(storedThreshold: Double): List<SuppressedTrackRow>
 
     @Query(
         """
@@ -623,12 +656,20 @@ interface PlayHistoryDao {
 
     // Seed tracks for the seed-track recommendation generator: recently played
     // tracks the user actually listened to (not skipped), with their primary
-    // artist name, most-recent first. One row per track.
+    // artist name. One row per track.
+    //
+    // No LIMIT and no final order: the caller ranks by the EFFECTIVE (time-faded)
+    // score, which SQL cannot compute, then takes its limit. A limit here would
+    // cut on the stored score and keep a track loved a year ago ahead of one
+    // loved this week. [storedFloor] is exact as a prefilter (see
+    // `storedTrackScoreFloor`). The genre subqueries already ran for every group
+    // under the old ORDER BY, so the extra cost is only the rows returned.
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
+               t.score_updated_at AS scoreUpdatedAt,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
                 WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
@@ -637,13 +678,13 @@ interface PlayHistoryDao {
         JOIN track_artists ta ON ta.track_uri = t.uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
-          AND t.score >= :minScore
+          -- "Not for me" means never in a mix, and a seed is where a mix begins.
+          AND t.disliked_at IS NULL
+          AND t.score >= :storedFloor
         GROUP BY t.uri
-        ORDER BY t.score DESC, lastPlayedAt DESC
-        LIMIT :limit
         """
     )
-    suspend fun getSeedTracks(since: Long, minListenedMs: Long, minScore: Double, limit: Int): List<SeedTrackRow>
+    suspend fun getSeedTrackCandidates(since: Long, minListenedMs: Long, storedFloor: Double): List<SeedTrackRow>
 
     // Recency-ordered seed pool. Strictness re-ranks this toward score in code, so
     // low Strictness still favours genuinely recent tracks over top-scored ones.
@@ -656,11 +697,17 @@ interface PlayHistoryDao {
     // hip hop in their profile a 33-track hip hop mix. The floor sits just above
     // that 0.28 so a single passive play cannot seed, while anything replayed,
     // liked, or listened through still can.
+    //
+    // The floor applies to the EFFECTIVE (time-faded) score, which SQL cannot
+    // compute, so this returns every candidate in recency order and the caller
+    // filters and takes its limit. [storedFloor] is exact as a prefilter (see
+    // `storedTrackScoreFloor`).
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
+               t.score_updated_at AS scoreUpdatedAt,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
                 WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
@@ -669,7 +716,9 @@ interface PlayHistoryDao {
         JOIN track_artists ta ON ta.track_uri = t.uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
-          AND t.score >= :minScore
+          -- "Not for me" means never in a mix, and a seed is where a mix begins.
+          AND t.disliked_at IS NULL
+          AND t.score >= :storedFloor
         GROUP BY t.uri
         -- A track heard ONCE and only because a mix served it proves nothing about
         -- taste, and letting those seed the next mix is how the engine came to feed
@@ -685,14 +734,12 @@ interface PlayHistoryDao {
         HAVING COUNT(*) > 1
             OR SUM(CASE WHEN ph.origin IN ('smart_mix', 'genre_radio') THEN 0 ELSE 1 END) > 0
         ORDER BY lastPlayedAt DESC
-        LIMIT :limit
         """
     )
-    suspend fun getRecentSeedTracks(
+    suspend fun getRecentSeedTrackCandidates(
         since: Long,
         minListenedMs: Long,
-        minScore: Double,
-        limit: Int
+        storedFloor: Double
     ): List<SeedTrackRow>
 
     // Confirmed-taste seed pool: same shape as getRecentSeedTracks, but ordered by
@@ -709,11 +756,16 @@ interface PlayHistoryDao {
     //
     // The play count is deliberately ALL TIME: a track loved last year and heard
     // once this month is confirmed taste, not a passive play.
+    //
+    // The score is only the tie-break between equal replay counts, and SQL can
+    // only order by the stored value; the caller maps each row to its effective
+    // score for ranking.
     @Query(
         """
         SELECT t.uri AS trackUri, t.name AS trackName, a.name AS artistName,
                a.uri AS artistUri, a.mbid AS artistMbid,
                MAX(ph.played_at) AS lastPlayedAt, t.score AS score,
+               t.score_updated_at AS scoreUpdatedAt,
                (SELECT GROUP_CONCAT(tg.genre_name) FROM track_genres tg WHERE tg.track_uri = t.uri) AS genres,
                (SELECT GROUP_CONCAT(DISTINCT ag.genre_name) FROM artist_genres ag
                 WHERE ag.artist_uri = ta.artist_uri) AS artistGenres
@@ -722,6 +774,8 @@ interface PlayHistoryDao {
         JOIN track_artists ta ON ta.track_uri = t.uri
         JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since AND COALESCE(ph.listened_ms, 0) >= :minListenedMs
+          -- "Not for me" means never in a mix, and a seed is where a mix begins.
+          AND t.disliked_at IS NULL
         GROUP BY t.uri
         HAVING (SELECT COUNT(*) FROM play_history p2 WHERE p2.track_uri = t.uri) >= :minPlays
         ORDER BY (SELECT COUNT(*) FROM play_history p2 WHERE p2.track_uri = t.uri) DESC,
@@ -887,7 +941,14 @@ interface PlayHistoryDao {
     @Query("DELETE FROM play_history WHERE played_at < :before")
     suspend fun deleteOlderThan(before: Long)
 
-    @Query("DELETE FROM tracks WHERE uri NOT IN (SELECT DISTINCT track_uri FROM play_history) AND score = 0.0")
+    // A disliked track is kept even with no plays left: the mark is permanent.
+    @Query(
+        """
+        DELETE FROM tracks
+        WHERE uri NOT IN (SELECT DISTINCT track_uri FROM play_history)
+          AND score = 0.0 AND disliked_at IS NULL
+        """
+    )
     suspend fun deleteOrphanTracks()
 
     @Query("DELETE FROM albums WHERE uri NOT IN (SELECT DISTINCT album_uri FROM tracks WHERE album_uri IS NOT NULL)")
@@ -1006,11 +1067,23 @@ interface PlayHistoryDao {
 
 // Projection data classes
 
-/** A suppressed track, with what is needed to recognise the same recording elsewhere. */
+/**
+ * A track that may be suppressed: its score state for the decision, and what is
+ * needed to recognise the same recording elsewhere.
+ */
 data class SuppressedTrackRow(
     val uri: String,
     val trackName: String,
-    val artistName: String?
+    val artistName: String?,
+    val score: Double,
+    val scoreUpdatedAt: Long,
+    val dislikedAt: Long?
+)
+
+/** A track's stored score and when it was written, for read-compute-write. */
+data class TrackScoreRow(
+    val score: Double,
+    val scoreUpdatedAt: Long
 )
 
 data class TrackGenrePlayRow(
@@ -1081,7 +1154,9 @@ data class SeedTrackRow(
     @ColumnInfo(name = "artistName") val artistName: String,
     @ColumnInfo(name = "artistUri") val artistUri: String,
     @ColumnInfo(name = "lastPlayedAt") val lastPlayedAt: Long,
+    /** The STORED score; map it through `effectiveTrackScore` before use. */
     @ColumnInfo(name = "score") val score: Double,
+    @ColumnInfo(name = "scoreUpdatedAt") val scoreUpdatedAt: Long,
     @ColumnInfo(name = "genres") val genres: String?,
     @ColumnInfo(name = "artistGenres") val artistGenres: String?
 )
