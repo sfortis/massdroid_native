@@ -204,12 +204,16 @@ interface PlayHistoryDao {
     """)
     suspend fun backfillArtistGenres()
 
+    /** Every genre name a library artist carries, for matching a search by `genreKey`. */
+    @Query("SELECT DISTINCT genre_name FROM artist_genres WHERE artist_uri LIKE 'library://%'")
+    suspend fun getLibraryArtistGenreNames(): List<String>
+
     @Query("""
-        SELECT DISTINCT ag.artist_uri FROM artist_genres ag
-        WHERE ag.genre_name LIKE '%' || :query || '%'
-          AND ag.artist_uri LIKE 'library://%'
+        SELECT DISTINCT artist_uri FROM artist_genres
+        WHERE genre_name IN (:genreNames)
+          AND artist_uri LIKE 'library://%'
     """)
-    suspend fun searchArtistUrisByGenre(query: String): List<String>
+    suspend fun getLibraryArtistUrisForGenres(genreNames: List<String>): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArtistTrackCache(cache: ArtistTrackCacheEntity)

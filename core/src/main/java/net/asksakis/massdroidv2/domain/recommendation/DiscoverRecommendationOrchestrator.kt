@@ -474,56 +474,6 @@ class DiscoverRecommendationOrchestrator(
     }
 
     /**
-     * A coarse family for grouping. The word rules read hyphens as spaces, and the
-     * curated sets and the fallback compare by [genreKey], so "singer-songwriter"
-     * and "singer songwriter", or "post-punk" and "post punk", group together.
-     * A glued spelling ("synthpop") still misses the " pop" word rule.
-     */
-    private fun genreFamily(genre: String): String {
-        val n = normalizeGenre(genre).replace('-', ' ')
-        val key = genreKey(n)
-        return when {
-            n.isBlank() -> ""
-            n == "metal" || n.endsWith(" metal") -> "metal"
-            n == "rock" || n.endsWith(" rock") -> "rock"
-            n == "pop" || n.endsWith(" pop") -> "pop"
-            key in ELECTRONIC_GENRES -> "electronic"
-            key in SOUL_BLUES_GENRES -> "soul-blues"
-            key in JAZZ_GENRES -> "jazz"
-            key in FOLK_GENRES -> "folk"
-            key in HIP_HOP_GENRES -> "hip-hop"
-            key in CLASSICAL_GENRES -> "classical"
-            key in REGGAE_GENRES -> "reggae"
-            n == "indie" -> "indie"
-            else -> key
-        }
-    }
-
-    private companion object {
-        /** Matched by [genreKey], like the genre they are tested against. */
-        private fun genreKeySet(vararg names: String): Set<String> = names.mapTo(mutableSetOf()) { genreKey(it) }
-
-        private val ELECTRONIC_GENRES = genreKeySet(
-            "electronic", "ambient", "new age", "synthwave", "trance", "house",
-            "techno", "edm", "downtempo", "dance", "electronica", "idm", "drum and bass"
-        )
-        private val SOUL_BLUES_GENRES = genreKeySet(
-            "blues", "soul", "rhythm and blues", "r&b", "rnb", "funk", "motown", "neo soul"
-        )
-        private val JAZZ_GENRES = genreKeySet(
-            "jazz", "fusion", "smooth jazz", "swing", "bebop", "free jazz", "jazz fusion"
-        )
-        private val FOLK_GENRES = genreKeySet(
-            "folk", "singer songwriter", "country", "americana", "bluegrass", "celtic"
-        )
-        private val HIP_HOP_GENRES = genreKeySet("hip hop", "rap", "trap")
-        private val CLASSICAL_GENRES = genreKeySet(
-            "classical", "symphony", "orchestral", "opera", "baroque", "romantic"
-        )
-        private val REGGAE_GENRES = genreKeySet("reggae", "ska", "dub", "dancehall")
-    }
-
-    /**
      * Fill in genres Music Assistant did not carry, from the MusicBrainz CACHE
      * only, and warm the misses in the background.
      *
@@ -763,3 +713,49 @@ class DiscoverRecommendationOrchestrator(
         }
     }
 }
+
+/**
+ * A coarse family for grouping. The family words are matched on [genreKey], so "synth pop",
+ * "synth-pop" and "synthpop" are all pop, and "post punk" groups with "post-punk". The
+ * curated sets and the fallback compare by [genreKey] too.
+ */
+internal fun genreFamily(genre: String): String {
+    val key = genreKey(normalizeGenre(genre))
+    return when {
+        key.isBlank() -> ""
+        key.endsWith("metal") -> "metal"
+        key.endsWith("rock") -> "rock"
+        key.endsWith("pop") -> "pop"
+        key in ELECTRONIC_GENRES -> "electronic"
+        key in SOUL_BLUES_GENRES -> "soul-blues"
+        key in JAZZ_GENRES -> "jazz"
+        key in FOLK_GENRES -> "folk"
+        key in HIP_HOP_GENRES -> "hip-hop"
+        key in CLASSICAL_GENRES -> "classical"
+        key in REGGAE_GENRES -> "reggae"
+        key == "indie" -> "indie"
+        else -> key
+    }
+}
+
+/** Matched by [genreKey], like the genre they are tested against. */
+private fun genreKeySet(vararg names: String): Set<String> = names.mapTo(mutableSetOf()) { genreKey(it) }
+
+private val ELECTRONIC_GENRES = genreKeySet(
+    "electronic", "ambient", "new age", "synthwave", "trance", "house",
+    "techno", "edm", "downtempo", "dance", "electronica", "idm", "drum and bass"
+)
+private val SOUL_BLUES_GENRES = genreKeySet(
+    "blues", "soul", "rhythm and blues", "r&b", "rnb", "funk", "motown", "neo soul"
+)
+private val JAZZ_GENRES = genreKeySet(
+    "jazz", "fusion", "smooth jazz", "swing", "bebop", "free jazz", "jazz fusion"
+)
+private val FOLK_GENRES = genreKeySet(
+    "folk", "singer songwriter", "country", "americana", "bluegrass", "celtic"
+)
+private val HIP_HOP_GENRES = genreKeySet("hip hop", "rap", "trap")
+private val CLASSICAL_GENRES = genreKeySet(
+    "classical", "symphony", "orchestral", "opera", "baroque", "romantic"
+)
+private val REGGAE_GENRES = genreKeySet("reggae", "ska", "dub", "dancehall")

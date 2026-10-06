@@ -22,6 +22,7 @@ import net.asksakis.massdroidv2.data.genre.GenreSpellingResolver
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
+import net.asksakis.massdroidv2.domain.recommendation.genreNamesMatching
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.recommendation.storedTrackScoreFloor
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
@@ -57,6 +58,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     companion object {
         private const val TAG = "PlayHistoryRepo"
         private const val MILLIS_PER_DAY = 86_400_000L
+        /** Bound variables per `IN` query, under the 999 SQLite allows on older Android. */
+        private const val SQL_IN_CHUNK = 500
 
         /**
          * How long a seed's cached `similar_tracks` is kept before the sweep on write
@@ -509,8 +512,16 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun getArtistsByGenre(genre: String): List<Pair<String, String>> =
         dao.getArtistsByGenre(genreSpellings.spellingToQuery(genre)).map { it.name to it.uri }
 
-    override suspend fun searchArtistUrisByGenre(query: String): List<String> =
-        dao.searchArtistUrisByGenre(query)
+    /**
+     * Library artists with a genre that matches [query] by `genreKey`. SQL `LIKE` compared the
+     * raw names, so "synth pop" missed the stored "synthpop"; the key cannot be computed in
+     * SQL, so the few hundred genre names are matched here. The names go back in chunks
+     * because SQLite on older Android allows 999 bound variables per query.
+     */
+    override suspend fun searchArtistUrisByGenre(query: String): List<String> {
+        val names = genreNamesMatching(query, dao.getLibraryArtistGenreNames())
+        return names.chunked(SQL_IN_CHUNK).flatMap { dao.getLibraryArtistUrisForGenres(it) }.distinct()
+    }
 
     override suspend fun resolveLibraryArtistUri(name: String): String? =
         dao.getArtistUrisByName(name).firstOrNull { it.startsWith("library://") }

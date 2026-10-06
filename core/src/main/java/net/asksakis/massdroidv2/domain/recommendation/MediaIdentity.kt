@@ -83,6 +83,17 @@ fun genreKey(name: String): String {
 fun distinctGenres(genres: Iterable<String>): List<String> = genres.distinctBy(::genreKey)
 
 /**
+ * The [names] a genre search for [query] finds: those whose [genreKey] contains the query's.
+ * A search is a substring match as before, so "rock" still finds "post rock", but letter case,
+ * spaces and hyphens no longer matter: "synth pop", "synth-pop" and "synthpop" find each other.
+ */
+fun genreNamesMatching(query: String, names: Iterable<String>): List<String> {
+    val queryKey = genreKey(query)
+    if (queryKey.isEmpty()) return emptyList()
+    return names.filter { genreKey(it).contains(queryKey) }
+}
+
+/**
  * The spelling each genre is shown and stored under, keyed by [genreKey].
  *
  * [usesBySpelling] maps every spelling to how often the library uses it (rows in
