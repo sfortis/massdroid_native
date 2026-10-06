@@ -5,7 +5,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
-import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
@@ -35,7 +34,6 @@ class DiscoverFeedOrchestrator @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val libraryGenreEnricher: LibraryGenreEnricher,
-    providerHealthReporter: ProviderHealthReporter,
     private val sectionBuilder: DiscoverSectionBuilder,
 ) {
 
@@ -45,7 +43,6 @@ class DiscoverFeedOrchestrator @Inject constructor(
         playHistoryRepository = playHistoryRepository,
         genreRepository = genreRepository,
         musicBrainzGenreResolver = musicBrainzGenreResolver,
-        providerHealthReporter = providerHealthReporter,
     )
 
     /**

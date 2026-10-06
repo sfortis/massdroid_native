@@ -10,7 +10,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
-import net.asksakis.massdroidv2.data.util.ProviderHealthReporter
 import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
@@ -20,13 +19,6 @@ import javax.inject.Inject
 
 private const val TAG = "LibraryVM"
 
-/**
- * Unused: this was the per-call timeout for the MA RPCs that resolved a Last.fm similar-artist
- * name to a playable MA artist, a step `similar_artists` no longer needs. `music/search` gathers
- * every provider server-side with no per-provider timeout, so a single slow/throttled provider
- * can hang the call for minutes. We cap it short and degrade.
- */
-private const val SIMILAR_RESOLVE_TIMEOUT_MS = 7_000L
 // "Top Tracks" is a highlights section, not the full catalogue: cap it (artist_tracks can return
 // hundreds). The artist's albums/discography cover the rest. Play-all uses this same capped set.
 private const val ARTIST_TOP_TRACKS_LIMIT = 20
@@ -41,8 +33,7 @@ class ArtistDetailViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val musicBrainzGenreResolver: net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver,
     private val artistBioResolver: net.asksakis.massdroidv2.data.musicbrainz.ArtistBioResolver,
-    private val dao: PlayHistoryDao,
-    private val providerHealthReporter: ProviderHealthReporter
+    private val dao: PlayHistoryDao
 ) : ViewModel() {
 
     val itemId: String = savedStateHandle["itemId"] ?: ""

@@ -58,8 +58,7 @@ class DiscoverRecommendationOrchestrator(
     private val musicRepository: MusicRepository,
     private val playHistoryRepository: PlayHistoryRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val musicBrainzGenreResolver: MusicBrainzGenreResolver,
-    private val providerHealthReporter: net.asksakis.massdroidv2.data.util.ProviderHealthReporter
+    private val musicBrainzGenreResolver: MusicBrainzGenreResolver
 ) {
 
     // Seeds still allowed to take the expensive track route this build.

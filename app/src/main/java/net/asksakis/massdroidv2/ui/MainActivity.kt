@@ -553,16 +553,6 @@ private fun MassDroidApp(
     }
 
     LaunchedEffect(Unit) {
-        appNoticesViewModel.searchDegraded.collect {
-            snackbarHostState.showSnackbar(
-                message = "Some results couldn't load. A music provider isn't responding " +
-                    "(it may be rate-limited). Check providers in Music Assistant.",
-                duration = SnackbarDuration.Long
-            )
-        }
-    }
-
-    LaunchedEffect(Unit) {
         appNoticesViewModel.permissionDenied.collect {
             snackbarHostState.showSnackbar(
                 message = "This action needs an administrator account on your Music Assistant server.",
