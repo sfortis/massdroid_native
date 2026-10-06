@@ -14,20 +14,15 @@ import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.whatsnew.WhatsNewRepository
-import net.asksakis.massdroidv2.domain.repository.AlbumScore
-import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
-import net.asksakis.massdroidv2.domain.repository.GenreScore
-import net.asksakis.massdroidv2.domain.repository.MusicRepository
+import net.asksakis.massdroidv2.domain.repository.InsightsAlbum
+import net.asksakis.massdroidv2.domain.repository.InsightsArtist
+import net.asksakis.massdroidv2.domain.repository.InsightsGenre
+import net.asksakis.massdroidv2.domain.repository.InsightsTrack
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
-import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
-import net.asksakis.massdroidv2.domain.repository.TrackScore
-import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
-import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import net.asksakis.massdroidv2.domain.whatsnew.WhatsNewRelease
-import net.asksakis.massdroidv2.ui.failureMessage
 import javax.inject.Inject
 
 data class UpdateUiState(
@@ -52,10 +47,7 @@ class SettingsViewModel @Inject constructor(
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
     private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository,
-    private val whatsNewRepository: WhatsNewRepository,
-    private val playerRepository: PlayerRepository,
-    private val musicRepository: MusicRepository,
-    private val shortcutDispatcher: ShortcutActionDispatcher
+    private val whatsNewRepository: WhatsNewRepository
 ) : ViewModel() {
 
     /**
@@ -211,14 +203,14 @@ class SettingsViewModel @Inject constructor(
     val recommendationBusy: StateFlow<Boolean> = _recommendationBusy.asStateFlow()
     private val _recommendationMessage = MutableStateFlow<String?>(null)
     val recommendationMessage: StateFlow<String?> = _recommendationMessage.asStateFlow()
-    private val _topArtists = MutableStateFlow<List<ArtistScore>>(emptyList())
-    val topArtists: StateFlow<List<ArtistScore>> = _topArtists.asStateFlow()
-    private val _topTracks = MutableStateFlow<List<TrackScore>>(emptyList())
-    val topTracks: StateFlow<List<TrackScore>> = _topTracks.asStateFlow()
-    private val _topAlbums = MutableStateFlow<List<AlbumScore>>(emptyList())
-    val topAlbums: StateFlow<List<AlbumScore>> = _topAlbums.asStateFlow()
-    private val _topGenres = MutableStateFlow<List<GenreScore>>(emptyList())
-    val topGenres: StateFlow<List<GenreScore>> = _topGenres.asStateFlow()
+    private val _topArtists = MutableStateFlow<List<InsightsArtist>>(emptyList())
+    val topArtists: StateFlow<List<InsightsArtist>> = _topArtists.asStateFlow()
+    private val _topTracks = MutableStateFlow<List<InsightsTrack>>(emptyList())
+    val topTracks: StateFlow<List<InsightsTrack>> = _topTracks.asStateFlow()
+    private val _topAlbums = MutableStateFlow<List<InsightsAlbum>>(emptyList())
+    val topAlbums: StateFlow<List<InsightsAlbum>> = _topAlbums.asStateFlow()
+    private val _topGenres = MutableStateFlow<List<InsightsGenre>>(emptyList())
+    val topGenres: StateFlow<List<InsightsGenre>> = _topGenres.asStateFlow()
     val themeMode = settingsRepository.themeMode
     fun setThemeMode(mode: String) { viewModelScope.launch { settingsRepository.setThemeMode(mode) } }
 
@@ -619,34 +611,6 @@ class SettingsViewModel @Inject constructor(
                 _recommendationBusy.value = false
             }
         }
-    }
-
-    /**
-     * Plays a track from the Insights ranking on the selected player, the same primary play
-     * Search uses. No option is sent, so the server applies its default for a track, which
-     * is "play": the track starts now and the rest of the queue is kept.
-     */
-    fun playInsightsTrack(trackUri: String) {
-        val queueId = playerRepository.requireSelectedPlayerId() ?: return
-        viewModelScope.launch {
-            try {
-                playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.NORMAL)
-                musicRepository.playMedia(queueId, trackUri)
-            } catch (e: Exception) {
-                Log.w(TAG, "playInsightsTrack failed: ${e.message}")
-                _recommendationMessage.value = e.failureMessage("Couldn't play that track")
-            }
-        }
-    }
-
-    /**
-     * Starts the Genre Radio for a genre from the Insights ranking. It goes through the
-     * shortcut dispatcher, as Android Auto does, because DiscoverViewModel owns the radio
-     * (the player check, the spam guard and the overlay) and a second start path here
-     * would bypass them.
-     */
-    fun startInsightsGenreRadio(genre: String) {
-        shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(genre))
     }
 
     private suspend fun loadRecommendationData() = coroutineScope {

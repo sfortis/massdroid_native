@@ -60,28 +60,26 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import net.asksakis.massdroidv2.domain.repository.AlbumScore
-import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
-import net.asksakis.massdroidv2.domain.repository.GenreScore
-import net.asksakis.massdroidv2.domain.repository.TrackScore
+import net.asksakis.massdroidv2.domain.repository.InsightsAlbum
+import net.asksakis.massdroidv2.domain.repository.InsightsArtist
+import net.asksakis.massdroidv2.domain.repository.InsightsGenre
+import net.asksakis.massdroidv2.domain.repository.InsightsTrack
 
 /**
  * What the recommendation engine has learned, and the actions that clear it.
  *
  * Laid out as plain rows in sections like every other settings surface: the database
  * actions, one section per ranked list, the blocked artists, and a row that explains how
- * the scores are made. An entry in a ranked list is a link: an artist or an album opens
- * its page through [onNavigateToArtist] and [onNavigateToAlbum], a track plays and a genre
- * starts its Genre Radio through the ViewModel.
+ * the scores are made. An artist, album or track in a ranked list is a link: an artist opens
+ * its page through [onNavigateToArtist], and an album or a track opens the album's page
+ * through [onNavigateToAlbum]. Nothing plays from here. A genre does not open anything.
  */
 @Composable
 fun RecommendationInsightsScreen(
     onBack: () -> Unit,
     onNavigateToArtist: (itemId: String, provider: String, name: String) -> Unit,
     onNavigateToAlbum: (itemId: String, provider: String, name: String) -> Unit,
-    /** Called once a genre's radio has been started; its progress and outcome show on Discover. */
-    onNavigateToDiscover: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val smartListeningEnabled by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
@@ -139,11 +137,6 @@ fun RecommendationInsightsScreen(
                     when (target) {
                         is InsightsTarget.Artist -> onNavigateToArtist(target.itemId, target.provider, target.name)
                         is InsightsTarget.Album -> onNavigateToAlbum(target.itemId, target.provider, target.name)
-                        is InsightsTarget.Track -> viewModel.playInsightsTrack(target.uri)
-                        is InsightsTarget.Genre -> {
-                            viewModel.startInsightsGenreRadio(target.genre)
-                            onNavigateToDiscover()
-                        }
                     }
                 }
             )
@@ -235,9 +228,9 @@ private fun RankedListsSections(rankings: InsightsScores, onOpen: (InsightsTarge
     val genres = remember(rankings.genres) { rankings.genres.map { it.toRankedEntry() } }
     val tracks = remember(rankings.tracks) { rankings.tracks.map { it.toRankedEntry() } }
     val albums = remember(rankings.albums) { rankings.albums.map { it.toRankedEntry() } }
-    RankedListSection("Top artists", caption = "By recent listening", entries = artists, onOpen = onOpen)
+    RankedListSection("Top artists", caption = "By play count", entries = artists, onOpen = onOpen)
     SettingsSectionDivider()
-    RankedListSection("Top genres", caption = "By recent listening", entries = genres, onOpen = onOpen)
+    RankedListSection("Top genres", caption = "By play count", entries = genres, onOpen = onOpen)
     SettingsSectionDivider()
     RankedListSection("Top tracks", caption = "By play count", entries = tracks, onOpen = onOpen)
     SettingsSectionDivider()
@@ -291,10 +284,10 @@ private fun RankedListSection(
 }
 
 /**
- * One entry of a ranked list on a single line: the rank and the name, the score, and a
- * chevron that says the entry opens something. An entry with no [RankedEntry.target] is
- * shown but cannot be tapped, so it has no chevron; it keeps the chevron's space so its
- * score stays in line with the scores above and below it.
+ * One entry of a ranked list: the rank and the name, the artist under it for a track or
+ * an album, the play count, and a chevron that says the entry opens something. An entry
+ * with no [RankedEntry.target] is shown but cannot be tapped, so it has no chevron; it
+ * keeps the chevron's space so its count stays in line with the counts above and below it.
  */
 @Composable
 private fun RankedEntryRow(rank: Int, entry: RankedEntry, onOpen: (InsightsTarget) -> Unit) {
@@ -303,14 +296,24 @@ private fun RankedEntryRow(rank: Int, entry: RankedEntry, onOpen: (InsightsTarge
         onClick = target?.let { { onOpen(it) } },
         onClickLabel = target?.actionLabel
     ) {
-        Text(
-            "$rank. ${entry.name}",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "$rank. ${entry.name}",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            entry.artist?.takeIf { it.isNotBlank() }?.let { artist ->
+                Text(
+                    artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         Text(
             entry.value,
             style = MaterialTheme.typography.bodyMedium,
@@ -424,7 +427,8 @@ private fun InsightsNote(text: String) {
 private fun ResetDatabaseDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     SettingsConfirmDialog(
         title = "Reset the recommendation data?",
-        text = "This deletes your play history, track scores and feedback, and keeps your blocked artists.",
+        text = "This deletes your play history, track scores, feedback and every \"Not for me\", " +
+            "and keeps your blocked artists.",
         confirmLabel = "Reset",
         onConfirm = onConfirm,
         onDismiss = onDismiss
@@ -477,11 +481,12 @@ private fun ScoringHelpDialog(onDismiss: () -> Unit) {
 }
 
 private val SCORING_HELP_PARAGRAPHS = listOf(
-    "Artists and genres: recent plays count more than old ones, and a play counts more the longer you listened. " +
-        "Last 90 days.",
-    "Tracks and albums: how many times you played them in the last 90 days.",
-    "Likes and full listens raise a score. Skips, unlikes and \"Not for me\" lower it, and the effect fades over time.",
-    "An artist with a strongly negative score is left out of recommendations. You can also block one yourself."
+    "Every list is ranked by how many times you played it in the last 90 days. " +
+        "A play counts after 30 seconds, unless you skipped it.",
+    "Plays from every speaker on your Music Assistant server count, not only the ones started from this app.",
+    "Likes and full listens raise a track's or an artist's score, and skips lower it. These scores and how " +
+        "recently you listened shape your mixes, not these lists. Both fade over about two months, and only \"Not for me\" stays.",
+    "A track or artist with a strongly negative score is left out of mixes. You can also block an artist yourself."
 )
 
 /** What tapping a ranked entry does. */
@@ -496,54 +501,60 @@ private sealed interface InsightsTarget {
     data class Album(val itemId: String, val provider: String, val name: String) : InsightsTarget {
         override val actionLabel get() = "Open album"
     }
-
-    data class Track(val uri: String) : InsightsTarget {
-        override val actionLabel get() = "Play"
-    }
-
-    data class Genre(val genre: String) : InsightsTarget {
-        override val actionLabel get() = "Start Genre Radio"
-    }
 }
 
-/** One line of a ranked list: the name, the score as shown, and what a tap does. */
-private data class RankedEntry(val name: String, val value: String, val target: InsightsTarget?)
+/**
+ * One entry of a ranked list: the name, the artist shown under a track or an album, the
+ * play count as shown, and what a tap does.
+ */
+private data class RankedEntry(
+    val name: String,
+    val value: String,
+    val target: InsightsTarget?,
+    val artist: String? = null
+)
 
 /** The four ranked lists as the ViewModel holds them. */
 private data class InsightsScores(
-    val artists: List<ArtistScore>,
-    val genres: List<GenreScore>,
-    val tracks: List<TrackScore>,
-    val albums: List<AlbumScore>
+    val artists: List<InsightsArtist>,
+    val genres: List<InsightsGenre>,
+    val tracks: List<InsightsTrack>,
+    val albums: List<InsightsAlbum>
 )
 
-private fun ArtistScore.toRankedEntry() = RankedEntry(
-    name = artistName,
-    value = String.format("%.2f", score),
-    target = parseMediaRef(artistUri, "artist")?.let { (provider, itemId) ->
-        InsightsTarget.Artist(itemId, provider, artistName)
+private fun InsightsArtist.toRankedEntry() = RankedEntry(
+    name = name,
+    value = playCountLabel(plays),
+    target = parseMediaRef(uri, "artist")?.let { (provider, itemId) ->
+        InsightsTarget.Artist(itemId, provider, name)
     }
 )
 
-private fun GenreScore.toRankedEntry() = RankedEntry(
+private fun InsightsGenre.toRankedEntry() = RankedEntry(
     name = genre,
-    value = String.format("%.2f", score),
-    target = genre.takeIf { it.isNotBlank() }?.let { InsightsTarget.Genre(it) }
+    value = playCountLabel(plays),
+    target = null
 )
 
-private fun TrackScore.toRankedEntry() = RankedEntry(
-    name = trackName,
-    value = "${score.toInt()} plays",
-    target = parseMediaRef(trackUri, "track")?.let { InsightsTarget.Track(trackUri) }
+private fun InsightsTrack.toRankedEntry() = RankedEntry(
+    name = name,
+    value = playCountLabel(plays),
+    target = albumUri?.let { parseMediaRef(it, "album") }?.let { (provider, itemId) ->
+        InsightsTarget.Album(itemId, provider, albumName.orEmpty())
+    },
+    artist = artistName
 )
 
-private fun AlbumScore.toRankedEntry() = RankedEntry(
-    name = albumName,
-    value = "${score.toInt()} plays",
-    target = parseMediaRef(albumUri, "album")?.let { (provider, itemId) ->
-        InsightsTarget.Album(itemId, provider, albumName)
-    }
+private fun InsightsAlbum.toRankedEntry() = RankedEntry(
+    name = name,
+    value = playCountLabel(plays),
+    target = parseMediaRef(uri, "album")?.let { (provider, itemId) ->
+        InsightsTarget.Album(itemId, provider, name)
+    },
+    artist = artistName
 )
+
+private fun playCountLabel(plays: Int): String = if (plays == 1) "1 play" else "$plays plays"
 
 /**
  * The provider and item id of a stored `provider://type/itemId` URI, or null when the URI

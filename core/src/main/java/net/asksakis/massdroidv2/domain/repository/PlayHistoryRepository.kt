@@ -51,18 +51,37 @@ data class ArtistScore(
     val score: Double
 )
 
-data class AlbumScore(
-    val albumUri: String,
-    val albumName: String,
-    val imageUrl: String?,
-    val year: Int?,
-    val score: Double
+/**
+ * One entry of a Recommendation insights list. [plays] is how many times it was played
+ * in the window, and every list is ordered by it. Copies of the same item under different providers or letter cases are
+ * merged into one entry, and [uri] is the library copy when there is one.
+ */
+data class InsightsArtist(val uri: String, val name: String, val plays: Int)
+
+/** A genre in the Insights list, see [InsightsArtist]. */
+data class InsightsGenre(val genre: String, val plays: Int)
+
+/**
+ * A track in the Insights list, see [InsightsArtist]. [artistName] joins every credited
+ * artist. [albumUri] is the album the entry opens, the library copy when there is one.
+ */
+data class InsightsTrack(
+    val uri: String,
+    val name: String,
+    val artistName: String,
+    val albumUri: String?,
+    val albumName: String?,
+    val plays: Int
 )
 
-data class TrackScore(
-    val trackUri: String,
-    val trackName: String,
-    val score: Double
+/** An album in the Insights list, see [InsightsArtist]. [artistName] is its most played artist. */
+data class InsightsAlbum(
+    val uri: String,
+    val name: String,
+    val artistName: String,
+    val imageUrl: String?,
+    val year: Int?,
+    val plays: Int
 )
 
 data class DecadeScore(
@@ -104,10 +123,14 @@ interface PlayHistoryRepository {
         origin: PlayOrigin = PlayOrigin.UNKNOWN
     ): Long
     suspend fun getRecentAlbums(limit: Int = 10): List<RecentAlbum>
-    suspend fun getTopGenres(days: Int = 30, limit: Int = 10): List<GenreScore>
-    suspend fun getTopArtists(days: Int = 30, limit: Int = 10): List<ArtistScore>
-    suspend fun getTopTracks(days: Int = 30, limit: Int = 10): List<TrackScore>
-    suspend fun getTopAlbums(days: Int = 30, limit: Int = 10): List<AlbumScore>
+    /**
+     * The Recommendation insights lists. Blocked artists, and the tracks and albums
+     * credited to them, are left out.
+     */
+    suspend fun getTopGenres(days: Int = 30, limit: Int = 10): List<InsightsGenre>
+    suspend fun getTopArtists(days: Int = 30, limit: Int = 10): List<InsightsArtist>
+    suspend fun getTopTracks(days: Int = 30, limit: Int = 10): List<InsightsTrack>
+    suspend fun getTopAlbums(days: Int = 30, limit: Int = 10): List<InsightsAlbum>
     suspend fun getScoredGenres(days: Int = 90, limit: Int = 20): List<GenreScore>
     suspend fun getScoredArtists(days: Int = 90, limit: Int = 50): List<ArtistScore>
     suspend fun getArtistDaypartAffinity(targetHour: Int, days: Int = 180): Map<String, Double>

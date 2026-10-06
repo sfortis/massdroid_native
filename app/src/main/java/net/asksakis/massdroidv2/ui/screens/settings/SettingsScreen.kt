@@ -1034,7 +1034,11 @@ private fun LearningSection(viewModel: SettingsViewModel, onOpenInsights: () -> 
         icon = Icons.Default.Psychology,
         checked = smartListeningEnabled,
         onCheckedChange = { viewModel.toggleSmartListening(it) },
-        supporting = "Learns from skip/like/listen actions and improves recommendations"
+        supporting = if (smartListeningEnabled) {
+            "Learns from skip/like/listen actions and improves recommendations"
+        } else {
+            "Skips and likes are not scored, but play history is still recorded."
+        }
     )
     SettingsNavigationRow(
         title = "Recommendation insights",

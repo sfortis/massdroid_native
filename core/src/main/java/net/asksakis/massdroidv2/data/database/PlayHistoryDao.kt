@@ -515,82 +515,38 @@ interface PlayHistoryDao {
     )
     suspend fun getArtistFeedbackSignals(since: Long): List<ArtistFeedbackSignalRow>
 
-    // Top genres by play count (track_genres + artist_genres)
-    @Query(
-        """
-        SELECT genre, SUM(cnt) AS playCount FROM (
-            SELECT g.name AS genre, COUNT(*) AS cnt
-            FROM play_history ph
-            JOIN track_genres tg ON tg.track_uri = ph.track_uri
-            JOIN genres g ON g.name = tg.genre_name
-            WHERE ph.played_at > :since
-            GROUP BY g.name
-            UNION ALL
-            SELECT g.name AS genre, COUNT(*) AS cnt
-            FROM play_history ph
-            JOIN track_artists ta ON ta.track_uri = ph.track_uri
-            JOIN artist_genres ag ON ag.artist_uri = ta.artist_uri
-            JOIN genres g ON g.name = ag.genre_name
-            WHERE ph.played_at > :since
-              AND ag.genre_name NOT IN (
-                  SELECT tg2.genre_name FROM track_genres tg2 WHERE tg2.track_uri = ph.track_uri
-              )
-            GROUP BY g.name
-        )
-        GROUP BY genre
-        ORDER BY playCount DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun getTopGenres(since: Long, limit: Int): List<GenrePlayCount>
-
-    // Top artists by play count (grouped by name to merge cross-provider URIs)
+    /**
+     * One row per play and credited artist in the window, for the Recommendation
+     * insights lists. A play of a track with two artists comes back twice; a track
+     * with no artist row comes back once with null artist columns. The lists merge
+     * provider copies and letter cases in Kotlin (`InsightsRanking`), which SQL
+     * grouping by uri or exact name could not do.
+     */
     @Query(
         """
         SELECT
-            MIN(a.uri) AS artistUri,
-            a.name AS artistName,
-            COUNT(*) AS playCount
-        FROM play_history ph
-        JOIN track_artists ta ON ta.track_uri = ph.track_uri
-        JOIN artists a ON a.uri = ta.artist_uri
-        WHERE ph.played_at > :since
-        GROUP BY a.name
-        ORDER BY playCount DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun getTopArtists(since: Long, limit: Int): List<ArtistPlayCount>
-
-    // Top tracks by play count
-    @Query(
-        """
-        SELECT t.uri AS trackUri, t.name AS trackName, COUNT(*) AS playCount
+            ph.id AS playId,
+            ph.played_at AS playedAt,
+            ph.listened_ms AS listenedMs,
+            t.duration AS duration,
+            t.uri AS trackUri,
+            t.name AS trackName,
+            al.uri AS albumUri,
+            al.name AS albumName,
+            al.image_url AS imageUrl,
+            al.year AS year,
+            a.uri AS artistUri,
+            a.name AS artistName
         FROM play_history ph
         JOIN tracks t ON t.uri = ph.track_uri
+        LEFT JOIN albums al ON al.uri = t.album_uri
+        LEFT JOIN track_artists ta ON ta.track_uri = t.uri
+        LEFT JOIN artists a ON a.uri = ta.artist_uri
         WHERE ph.played_at > :since
-        GROUP BY t.uri
-        ORDER BY playCount DESC
-        LIMIT :limit
+        ORDER BY ph.id, ta.rowid
         """
     )
-    suspend fun getTopTracks(since: Long, limit: Int): List<TrackPlayCount>
-
-    // Top albums by play count
-    @Query(
-        """
-        SELECT al.uri AS albumUri, al.name AS albumName, al.image_url AS imageUrl,
-               al.year AS year, COUNT(*) AS playCount
-        FROM play_history ph
-        JOIN tracks t ON t.uri = ph.track_uri
-        JOIN albums al ON al.uri = t.album_uri
-        WHERE ph.played_at > :since
-        GROUP BY al.uri
-        ORDER BY playCount DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun getTopAlbums(since: Long, limit: Int): List<AlbumPlayCount>
+    suspend fun getInsightsPlayRows(since: Long): List<InsightsPlayRow>
 
     // Recent albums (most recently played)
     @Query(
@@ -1105,34 +1061,24 @@ data class TrackGenrePlayRow(
     val plays: Int
 )
 
-data class GenrePlayCount(
-    val genre: String,
-    val playCount: Int
-)
-
 data class GenreUsageRow(
     val name: String,
     val uses: Int
 )
 
-data class ArtistPlayCount(
-    @ColumnInfo(name = "artistUri") val artistUri: String,
-    @ColumnInfo(name = "artistName") val artistName: String,
-    val playCount: Int
-)
-
-data class TrackPlayCount(
+data class InsightsPlayRow(
+    @ColumnInfo(name = "playId") val playId: Long,
+    @ColumnInfo(name = "playedAt") val playedAt: Long,
+    @ColumnInfo(name = "listenedMs") val listenedMs: Long?,
+    val duration: Double?,
     @ColumnInfo(name = "trackUri") val trackUri: String,
     @ColumnInfo(name = "trackName") val trackName: String,
-    val playCount: Int
-)
-
-data class AlbumPlayCount(
-    @ColumnInfo(name = "albumUri") val albumUri: String,
-    @ColumnInfo(name = "albumName") val albumName: String,
+    @ColumnInfo(name = "albumUri") val albumUri: String?,
+    @ColumnInfo(name = "albumName") val albumName: String?,
     @ColumnInfo(name = "imageUrl") val imageUrl: String?,
     val year: Int?,
-    val playCount: Int
+    @ColumnInfo(name = "artistUri") val artistUri: String?,
+    @ColumnInfo(name = "artistName") val artistName: String?
 )
 
 data class RecentAlbumRow(

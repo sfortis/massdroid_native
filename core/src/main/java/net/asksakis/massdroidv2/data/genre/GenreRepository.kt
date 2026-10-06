@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.data.genre
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.domain.repository.DecadeScore
 import net.asksakis.massdroidv2.domain.repository.GenreScore
+import net.asksakis.massdroidv2.domain.repository.InsightsGenre
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,7 +44,7 @@ class GenreRepository @Inject constructor(
     suspend fun scoredGenres(days: Int = 90, limit: Int = 20): List<GenreScore> =
         playHistoryRepository.getScoredGenres(days, limit)
 
-    suspend fun topGenres(days: Int = 30, limit: Int = 10): List<GenreScore> =
+    suspend fun topGenres(days: Int = 30, limit: Int = 10): List<InsightsGenre> =
         playHistoryRepository.getTopGenres(days, limit)
 
     suspend fun adjacencyMap(): Map<String, Set<String>> =

@@ -24,16 +24,18 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.recommendation.storedTrackScoreFloor
-import net.asksakis.massdroidv2.domain.repository.AlbumScore
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
 import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
 import net.asksakis.massdroidv2.domain.repository.DecadeScore
 import net.asksakis.massdroidv2.domain.repository.GenrePlayRow
 import net.asksakis.massdroidv2.domain.repository.GenreScore
+import net.asksakis.massdroidv2.domain.repository.InsightsAlbum
+import net.asksakis.massdroidv2.domain.repository.InsightsArtist
+import net.asksakis.massdroidv2.domain.repository.InsightsGenre
+import net.asksakis.massdroidv2.domain.repository.InsightsTrack
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.RecentAlbum
 import net.asksakis.massdroidv2.domain.repository.SeedTrack
-import net.asksakis.massdroidv2.domain.repository.TrackScore
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -181,35 +183,23 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun getTopGenres(days: Int, limit: Int): List<GenreScore> =
-        getScoredGenres(days, limit)
-
-    override suspend fun getTopArtists(days: Int, limit: Int): List<ArtistScore> =
-        getScoredArtists(days, limit)
-
-    override suspend fun getTopTracks(days: Int, limit: Int): List<TrackScore> {
+    override suspend fun getTopGenres(days: Int, limit: Int): List<InsightsGenre> {
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
-        return dao.getTopTracks(since, limit).map {
-            TrackScore(
-                trackUri = it.trackUri,
-                trackName = it.trackName,
-                score = it.playCount.toDouble()
-            )
-        }
+        return InsightsRanking.rankGenres(dao.getGenrePlayTimestamps(since), limit)
     }
 
-    override suspend fun getTopAlbums(days: Int, limit: Int): List<AlbumScore> {
+    override suspend fun getTopArtists(days: Int, limit: Int): List<InsightsArtist> =
+        InsightsRanking.rankArtists(insightsPlays(days), dao.getBlockedArtistUris().toSet(), limit)
+
+    override suspend fun getTopTracks(days: Int, limit: Int): List<InsightsTrack> =
+        InsightsRanking.rankTracks(insightsPlays(days), dao.getBlockedArtistUris().toSet(), limit)
+
+    override suspend fun getTopAlbums(days: Int, limit: Int): List<InsightsAlbum> =
+        InsightsRanking.rankAlbums(insightsPlays(days), dao.getBlockedArtistUris().toSet(), limit)
+
+    private suspend fun insightsPlays(days: Int): List<InsightsRanking.Play> {
         val since = System.currentTimeMillis() - (days * MILLIS_PER_DAY)
-        val rows = dao.getTopAlbums(since, limit * 2)
-        return rows.map {
-            AlbumScore(
-                albumUri = it.albumUri,
-                albumName = it.albumName,
-                imageUrl = it.imageUrl,
-                year = it.year,
-                score = it.playCount.toDouble()
-            )
-        }.sortedByDescending { it.score }.take(limit)
+        return InsightsRanking.plays(dao.getInsightsPlayRows(since))
     }
 
     override suspend fun getScoredGenres(days: Int, limit: Int): List<GenreScore> {
