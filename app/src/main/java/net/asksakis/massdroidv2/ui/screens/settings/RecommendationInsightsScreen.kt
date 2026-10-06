@@ -30,10 +30,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
@@ -60,7 +58,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
 import net.asksakis.massdroidv2.domain.repository.InsightsAlbum
 import net.asksakis.massdroidv2.domain.repository.InsightsArtist
 import net.asksakis.massdroidv2.domain.repository.InsightsGenre
@@ -70,8 +67,8 @@ import net.asksakis.massdroidv2.domain.repository.InsightsTrack
  * What the recommendation engine has learned, and the actions that clear it.
  *
  * Laid out as plain rows in sections like every other settings surface: the database
- * actions, one section per ranked list, the blocked artists, and a row that explains how
- * the scores are made. An artist, album or track in a ranked list is a link: an artist opens
+ * actions, one section per ranked list, and a row that explains how the scores are made.
+ * The blocked artists are managed in Settings, under the Insights row. An artist, album or track in a ranked list is a link: an artist opens
  * its page through [onNavigateToArtist], and an album or a track opens the album's page
  * through [onNavigateToAlbum]. Nothing plays from here. A genre does not open anything.
  */
@@ -89,7 +86,6 @@ fun RecommendationInsightsScreen(
     val topTracks by viewModel.topTracks.collectAsStateWithLifecycle()
     val topAlbums by viewModel.topAlbums.collectAsStateWithLifecycle()
     val topGenres by viewModel.topGenres.collectAsStateWithLifecycle()
-    val blockedArtists by viewModel.blockedArtists.collectAsStateWithLifecycle()
 
     val actionsEnabled = smartListeningEnabled && !recommendationBusy
 
@@ -139,14 +135,6 @@ fun RecommendationInsightsScreen(
                         is InsightsTarget.Album -> onNavigateToAlbum(target.itemId, target.provider, target.name)
                     }
                 }
-            )
-            SettingsSectionDivider()
-            BlockedArtistsSection(
-                blockedArtists = blockedArtists,
-                smartListeningEnabled = smartListeningEnabled,
-                enabled = actionsEnabled,
-                onUnblock = { viewModel.unblockArtist(it.artistUri, it.artistName) },
-                onClearAll = { viewModel.resetBlockedArtists() }
             )
             SettingsSectionDivider()
             ScoringHelpRow()
@@ -360,56 +348,6 @@ private fun CompactRow(
     )
 }
 
-/** The blocked artists, each with its own unblock. [onClearAll] runs only after confirmation. */
-@Composable
-private fun BlockedArtistsSection(
-    blockedArtists: List<BlockedArtistInfo>,
-    smartListeningEnabled: Boolean,
-    enabled: Boolean,
-    onUnblock: (BlockedArtistInfo) -> Unit,
-    onClearAll: () -> Unit
-) {
-    var confirming by rememberSaveable { mutableStateOf(false) }
-    if (confirming && smartListeningEnabled) {
-        ClearBlockedArtistsDialog(
-            onConfirm = {
-                confirming = false
-                onClearAll()
-            },
-            onDismiss = { confirming = false }
-        )
-    }
-    SettingsSectionHeader("Blocked artists")
-    if (blockedArtists.isEmpty()) {
-        InsightsNote("No blocked artists")
-        return
-    }
-    blockedArtists.forEach { blocked ->
-        SettingsRow(
-            title = blocked.artistName?.ifBlank { blocked.artistUri } ?: blocked.artistUri,
-            icon = Icons.Default.Block,
-            trailing = {
-                MdTextButton(onClick = { onUnblock(blocked) }, enabled = enabled) {
-                    Text("Unblock")
-                }
-            }
-        )
-    }
-    // Clearing the whole list is its own action, kept here next to the list rather than
-    // with the database actions above: a block is something the listener stated, not
-    // something the engine learned, so it does not belong to "reset the stats".
-    SettingsRow(
-        title = "Unblock all",
-        icon = Icons.Default.LockOpen,
-        supporting = "Every blocked artist becomes eligible again.",
-        onClick = { confirming = true },
-        enabled = enabled,
-        // Unblocking loses no data (history and scores stay), so it is not drawn as a
-        // destructive action; only Reset above is.
-        tone = SettingsTone.NORMAL
-    )
-}
-
 /** A line of text that is not a row, such as an empty list, aligned with the rows' text. */
 @Composable
 private fun InsightsNote(text: String) {
@@ -432,19 +370,6 @@ private fun ResetDatabaseDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         confirmLabel = "Reset",
         onConfirm = onConfirm,
         onDismiss = onDismiss
-    )
-}
-
-@Composable
-private fun ClearBlockedArtistsDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    SettingsConfirmDialog(
-        title = "Unblock all artists?",
-        text = "Every artist you blocked can be recommended again, and your history and scores are kept.",
-        confirmLabel = "Unblock all",
-        onConfirm = onConfirm,
-        onDismiss = onDismiss,
-        // The confirm button matches the row: nothing is lost, so it is not in the error colour.
-        confirmTone = SettingsTone.NORMAL
     )
 }
 

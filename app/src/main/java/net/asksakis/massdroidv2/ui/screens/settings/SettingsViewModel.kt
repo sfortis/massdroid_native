@@ -585,7 +585,7 @@ class SettingsViewModel @Inject constructor(
             _recommendationBusy.value = true
             try {
                 smartListeningRepository.clearBlockedArtists()
-                loadRecommendationData()
+                loadBlockedArtists()
                 _recommendationMessage.value = "All artists unblocked"
             } catch (e: Exception) {
                 Log.e(TAG, "resetBlockedArtists failed: ${e.message}")
@@ -602,7 +602,7 @@ class SettingsViewModel @Inject constructor(
             _recommendationBusy.value = true
             try {
                 smartListeningRepository.setArtistBlocked(artistUri, artistName, blocked = false)
-                loadRecommendationData()
+                loadBlockedArtists()
                 _recommendationMessage.value = "Artist unblocked"
             } catch (e: Exception) {
                 Log.e(TAG, "unblockArtist failed: ${e.message}")
@@ -611,6 +611,25 @@ class SettingsViewModel @Inject constructor(
                 _recommendationBusy.value = false
             }
         }
+    }
+
+    /**
+     * Loads only the blocked artists, for the Blocked artists screen. The Insights lists
+     * are not reloaded here: Insights reloads them itself when it is shown again.
+     */
+    fun refreshBlockedArtists() {
+        viewModelScope.launch {
+            try {
+                loadBlockedArtists()
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshBlockedArtists failed: ${e.message}")
+                _recommendationMessage.value = "Couldn't load the blocked artists"
+            }
+        }
+    }
+
+    private suspend fun loadBlockedArtists() {
+        _blockedArtists.value = smartListeningRepository.getBlockedArtists()
     }
 
     private suspend fun loadRecommendationData() = coroutineScope {

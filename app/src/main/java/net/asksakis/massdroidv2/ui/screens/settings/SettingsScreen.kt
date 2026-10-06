@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
@@ -106,6 +107,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import android.Manifest
 import android.bluetooth.BluetoothClass
@@ -1044,14 +1046,83 @@ private fun LearningSection(viewModel: SettingsViewModel, onOpenInsights: () -> 
         title = "Recommendation insights",
         icon = Icons.Default.Insights,
         supporting = if (smartListeningEnabled) {
-            "Score stats, blocked artists, and recommendation DB actions"
+            "Score stats and recommendation DB actions"
         } else {
             "Enable Smart Listening first"
         },
         onClick = onOpenInsights,
         enabled = smartListeningEnabled
     )
+    BlockedArtistsRow(viewModel = viewModel, smartListeningEnabled = smartListeningEnabled)
     GenreEnrichmentRow(viewModel = viewModel)
+}
+
+/**
+ * The blocked artists, folded under one row: each with its own unblock, and an action that
+ * unblocks them all after a confirmation. Settings has no snackbar, so the outcome of an
+ * unblock shows as a line in the detail; a successful one also takes the name off the list.
+ */
+@Composable
+private fun BlockedArtistsRow(viewModel: SettingsViewModel, smartListeningEnabled: Boolean) {
+    val blockedArtists by viewModel.blockedArtists.collectAsStateWithLifecycle()
+    val busy by viewModel.recommendationBusy.collectAsStateWithLifecycle()
+    val message by viewModel.recommendationMessage.collectAsStateWithLifecycle()
+    val enabled = smartListeningEnabled && !busy
+    var confirming by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { viewModel.refreshBlockedArtists() }
+
+    SettingsExpandableRow(
+        title = "Blocked artists",
+        icon = Icons.Default.Block,
+        supporting = when (blockedArtists.size) {
+            0 -> "No blocked artists"
+            1 -> "1 artist is left out of recommendations"
+            else -> "${blockedArtists.size} artists are left out of recommendations"
+        }
+    ) {
+        blockedArtists.forEach { blocked ->
+            DetailActionRow(
+                title = blocked.artistName?.ifBlank { blocked.artistUri } ?: blocked.artistUri,
+                actionLabel = "Unblock",
+                enabled = enabled,
+                onAction = { viewModel.unblockArtist(blocked.artistUri, blocked.artistName) }
+            )
+        }
+        // Unblocking loses no data (history and scores stay), so it is not drawn in the
+        // error colour, and it is offered only when there is more than one to clear.
+        if (blockedArtists.size > 1) {
+            DetailActionRow(
+                title = "All ${blockedArtists.size} artists",
+                actionLabel = "Unblock all",
+                enabled = enabled,
+                onAction = { confirming = true }
+            )
+        }
+        message?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+    }
+
+    if (confirming && smartListeningEnabled) {
+        SettingsConfirmDialog(
+            title = "Unblock all artists?",
+            text = "Every artist you blocked can be recommended again, and your history and scores are kept.",
+            confirmLabel = "Unblock all",
+            onConfirm = {
+                confirming = false
+                viewModel.resetBlockedArtists()
+            },
+            onDismiss = { confirming = false },
+            // The confirm button matches the action: nothing is lost, so it is not in the error colour.
+            confirmTone = SettingsTone.NORMAL
+        )
+    }
 }
 
 @Composable
@@ -1382,6 +1453,35 @@ private fun CarAudioSection(viewModel: SettingsViewModel) {
             onClick = { btPermLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) },
             tone = SettingsTone.ERROR
         )
+    }
+}
+
+/**
+ * A name with one action inside the detail of a [SettingsExpandableRow], in the compact
+ * form [DetailSwitchRow] uses, for the same reason: a full settings row there would add
+ * `ListItem`'s inset a second time.
+ */
+@Composable
+private fun DetailActionRow(
+    title: String,
+    actionLabel: String,
+    enabled: Boolean,
+    onAction: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        MdTextButton(onClick = onAction, enabled = enabled) { Text(actionLabel) }
     }
 }
 
