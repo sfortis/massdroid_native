@@ -21,9 +21,10 @@ import javax.inject.Inject
 private const val TAG = "LibraryVM"
 
 /**
- * Per-call timeout for the MA RPCs that resolve a Last.fm similar-artist name to a playable
- * MA artist. `music/search` gathers every provider server-side with no per-provider timeout, so
- * a single slow/throttled provider can hang the call for minutes. We cap it short and degrade.
+ * Unused: this was the per-call timeout for the MA RPCs that resolved a Last.fm similar-artist
+ * name to a playable MA artist, a step `similar_artists` no longer needs. `music/search` gathers
+ * every provider server-side with no per-provider timeout, so a single slow/throttled provider
+ * can hang the call for minutes. We cap it short and degrade.
  */
 private const val SIMILAR_RESOLVE_TIMEOUT_MS = 7_000L
 // "Top Tracks" is a highlights section, not the full catalogue: cap it (artist_tracks can return

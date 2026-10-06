@@ -203,9 +203,9 @@ class LibraryViewModel @Inject constructor(
 
     /**
      * When the user searches the library, also surface items whose ARTIST matches the query by
-     * genre association (Last.fm-backed), merged after the API results. [excludeArtistUris] skips
-     * resolution for artists already present (Artists tab); the Albums/Tracks tabs cannot pre-skip
-     * because the genre match is the artist URI, not the row item.
+     * genre association (MA and MusicBrainz genres stored per artist), merged after the API
+     * results. [excludeArtistUris] skips resolution for artists already present (Artists tab); the
+     * Albums/Tracks tabs cannot pre-skip because the genre match is the artist URI, not the row item.
      */
     private suspend fun <T> augmentWithGenreMatches(
         query: String?,

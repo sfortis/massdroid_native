@@ -9,12 +9,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * View-agnostic signal that bulk MA resolution (Last.fm similar-artist resolution, Discover
- * recommendations, ...) couldn't complete because `music/search` / `music/artists/get` timed out.
+ * View-agnostic signal that bulk MA resolution couldn't complete because `music/search` /
+ * `music/artists/get` timed out.
  *
  * The MA server gathers every provider for a search with no per-provider timeout, so one slow or
- * rate-limited provider hangs the whole call. The resolvers cap each call with a short timeout and
- * report here when they give up. A single app-level consumer surfaces a transient notice, so no
+ * rate-limited provider hangs the whole call. Nothing reports here at the moment: the Last.fm name
+ * resolution that capped each call and reported when it gave up was removed, so [searchDegraded]
+ * never emits. A single app-level consumer surfaces a transient notice, so no
  * screen needs its own "couldn't load" plumbing. Emissions are debounced so a burst of timeouts
  * from one resolution pass produces at most one notice.
  */

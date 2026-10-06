@@ -7,15 +7,16 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
- * Global concurrency cap for bulk Last.fm -> MA resolution RPCs (similar-artist
- * resolution, Discover recommendation resolution, ...).
+ * Global concurrency cap for bulk MA RPCs. The one caller today is the Discover
+ * album row, which fetches a discography (`music/artists/get` + `artist_albums`)
+ * for each candidate artist.
  *
  * The Music Assistant server runs on a single event loop behind one shared WS
  * pipeline. Firing dozens of `music/search` + `music/artists/get` at once (the
  * unthrottled `async {}.awaitAll()` loops) bursts ~40 RPCs/sec, starves
  * latency-sensitive traffic (seek/play/pause/Sendspin) and, worse, the bulk
  * responses themselves don't return in time so the feature it feeds (e.g. the
- * artist Similar Artists row) silently comes back empty.
+ * Discover album row) silently comes back empty.
  *
  * A fixed inter-call delay was tried before and reverted for being too slow
  * (it serialised the work). Instead we keep the calls parallel but bound the

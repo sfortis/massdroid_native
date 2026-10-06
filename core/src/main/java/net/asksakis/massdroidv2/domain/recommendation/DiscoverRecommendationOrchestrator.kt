@@ -401,7 +401,7 @@ class DiscoverRecommendationOrchestrator(
             val base = if (range > 0.0) (v - minScore) / range else 1.0
             (base + Random.nextDouble(-DISCOVERY_MMR_JITTER, DISCOVERY_MMR_JITTER)).coerceIn(0.0, 1.0)
         }
-        // Album genres prefer album.genres, fall back to artist genres which were enriched via Last.fm
+        // Album genres prefer album.genres, fall back to artist genres (MA's, gaps filled from the MusicBrainz cache)
         val genresByTriple = candidates.associateWith { (_, artist, album) ->
             val albumGenres = album.genres.mapTo(mutableSetOf()) { genreKey(it) }
             if (albumGenres.isNotEmpty()) albumGenres

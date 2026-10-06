@@ -556,8 +556,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             // Self-healing (deterministic, structural only): collapse provider://
             // artist mappings onto the canonical library:// row of the same
             // artist, then propagate genres across an artist's remaining URIs.
-            // Does NOT touch Last.fm tag content (community mis-tags need a
-            // separate validation path). Runs before orphan cleanup so the
+            // Does NOT touch the genres themselves (a wrong MA or MusicBrainz
+            // genre needs a separate validation path). Runs before orphan cleanup so the
             // provider artists it strips get swept in the same pass.
             dao.consolidateProviderArtistMappings()
             dao.backfillArtistGenres()

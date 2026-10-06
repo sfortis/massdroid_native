@@ -77,7 +77,7 @@ class SeedClusterGateTest {
         assertThat(genresOverlapLoose(listOf("techno"), emptySet())).isTrue()
     }
 
-    // --- genreFamilies: static mapping over the Last.fm whitelist ---
+    // --- genreFamilies: static mapping over GENRE_FAMILY ---
 
     @Test
     fun `families map deterministic worlds`() {
@@ -93,7 +93,7 @@ class SeedClusterGateTest {
 
     @Test
     fun `unknown multi-word genres resolve via their last word (public-library generalization)`() {
-        // Provider/ID3 genres outside the Last.fm whitelist must still land in
+        // Provider/ID3 genres outside GENRE_FAMILY must still land in
         // the right family for any user's library.
         assertThat(genreFamilies(listOf("deep tech house"))).containsExactly("electronic")
         assertThat(genreFamilies(listOf("greek rock"))).containsExactly("rock")
@@ -178,7 +178,7 @@ class SeedClusterGateTest {
         val dbSet = listOf("alternative", "electronic", "house", "psychedelic", "synthpop", "trance")
         assertThat(dominantFamily(dbSet)).isEqualTo("rock")
         assertThat(dominantFamily(orderByFamilyFrequency(dbSet))).isEqualTo("electronic")
-        // A weight-ordered Last.fm list must survive the reordering unchanged
+        // A weight-ordered tag list must survive the reordering unchanged
         // when its first tag already belongs to the majority family.
         assertThat(orderByFamilyFrequency(listOf("house", "deep house", "jazz")).first()).isEqualTo("house")
     }

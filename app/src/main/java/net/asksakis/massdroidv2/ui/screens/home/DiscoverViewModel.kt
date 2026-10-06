@@ -459,7 +459,7 @@ class DiscoverViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isRefreshing = true)
             }
             try {
-                // The whole feed (library load + Last.fm/BLL discovery + sections) is
+                // The whole feed (library load + MA similar-artist/BLL discovery + sections) is
                 // built by the shared :core DiscoverFeedOrchestrator so the car renders
                 // the identical feed. The VM keeps the maps it hands to the mix paths.
                 val feed = discoverFeedOrchestrator.buildFeed()

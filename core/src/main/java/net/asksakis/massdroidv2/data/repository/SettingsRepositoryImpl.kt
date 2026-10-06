@@ -85,7 +85,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_RECENT_MIX_GENRES = stringPreferencesKey("recent_mix_genres")
 
         // One cluster per line, its genres comma-separated. Genres never contain
-        // either character (Last.fm tags are words: "drum and bass", "hip hop")
+        // either character (genres are words: "drum and bass", "hip hop")
         // and the DB already round-trips them through comma-joined lists.
         private const val CLUSTER_SEPARATOR = "\n"
         private const val GENRE_SEPARATOR = ","

@@ -12,8 +12,8 @@ import javax.inject.Singleton
  * Their terms allow one request per second per application, and exceeding it
  * gets the client blocked rather than throttled, so every call goes through
  * here. Being a singleton acquired immediately before the HTTP call makes it
- * impossible for a caller to bypass. Mirrors `LastFmRateLimiter`, at a fifth of
- * the rate.
+ * impossible for a caller to bypass. Requests are spaced [MIN_INTERVAL_MS]
+ * apart, which keeps a margin under that limit.
  */
 @Singleton
 class MusicBrainzRateLimiter @Inject constructor() {

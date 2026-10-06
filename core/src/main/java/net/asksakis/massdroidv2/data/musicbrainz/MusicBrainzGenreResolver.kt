@@ -383,8 +383,8 @@ class MusicBrainzGenreResolver @Inject constructor(
         const val TAG = "MusicBrainzGenre"
         const val BASE = "https://musicbrainz.org/ws/2"
         const val USER_AGENT = "MassDroid/2.x ( https://github.com/sfortis/massdroid_native )"
-        // MusicBrainz genres are stable, so entries are kept far longer than the
-        // Last.fm tag cache; a miss is retried sooner in case the artist is new.
+        // MusicBrainz genres are stable, so entries are kept for 90 days; a miss
+        // is retried after 14 days in case the artist is new.
         const val CACHE_MS = 90L * 24 * 60 * 60 * 1000
         const val EMPTY_CACHE_MS = 14L * 24 * 60 * 60 * 1000
         const val MAX_TAGS = 4
