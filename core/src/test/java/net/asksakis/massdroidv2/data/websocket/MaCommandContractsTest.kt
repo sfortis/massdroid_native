@@ -66,4 +66,11 @@ class MaCommandContractsTest {
         assertThat(json["provider"]?.jsonArray?.map { it.jsonPrimitive.content })
             .containsExactly("spotify", "deezer").inOrder()
     }
+
+    @Test
+    fun `LibraryItemsArgs sends genre ids only when there are some`() {
+        val json = LibraryItemsArgs(limit = 10, offset = 0, genreIds = listOf(33, 47)).toJson()
+        assertThat(json["genre"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("33", "47").inOrder()
+        assertThat(LibraryItemsArgs(limit = 10, offset = 0, genreIds = emptyList()).toJson().containsKey("genre")).isFalse()
+    }
 }

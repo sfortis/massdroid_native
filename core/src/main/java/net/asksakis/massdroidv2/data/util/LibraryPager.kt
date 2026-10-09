@@ -21,8 +21,12 @@ import kotlinx.coroutines.launch
  * stable key. Paging stops once a short/empty page signals the end (no fixed cap, the whole
  * library is reachable by paging).
  *
+ * [completeFirstPage] can answer a reload with the WHOLE result instead (a Library search that
+ * names a genre filters the full tab client side); when it returns a list, that list is page 0
+ * and the end, and [loadMore] fetches nothing more until the next reload.
+ *
  * The server offset always advances by the RAW page size; [augmentFirstPage] (merge extra matches
- * into page 0, e.g. genre-matched artists) and [transformPage] (client-side safety filtering)
+ * into page 0, e.g. non-library radio stations) and [transformPage] (client-side safety filtering)
  * only shape what is published, so client-side additions/removals can never shift later pages.
  * [onPageLoaded] receives every raw page for side effects (e.g. background enrichment).
  *
@@ -37,6 +41,7 @@ class LibraryPager<T>(
     private val key: (T) -> Any,
     private val pageSize: Int = DEFAULT_PAGE_SIZE,
     private val augmentFirstPage: (suspend (List<T>) -> List<T>)? = null,
+    private val completeFirstPage: (suspend () -> List<T>?)? = null,
     private val transformPage: ((List<T>) -> List<T>)? = null,
     private val onPageLoaded: ((List<T>) -> Unit)? = null,
     private val fetch: suspend (limit: Int, offset: Int) -> List<T>,
@@ -75,12 +80,13 @@ class LibraryPager<T>(
         val newJob = scope.launch(start = CoroutineStart.LAZY) {
             _loading.value = true
             try {
-                val raw = fetch(pageSize, 0)
-                val augmented = augmentFirstPage?.invoke(raw) ?: raw
+                val complete = completeFirstPage?.invoke()
+                val raw = complete ?: fetch(pageSize, 0)
+                val augmented = if (complete == null) augmentFirstPage?.invoke(raw) ?: raw else raw
                 val page = transformPage?.invoke(augmented) ?: augmented
                 if (!publishOnlyIfEmpty || _items.value.isEmpty()) {
                     offset = raw.size
-                    endReached = raw.size < pageSize
+                    endReached = complete != null || raw.size < pageSize
                     _items.value = page
                     onPageLoaded?.invoke(raw)
                 }

@@ -31,6 +31,8 @@ class MusicRepositoryImpl @Inject constructor(
 ) : MusicRepository {
     companion object {
         private const val TAG = "MusicRepo"
+        /** Far above the ~100 genres MA ships, so one page holds them all. */
+        private const val SERVER_GENRES_LIMIT = 500
         private const val MUSICBRAINZ_ARTIST_ID = "musicbrainz_artistid"
         private const val FAVORITE_ACK_TIMEOUT_MS = 1_000L
         private const val FAVORITE_MAX_ATTEMPTS = 3
@@ -105,28 +107,38 @@ class MusicRepositoryImpl @Inject constructor(
         // off the collector's (Main) dispatcher.
     }.flowOn(Dispatchers.Default)
 
-    override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Artist> {
+    override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?, genreIds: List<Int>?): List<Artist> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ARTISTS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds)
         )
         return parseMediaItems(result).mapNotNull { it.toArtist() }
     }
 
-    override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Album> {
+    override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?, genreIds: List<Int>?): List<Album> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ALBUMS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds)
         )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }
 
-    override suspend fun getTracks(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Track> {
+    override suspend fun getTracks(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?, genreIds: List<Int>?): List<Track> {
         val result = wsClient.sendCommand(
             MaCommands.Music.TRACKS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter)
+            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds)
         )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
+    }
+
+    override suspend fun getServerGenres(): List<ServerGenre> {
+        val result = wsClient.sendCommand(
+            MaCommands.Music.GENRES_LIBRARY_ITEMS,
+            LibraryItemsArgs(limit = SERVER_GENRES_LIMIT, offset = 0)
+        )
+        return parseMediaItems(result).mapNotNull { item ->
+            item.itemId.toIntOrNull()?.let { ServerGenre(it, item.name) }
+        }
     }
 
     override suspend fun getPlaylists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?): List<Playlist> {

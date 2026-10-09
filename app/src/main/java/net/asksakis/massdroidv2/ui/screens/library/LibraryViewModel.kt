@@ -6,15 +6,14 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
+import net.asksakis.massdroidv2.data.genre.LibraryGenreSearch
 import net.asksakis.massdroidv2.data.util.LibraryPager
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.EventType
@@ -34,7 +33,7 @@ import javax.inject.Inject
 private const val TAG = "LibraryVM"
 private const val STATE_CURRENT_TAB = "library_current_tab"
 
-// Page-0 search augmentation thresholds (see the pager construction below).
+// Search thresholds: a genre search needs this many characters (see genreSearchResult).
 private const val GENRE_SEARCH_MIN_CHARS = 3
 private const val RADIO_SEARCH_MIN_CHARS = 2
 private const val RADIO_SEARCH_LIMIT = 25
@@ -56,6 +55,7 @@ class LibraryViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
+    private val libraryGenreSearch: LibraryGenreSearch,
     private val libraryGenreEnricher: LibraryGenreEnricher,
     val providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache,
     private val sessionEventBus: SessionEventBus
@@ -191,46 +191,56 @@ class LibraryViewModel @Inject constructor(
         return items.filter { item -> providerDomains(item).any { it in selectedDomains } }
     }
 
-    private fun parseMediaUri(uri: String): Pair<String, String>? {
-        val sep = uri.indexOf("://")
-        if (sep < 0) return null
-        val provider = uri.substring(0, sep)
-        val itemId = uri.substringAfterLast("/")
-        return if (provider.isNotBlank() && itemId.isNotBlank()) provider to itemId else null
-    }
-
-    // ---- page-0 search augmentation -----------------------------------------------------------
+    // ---- genre search ---------------------------------------------------------------------------
 
     /**
-     * When the user searches the library, also surface items whose ARTIST matches the query by
-     * genre association (MA and MusicBrainz genres stored per artist), merged after the API
-     * results. [excludeArtistUris] skips resolution for artists already present (Artists tab); the
-     * Albums/Tracks tabs cannot pre-skip because the genre match is the artist URI, not the row item.
+     * The whole result of [tab]'s search when the query names a genre, kept in the listener's
+     * sort, or null for the usual paged name search. See [LibraryGenreSearch.searchTab].
      */
-    private suspend fun <T> augmentWithGenreMatches(
-        query: String?,
-        apiResults: List<T>,
-        excludeArtistUris: Set<String>,
+    private suspend fun <T> genreSearchResult(
+        tab: LibraryTabKey,
         uriOf: (T) -> String,
-        resolveArtistItems: suspend (provider: String, itemId: String) -> List<T>
-    ): List<T> {
-        if (query == null || query.length < GENRE_SEARCH_MIN_CHARS) return apiResults
-        val genreUris = runCatching { genreRepository.searchArtistUris(query) }
-            .getOrElse { emptyList() }
-            .filterNot { it in excludeArtistUris }
-        if (genreUris.isEmpty()) return apiResults
-        val extras = supervisorScope {
-            genreUris.map { uri ->
-                async {
-                    runCatching {
-                        parseMediaUri(uri)?.let { (prov, id) -> resolveArtistItems(prov, id) }
-                    }.getOrNull().orEmpty()
-                }
-            }.awaitAll().flatten()
+        artistKeysOf: (T) -> Collection<String>,
+        matchServerGenreArtists: Boolean,
+        fetchPage: suspend (search: String?, genreIds: List<Int>?, limit: Int, offset: Int) -> List<T>
+    ): List<T>? {
+        val query = searchFor(tab)?.takeIf { it.length >= GENRE_SEARCH_MIN_CHARS } ?: return null
+        return try {
+            libraryGenreSearch.searchTab(query, fetchPage, uriOf, artistKeysOf, matchServerGenreArtists)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Genre search failed, falling back to a name search: ${e.message}")
+            null
         }
-        val seen = apiResults.mapTo(HashSet(), uriOf)
-        return apiResults + extras.filter { seen.add(uriOf(it)) }
     }
+
+    private suspend fun fetchArtists(search: String?, genreIds: List<Int>?, limit: Int, offset: Int) =
+        musicRepository.getArtists(
+            search = search, limit = limit, offset = offset,
+            orderBy = orderByForTab(LibraryTabKey.ARTISTS.index),
+            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ARTISTS.index),
+            providerFilter = providerFilterFor(LibraryTabKey.ARTISTS),
+            genreIds = genreIds
+        )
+
+    private suspend fun fetchAlbums(search: String?, genreIds: List<Int>?, limit: Int, offset: Int) =
+        musicRepository.getAlbums(
+            search = search, limit = limit, offset = offset,
+            orderBy = orderByForTab(LibraryTabKey.ALBUMS.index),
+            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ALBUMS.index),
+            providerFilter = providerFilterFor(LibraryTabKey.ALBUMS),
+            genreIds = genreIds
+        )
+
+    private suspend fun fetchTracks(search: String?, genreIds: List<Int>?, limit: Int, offset: Int) =
+        musicRepository.getTracks(
+            search = search, limit = limit, offset = offset,
+            orderBy = orderByForTab(LibraryTabKey.TRACKS.index),
+            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.TRACKS.index),
+            providerFilter = providerFilterFor(LibraryTabKey.TRACKS),
+            genreIds = genreIds
+        )
 
     /** Radios search also offers non-library stations, flagged by name-match against the library. */
     private suspend fun mergeRadioSearchResults(query: String?, apiResults: List<Radio>): List<Radio> {
@@ -251,70 +261,48 @@ class LibraryViewModel @Inject constructor(
     private val artistsPager = LibraryPager(
         scope = viewModelScope,
         key = { it: Artist -> it.uri },
-        augmentFirstPage = { api ->
-            augmentWithGenreMatches(
-                query = searchFor(LibraryTabKey.ARTISTS),
-                apiResults = api,
-                excludeArtistUris = api.mapTo(HashSet()) { it.uri },
-                uriOf = { it.uri }
-            ) { provider, itemId -> listOfNotNull(musicRepository.getArtist(itemId, provider)) }
+        completeFirstPage = {
+            genreSearchResult(
+                tab = LibraryTabKey.ARTISTS,
+                uriOf = { it.uri },
+                artistKeysOf = { listOfNotNull(MediaIdentity.artistKeyFromUri(it.uri)) },
+                matchServerGenreArtists = false,
+                fetchPage = ::fetchArtists
+            )
         },
         transformPage = { filterBySelectedProviders(it, LibraryTabKey.ARTISTS) { a -> a.providerDomains } },
         onPageLoaded = { libraryGenreEnricher.enrichInBackground(it) }
-    ) { limit, offset ->
-        musicRepository.getArtists(
-            search = searchFor(LibraryTabKey.ARTISTS), limit = limit, offset = offset,
-            orderBy = orderByForTab(LibraryTabKey.ARTISTS.index),
-            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ARTISTS.index),
-            providerFilter = providerFilterFor(LibraryTabKey.ARTISTS)
-        )
-    }
+    ) { limit, offset -> fetchArtists(searchFor(LibraryTabKey.ARTISTS), null, limit, offset) }
 
     private val albumsPager = LibraryPager(
         scope = viewModelScope,
         key = { it: Album -> it.uri },
-        augmentFirstPage = { api ->
-            augmentWithGenreMatches(
-                query = searchFor(LibraryTabKey.ALBUMS),
-                apiResults = api,
-                excludeArtistUris = emptySet(),
-                uriOf = { it.uri }
-            ) { provider, itemId ->
-                musicRepository.getArtistAlbums(itemId, provider).filter { it.uri.startsWith("library://") }
-            }
+        completeFirstPage = {
+            genreSearchResult(
+                tab = LibraryTabKey.ALBUMS,
+                uriOf = { it.uri },
+                artistKeysOf = { album -> album.artists.mapNotNull { MediaIdentity.artistKeyFromUri(it.uri) } },
+                matchServerGenreArtists = true,
+                fetchPage = ::fetchAlbums
+            )
         },
         transformPage = { filterBySelectedProviders(it, LibraryTabKey.ALBUMS) { a -> a.providerDomains } }
-    ) { limit, offset ->
-        musicRepository.getAlbums(
-            search = searchFor(LibraryTabKey.ALBUMS), limit = limit, offset = offset,
-            orderBy = orderByForTab(LibraryTabKey.ALBUMS.index),
-            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ALBUMS.index),
-            providerFilter = providerFilterFor(LibraryTabKey.ALBUMS)
-        )
-    }
+    ) { limit, offset -> fetchAlbums(searchFor(LibraryTabKey.ALBUMS), null, limit, offset) }
 
     private val tracksPager = LibraryPager(
         scope = viewModelScope,
         key = { it: Track -> it.uri },
-        augmentFirstPage = { api ->
-            augmentWithGenreMatches(
-                query = searchFor(LibraryTabKey.TRACKS),
-                apiResults = api,
-                excludeArtistUris = emptySet(),
-                uriOf = { it.uri }
-            ) { provider, itemId ->
-                musicRepository.getArtistTracks(itemId, provider).filter { it.uri.startsWith("library://") }
-            }
+        completeFirstPage = {
+            genreSearchResult(
+                tab = LibraryTabKey.TRACKS,
+                uriOf = { it.uri },
+                artistKeysOf = { it.artistUris },
+                matchServerGenreArtists = true,
+                fetchPage = ::fetchTracks
+            )
         },
         transformPage = { filterBySelectedProviders(it, LibraryTabKey.TRACKS) { t -> t.providerDomains } }
-    ) { limit, offset ->
-        musicRepository.getTracks(
-            search = searchFor(LibraryTabKey.TRACKS), limit = limit, offset = offset,
-            orderBy = orderByForTab(LibraryTabKey.TRACKS.index),
-            favoriteOnly = favoriteOnlyForTab(LibraryTabKey.TRACKS.index),
-            providerFilter = providerFilterFor(LibraryTabKey.TRACKS)
-        )
-    }
+    ) { limit, offset -> fetchTracks(searchFor(LibraryTabKey.TRACKS), null, limit, offset) }
 
     private val playlistsPager = LibraryPager(
         scope = viewModelScope,

@@ -23,6 +23,7 @@ object MaCommands {
         const val RADIOS_LIBRARY_ITEMS = "music/radios/library_items"
         const val AUDIOBOOKS_LIBRARY_ITEMS = "music/audiobooks/library_items"
         const val PODCASTS_LIBRARY_ITEMS = "music/podcasts/library_items"
+        const val GENRES_LIBRARY_ITEMS = "music/genres/library_items"
         const val PODCASTS_GET = "music/podcasts/get"
         const val PODCAST_EPISODES = "music/podcasts/podcast_episodes"
         const val PODCAST_EPISODE_GET = "music/podcasts/podcast_episode"
@@ -164,7 +165,9 @@ data class LibraryItemsArgs(
     val offset: Int,
     val orderBy: String? = null,
     val favoriteOnly: Boolean = false,
-    val provider: List<String>? = null
+    val provider: List<String>? = null,
+    /** MA 2.10 genre ids; the server keeps the items mapped to any of them. */
+    val genreIds: List<Int>? = null
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         search?.let { put("search", it) }
@@ -173,6 +176,7 @@ data class LibraryItemsArgs(
         orderBy?.let { put("order_by", it) }
         if (favoriteOnly) put("favorite", true)
         provider?.let { put("provider", JsonArray(it.map { id -> JsonPrimitive(id) })) }
+        genreIds?.takeIf { it.isNotEmpty() }?.let { put("genre", JsonArray(it.map { id -> JsonPrimitive(id) })) }
     }
 }
 

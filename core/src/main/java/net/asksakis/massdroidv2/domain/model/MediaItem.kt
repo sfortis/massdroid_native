@@ -236,3 +236,6 @@ enum class MediaType(val apiValue: String) {
         fun fromApi(value: String): MediaType? = entries.find { it.apiValue == value }
     }
 }
+
+/** One of the server's own genres (MA 2.10+): its numeric id and its name. */
+data class ServerGenre(val id: Int, val name: String)
