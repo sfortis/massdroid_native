@@ -48,6 +48,7 @@ class TvPlaybackService : Service() {
 
     @Inject lateinit var sendspinManager: SendspinManager
     @Inject lateinit var sendspinVolumeCoordinator: SendspinVolumeCoordinator
+    @Inject lateinit var sendspinNoiseConnector: net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var wsClient: MaWebSocketClient
@@ -96,6 +97,7 @@ class TvPlaybackService : Service() {
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = sendspinVolumeCoordinator,
+            noiseConnector = sendspinNoiseConnector,
             shortcutDispatcher = shortcutDispatcher,
             clientName = "MassDroid TV",
             onConnectionStateChanged = {},

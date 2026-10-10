@@ -48,6 +48,14 @@ class MaCommandRetryTest {
     }
 
     @Test
+    fun `Sendspin pairing and player removal are not retried`() {
+        // A late pairing answer means the first attempt is still running; a second is refused.
+        assertThat(isRetryableCommand(MaCommands.Sendspin.PAIR_WEB_PLAYER)).isFalse()
+        // A removal succeeds once; a repeat fails because the config is gone.
+        assertThat(isRetryableCommand(MaCommands.ConfigPlayers.REMOVE)).isFalse()
+    }
+
+    @Test
     fun `auth is not retried`() {
         assertThat(isRetryableCommand(MaCommands.Auth.AUTH)).isFalse()
         assertThat(isRetryableCommand(MaCommands.Auth.LOGIN)).isFalse()

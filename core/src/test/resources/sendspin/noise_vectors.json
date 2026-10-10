@@ -40,5 +40,6 @@
   "rehandshake_client_frame": "uHHg3x51VWH4rbLP9oh1zZJWl1XFrz4uGYgVp_avE4CpzktLkyMThGX6CXIaIH_LoGG93eK2zXH3MwrFPKXaODnFyUH7SJTmOLtPGCbV-Ox4AzPkFr7vqGe41_SEnKrb-VhvmJmh7QXwQztilYS63WJP-Qsxc8IvbDLOdswWRn4OM9Kn",
   "rehandshake_hash": "x5s1wuFuk4Q9_tHJBeRmfGe3zqhoZbqyhNMnrIwPJiE",
   "post_rehandshake_server_frame": "Cxb1nd3RWV-v348GQ9YdthDVE9-Kqluvv0kzGVoT8GDxnATWx4WFN4vOCKhDHAuseYUZi_TpnbVPyPHT4cz81jS0JNlTZFpB-PhiPbo",
-  "post_rehandshake_client_frame": "y0ox1YUkjHNgMkm0kB88s-JVk0LGLBTFYNJ1M-4S_XRv1v2XjaoG8JWK9WWt7xW4nrR8RbAuTN5t0O8jzR7SrylGRxer8Jg"
+  "post_rehandshake_client_frame": "y0ox1YUkjHNgMkm0kB88s-JVk0LGLBTFYNJ1M-4S_XRv1v2XjaoG8JWK9WWt7xW4nrR8RbAuTN5t0O8jzR7SrylGRxer8Jg",
+  "pairing_token": "SP:0YJT9NBTN79TRDCKX6WQICZ9A735ZUIFWRFOAQQ3OXWRONFHMBNRN3AKEGNQWI6YGXFH94A7Q94ZIIJYABEIU3V795DBQ4NRNSVFWVEY"
 }

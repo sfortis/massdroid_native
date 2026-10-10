@@ -48,6 +48,7 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var volumeKeyController: net.asksakis.massdroidv2.domain.player.VolumeKeyController
     @Inject lateinit var sendspinManager: SendspinManager
     @Inject lateinit var sendspinVolumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
+    @Inject lateinit var sendspinNoiseConnector: net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector
     @Inject lateinit var sleepTimerBridge: SleepTimerBridge
     @Inject lateinit var musicRepository: MusicRepository
     @Inject lateinit var wsClient: MaWebSocketClient
@@ -185,6 +186,7 @@ class PlaybackService : MediaLibraryService() {
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = sendspinVolumeCoordinator,
+            noiseConnector = sendspinNoiseConnector,
             shortcutDispatcher = shortcutDispatcher,
             mixOrchestrator = mixOrchestrator,
             isAutomotive = net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE,

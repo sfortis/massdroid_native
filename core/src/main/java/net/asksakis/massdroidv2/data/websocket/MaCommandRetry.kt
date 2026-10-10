@@ -33,6 +33,10 @@ private val NON_IDEMPOTENT_COMMANDS: Set<String> = setOf(
     // Step relative to the current track: a retry skips two.
     MaCommands.Players.CMD_NEXT,
     MaCommands.Players.CMD_PREVIOUS,
+    // A late answer means the first attempt is still pairing; a second one is refused as concurrent.
+    MaCommands.Sendspin.PAIR_WEB_PLAYER,
+    // Succeeds once; a second run fails because the config is already gone.
+    MaCommands.ConfigPlayers.REMOVE,
 )
 
 /**

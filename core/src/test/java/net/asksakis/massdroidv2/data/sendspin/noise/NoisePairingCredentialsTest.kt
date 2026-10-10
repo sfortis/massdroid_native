@@ -1,6 +1,9 @@
 package net.asksakis.massdroidv2.data.sendspin.noise
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -29,53 +32,56 @@ class NoisePairingCredentialsTest {
     }
 
     @Test
-    fun `the finalized psk resolves before the ack and is saved by the handshake that uses it`() {
-        val credentials = credentials()
-        credentials.newPairingPsk()
-        val longTerm = credentials.beginFinalize(serverId)
+    fun `the finalize psk is saved before it is sent, so it survives the app dying before the ack`() {
+        val longTerm = credentials().beginFinalize(serverId)
 
-        // The server re-handshakes right after its ack, possibly before the ack is handled.
-        val resolved = checkNotNull(credentials.resolve(SendspinNoise.pskId(longTerm)))
+        // A new process: only the file is left.
+        val resolved = checkNotNull(credentials().resolve(SendspinNoise.pskId(longTerm)))
 
         assertThat(resolved.category).isEqualTo(PskCategory.LONG_TERM)
         assertThat(resolved.serverId).isEqualTo(serverId)
-        assertThat(SendspinIdentityStore(file).hasLongTermPsk(serverId)).isTrue()
     }
 
     @Test
-    fun `the ack saves the pending psk and ends the pairing psk`() {
+    fun `the ack ends the pairing psk`() {
         val credentials = credentials()
         val pairing = credentials.newPairingPsk()
-        val longTerm = credentials.beginFinalize(serverId)
+        credentials.beginFinalize(serverId)
 
         credentials.completeFinalize(serverId)
 
-        assertThat(SendspinIdentityStore(file).resolve(SendspinNoise.pskId(longTerm))?.serverId).isEqualTo(serverId)
         assertThat(credentials.resolve(SendspinNoise.pskId(pairing))).isNull()
     }
 
     @Test
-    fun `an abandoned attempt leaves nothing behind`() {
+    fun `an abandoned attempt drops the pairing psk`() {
         val credentials = credentials()
         val pairing = credentials.newPairingPsk()
-        val longTerm = credentials.beginFinalize(serverId)
 
         credentials.abandon()
-        credentials.completeFinalize(serverId)
 
         assertThat(credentials.resolve(SendspinNoise.pskId(pairing))).isNull()
-        assertThat(credentials.resolve(SendspinNoise.pskId(longTerm))).isNull()
-        assertThat(SendspinIdentityStore(file).hasLongTermPsk(serverId)).isFalse()
     }
 
     @Test
     fun `forget removes a saved pairing`() {
         val credentials = credentials()
         credentials.beginFinalize(serverId)
-        credentials.completeFinalize(serverId)
 
         credentials.forget(serverId)
 
         assertThat(SendspinIdentityStore(file).hasLongTermPsk(serverId)).isFalse()
+    }
+
+    @Test
+    fun `the pairing token is byte for byte the server's encoding`() {
+        val vectors = Json.parseToJsonElement(
+            checkNotNull(javaClass.classLoader?.getResource("sendspin/noise_vectors.json")).readText()
+        ).jsonObject
+        fun bytes(key: String) = SendspinNoise.b64urlDecode(vectors.getValue(key).jsonPrimitive.content)
+
+        val token = SendspinPairingToken.encode(bytes("client_static_public"), bytes("pairing_psk"))
+
+        assertThat(token).isEqualTo(vectors.getValue("pairing_token").jsonPrimitive.content)
     }
 }

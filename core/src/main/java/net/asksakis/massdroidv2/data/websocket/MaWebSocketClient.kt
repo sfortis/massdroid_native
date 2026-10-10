@@ -76,7 +76,7 @@ class MaWebSocketClient(
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
         private const val ERROR_INSUFFICIENT_PERMISSIONS = 22
         /** Argument values never written to the log; see [redactSecrets]. */
-        private val SENSITIVE_ARG_KEYS = setOf("password", "token")
+        private val SENSITIVE_ARG_KEYS = setOf("password", "token", "pairing_token")
         private const val ARGS_LOG_LIMIT = 120
     }
 

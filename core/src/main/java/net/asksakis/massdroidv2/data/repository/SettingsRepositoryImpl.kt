@@ -56,6 +56,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private const val DEFAULT_SMART_MIX_STRICTNESS = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
+        private val KEY_SENDSPIN_MIGRATION_SOURCE_ID = stringPreferencesKey("sendspin_migration_source_id")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -283,6 +284,17 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setSendspinClientId(clientId: String) {
         context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
+    }
+
+    override val sendspinMigrationSourceId: Flow<String?> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_MIGRATION_SOURCE_ID]
+    }
+
+    override suspend fun setSendspinMigrationSourceId(playerId: String?) {
+        context.dataStore.edit {
+            if (playerId != null) it[KEY_SENDSPIN_MIGRATION_SOURCE_ID] = playerId
+            else it.remove(KEY_SENDSPIN_MIGRATION_SOURCE_ID)
+        }
     }
 
     override val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>> = safeData.map { prefs ->

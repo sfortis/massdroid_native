@@ -80,6 +80,11 @@ interface SettingsRepository {
     val smartMixStrictness: Flow<Float>
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
+    /**
+     * The player id this phone used before it switched to its Sendspin Noise identity, kept
+     * until that old player's settings have been moved to the new one. Null once done.
+     */
+    val sendspinMigrationSourceId: Flow<String?>
     val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
     val librarySortDescending: Flow<Map<Int, Boolean>>
@@ -215,6 +220,7 @@ interface SettingsRepository {
     suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
+    suspend fun setSendspinMigrationSourceId(playerId: String?)
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)

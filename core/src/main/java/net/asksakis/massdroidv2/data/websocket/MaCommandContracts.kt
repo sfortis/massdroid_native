@@ -130,8 +130,23 @@ object MaCommands {
     }
 
     object ConfigPlayers {
+        /** Every stored player config, without values. */
+        const val LIST = "config/players"
         const val GET = "config/players/get"
+        /** One value, read from storage first, so it also works for a player that is not connected. */
+        const val GET_VALUE = "config/players/get_value"
         const val SAVE = "config/players/save"
+        const val REMOVE = "config/players/remove"
+    }
+
+    /** Sendspin provider commands (MA 2.10+). */
+    object Sendspin {
+        /**
+         * Pairs the calling app's own Sendspin player from its pairing token. The server
+         * accepts it only for web and app players, which "Mobile Application" is, and
+         * answers after the whole pairing exchange has run on the Sendspin connection.
+         */
+        const val PAIR_WEB_PLAYER = "sendspin/pair_web_player"
     }
 
     /**
@@ -550,6 +565,31 @@ data class ConfigPlayerSaveArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("player_id", playerId)
         put("values", values)
+    }
+}
+
+/**
+ * [default] is returned when the player has no such value, instead of an error. Without it the
+ * server raises for every key the player never stored.
+ */
+data class ConfigPlayerValueArgs(
+    val playerId: String,
+    val key: String,
+    val default: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("player_id", playerId)
+        put("key", key)
+        put("default", default)
+    }
+}
+
+/** The token carries a pairing secret, so the command log redacts it (see MaWebSocketClient). */
+data class PairWebPlayerArgs(
+    val pairingToken: String
+) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("pairing_token", pairingToken)
     }
 }
 

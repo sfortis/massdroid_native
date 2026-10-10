@@ -207,7 +207,15 @@ class SendspinManager(
             override fun stopPlayer() = endPlayerSession()
             override fun resendState() = sendCurrentState()
         },
+        onLinkEvent = { event ->
+            if (!_noiseLinkEvents.tryEmit(event)) Log.w(TAG, "Dropping Noise link event $event")
+        },
     )
+
+    private val _noiseLinkEvents = MutableSharedFlow<NoiseLinkEvent>(extraBufferCapacity = 8)
+
+    /** Pairing state of Noise connections, for the pairing supervisor; empty on the legacy transport. */
+    val noiseLinkEvents: SharedFlow<NoiseLinkEvent> = _noiseLinkEvents.asSharedFlow()
 
     init {
         // Both engines exist for the app's lifetime (swapped on group join/leave);

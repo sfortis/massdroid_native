@@ -25,6 +25,7 @@ import json
 
 from aiosendspin.noise.constants import SENTINEL_PSK
 from aiosendspin.noise.keys import Identity, b64url_encode, psk_id_for
+from aiosendspin.noise.pairing_token import PSKPairingToken, decode_token, encode_token
 from aiosendspin.noise.session import NoiseCipherSuite
 from aiosendspin.noise.wire import _fragment
 from noise.connection import Keypair, NoiseConnection
@@ -130,6 +131,9 @@ def main() -> None:
     post_client_frame = bytes(cli2.encrypt(client_hello))
     assert bytes(srv2.decrypt(post_client_frame)) == client_hello
 
+    pairing_token = encode_token(PSKPairingToken(client.peer_id, pairing_psk))
+    assert decode_token(pairing_token).pairing_psk == pairing_psk
+
     out = {
         "suite": SUITE.value,
         "client_static_private": b64url_encode(client.private_bytes),
@@ -161,6 +165,7 @@ def main() -> None:
         "rehandshake_hash": b64url_encode(srv2.get_handshake_hash()),
         "post_rehandshake_server_frame": b64url_encode(post_server_frame),
         "post_rehandshake_client_frame": b64url_encode(post_client_frame),
+        "pairing_token": pairing_token,
     }
     print(json.dumps(out, indent=2))
 

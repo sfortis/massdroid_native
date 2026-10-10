@@ -56,6 +56,18 @@ class CommandLogRedactionTest {
     }
 
     @Test
+    fun `a Sendspin pairing token never reaches the log`() {
+        // The token carries the pairing PSK, which admits a pairing until it completes.
+        val rendered = client.redactSecrets(
+            "sendspin/pair_web_player",
+            buildJsonObject { put("pairing_token", "SP:0ABCDEFGHIJKLMNOP") }
+        )
+
+        assertThat(rendered).doesNotContain("SP:0")
+        assertThat(rendered).contains("<redacted>")
+    }
+
+    @Test
     fun `ordinary command arguments are left readable`() {
         val rendered = client.redactSecrets(
             "players/cmd/volume_set",

@@ -69,6 +69,7 @@ class SendspinAudioController(
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator,
+    private val noiseConnector: net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector,
     // Name this device registers under as a Sendspin player. Defaults to
     // "MassDroid" (phone); other front-ends (e.g. Android TV) override it so the
     // players are distinguishable in Music Assistant.
@@ -682,6 +683,10 @@ class SendspinAudioController(
             val persistedOffset = settingsRepository.sendspinClockOffsetUs.first()
             sendspinManager.seedClockOffset(persistedOffset)
         }
+
+        // Pairing with the Sendspin server and the one-time move of the old
+        // player's settings, on Noise connections (MA 2.10.0+).
+        collectorJobs += scope.launch { noiseConnector.superviseLink() }
 
         // A calibration stored or reset in the settings applies at once to the
         // route it belongs to; the calibration coordinator only stores.

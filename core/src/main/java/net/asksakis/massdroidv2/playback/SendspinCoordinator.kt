@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
+import net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -42,6 +43,7 @@ class SendspinCoordinator(
     private val playerRepository: PlayerRepository,
     private val wsClient: MaWebSocketClient,
     private val volumeCoordinator: SendspinVolumeCoordinator,
+    private val noiseConnector: SendspinNoiseConnector,
     private val shortcutDispatcher: ShortcutActionDispatcher,
     // Shared Smart Mix / Genre Radio build+play engine. Only the headless car uses
     // it (the phone/TV drive mixes from DiscoverViewModel); null where unused (TV).
@@ -156,6 +158,7 @@ class SendspinCoordinator(
             playerRepository = playerRepository,
             wsClient = wsClient,
             volumeCoordinator = volumeCoordinator,
+            noiseConnector = noiseConnector,
             // Car build registers as a distinct MA player name so it is obvious which
             // entry is the head unit (the phone/TV also register as "MassDroid").
             clientName = if (isAutomotive) "$clientName AAOS" else clientName,

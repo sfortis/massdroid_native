@@ -3,6 +3,18 @@ package net.asksakis.massdroidv2.data.sendspin
 import android.util.Log
 import net.asksakis.massdroidv2.data.sendspin.noise.NoisePairingCredentials
 import net.asksakis.massdroidv2.data.sendspin.noise.PskCategory
+import java.io.IOException
+
+/** The points of a Noise connection that the pairing supervisor acts on. */
+sealed class NoiseLinkEvent {
+    abstract val serverId: String
+
+    /** Activated on the sentinel PSK: this server holds no pairing with the phone. */
+    data class Unpaired(override val serverId: String) : NoiseLinkEvent()
+
+    /** Activated on a long-term PSK: the phone is paired with this server. */
+    data class Paired(override val serverId: String) : NoiseLinkEvent()
+}
 
 /**
  * The manager's side of the Noise transport, after the client has completed the handshake:
@@ -20,6 +32,7 @@ internal class SendspinNoiseFlow(
     private val client: SendspinClient,
     private val pairing: NoisePairingCredentials,
     private val player: Player,
+    private val onLinkEvent: (NoiseLinkEvent) -> Unit,
 ) {
     /** What the flow asks of the manager's player machinery. */
     interface Player {
@@ -32,12 +45,15 @@ internal class SendspinNoiseFlow(
     private var activeRoles: List<String> = emptyList()
     private var playerActive = false
     private var resyncPending = false
+    // The PSK category last reported through onLinkEvent on this connection.
+    private var reportedCategory: PskCategory? = null
 
     /** A new connection starts from scratch: no roles, no active player. */
     fun reset() {
         activeRoles = emptyList()
         playerActive = false
         resyncPending = false
+        reportedCategory = null
     }
 
     fun onServerHello() {
@@ -63,10 +79,7 @@ internal class SendspinNoiseFlow(
         resyncPending = false
         Log.d(TAG, "server/activate activities=${payload.activities} roles=$activeRoles psk=${psk.category} -> $step")
         when (step) {
-            NoiseActivationStep.FinalizePairing -> {
-                val serverId = client.noiseServerId() ?: return
-                client.sendPairFinalize(pairing.beginFinalize(serverId))
-            }
+            NoiseActivationStep.FinalizePairing -> finalizePairing()
             is NoiseActivationStep.AbortPairing -> {
                 pairing.abandon()
                 client.sendPairAbort(step.reason)
@@ -84,6 +97,34 @@ internal class SendspinNoiseFlow(
                 Log.i(TAG, "Connected without a player role: waiting for pairing or approval in MA")
             }
         }
+        if (step !is NoiseActivationStep.FinalizePairing && step !is NoiseActivationStep.AbortPairing) {
+            reportLink(psk.category)
+        }
+    }
+
+    /** Reports the first activation per PSK category on this connection. */
+    private fun reportLink(category: PskCategory) {
+        if (category == reportedCategory) return
+        val serverId = client.noiseServerId() ?: return
+        val event = when (category) {
+            PskCategory.SENTINEL -> NoiseLinkEvent.Unpaired(serverId)
+            PskCategory.LONG_TERM -> NoiseLinkEvent.Paired(serverId)
+            PskCategory.PAIRING -> return
+        }
+        reportedCategory = category
+        onLinkEvent(event)
+    }
+
+    private fun finalizePairing() {
+        val serverId = client.noiseServerId() ?: return
+        val psk = try {
+            pairing.beginFinalize(serverId)
+        } catch (e: IOException) {
+            // Unsaved, it must not be sent; the server's attempt times out and the next connect retries.
+            Log.e(TAG, "Cannot save the new pairing, not finalizing", e)
+            return
+        }
+        client.sendPairFinalize(psk)
     }
 
     fun onPairFinalize() {
