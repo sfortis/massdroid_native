@@ -114,6 +114,29 @@ class TrackScoreDecayTest {
         assertThat(storedTrackScoreFloor(-0.5)).isLessThan(-3.0)
     }
 
+    @Test
+    fun `a hard skip is forgotten once it fades below the forget line`() {
+        // -0.6 needs log2(12), about 3.6 half-lives (215 days), to fall under 0.05.
+        assertThat(isTrackScoreForgotten(-0.6, T0, T0 + days(210))).isFalse()
+        assertThat(isTrackScoreForgotten(-0.6, T0, T0 + days(220))).isTrue()
+    }
+
+    @Test
+    fun `a positive score is forgotten by magnitude too`() {
+        // +0.28 falls under 0.05 after log2(5.6), about 2.5 half-lives (149 days).
+        assertThat(isTrackScoreForgotten(0.28, T0, T0 + days(145))).isFalse()
+        assertThat(isTrackScoreForgotten(0.28, T0, T0 + days(155))).isTrue()
+    }
+
+    @Test
+    fun `a fresh small signal counts as forgotten at once`() {
+        // The mildest skip (-0.03) never reaches the forget line. The cleanup keeps
+        // such a track anyway while its feedback rows exist, so this alone does not
+        // remove it.
+        assertThat(isTrackScoreForgotten(-0.03, T0, T0)).isTrue()
+        assertThat(isTrackScoreForgotten(-0.05, T0, T0)).isFalse()
+    }
+
     private companion object {
         const val TOLERANCE = 1e-9
         const val HARD_SKIP = -0.6

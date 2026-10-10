@@ -948,10 +948,44 @@ interface PlayHistoryDao {
     )
     suspend fun deleteOrphanTracks()
 
+    /**
+     * Tracks with no plays and no feedback left whose score is not zero, so the
+     * caller can judge the FADED score, which SQL cannot compute. A track that
+     * still has feedback rows is kept: `smart_feedback` points at it with
+     * SET NULL, and removing the track would strip the track and, through the
+     * orphan artist sweep, the artist from those rows.
+     */
+    @Query(
+        """
+        SELECT uri, score, score_updated_at AS scoreUpdatedAt FROM tracks
+        WHERE uri NOT IN (SELECT DISTINCT track_uri FROM play_history)
+          AND uri NOT IN (SELECT DISTINCT track_uri FROM smart_feedback WHERE track_uri IS NOT NULL)
+          AND score != 0.0 AND disliked_at IS NULL
+        """
+    )
+    suspend fun getUnplayedScoredTracks(): List<TrackUriScoreRow>
+
+    @Query("DELETE FROM tracks WHERE uri IN (:uris)")
+    suspend fun deleteTracks(uris: List<String>)
+
     @Query("DELETE FROM albums WHERE uri NOT IN (SELECT DISTINCT album_uri FROM tracks WHERE album_uri IS NOT NULL)")
     suspend fun deleteOrphanAlbums()
 
-    @Query("DELETE FROM artists WHERE uri NOT IN (SELECT DISTINCT artist_uri FROM track_artists)")
+    /**
+     * Removes artists no track points at, except the ones stored for their own
+     * sake: library artists (`syncLibraryArtists` stores every one, played or not)
+     * and artists that hold genres (the discovery artists the genre gate judges).
+     * Sweeping those deleted their genres by cascade on every start, and the gap
+     * walk did not write them back, because the MusicBrainz answer was cached.
+     */
+    @Query(
+        """
+        DELETE FROM artists
+        WHERE uri NOT IN (SELECT DISTINCT artist_uri FROM track_artists)
+          AND uri NOT LIKE 'library://%'
+          AND uri NOT IN (SELECT DISTINCT artist_uri FROM artist_genres)
+        """
+    )
     suspend fun deleteOrphanArtists()
 
     @Query(
@@ -1075,6 +1109,13 @@ data class SuppressedTrackRow(
     val score: Double,
     val scoreUpdatedAt: Long,
     val dislikedAt: Long?
+)
+
+/** A track's uri with its stored score, for decisions on the faded score. */
+data class TrackUriScoreRow(
+    val uri: String,
+    val score: Double,
+    val scoreUpdatedAt: Long
 )
 
 /** A track's stored score and when it was written, for read-compute-write. */

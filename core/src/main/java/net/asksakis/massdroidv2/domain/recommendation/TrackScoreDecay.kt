@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.domain.recommendation
 
+import kotlin.math.abs
 import kotlin.math.pow
 
 /**
@@ -26,6 +27,17 @@ const val TRACK_SCORE_HALF_LIFE_DAYS = 60.0
  * the mildest, which is how one skip came to suppress a track permanently.
  */
 const val TRACK_SUPPRESSION_THRESHOLD = -0.75
+
+/**
+ * Below this magnitude a faded track score no longer changes anything, so a track
+ * with no plays left may be removed by the cleanup.
+ *
+ * The cleanup used to remove only tracks whose STORED score was exactly 0, but the
+ * fading is applied on read, so a track that ever received a signal stayed in the
+ * database for good, and so did its artists. 0.05 is far from every line the score
+ * is compared with: the suppression line at -0.75 and the seed floor at 0.30.
+ */
+const val TRACK_SCORE_FORGET_THRESHOLD = 0.05
 
 private const val MILLIS_PER_DAY = 86_400_000.0
 private const val HALF_LIFE_MS = TRACK_SCORE_HALF_LIFE_DAYS * MILLIS_PER_DAY
@@ -73,3 +85,10 @@ fun isTrackSuppressed(effective: Double, dislikedAt: Long?): Boolean =
  */
 fun storedTrackScoreFloor(minEffective: Double): Double =
     if (minEffective >= 0.0) minEffective else -Double.MAX_VALUE
+
+/**
+ * Whether a track's score has faded so far that forgetting the track loses
+ * nothing. Positive and negative scores are judged alike, by magnitude.
+ */
+fun isTrackScoreForgotten(stored: Double, updatedAt: Long, now: Long): Boolean =
+    abs(effectiveTrackScore(stored, updatedAt, now)) < TRACK_SCORE_FORGET_THRESHOLD

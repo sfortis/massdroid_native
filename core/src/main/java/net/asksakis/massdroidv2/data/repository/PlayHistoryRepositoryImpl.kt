@@ -19,11 +19,13 @@ import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.data.database.TrackGenreEntity
+import net.asksakis.massdroidv2.data.database.TrackUriScoreRow
 import net.asksakis.massdroidv2.data.genre.GenreSpellingResolver
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.effectiveTrackScore
 import net.asksakis.massdroidv2.domain.recommendation.genreNamesMatching
+import net.asksakis.massdroidv2.domain.recommendation.isTrackScoreForgotten
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
 import net.asksakis.massdroidv2.domain.recommendation.storedTrackScoreFloor
 import net.asksakis.massdroidv2.domain.repository.ArtistScore
@@ -589,7 +591,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
         } catch (_: Exception) {
             -1
         }
-        appDatabase.withTransaction {
+        val fadedTracks = appDatabase.withTransaction {
             dao.deleteOlderThan(cutoff)
             dao.deleteOldSmartFeedback(feedbackCutoff)
             // Self-healing (deterministic, structural only): collapse provider://
@@ -601,18 +603,33 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             dao.consolidateProviderArtistMappings()
             dao.backfillArtistGenres()
             dao.deleteOrphanTracks()
+            val faded = forgottenTrackUris(dao.getUnplayedScoredTracks(), System.currentTimeMillis())
+            faded.chunked(SQL_IN_CHUNK).forEach { dao.deleteTracks(it) }
             dao.deleteOrphanAlbums()
             dao.deleteOrphanArtists()
             dao.deleteOrphanArtistGenres()
             dao.deleteOrphanGenres()
+            faded.size
         }
         val dupAfter = try {
             dao.countDuplicateArtistMappings()
         } catch (_: Exception) {
             -1
         }
-        Log.d(TAG, "Cleanup done: retention $retentionMonths months, feedback $FEEDBACK_RETENTION_DAYS days, orphans purged, duplicate artist mappings $dupBefore -> $dupAfter")
+        Log.d(
+            TAG,
+            "Cleanup done: retention $retentionMonths months, feedback $FEEDBACK_RETENTION_DAYS days, " +
+                "orphans purged ($fadedTracks faded tracks), duplicate artist mappings $dupBefore -> $dupAfter"
+        )
     }
+
+    /**
+     * The unplayed tracks whose score has faded so far that removing them loses
+     * nothing. [rows] already excludes disliked tracks and tracks with feedback.
+     */
+    @VisibleForTesting
+    internal fun forgottenTrackUris(rows: List<TrackUriScoreRow>, now: Long): List<String> =
+        rows.filter { isTrackScoreForgotten(it.score, it.scoreUpdatedAt, now) }.map { it.uri }
 
     override suspend fun clearRecommendationData() {
         dao.clearRecommendationData()
