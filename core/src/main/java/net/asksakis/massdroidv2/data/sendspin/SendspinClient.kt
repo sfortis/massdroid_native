@@ -15,12 +15,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import net.asksakis.massdroidv2.data.sendspin.noise.NoiseClientSession
+import net.asksakis.massdroidv2.data.sendspin.noise.NoiseProtocolException
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
@@ -39,6 +43,12 @@ sealed class SendspinMessage {
     data class Binary(val data: ByteArray) : SendspinMessage()
 }
 
+/** Builds the Noise session for one connection attempt. */
+fun interface NoiseSessionFactory {
+    /** @throws IOException when the identity cannot be loaded or created. */
+    fun create(): NoiseClientSession
+}
+
 /**
  * Sendspin WebSocket client. Owns the full transport lifecycle:
  *
@@ -50,6 +60,15 @@ sealed class SendspinMessage {
  *  - Credentials are pulled from [credentialsProvider] on every attempt, so a
  *    stale or rotated token is always replaced with a fresh one before we open
  *    a socket.
+ *  - Two transports. The legacy one exchanges cleartext JSON and binary frames.
+ *    The Noise one (MA 2.10.0 and later, chosen by passing a [NoiseSessionFactory]
+ *    to [start]) runs the Noise handshake right after the proxy accepts the
+ *    auth frame, inside this class, and from then on every frame is an
+ *    encrypted binary frame. The manager sees the same decoded messages either
+ *    way, except that it never receives auth_ok on Noise.
+ *  - A Noise handshake failure or a frame that fails authentication closes the
+ *    socket and goes through the normal backoff. There is no fallback to the
+ *    legacy transport, because a paired server refuses it anyway.
  *  - [SendspinState.ERROR] is terminal. It is reached only when (a) the
  *    server returns auth_error, (b) the manager pushes ERROR for a protocol
  *    failure, or (c) the credentials provider can't supply credentials for
@@ -71,6 +90,11 @@ class SendspinClient(
         // If the provider keeps returning null/blank credentials, we give up
         // and move to ERROR so the orchestrator can take corrective action.
         private const val MAX_PROVIDER_FAILURES = 8
+        // From onOpen to the end of the Noise handshake. The MA proxy allows 10 s
+        // for the auth frame and aiosendspin 30 s per handshake message; a healthy
+        // bring-up takes well under a second.
+        private const val NOISE_BRING_UP_TIMEOUT_MS = 15_000L
+        private const val CLOSE_PROTOCOL_ERROR = 1002
     }
 
     data class Credentials(val serverUrl: String, val token: String)
@@ -79,12 +103,15 @@ class SendspinClient(
     // threads than the ones that read it. Without the visibility guarantee, a
     // thread could observe a stale closed handle (or a stale null) after a
     // reconnect. The send helpers deliberately do NOT read this one: see
-    // [authedSocket].
+    // [link].
     @Volatile private var webSocket: WebSocket? = null
 
+    /** A socket the send helpers may write to, with the Noise session that encrypts for it. */
+    private class Link(val socket: WebSocket, val noise: NoiseClientSession?)
+
     /**
-     * The socket that has already had the auth frame written to it, and the only
-     * one the send helpers may use.
+     * The only socket the send helpers may use: on the legacy transport, once the
+     * auth frame has been written to it; on Noise, once handshake message 2 has.
      *
      * OkHttp assigns the handle when `newWebSocket` returns, which is before the
      * handshake completes, and it queues anything sent in that window to go out
@@ -93,9 +120,10 @@ class SendspinClient(
      * with 4001 "First message must be auth" when the first frame carries any
      * other type. That happened on three consecutive reconnect attempts on
      * 2026-09-17 at 17:39, costing thirteen seconds of silence before the fourth
-     * attempt won the race.
+     * attempt won the race. On Noise, a cleartext frame in the middle of the
+     * handshake would break it the same way.
      */
-    @Volatile private var authedSocket: WebSocket? = null
+    @Volatile private var link: Link? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var reconnectJob: Job? = null
 
@@ -121,6 +149,7 @@ class SendspinClient(
     private val droppedBinaryFrames = AtomicInteger(0)
     private var clientIdInternal: String = ""
     private var credentialsProvider: (suspend () -> Credentials?)? = null
+    private var noiseSessionFactory: NoiseSessionFactory? = null
 
     /**
      * Begin the lifecycle. If already running, this just refreshes the
@@ -128,9 +157,14 @@ class SendspinClient(
      * caller knows credentials have rotated).
      */
     @Synchronized
-    fun start(clientId: String, credentialsProvider: suspend () -> Credentials?) {
+    fun start(
+        clientId: String,
+        noiseSessionFactory: NoiseSessionFactory? = null,
+        credentialsProvider: suspend () -> Credentials?,
+    ) {
         this.clientIdInternal = clientId
         this.credentialsProvider = credentialsProvider
+        this.noiseSessionFactory = noiseSessionFactory
         cancelReconnect()
         shouldRun = true
         attempt.set(0)
@@ -182,7 +216,7 @@ class SendspinClient(
             ws.close(1000, "Client disconnect")
         }
         webSocket = null
-        authedSocket = null
+        link = null
         // Same reason as in closeSocket: a callback already on its way must not
         // find its generation still current.
         ++connectionGeneration
@@ -190,6 +224,7 @@ class SendspinClient(
         attempt.set(0)
         providerFailures.set(0)
         credentialsProvider = null
+        noiseSessionFactory = null
     }
 
     /**
@@ -210,14 +245,14 @@ class SendspinClient(
      * closing does not stop callbacks that are already in flight. An `onOpen`
      * for the socket this call just abandoned would otherwise still pass the
      * generation guard, send auth into a dead handle and publish it as the
-     * authenticated one, which is the invariant [authedSocket] exists to hold.
+     * authenticated one, which is the invariant [link] exists to hold.
      */
     private fun closeSocket(code: Int, reason: String?) {
         val ws = synchronized(this) {
             ++connectionGeneration
             val current = webSocket
             webSocket = null
-            authedSocket = null
+            link = null
             current
         }
         ws?.close(code, reason)
@@ -303,82 +338,200 @@ class SendspinClient(
         closeSocket(1000, null)
         val gen = synchronized(this) { ++connectionGeneration }
 
+        // A fresh session per attempt: handshake state never carries over.
+        val noise = try {
+            noiseSessionFactory?.create()
+        } catch (e: IOException) {
+            Log.e(TAG, "Sendspin identity unavailable: ${e.message}")
+            errorMessage = e.message
+            scheduleConnect(nextBackoffMs())
+            return
+        }
+
         _state.value = SendspinState.CONNECTING
         errorMessage = null
 
         val wsUrl = buildSendspinUrl(creds.serverUrl)
-        Log.d(TAG, "Connecting to $wsUrl (gen=$gen, attempt=${attempt.get()})")
+        Log.d(TAG, "Connecting to $wsUrl (gen=$gen, attempt=${attempt.get()}, noise=${noise != null})")
 
         val request = Request.Builder().url(wsUrl).build()
-        webSocket = httpClientProvider().newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (gen != connectionGeneration) return
-                droppedBinaryFrames.set(0)
-                _state.value = SendspinState.AUTHENTICATING
-                val auth = SendspinAuthMessage(token = creds.token, clientId = clientIdInternal)
-                val msg = json.encodeToString(auth)
-                Log.d(TAG, "Sendspin WebSocket opened, sending auth")
-                webSocket.send(msg)
+        webSocket = httpClientProvider().newWebSocket(request, ConnectionListener(gen, creds.token, noise))
+    }
+
+    /**
+     * Callbacks of one socket. Every callback first checks that its generation is
+     * still the current one, so a socket that was replaced can no longer act.
+     */
+    private inner class ConnectionListener(
+        private val gen: Int,
+        private val token: String,
+        private val noise: NoiseClientSession?,
+    ) : WebSocketListener() {
+        // Reader thread only.
+        private var authAccepted = false
+
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (gen != connectionGeneration) return
+            droppedBinaryFrames.set(0)
+            _state.value = SendspinState.AUTHENTICATING
+            val auth = SendspinAuthMessage(token = token, clientId = clientIdInternal)
+            val msg = json.encodeToString(auth)
+            Log.d(TAG, "Sendspin WebSocket opened, sending auth")
+            webSocket.send(msg)
+            if (noise == null) {
                 // Only now may anything else be written: the auth frame is first
                 // in the queue, so whatever follows arrives second.
-                authedSocket = webSocket
+                link = Link(webSocket, null)
+            } else {
+                armNoiseBringUpTimeout(gen, noise)
             }
+        }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (gen != connectionGeneration) return
-                // Stamp the NTP receive time (T4) at the earliest possible point
-                // (before deserialize + coroutine dispatch), matching the JS
-                // reference. Capturing T4 later biases the clock offset low ->
-                // we play late. Only server/time needs it.
-                val rxUs = System.nanoTime() / 1000
-                val parsed = SendspinIncoming.parse(text, json)
-                val incoming = if (parsed is SendspinIncoming.ServerTime) {
-                    parsed.copy(clientReceivedUs = rxUs)
-                } else {
-                    parsed
-                }
-                if (!_messages.tryEmit(SendspinMessage.Text(incoming))) {
-                    Log.w(TAG, "Dropping text message: $incoming")
-                }
-                _textMessages.tryEmit(incoming)
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            if (gen != connectionGeneration) return
+            // Stamp the NTP receive time (T4) at the earliest possible point
+            // (before deserialize + coroutine dispatch), matching the JS
+            // reference. Capturing T4 later biases the clock offset low ->
+            // we play late. Only server/time needs it.
+            val rxUs = System.nanoTime() / 1000
+            when {
+                noise == null -> deliverText(text, rxUs)
+                !noise.isEstablished -> onNoiseBringUpText(webSocket, noise, text)
+                else -> abortConnection(gen, "cleartext frame on an encrypted connection")
             }
+        }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                if (gen != connectionGeneration) return
-                val data = bytes.toByteArray()
-                if (!_messages.tryEmit(SendspinMessage.Binary(data))) {
-                    val dropped = droppedBinaryFrames.incrementAndGet()
-                    if (dropped <= 5 || dropped % 100 == 0) {
-                        Log.w(TAG, "Dropping binary audio frame(s): dropped=$dropped")
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (gen != connectionGeneration) return
+            if (noise == null) {
+                deliverBinary(bytes.toByteArray())
+                return
+            }
+            // T4 before the decrypt, for the same reason as on the text path.
+            val rxUs = System.nanoTime() / 1000
+            val received = try {
+                noise.receive(bytes.toByteArray()) { frame -> webSocket.send(frame.toByteString()) }
+            } catch (e: NoiseProtocolException) {
+                abortConnection(gen, e.message ?: "transport frame rejected")
+                return
+            }
+            when (received) {
+                null -> Unit
+                is NoiseClientSession.Received.Text -> deliverText(received.text, rxUs)
+                is NoiseClientSession.Received.Binary -> deliverBinary(received.data)
+                is NoiseClientSession.Received.Rehandshake ->
+                    Log.d(TAG, "Noise re-handshake onto a ${received.psk.category} PSK")
+            }
+        }
+
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            if (gen != connectionGeneration) return
+            Log.d(TAG, "Sendspin closing: $code $reason")
+            webSocket.close(1000, null)
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (gen != connectionGeneration) return
+            Log.d(TAG, "Sendspin closed: $code $reason")
+            onTransportLost("closed: $code $reason")
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (gen != connectionGeneration) return
+            Log.e(TAG, "Sendspin failure: ${t.message}")
+            errorMessage = t.message
+            onTransportLost("failure: ${t.message}")
+        }
+
+        /**
+         * The cleartext part of a Noise connection: the proxy's auth answer, then
+         * `server/init` and handshake message 1. auth_ok stays here, because on
+         * Noise it is not the manager's cue to send the hello.
+         */
+        private fun onNoiseBringUpText(webSocket: WebSocket, noise: NoiseClientSession, text: String) {
+            try {
+                if (!authAccepted) {
+                    when (val incoming = SendspinIncoming.parse(text, json)) {
+                        SendspinIncoming.AuthOk -> {
+                            authAccepted = true
+                            _state.value = SendspinState.HANDSHAKING
+                            webSocket.send(noise.clientInitText)
+                        }
+                        is SendspinIncoming.AuthError -> emitText(incoming)
+                        else -> abortConnection(gen, "expected auth_ok, got $incoming")
                     }
-                } else {
-                    val previousDropped = droppedBinaryFrames.getAndSet(0)
-                    if (previousDropped != 0) {
-                        Log.d(TAG, "Recovered after dropping $previousDropped binary frame(s)")
-                    }
+                    return
                 }
-                _binaryMessages.tryEmit(data)
+                noise.onHandshakeText(text)?.let { reply -> webSocket.send(reply) }
+                if (noise.isEstablished) {
+                    // Message 2 is queued, so encrypted frames may follow it.
+                    link = Link(webSocket, noise)
+                    Log.d(TAG, "Noise session up: server=${noise.serverId}, psk=${noise.psk?.category}")
+                }
+            } catch (e: NoiseProtocolException) {
+                abortConnection(gen, e.message ?: "handshake failed")
+            } catch (e: IllegalArgumentException) {
+                abortConnection(gen, "malformed frame during bring-up: ${e.message}")
             }
+        }
+    }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                if (gen != connectionGeneration) return
-                Log.d(TAG, "Sendspin closing: $code $reason")
-                webSocket.close(1000, null)
-            }
+    private fun deliverText(text: String, rxUs: Long) {
+        val parsed = SendspinIncoming.parse(text, json)
+        val incoming = if (parsed is SendspinIncoming.ServerTime) {
+            parsed.copy(clientReceivedUs = rxUs)
+        } else {
+            parsed
+        }
+        emitText(incoming)
+    }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (gen != connectionGeneration) return
-                Log.d(TAG, "Sendspin closed: $code $reason")
-                onTransportLost("closed: $code $reason")
-            }
+    private fun emitText(incoming: SendspinIncoming) {
+        if (!_messages.tryEmit(SendspinMessage.Text(incoming))) {
+            Log.w(TAG, "Dropping text message: $incoming")
+        }
+        _textMessages.tryEmit(incoming)
+    }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (gen != connectionGeneration) return
-                Log.e(TAG, "Sendspin failure: ${t.message}")
-                errorMessage = t.message
-                onTransportLost("failure: ${t.message}")
+    private fun deliverBinary(data: ByteArray) {
+        if (!_messages.tryEmit(SendspinMessage.Binary(data))) {
+            val dropped = droppedBinaryFrames.incrementAndGet()
+            if (dropped <= 5 || dropped % 100 == 0) {
+                Log.w(TAG, "Dropping binary audio frame(s): dropped=$dropped")
             }
-        })
+        } else {
+            val previousDropped = droppedBinaryFrames.getAndSet(0)
+            if (previousDropped != 0) {
+                Log.d(TAG, "Recovered after dropping $previousDropped binary frame(s)")
+            }
+        }
+        _binaryMessages.tryEmit(data)
+    }
+
+    /** Fails a Noise connection that has not finished its bring-up in time. */
+    private fun armNoiseBringUpTimeout(gen: Int, noise: NoiseClientSession) {
+        scope.launch {
+            delay(NOISE_BRING_UP_TIMEOUT_MS)
+            if (gen == connectionGeneration && !noise.isEstablished) {
+                abortConnection(gen, "Noise handshake timed out")
+            }
+        }
+    }
+
+    /**
+     * Ends a connection whose Noise layer failed. The socket is closed without an
+     * application message, as the spec asks, and the attempt counts against the
+     * backoff like any other transport loss. Closing bumps the generation, so the
+     * socket's own onClosed is ignored and the loss is reported here instead.
+     */
+    private fun abortConnection(gen: Int, reason: String) {
+        synchronized(this) {
+            if (gen != connectionGeneration) return
+            Log.w(TAG, "Sendspin Noise connection failed: $reason")
+            errorMessage = reason
+            closeSocket(CLOSE_PROTOCOL_ERROR, null)
+            onTransportLost("noise: $reason")
+        }
     }
 
     /**
@@ -389,7 +542,7 @@ class SendspinClient(
     private fun onTransportLost(reason: String) {
         synchronized(this) {
             webSocket = null
-            authedSocket = null
+            link = null
             // Don't clobber a terminal ERROR pushed by the manager (auth_error).
             if (_state.value != SendspinState.ERROR) {
                 _state.value = SendspinState.DISCONNECTED
@@ -427,24 +580,21 @@ class SendspinClient(
                 playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
             )
         )
-        val msg = json.encodeToString(hello)
-        authedSocket?.send(msg)
+        sendText(json.encodeToString(hello))
     }
 
     fun sendClientState(available: Boolean, player: PlayerStateInfo) {
         val state = SendspinClientState(
             payload = ClientStatePayload(available = available, player = player)
         )
-        val msg = json.encodeToString(state)
-        authedSocket?.send(msg)
+        sendText(json.encodeToString(state))
     }
 
     fun sendTimeRequest(clientTimeUs: Long) {
         val timeReq = SendspinClientTime(
             payload = ClientTimePayload(clientTransmitted = clientTimeUs)
         )
-        val msg = json.encodeToString(timeReq)
-        authedSocket?.send(msg)
+        sendText(json.encodeToString(timeReq))
     }
 
     fun sendRequestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
@@ -453,14 +603,23 @@ class SendspinClient(
                 player = RequestFormatPlayerPayload(codec = codec, sampleRate = sampleRate, bitDepth = bitDepth, channels = channels)
             )
         )
-        val msg = json.encodeToString(req)
-        authedSocket?.send(msg)
+        sendText(json.encodeToString(req))
     }
 
     fun sendGoodbye(reason: String = "user_request") {
         val goodbye = SendspinGoodbye(payload = GoodbyePayload(reason = reason))
-        val msg = json.encodeToString(goodbye)
-        authedSocket?.send(msg)
+        sendText(json.encodeToString(goodbye))
+    }
+
+    /** Sends a control message on the published link, encrypted when the link is Noise. */
+    private fun sendText(text: String) {
+        val current = link ?: return
+        val noise = current.noise
+        if (noise == null) {
+            current.socket.send(text)
+        } else {
+            noise.sendText(text) { frame -> current.socket.send(frame.toByteString()) }
+        }
     }
 
     /**

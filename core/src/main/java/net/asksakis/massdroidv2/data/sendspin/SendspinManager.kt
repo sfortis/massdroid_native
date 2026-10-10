@@ -267,7 +267,7 @@ class SendspinManager(
             }
         }
 
-        client.start(clientId, credentialsProvider)
+        client.start(clientId, credentialsProvider = credentialsProvider)
     }
 
     /**

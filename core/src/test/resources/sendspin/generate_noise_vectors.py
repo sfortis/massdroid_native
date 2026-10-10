@@ -7,6 +7,11 @@ aiosendspin.noise.session._build_conn does, with one difference: both ephemeral 
 so the output is deterministic. MassDroid is the responder, so its expected handshake message 2
 and its expected transport frames are produced by a noiseprotocol responder with the same keys.
 
+After the first handshake and a few transport frames, the server re-handshakes in band onto a
+second PSK, the way aiosendspin's run_rehandshake_server does: both handshake messages travel as
+noise/handshake JSON inside the old transport, the prologue is the previous handshake hash, and
+both sides swap to the new session only after message 2.
+
 Run it inside the MA container, where aiosendspin is installed:
 
     ssh mass 'docker exec -i music-assistant-server python3 -' < core/src/test/resources/sendspin/generate_noise_vectors.py \
@@ -90,6 +95,40 @@ def main() -> None:
     fragment_frames = [bytes(cli.encrypt(f)) for f in fragments]
     for frame in [client_frame, *fragment_frames]:
         srv.decrypt(frame)
+    for frame in server_frames:
+        cli.decrypt(frame)
+
+    pairing_psk = fixed("massdroid-test-pairing-psk")
+    client_eph2 = fixed("massdroid-test-client-ephemeral-2")
+    server_eph2 = fixed("massdroid-test-server-ephemeral-2")
+    prologue2 = srv.get_handshake_hash()
+    srv2 = build(True, server.private_bytes, client.public_bytes, server_eph2, prologue2,
+                 pairing_psk)
+    cli2 = build(False, client.private_bytes, server.public_bytes, client_eph2, prologue2,
+                 bytes(32))
+
+    def handshake_text(noise_bytes: bytes) -> bytes:
+        return json.dumps(
+            {"type": "noise/handshake", "payload": {"data": b64url_encode(noise_bytes)}},
+            separators=(",", ":"),
+        ).encode()
+
+    rh_msg1_payload = json.dumps({"psk_id": psk_id_for(pairing_psk)}, separators=(",", ":"))
+    rh_msg1 = bytes(srv2.write_message(rh_msg1_payload.encode()))
+    rh_server_frame = bytes(srv.encrypt(b"\x00" + handshake_text(rh_msg1)))
+    assert bytes(cli.decrypt(rh_server_frame))[1:] == handshake_text(rh_msg1)
+    cli2.read_message(rh_msg1)
+    cli2.set_psks(psks=[pairing_psk])
+    rh_msg2 = bytes(cli2.write_message(b"{}"))
+    rh_client_text = handshake_text(rh_msg2)
+    rh_client_frame = bytes(cli.encrypt(b"\x00" + rh_client_text))
+    assert bytes(srv.decrypt(rh_client_frame))[1:] == rh_client_text
+    assert bytes(srv2.read_message(rh_msg2)) == b"{}"
+    assert srv2.get_handshake_hash() == cli2.get_handshake_hash()
+
+    post_server_frame = bytes(srv2.encrypt(server_hello))
+    post_client_frame = bytes(cli2.encrypt(client_hello))
+    assert bytes(srv2.decrypt(post_client_frame)) == client_hello
 
     out = {
         "suite": SUITE.value,
@@ -114,6 +153,14 @@ def main() -> None:
         "fragment_plaintext_length": len(big),
         "fragment_frame_sizes": [len(f) for f in fragment_frames],
         "fragment_frame_sha256": [hashlib.sha256(f).hexdigest() for f in fragment_frames],
+        "pairing_psk": b64url_encode(pairing_psk),
+        "client_ephemeral2_private": b64url_encode(client_eph2),
+        "rehandshake_server_frame": b64url_encode(rh_server_frame),
+        "rehandshake_client_text": rh_client_text.decode(),
+        "rehandshake_client_frame": b64url_encode(rh_client_frame),
+        "rehandshake_hash": b64url_encode(srv2.get_handshake_hash()),
+        "post_rehandshake_server_frame": b64url_encode(post_server_frame),
+        "post_rehandshake_client_frame": b64url_encode(post_client_frame),
     }
     print(json.dumps(out, indent=2))
 

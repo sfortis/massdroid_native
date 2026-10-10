@@ -32,5 +32,13 @@
   "fragment_frame_sha256": [
     "9ace586e8e9461d4fea48cb14161f4ffd78dc5bfdf553b636a3334b3cdc19f0c",
     "5388972642bdc6eb3810e843dc0809e5211d21a04591b158e9388122328d5194"
-  ]
+  ],
+  "pairing_psk": "3YFEM2Fkewa5T64D8NcyhCcACRFN1_roww42LZVLapM",
+  "client_ephemeral2_private": "Hw8WJWzURFfxBqnKFcQnnmbNWfbF7B2t02tKPOV0wN4",
+  "rehandshake_server_frame": "1W6cBnUbR0QwXxvsrulO3feSCmd00UNlcaswX3MallqACjnTtrKk8rN46E9AIM89jLc9_thL4cAEBZKzIYJGBa2pKhLfqr8hsddDH-1GpPrTEXc8pWqZyYXfuOIiZs1UwMH9OcCgWUAhNYHNgNcoz32TwcQLykf-7EdFAnWAcGU-mROJbfsbhVIo40sTC7rcapWy43QHfWs4TBaGI5kSnIt08ROVmwx8DliCMToRYnajWm1TIHhHKc4uZsPMcmxFcTJ8-blhcGkxWrxZ",
+  "rehandshake_client_text": "{\"type\":\"noise/handshake\",\"payload\":{\"data\":\"1QrAIMKoqIIFAx1Vn49238bLaoUBrmxLHNGnNr_RpFU8Z1n9y_oVnZmS81g9LCnDM8I\"}}",
+  "rehandshake_client_frame": "uHHg3x51VWH4rbLP9oh1zZJWl1XFrz4uGYgVp_avE4CpzktLkyMThGX6CXIaIH_LoGG93eK2zXH3MwrFPKXaODnFyUH7SJTmOLtPGCbV-Ox4AzPkFr7vqGe41_SEnKrb-VhvmJmh7QXwQztilYS63WJP-Qsxc8IvbDLOdswWRn4OM9Kn",
+  "rehandshake_hash": "x5s1wuFuk4Q9_tHJBeRmfGe3zqhoZbqyhNMnrIwPJiE",
+  "post_rehandshake_server_frame": "Cxb1nd3RWV-v348GQ9YdthDVE9-Kqluvv0kzGVoT8GDxnATWx4WFN4vOCKhDHAuseYUZi_TpnbVPyPHT4cz81jS0JNlTZFpB-PhiPbo",
+  "post_rehandshake_client_frame": "y0ox1YUkjHNgMkm0kB88s-JVk0LGLBTFYNJ1M-4S_XRv1v2XjaoG8JWK9WWt7xW4nrR8RbAuTN5t0O8jzR7SrylGRxer8Jg"
 }

@@ -20,9 +20,11 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.noise.SendspinIdentityStore
 import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import okhttp3.OkHttpClient
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
@@ -101,6 +103,12 @@ object AppModule {
         httpClientProvider = { wsClient.getHttpClient() },
         json = json
     )
+
+    /** The Noise identity file lives in noBackupFilesDir: a private key must never be restored onto another device. */
+    @Provides
+    @Singleton
+    fun provideSendspinIdentityStore(@ApplicationContext ctx: Context): SendspinIdentityStore =
+        SendspinIdentityStore(File(ctx.noBackupFilesDir, "sendspin_identity.json"))
 
     @Provides
     @Singleton

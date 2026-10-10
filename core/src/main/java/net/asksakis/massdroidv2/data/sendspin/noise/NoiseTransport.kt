@@ -69,15 +69,18 @@ class NoiseTransport internal constructor(
     }
 
     /**
-     * Replaces both ciphers after an in-band re-handshake. The caller must hold back other sends
-     * between sending handshake message 2 and this swap.
+     * Sends re-handshake message 2 under the current keys, then takes over the ciphers of [next].
+     * Both happen under the send lock, so no frame from another thread can be encrypted with the
+     * old keys after message 2 or with the new keys before it. Must be called on the receiving
+     * thread, which owns [receive].
      */
-    fun swapCiphers(other: NoiseTransport) {
+    fun sendTextThenSwap(text: String, next: NoiseTransport, sink: (ByteArray) -> Boolean): Boolean =
         synchronized(sendLock) {
-            send = other.send
-            receive = other.receive
+            val sent = sendText(text, sink)
+            send = next.send
+            receive = next.receive
+            sent
         }
-    }
 
     private fun onFragmentMore(plaintext: ByteArray) {
         val buffer = reassembly
