@@ -311,13 +311,10 @@ object AppModule {
     }
 
     /**
-     * The score "Not for me" wrote up to schema 19. Frozen here rather than read
-     * from the live constant, so a later change to that value cannot change which
-     * old rows this migration recognises as dislikes.
+     * How long schema 19 kept `smart_feedback` rows. Frozen here rather than read
+     * from the live constant, so a later change to the retention cannot change
+     * what this migration does.
      */
-    private const val V19_DISLIKE_TRACK_SCORE = -2.0
-
-    /** How long schema 19 kept `smart_feedback` rows. Frozen for the same reason. */
     private const val V19_FEEDBACK_RETENTION_DAYS = 120L
 
     private const val MILLIS_PER_DAY = 86_400_000L
@@ -330,9 +327,13 @@ object AppModule {
      * track out of mixes for good: on a real database 2202 of 19580 tracks were
      * suppressed, 1158 of them with no feedback left to explain it.
      *
-     * - `disliked_at` goes on every track at or below the dislike score, dated by
-     *   its latest dislike row, or by now when retention has pruned that row. The
-     *   stored score is left as it is, so the undo's compare-and-set still matches.
+     * - `disliked_at` goes on every track that has a `dislike` feedback row, dated
+     *   by its latest one. The score cannot tell a dislike apart: it was an
+     *   unclamped running sum, so four hard skips also reached -2.4, and a dislike
+     *   followed by a listen climbed back above -2.0. A dislike whose row the
+     *   retention has pruned gets no mark, and its score fades like any other.
+     *   The undo deletes the row, so an undone dislike has none. The stored score
+     *   is left as it is, so the undo's compare-and-set still matches.
      * - `score_updated_at` is the latest feedback or play of the track. A track
      *   with neither is at least as old as the feedback retention, so it is dated
      *   that far back and has already mostly faded, which is what releases the
@@ -348,14 +349,15 @@ object AppModule {
             db.execSQL("ALTER TABLE `tracks` ADD COLUMN `disliked_at` INTEGER")
             db.execSQL(
                 """
-                UPDATE `tracks` SET `disliked_at` = COALESCE(
-                    (SELECT MAX(sf.`created_at`) FROM `smart_feedback` sf
-                     WHERE sf.`track_uri` = `tracks`.`uri` AND sf.`action` = 'dislike'),
-                    ?
+                UPDATE `tracks` SET `disliked_at` = (
+                    SELECT MAX(sf.`created_at`) FROM `smart_feedback` sf
+                    WHERE sf.`track_uri` = `tracks`.`uri` AND sf.`action` = 'dislike'
                 )
-                WHERE `score` <= ?
-                """.trimIndent(),
-                arrayOf<Any>(now, V19_DISLIKE_TRACK_SCORE)
+                WHERE `uri` IN (
+                    SELECT `track_uri` FROM `smart_feedback`
+                    WHERE `action` = 'dislike' AND `track_uri` IS NOT NULL
+                )
+                """.trimIndent()
             )
             db.execSQL(
                 """

@@ -62,8 +62,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
          * suppressing: the `disliked_at` mark does that, permanently, while this
          * score fades like any other. The value stays as the marker the undo
          * compares against, and so that a track whose mark is lifted starts from
-         * a clear negative. Schema 20 also uses it, frozen in the migration, to
-         * recognise the dislikes written before the mark existed.
+         * a clear negative.
          */
         private const val DISLIKE_TRACK_SCORE = -2.0
 
