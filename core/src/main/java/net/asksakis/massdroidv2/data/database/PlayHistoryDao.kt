@@ -77,6 +77,78 @@ interface PlayHistoryDao {
     @Query("UPDATE artists SET name = :name, mbid = :mbid WHERE uri = :uri")
     suspend fun replaceArtistIdentity(uri: String, name: String, mbid: String?)
 
+    /**
+     * Hands a library uri that Music Assistant gave to another artist over to its
+     * new occupant, and moves what belonged to the previous one off it.
+     *
+     * Everything else keys off the uri, so without this the previous artist's
+     * plays, feedback and block stayed on it: Savages' plays on
+     * `library://artist/41` counted as Lindstrøm's, and a block on Savages
+     * blocked Lindstrøm. The previous artist's rows move to another uri of the
+     * same name when one exists (preferring `library://`). Otherwise they are
+     * removed, which leaves those tracks with no artist: the previous artist is
+     * no longer in the library, and keeping the rows would describe the new one.
+     * A block already filed under the new occupant's name is kept.
+     */
+    @Transaction
+    suspend fun reassignLibraryArtistUri(uri: String, previousName: String, name: String, mbid: String?) {
+        val heir = getSameNameArtistUri(previousName, uri)
+        if (heir != null) {
+            copyTrackArtistLinks(uri, heir)
+            moveArtistFeedback(uri, heir)
+            copyArtistBlock(uri, heir, previousName)
+        }
+        deleteTrackArtistLinks(uri)
+        deleteArtistFeedback(uri)
+        deleteBlockNotNamed(uri, name)
+        replaceArtistIdentity(uri, name, mbid)
+        deleteArtistGenres(uri)
+    }
+
+    @Query(
+        """
+        SELECT uri FROM artists
+        WHERE lower(name) = lower(:name) AND uri <> :excludeUri
+        ORDER BY CASE WHEN uri LIKE 'library://%' THEN 0 ELSE 1 END, uri
+        LIMIT 1
+        """
+    )
+    suspend fun getSameNameArtistUri(name: String, excludeUri: String): String?
+
+    @Query(
+        """
+        INSERT OR IGNORE INTO track_artists (track_uri, artist_uri)
+        SELECT track_uri, :toUri FROM track_artists WHERE artist_uri = :fromUri
+        """
+    )
+    suspend fun copyTrackArtistLinks(fromUri: String, toUri: String)
+
+    @Query("DELETE FROM track_artists WHERE artist_uri = :uri")
+    suspend fun deleteTrackArtistLinks(uri: String)
+
+    @Query("UPDATE smart_feedback SET artist_uri = :toUri WHERE artist_uri = :fromUri")
+    suspend fun moveArtistFeedback(fromUri: String, toUri: String)
+
+    @Query("DELETE FROM smart_feedback WHERE artist_uri = :uri")
+    suspend fun deleteArtistFeedback(uri: String)
+
+    @Query(
+        """
+        INSERT OR IGNORE INTO blocked_artists (artist_uri, artist_name, blocked_at)
+        SELECT :toUri, :previousName, blocked_at FROM blocked_artists
+        WHERE artist_uri = :fromUri AND (artist_name IS NULL OR lower(artist_name) = lower(:previousName))
+        """
+    )
+    suspend fun copyArtistBlock(fromUri: String, toUri: String, previousName: String)
+
+    @Query(
+        """
+        DELETE FROM blocked_artists
+        WHERE artist_uri = :uri AND (artist_name IS NULL OR lower(artist_name) <> lower(:name))
+        """
+    )
+    suspend fun deleteBlockNotNamed(uri: String, name: String)
+
     /** Drop the genres attached to a uri, for when that uri turned out to be someone else. */
     @Query("DELETE FROM artist_genres WHERE artist_uri = :uri")
     suspend fun deleteArtistGenres(uri: String)

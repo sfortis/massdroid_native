@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.musicbrainz.MusicBrainzGenreResolver
 import net.asksakis.massdroidv2.data.database.ArtistGenreEntity
+import net.asksakis.massdroidv2.data.database.ArtistIdentityRow
 import net.asksakis.massdroidv2.data.database.ArtistNeedingGenres
 import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
@@ -18,6 +19,7 @@ import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
+import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -402,8 +404,9 @@ class LibraryGenreEnricher @Inject constructor(
      * asking for `similar_artists` on artist/41 returns Lindstrøm's neighbours
      * while the mix believes it is expanding a post-punk seed, and the stale
      * genres attached to the uri describe the previous occupant. So a uri whose
-     * occupant changed is repointed and its genres are dropped, to be rebuilt
-     * from MusicBrainz for whoever lives there now.
+     * occupant changed is repointed, its genres are dropped to be rebuilt from
+     * MusicBrainz for whoever lives there now, and the previous occupant's plays,
+     * feedback and block move off it (see `reassignLibraryArtistUri`).
      */
     private suspend fun syncLibraryArtists() {
         try {
@@ -436,12 +439,15 @@ class LibraryGenreEnricher @Inject constructor(
                             )
                             inserted++
                         }
-                        // Same uri, different occupant: the id was recycled.
-                        !local.name.equals(artist.name, ignoreCase = true) -> {
-                            Log.d(TAG, "Library id reused: ${artist.uri} was '${local.name}', now '${artist.name}'")
-                            dao.replaceArtistIdentity(artist.uri, artist.name, artist.mbid)
-                            dao.deleteArtistGenres(artist.uri)
-                            repointed++
+                        else -> when (libraryUriChange(local, artist)) {
+                            LibraryUriChange.SAME -> Unit
+                            LibraryUriChange.RENAMED ->
+                                dao.replaceArtistIdentity(artist.uri, artist.name, artist.mbid)
+                            LibraryUriChange.REUSED -> {
+                                Log.d(TAG, "Library id reused: ${artist.uri} was '${local.name}', now '${artist.name}'")
+                                dao.reassignLibraryArtistUri(artist.uri, local.name, artist.name, artist.mbid)
+                                repointed++
+                            }
                         }
                     }
                     if (artist.mbid != null) {
@@ -482,4 +488,26 @@ class LibraryGenreEnricher @Inject constructor(
         /** SQLite caps host parameters, so deletes go in chunks. */
         private const val DELETE_CHUNK = 400
     }
+}
+
+/** What happened to a library uri between the local row and the server's listing. */
+internal enum class LibraryUriChange { SAME, RENAMED, REUSED }
+
+/**
+ * Tells a renamed artist apart from a library id that Music Assistant gave to
+ * someone else. The difference matters because a reuse moves or drops the
+ * previous artist's history (see `PlayHistoryDao.reassignLibraryArtistUri`).
+ *
+ * The same MusicBrainz id on both sides is the same artist whatever the name
+ * says. Otherwise names are compared by [genreKey] (case, accents and
+ * punctuation ignored, the rule MA itself uses for aliases), so "Beyonce"
+ * becoming "Beyoncé" is a rename and not a new artist.
+ */
+@VisibleForTesting
+internal fun libraryUriChange(local: ArtistIdentityRow, server: Artist): LibraryUriChange = when {
+    local.mbid != null && local.mbid == server.mbid ->
+        if (local.name == server.name) LibraryUriChange.SAME else LibraryUriChange.RENAMED
+    genreKey(local.name) != genreKey(server.name) -> LibraryUriChange.REUSED
+    local.name != server.name -> LibraryUriChange.RENAMED
+    else -> LibraryUriChange.SAME
 }
