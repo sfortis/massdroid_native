@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.data.musicbrainz
 
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.database.MusicBrainzArtistTagsEntity
@@ -91,5 +92,23 @@ class MusicBrainzStillWorthAskingTest {
     @Test
     fun `nothing to ask about is nothing to ask about`() = runTest {
         assertThat(resolver.stillWorthAsking(emptyList())).isEmpty()
+    }
+
+    @Test
+    fun `a large pool is read in chunks that stay under the SQLite variable limit`() = runTest {
+        // Android 11 and older allow 999 bound variables. One query for 1,200 keys
+        // threw there, and the catch then re-listed every artist as outstanding.
+        val pool = (1..1200).map { MusicBrainzGenreResolver.ArtistRef("Artist $it") }
+        val sizes = mutableListOf<Int>()
+        coEvery { dao.getMusicBrainzTagsFor(any()) } answers {
+            val keys = firstArg<List<String>>()
+            sizes += keys.size
+            keys.map { row(it, "electronic", 1) }
+        }
+
+        assertThat(resolver.stillWorthAsking(pool)).isEmpty()
+        assertThat(sizes.sum()).isEqualTo(1200)
+        assertThat(sizes.max()).isAtMost(999)
+        coVerify(atLeast = 3) { dao.getMusicBrainzTagsFor(any()) }
     }
 }

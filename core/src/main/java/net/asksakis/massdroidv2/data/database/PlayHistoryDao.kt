@@ -447,15 +447,20 @@ interface PlayHistoryDao {
      * mix. These rows are re-asked once, this time disambiguated by the recording.
      *
      * The MBID pattern is 8-4-4-4-12 hex; anything else is a name key.
+     *
+     * The names with a recording are collected once, not looked up per cache row:
+     * a correlated `lower(a.name)` cannot use an index, and on a real library
+     * (12,604 cache rows) it ran for more than seven minutes, where this form
+     * takes 60 ms and returns the same rows.
      */
     @Query("""
         SELECT m.artist_name FROM musicbrainz_artist_tags m
         WHERE m.artist_name NOT LIKE '________-____-____-____-____________'
-          AND EXISTS (
-              SELECT 1 FROM artists a
+          AND m.artist_name IN (
+              SELECT DISTINCT lower(a.name) FROM artists a
               JOIN track_artists ta ON ta.artist_uri = a.uri
               JOIN tracks t ON t.uri = ta.track_uri
-              WHERE lower(a.name) = m.artist_name AND t.name != ''
+              WHERE t.name != ''
           )
     """)
     suspend fun getNameResolvedArtistsWithRecording(): List<String>

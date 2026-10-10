@@ -75,7 +75,7 @@ class MusicBrainzGenreResolver @Inject constructor(
         val keys = artists.map { cacheKey(it.name, it.mbid) }.filter { it.isNotEmpty() }.distinct()
         if (keys.isEmpty()) return emptyMap()
         val rows = try {
-            dao.getMusicBrainzTagsFor(keys)
+            cachedRows(keys)
         } catch (_: Exception) {
             return emptyMap()
         }
@@ -108,7 +108,7 @@ class MusicBrainzGenreResolver @Inject constructor(
             .filterKeys { it.isNotEmpty() }
         if (byKey.isEmpty()) return emptyList()
         val rows = try {
-            dao.getMusicBrainzTagsFor(byKey.keys.toList())
+            cachedRows(byKey.keys.toList())
         } catch (_: Exception) {
             // Unable to read the cache: better to ask again than to skip
             // everything and report nothing to do.
@@ -379,8 +379,19 @@ class MusicBrainzGenreResolver @Inject constructor(
     /** An artist to look up: the id if Music Assistant knew one, else the name. */
     data class ArtistRef(val name: String, val mbid: String? = null)
 
+    /**
+     * Cache rows for [keys], read in chunks. The gap walk passes thousands of
+     * keys (8,409 on a real library), and Android 11 and older allow 999 bound
+     * variables per statement: the single query threw there, the callers caught
+     * it, and every answered artist was queued for MusicBrainz again.
+     */
+    private suspend fun cachedRows(keys: List<String>): List<MusicBrainzArtistTagsEntity> =
+        keys.chunked(SQL_IN_CHUNK).flatMap { dao.getMusicBrainzTagsFor(it) }
+
     private companion object {
         const val TAG = "MusicBrainzGenre"
+        /** Bound variables per `IN` query, under the 999 SQLite allows on older Android. */
+        const val SQL_IN_CHUNK = 500
         const val BASE = "https://musicbrainz.org/ws/2"
         const val USER_AGENT = "MassDroid/2.x ( https://github.com/sfortis/massdroid_native )"
         // MusicBrainz genres are stable, so entries are kept for 90 days; a miss
