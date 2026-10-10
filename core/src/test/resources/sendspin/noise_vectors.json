@@ -1,0 +1,36 @@
+{
+  "suite": "25519_AESGCM_SHA256",
+  "client_static_private": "FXbeEtUm2cmD19EpzAgH_BKme4Fq_iC5owaU9snUMLs",
+  "client_static_public": "wmemhm3-pxGJV_WggWdA_vuaILaJXAhDbr2i5pTsC2I",
+  "server_static_public": "P4o8v2fj3SZ2dURRR9w_LyJFw4156xnKdK99R3NiN04",
+  "client_ephemeral_private": "NDbRqPghH7GY8YVUYGUH9e9CCCIA7U8NJ3VymWiJi_o",
+  "psk": "oHGC3ZJkyNN2FpCntIW-ctg_PjEFmB18rwe6rhH97Uk",
+  "psk_id": "eI8Gl5TTDX98gFQWJK_itfLRdHHnBN5X69Xw-uOMOMc",
+  "sentinel_psk": "G14k28Gu2V_CpaM4qQwF30S9EPXsH0zWbL-GJydnudM",
+  "sentinel_psk_id": "GFsV9tLaSQm9HcFWpKsgYQOr7wFTvNUtkmFwuVz3zoo",
+  "client_init": "{\"type\":\"client/init\",\"payload\":{\"client_id\":\"wmemhm3-pxGJV_WggWdA_vuaILaJXAhDbr2i5pTsC2I\",\"version\":1,\"suite\":\"25519_AESGCM_SHA256\"}}",
+  "server_init": "{\"type\":\"server/init\",\"payload\":{\"server_id\":\"P4o8v2fj3SZ2dURRR9w_LyJFw4156xnKdK99R3NiN04\",\"version\":1}}",
+  "msg1": "MJr3Z1_FzZzXk9yKsB7mRcNVK_vLLjwIDxlpfYpQ9Sd7FZ9E5ksYmGIYiZHTFulVA7U4kW90Tf2rkjVm4vTAGcPIywK3D2Z-wsRSfQGOpQyS6obIdc0snLviaYll2n2Qay-Leq6Ukqk",
+  "msg1_payload": "{\"psk_id\":\"eI8Gl5TTDX98gFQWJK_itfLRdHHnBN5X69Xw-uOMOMc\"}",
+  "msg2": "6idII_yCNtIc4n3JsvnON0Wfm8-Yl2icbCUdLMxT9QujGxDo3HEB9MWoUhBvwaMoknE",
+  "handshake_hash": "qizN7uG0zGJxCMArC8A9WBg1KlP6u3UM5Y5epby7-DQ",
+  "server_frames": [
+    "ACteLqhaJ_hQRGfCrDxfWvfH_mM2w9DgkgjXBZZJjQqMv__KoJxWU4NlCejhMvUJlIsaYqAVVhCfmJc1y4975uOBACwufSntNEDTv-w",
+    "a4Gseaxy352_ZDnyeCyGOxvtX_kxWRb-gPloYunC6p6EadzigfcfPHNgMpCyVLTYdZ1C_pwuWiruHYRkmS-oWd3J3RoFq8TcX5ttb9rmeT7bj8X9qBXrD0GMCRUu6-vFk6XelcU2n8UyehTTwDKdSmY23cnw"
+  ],
+  "server_plaintexts": [
+    "AHsidHlwZSI6InNlcnZlci9oZWxsbyIsInBheWxvYWQiOnsibmFtZSI6Ik11c2ljIEFzc2lzdGFudCJ9fQ",
+    "BAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2BhYmM"
+  ],
+  "client_plaintext": "AHsidHlwZSI6ImNsaWVudC9oZWxsbyIsInBheWxvYWQiOnsibmFtZSI6Ik1hc3NEcm9pZCJ9fQ",
+  "client_frame": "8_jFWDbAo91xnAPlKyoZVQHVoQLZ7y4pjG9pmUugwx3vNsD-eCXhh8ZMi23925NTKPM9Cm8EmtLmFbgwSKS8A-qviNAGdhQ",
+  "fragment_plaintext_length": 70001,
+  "fragment_frame_sizes": [
+    65535,
+    4500
+  ],
+  "fragment_frame_sha256": [
+    "9ace586e8e9461d4fea48cb14161f4ffd78dc5bfdf553b636a3334b3cdc19f0c",
+    "5388972642bdc6eb3810e843dc0809e5211d21a04591b158e9388122328d5194"
+  ]
+}

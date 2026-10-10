@@ -79,6 +79,9 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("com.google.oboe:oboe:1.10.0")
+    // X25519 for the Sendspin Noise handshake. The platform has no X25519 at minSdk 26;
+    // only the lightweight rfc7748 class is used, so R8 keeps a small part of the jar.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
 
     // Hilt
     implementation("com.google.dagger:hilt-android:2.52")
