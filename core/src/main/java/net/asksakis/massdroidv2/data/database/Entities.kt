@@ -14,7 +14,8 @@ data class AlbumEntity(
     val year: Int? = null
 )
 
-@Entity(tableName = "artists")
+/** Indexed by [name]: the genre-gap and identity queries look artists up by name. */
+@Entity(tableName = "artists", indices = [Index("name")])
 data class ArtistEntity(
     @PrimaryKey val uri: String,
     val name: String,
@@ -228,6 +229,13 @@ data class BlockedArtistEntity(
 )
 
 
+/**
+ * An artist's tracks as fetched for the genre mix engine (`artist_tracks`, sampled
+ * and enriched with the artist's genres), keyed by the normalized artist uri.
+ * The seed-track engine's `top_tracks` answers live in [MaArtistTopTracksEntity]:
+ * until schema 22 both wrote here under the same key, so each could read the
+ * other's list.
+ */
 @Entity(tableName = "artist_track_cache")
 data class ArtistTrackCacheEntity(
     @PrimaryKey
@@ -236,15 +244,6 @@ data class ArtistTrackCacheEntity(
     @ColumnInfo(name = "fetched_at") val fetchedAt: Long
 )
 
-/**
- * MA `similar_artists` results, cached so a mix build does not re-ask the server
- * every time. Without this the MA discovery route made ~42 live WS calls per mix
- * (18s) where the Last.fm route it replaces was answered from Room in 6.6s.
- *
- * Keyed by MA uris on both sides, so entries stay valid across name changes and
- * can be fed straight back into `top_tracks` with no resolution step.
- * Standalone, like `artist_track_cache`: these artists may never be played.
- */
 /**
  * MusicBrainz genres per artist, the genre source for candidates nobody else can
  * describe.
@@ -256,8 +255,10 @@ data class ArtistTrackCacheEntity(
  * 13 of 16 of those artists, precisely (Lost Frequencies -> house/dance/edm,
  * The Telescopes -> shoegaze/dream pop), with no API key.
  *
- * Keyed by normalized NAME rather than MBID because the candidates have no MBID
- * to look up with. [tags] is weight-ordered and may be EMPTY, which is a real
+ * Keyed by the artist's MBID when one is known and by the lowercased name
+ * otherwise (the resolvers' `cacheKey`), because many candidates have no MBID to
+ * look up with. The column is still called `artist_name`, so it often holds an
+ * MBID. [tags] is weight-ordered and may be EMPTY, which is a real
  * answer ("MusicBrainz knows nothing about them") and is cached as such so the
  * 1 req/s budget is never spent on the same dead end twice.
  */
@@ -300,6 +301,15 @@ data class MaSimilarTrackCacheEntity(
     @ColumnInfo(name = "fetched_at") val fetchedAt: Long
 )
 
+/**
+ * MA `similar_artists` results, cached so a mix build does not re-ask the server
+ * every time. Without this the MA discovery route made ~42 live WS calls per mix
+ * (18s) where the Last.fm route it replaces was answered from Room in 6.6s.
+ *
+ * Keyed by MA uris on both sides, so entries stay valid across name changes and
+ * can be fed straight back into `top_tracks` with no resolution step.
+ * Standalone, like `artist_track_cache`: these artists may never be played.
+ */
 @Entity(tableName = "ma_similar_artists", primaryKeys = ["source_uri", "similar_uri"])
 data class MaSimilarArtistEntity(
     @ColumnInfo(name = "source_uri") val sourceUri: String,
@@ -308,5 +318,18 @@ data class MaSimilarArtistEntity(
     @ColumnInfo(name = "similar_genres") val similarGenres: String,
     /** Server-provided ordering; lower is more similar. */
     @ColumnInfo(name = "position") val position: Int,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)
+
+/**
+ * MA `top_tracks` answers for the seed-track engine, keyed by the artist uri the
+ * engine asked with. A few tracks per artist, kept 14 days. Standalone, like
+ * `artist_track_cache`: these artists may never be played.
+ */
+@Entity(tableName = "ma_artist_top_tracks")
+data class MaArtistTopTracksEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "artist_uri") val artistUri: String,
+    @ColumnInfo(name = "tracks_json") val tracksJson: String,
     @ColumnInfo(name = "fetched_at") val fetchedAt: Long
 )

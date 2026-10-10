@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.PlayHistoryEntity
 import net.asksakis.massdroidv2.data.database.PlayOrigin
+import net.asksakis.massdroidv2.data.database.MaArtistTopTracksEntity
 import net.asksakis.massdroidv2.data.database.MaSimilarArtistEntity
 import net.asksakis.massdroidv2.data.database.MaSimilarTrackCacheEntity
 import net.asksakis.massdroidv2.data.database.SeedTrackRow
@@ -66,6 +67,12 @@ class PlayHistoryRepositoryImpl @Inject constructor(
          * removes it. Matches the generator's own TTL for the same rows.
          */
         private const val SIMILAR_TRACK_CACHE_DAYS = 14L
+
+        /** Same rule for `ma_similar_artists`; matches the generator's `MA_SIMILAR_TTL_MS`. */
+        private const val SIMILAR_ARTIST_CACHE_DAYS = 14L
+
+        /** Same rule for `ma_artist_top_tracks`; matches the generator's `MA_TOP_TRACKS_TTL_MS`. */
+        private const val ARTIST_TOP_TRACKS_CACHE_DAYS = 14L
         private const val MILLIS_PER_HOUR = 3_600_000.0
         private const val BLL_DECAY = -1.5
         private const val BLL_MIN_HOURS = 0.5
@@ -353,11 +360,26 @@ class PlayHistoryRepositoryImpl @Inject constructor(
 
     override suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>? {
         val cache = dao.getArtistTrackCache(artistUri) ?: return null
-        if (System.currentTimeMillis() - cache.fetchedAt > maxAgeMs) return null
+        return decodeCachedTracks(cache.tracksJson, cache.fetchedAt, maxAgeMs, "artist track cache", artistUri)
+    }
+
+    override suspend fun getCachedArtistTopTracks(artistUri: String, maxAgeMs: Long): List<Track>? {
+        val cache = dao.getArtistTopTracks(artistUri) ?: return null
+        return decodeCachedTracks(cache.tracksJson, cache.fetchedAt, maxAgeMs, "artist top tracks", artistUri)
+    }
+
+    private fun decodeCachedTracks(
+        tracksJson: String,
+        fetchedAt: Long,
+        maxAgeMs: Long,
+        cacheName: String,
+        artistUri: String
+    ): List<Track>? {
+        if (System.currentTimeMillis() - fetchedAt > maxAgeMs) return null
         return try {
-            json.decodeFromString(ListSerializer(Track.serializer()), cache.tracksJson)
+            json.decodeFromString(ListSerializer(Track.serializer()), tracksJson)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to decode artist track cache for $artistUri: ${e.message}")
+            Log.w(TAG, "Failed to decode $cacheName for $artistUri: ${e.message}")
             null
         }
     }
@@ -396,7 +418,8 @@ class PlayHistoryRepositoryImpl @Inject constructor(
     override suspend fun cacheMaSimilarArtists(artistUri: String, similar: List<CachedSimilarArtist>) {
         if (artistUri.isBlank()) return
         val now = System.currentTimeMillis()
-        dao.upsertMaSimilarArtists(
+        dao.replaceMaSimilarArtists(
+            artistUri,
             similar.mapIndexed { index, s ->
                 MaSimilarArtistEntity(
                     sourceUri = artistUri,
@@ -408,6 +431,9 @@ class PlayHistoryRepositoryImpl @Inject constructor(
                 )
             }
         )
+        // Swept on write, like the other MA caches. Sources rotate with the seeds,
+        // and on a real database 66% of the rows had outlived the TTL.
+        dao.deleteExpiredMaSimilarArtists(now - (SIMILAR_ARTIST_CACHE_DAYS * MILLIS_PER_DAY))
     }
 
     override suspend fun getCachedSimilarTracks(
@@ -499,6 +525,18 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             )
         )
         dao.deleteExpiredArtistTrackCache(now - (14 * MILLIS_PER_DAY))
+    }
+
+    override suspend fun cacheArtistTopTracks(artistUri: String, tracks: List<Track>) {
+        val now = System.currentTimeMillis()
+        dao.upsertArtistTopTracks(
+            MaArtistTopTracksEntity(
+                artistUri = artistUri,
+                tracksJson = json.encodeToString(ListSerializer(Track.serializer()), tracks),
+                fetchedAt = now
+            )
+        )
+        dao.deleteExpiredArtistTopTracks(now - (ARTIST_TOP_TRACKS_CACHE_DAYS * MILLIS_PER_DAY))
     }
 
     override suspend fun getAllGenreNames(): List<String> = dao.getAllGenreNames()

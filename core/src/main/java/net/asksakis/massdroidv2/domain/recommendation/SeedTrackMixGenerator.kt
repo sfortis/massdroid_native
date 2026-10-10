@@ -1140,10 +1140,10 @@ class SeedTrackMixGenerator @Inject constructor(
                     // over the wire each), which alone made a build take 70s.
                     // We need two tracks per artist, and top_tracks supplies
                     // that: 20 artists yielded 33 usable tracks in practice.
-                    val cached = playHistoryRepository.getCachedArtistTracks(art.uri, MA_TOP_TRACKS_TTL_MS)
+                    val cached = playHistoryRepository.getCachedArtistTopTracks(art.uri, MA_TOP_TRACKS_TTL_MS)
                     val tracks = cached ?: try {
                         musicRepository.getArtistTopTracks(ref.itemId, ref.provider, MA_TOP_TRACKS_PER_ARTIST)
-                            .also { if (it.isNotEmpty()) playHistoryRepository.cacheArtistTracks(art.uri, it) }
+                            .also { if (it.isNotEmpty()) playHistoryRepository.cacheArtistTopTracks(art.uri, it) }
                     } catch (e: CancellationException) {
                         // A cancelled build must stop, not carry on with an empty answer.
                         throw e

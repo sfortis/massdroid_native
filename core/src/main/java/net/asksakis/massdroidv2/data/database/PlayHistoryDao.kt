@@ -220,9 +220,22 @@ interface PlayHistoryDao {
 
     // ---- MA similar-artists cache ----
 
-    @Transaction
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertMaSimilarArtists(entities: List<MaSimilarArtistEntity>)
+    suspend fun insertMaSimilarArtists(entities: List<MaSimilarArtistEntity>)
+
+    @Query("DELETE FROM ma_similar_artists WHERE source_uri = :sourceUri")
+    suspend fun deleteMaSimilarArtists(sourceUri: String)
+
+    /**
+     * Replaces every row of [sourceUri]. An upsert alone kept the rows a refresh no
+     * longer returned: they came back beside the new answer, and their old
+     * `fetched_at` made the source read as expired on every build.
+     */
+    @Transaction
+    suspend fun replaceMaSimilarArtists(sourceUri: String, entities: List<MaSimilarArtistEntity>) {
+        deleteMaSimilarArtists(sourceUri)
+        insertMaSimilarArtists(entities)
+    }
 
     @Query("SELECT * FROM ma_similar_artists WHERE source_uri = :sourceUri ORDER BY position")
     suspend fun getMaSimilarArtists(sourceUri: String): List<MaSimilarArtistEntity>
@@ -238,6 +251,17 @@ interface PlayHistoryDao {
 
     @Query("DELETE FROM artist_track_cache WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTrackCache(olderThan: Long)
+
+    // ---- MA top-tracks cache ----
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertArtistTopTracks(cache: MaArtistTopTracksEntity)
+
+    @Query("SELECT * FROM ma_artist_top_tracks WHERE artist_uri = :artistUri LIMIT 1")
+    suspend fun getArtistTopTracks(artistUri: String): MaArtistTopTracksEntity?
+
+    @Query("DELETE FROM ma_artist_top_tracks WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredArtistTopTracks(olderThan: Long)
 
     // ---- MA similar-tracks cache ----
 
@@ -1020,7 +1044,7 @@ interface PlayHistoryDao {
      * [clearBlockedArtists].
      *
      * The external caches (`musicbrainz_artist_tags`, `ma_similar_artists`,
-     * `artist_track_cache`, `ma_similar_track_cache`) are also untouched: they hold
+     * `artist_track_cache`, `ma_artist_top_tracks`, `ma_similar_track_cache`) are also untouched: they hold
      * no preference of any kind, only answers from servers that would otherwise have
      * to be fetched again over days.
      */

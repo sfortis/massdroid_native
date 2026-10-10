@@ -9,8 +9,10 @@ import org.junit.Test
  * Guards the one property of the migration set that cannot be seen by reading it:
  * that no installed version is stranded.
  *
- * Room falls back to a destructive migration whenever it cannot find a path, so a
- * missing step costs a user their listening history rather than failing the build.
+ * Room used to fall back to a destructive migration whenever it could not find a
+ * path, so a missing step cost a user their listening history rather than failing
+ * the build. The fallback now covers only schemas that never shipped, so a missing
+ * step would stop the database from opening at all.
  * That is what happened to schemas 11 to 14. They reached `origin/dev` and CI
  * published a debug APK for each, then their migrations were deleted once a single
  * v10 to v17 hop replaced them, and nothing noticed for five weeks.

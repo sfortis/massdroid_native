@@ -184,8 +184,17 @@ interface PlayHistoryRepository {
      * for that user.
      */
     suspend fun cacheSimilarTracks(seedUri: String, tracks: List<Track>)
+    /** The genre mix engine's artist tracks (`artist_tracks`, sampled), keyed by normalized artist uri. */
     suspend fun getCachedArtistTracks(artistUri: String, maxAgeMs: Long): List<Track>?
     suspend fun cacheArtistTracks(artistUri: String, tracks: List<Track>)
+
+    /**
+     * The seed engine's MA `top_tracks` answer for [artistUri]. Kept apart from
+     * [getCachedArtistTracks]: the two engines ask for different lists under the
+     * same artist uri.
+     */
+    suspend fun getCachedArtistTopTracks(artistUri: String, maxAgeMs: Long): List<Track>?
+    suspend fun cacheArtistTopTracks(artistUri: String, tracks: List<Track>)
     /** Cached provider URI for an artist name resolved by the genre engine (null if absent or stale). */
     /**
      * Seed-track seeds: listened tracks whose effective (time-faded) score is at

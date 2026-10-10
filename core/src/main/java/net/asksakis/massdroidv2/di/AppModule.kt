@@ -468,11 +468,42 @@ object AppModule {
     }
 
     /**
+     * Gives the seed engine's `top_tracks` answers a table of their own and indexes
+     * artist names.
+     *
+     * - `ma_artist_top_tracks`: until now the seed engine and the genre mix engine
+     *   both wrote `artist_track_cache` under the same artist uri, one with a few
+     *   top tracks for 14 days and the other with up to 40 artist tracks for 12
+     *   hours, so each could read the other's list. The old rows are mixed, so
+     *   `artist_track_cache` is emptied; both caches refill on the next mix.
+     * - `index_artists_name`: the genre-gap queries look artists up by name once
+     *   per row. Without the index they took 43 s and 304 s on a real library
+     *   (laptop timing, the phone is slower); with it, 43 ms and 78 ms.
+     */
+    private val MIGRATION_21_22 = object : Migration(21, 22) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `ma_artist_top_tracks` (
+                    `artist_uri` TEXT NOT NULL,
+                    `tracks_json` TEXT NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`artist_uri`)
+                )
+                """.trimIndent()
+            )
+            db.execSQL("DELETE FROM `artist_track_cache`")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_artists_name` ON `artists` (`name`)")
+        }
+    }
+
+    /**
      * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
      *
      * v10 is what the last release before v2.32.0 shipped, so v10 -> v17 is the path
      * every user coming from a release takes, followed by [MIGRATION_17_18],
-     * [MIGRATION_18_19], [MIGRATION_19_20] and `GenreSpellingMigration.MIGRATION_20_21`. Stepping through v11 to v16 instead
+     * [MIGRATION_18_19], [MIGRATION_19_20], `GenreSpellingMigration.MIGRATION_20_21` and
+     * [MIGRATION_21_22]. Stepping through v11 to v16 instead
      * would only make that upgrade do pointless work, since one of those steps
      * empties a table the previous one had just created.
      *
@@ -543,7 +574,7 @@ object AppModule {
         MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_11_12,
         MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
         MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
-        GenreSpellingMigration.MIGRATION_20_21
+        GenreSpellingMigration.MIGRATION_20_21, MIGRATION_21_22
     )
 
     /**
@@ -554,6 +585,9 @@ object AppModule {
      */
     @VisibleForTesting
     internal const val OLDEST_SHIPPED_SCHEMA = 2
+
+    /** Schemas below [OLDEST_SHIPPED_SCHEMA]: no installation should hold one, so none has a migration. */
+    private val NEVER_SHIPPED_SCHEMAS: IntArray = (1 until OLDEST_SHIPPED_SCHEMA).toList().toIntArray()
 
     @Provides
     @Singleton
@@ -571,9 +605,14 @@ object AppModule {
             AppDatabase::class.java,
             DATABASE_NAME
         ).addMigrations(*ALL_MIGRATIONS)
-            // Kept so a missing migration cannot brick the app, but no longer
-            // silent: see DatabaseResetReporter.
-            .fallbackToDestructiveMigration()
+            // Only a schema older than any that shipped is rebuilt empty (and
+            // reported, see DatabaseResetReporter). Every shipped schema has a
+            // path, which MigrationCoverageTest checks. The blanket fallback this
+            // replaces also wiped the database on a DOWNGRADE, for example a
+            // dev-latest APK installed over a newer local debug build, which
+            // shares its package; a downgrade now fails to open instead, and
+            // installing the newer build again brings the history back.
+            .fallbackToDestructiveMigrationFrom(*NEVER_SHIPPED_SCHEMAS)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
                     // db.version is still the OLD one here, so the target comes
