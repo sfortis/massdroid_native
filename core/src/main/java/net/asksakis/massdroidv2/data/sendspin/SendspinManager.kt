@@ -47,6 +47,8 @@ class SendspinManager(
         // VOLUME_FADE_SEC (~150ms), not the snappy mute fade.
         private const val DUCK_GAIN = 0.1f
         private const val HEARTBEAT_INTERVAL_MS = 2000L
+        // Connection states in which the server has sent its hello, so a client/state is in order.
+        private val STATE_REPORTING_STATES = setOf(SendspinState.SYNCING, SendspinState.STREAMING)
         // After stream/end, wait this long before fully releasing the audio
         // resources (Oboe output, wake + Wi-Fi locks). A normal track change is
         // stream/end -> stream/start within ~1-3s and cancels the teardown; only a
@@ -187,7 +189,7 @@ class SendspinManager(
     // without this the swapped-in engine sits unconfigured (no output, stuck
     // "measuring") — notably at launch while already grouped.
     @Volatile private var lastStreamInfo: StreamStartPlayerInfo? = null
-    @Volatile private var lastSentSyncState = ""
+    @Volatile private var lastSentAvailable: Boolean? = null
     @Volatile private var lastCallbackSentAtMs = 0L
     private var clientId: String = ""
     private var clientName: String = ""
@@ -307,7 +309,7 @@ class SendspinManager(
                 Log.d(TAG, "Server hello received")
                 client.updateState(SendspinState.SYNCING)
                 setupSyncStateCallback()
-                sendCurrentState(currentSyncStatePayloadValue())
+                sendCurrentState()
                 startHeartbeat()
                 // Always run time sync, even in DIRECT mode. Keeps the Kalman
                 // clock warm so group join has instant precision (no 2-3s wait).
@@ -498,7 +500,7 @@ class SendspinManager(
             while (true) {
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (System.currentTimeMillis() - lastCallbackSentAtMs < 500L) continue
-                sendCurrentState(currentSyncStatePayloadValue())
+                sendCurrentState()
             }
         }
     }
@@ -814,10 +816,15 @@ class SendspinManager(
     @Volatile private var isCellularTransport = false
 
     fun setCellularHint(cellular: Boolean) {
+        val changed = cellular != isCellularTransport
         isCellularTransport = cellular
         _networkMode.value = if (cellular) "Mobile" else "WiFi"
         engine.setCellularTransport(cellular)
         updatePreferredCodec()
+        // min_buffer_ms follows the network, so the server hears of the change
+        // now rather than at the next heartbeat. Only once the hello exchange is
+        // done: state before client/hello is out of protocol order.
+        if (changed && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
     }
 
     @Volatile private var groupedForCodec = false
@@ -839,7 +846,7 @@ class SendspinManager(
         _preferredCodec.value = preferredSendspinCodec(groupedForCodec, isCellularTransport)
     }
 
-    private fun sendCurrentState(syncState: String) {
+    private fun sendCurrentState() {
         // Per the Sendspin spec, static_delay_ms reports the device's known
         // external delay beyond the audio port; the server sends chunks that
         // much earlier and judges lateness with it. The output calibration of a
@@ -856,10 +863,14 @@ class SendspinManager(
             ((audio.routeAcousticExtraUs ?: 0L) / 1000L).coerceIn(0L, 5000L).toInt()
         }
         client.sendClientState(
-            volume = currentVolume,
-            muted = muted,
-            syncState = syncState,
-            staticDelayMs = specStaticDelayMs
+            available = currentAvailability(),
+            player = PlayerStateInfo(
+                volume = currentVolume,
+                muted = muted,
+                staticDelayMs = specStaticDelayMs,
+                requiredLeadTimeMs = SENDSPIN_REQUIRED_LEAD_TIME_MS,
+                minBufferMs = sendspinMinBufferMs(isCellularTransport)
+            )
         )
     }
 
@@ -940,26 +951,27 @@ class SendspinManager(
         }
         audio.onSyncStateChanged = { state ->
             _syncState.value = state
-            val stateStr = mapEngineStateToProtocolState(state)
-            if (stateStr != lastSentSyncState) {
-                lastSentSyncState = stateStr
+            val available = availabilityFor(state)
+            if (available != lastSentAvailable) {
+                lastSentAvailable = available
                 lastCallbackSentAtMs = System.currentTimeMillis()
-                Log.d("sendspindbg", ">>> client/state: $stateStr (from $state) buf=${audio.bufferDurationMs()}ms")
-                sendCurrentState(stateStr)
+                Log.d("sendspindbg", ">>> client/state: available=$available (from $state) buf=${audio.bufferDurationMs()}ms")
+                sendCurrentState()
             }
         }
     }
 
-    private fun currentSyncStatePayloadValue(): String =
-        mapEngineStateToProtocolState(_syncState.value)
+    private fun currentAvailability(): Boolean = availabilityFor(_syncState.value)
 
     /**
-     * Translate our internal [SyncState] enum to the wire-level
-     * `client/state` field defined by the Sendspin protocol.
+     * Translate our internal [SyncState] enum to the `available` flag of
+     * `client/state`. Every state reports available, as sendspin-js does: the
+     * flag says whether the client can take part in playback at all, and none
+     * of these states is a reason to leave it.
      *
-     * Per spec (`src/spec.md`) and the reference sendspin-js client
-     * (`src/core/core.ts:handleStreamClear`), the only legal values
-     * are `'synchronized'`, `'error'`, and `'external_source'`. The
+     * This flag replaced the legacy `state` string, whose values were
+     * `'synchronized'`, `'error'`, and `'external_source'`. The history below
+     * is why no recovery state is reported as unavailable. The old
      * `'error'` state is documented to signal **unrecoverable**
      * problems (buffer underrun the client cannot keep up with, clock
      * sync failure, etc.) — not transient buffer flushes.
@@ -974,17 +986,17 @@ class SendspinManager(
      *
      * `IDLE` (no active stream yet, e.g. between tracks after
      * stream/end) also used to map to `'error'` and caused a
-     * Disconnected/Connected flap after every track end. Both map to
-     * `'synchronized'` now, matching reference-client behaviour. If we
+     * Disconnected/Connected flap after every track end. Both report
+     * available now, matching reference-client behaviour. If we
      * ever need to express true underrun, we'll add an explicit
      * `SyncState` variant for it instead of overloading the existing
      * recovery state.
      */
-    private fun mapEngineStateToProtocolState(state: SyncState): String = when (state) {
-        SyncState.IDLE -> "synchronized"
-        SyncState.SYNCHRONIZED -> "synchronized"
-        SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> "synchronized"
-        SyncState.SYNC_ERROR_REBUFFERING -> "synchronized"
+    private fun availabilityFor(state: SyncState): Boolean = when (state) {
+        SyncState.IDLE -> true
+        SyncState.SYNCHRONIZED -> true
+        SyncState.HOLDOVER_PLAYING_FROM_BUFFER -> true
+        SyncState.SYNC_ERROR_REBUFFERING -> true
     }
 
     fun stop() {

@@ -87,6 +87,28 @@ fun preferredSendspinCodec(inSyncGroup: Boolean, onCellular: Boolean): String =
     if (onCellular && !inSyncGroup) OPUS_48_16.codec else FLAC_48_16.codec
 
 /**
+ * The startup lead this player reports: time from the server sending
+ * stream/start to the first chunk's timestamp. 250 ms is what the sync engine
+ * buffers before it starts (`SYNC_START_BUFFER_MS`), what sendspin-js reports,
+ * and what MA 2.9 assumed for this client for months.
+ */
+const val SENDSPIN_REQUIRED_LEAD_TIME_MS = 250
+
+/** Minimum buffer on Wi-Fi: the sendspin-js default, and MA 2.9's. */
+const val SENDSPIN_MIN_BUFFER_WIFI_MS = 250
+
+/**
+ * Minimum buffer on mobile data, where latency jumps far more than on Wi-Fi.
+ * The server sends at least this far ahead of playback, which also costs this
+ * much startup latency, and in a group it applies to every member.
+ */
+const val SENDSPIN_MIN_BUFFER_CELLULAR_MS = 1000
+
+/** The `min_buffer_ms` this player reports for the network it is on. */
+fun sendspinMinBufferMs(onCellular: Boolean): Int =
+    if (onCellular) SENDSPIN_MIN_BUFFER_CELLULAR_MS else SENDSPIN_MIN_BUFFER_WIFI_MS
+
+/**
  * The formats announced in `client/hello`, [preferredCodec] first. With
  * "automatic" the server streams the first entry; an explicit server format
  * overrides the order and is never touched by the client. A later change of
@@ -139,12 +161,24 @@ data class PlayerStateInfo(
     val volume: Int = 100,
     val muted: Boolean = false,
     @SerialName("static_delay_ms")
-    val staticDelayMs: Int = 0
+    val staticDelayMs: Int = 0,
+    /** Startup lead from the server's stream/start (or stream/clear) to the first chunk's timestamp. */
+    @SerialName("required_lead_time_ms")
+    val requiredLeadTimeMs: Int = SENDSPIN_REQUIRED_LEAD_TIME_MS,
+    /** Minimum buffer the server keeps ahead of playback, against network jitter. */
+    @SerialName("min_buffer_ms")
+    val minBufferMs: Int = SENDSPIN_MIN_BUFFER_WIFI_MS
 )
 
+/**
+ * `client/state`. Availability is the top-level `available` flag; the legacy
+ * top-level `state` string is no longer sent, because aiosendspin 9 flags a
+ * client that uses it as non-compliant. Older servers (aiosendspin 6, MA 2.9)
+ * read `state` as optional and ignore the unknown `available`.
+ */
 @Serializable
 data class ClientStatePayload(
-    val state: String = "synchronized",
+    val available: Boolean = true,
     val player: PlayerStateInfo = PlayerStateInfo()
 )
 

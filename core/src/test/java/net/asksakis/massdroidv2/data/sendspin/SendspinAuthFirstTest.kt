@@ -93,7 +93,7 @@ class SendspinAuthFirstTest {
 
         // The socket handle exists but the handshake has not completed. A frame
         // sent now would be queued ahead of the auth frame.
-        client.sendClientState(volume = 30)
+        client.sendClientState(available = true, player = PlayerStateInfo(volume = 30))
         client.sendTimeRequest(clientTimeUs = 1_000)
 
         assertThat(wire.sent).isEmpty()
@@ -125,7 +125,7 @@ class SendspinAuthFirstTest {
         wire.sent.clear()
 
         requireNotNull(wire.listener).onFailure(wire.socket, RuntimeException("dropped"), null)
-        client.sendClientState(volume = 30)
+        client.sendClientState(available = true, player = PlayerStateInfo(volume = 30))
 
         assertThat(wire.sent).isEmpty()
     }

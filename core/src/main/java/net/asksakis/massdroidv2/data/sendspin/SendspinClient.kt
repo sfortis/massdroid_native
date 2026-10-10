@@ -431,12 +431,9 @@ class SendspinClient(
         authedSocket?.send(msg)
     }
 
-    fun sendClientState(volume: Int = 100, muted: Boolean = false, syncState: String = "synchronized", staticDelayMs: Int = 0) {
+    fun sendClientState(available: Boolean, player: PlayerStateInfo) {
         val state = SendspinClientState(
-            payload = ClientStatePayload(
-                state = syncState,
-                player = PlayerStateInfo(volume = volume, muted = muted, staticDelayMs = staticDelayMs)
-            )
+            payload = ClientStatePayload(available = available, player = player)
         )
         val msg = json.encodeToString(state)
         authedSocket?.send(msg)
