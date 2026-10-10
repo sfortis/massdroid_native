@@ -733,7 +733,11 @@ interface PlayHistoryDao {
         -- library 12314 of 15062 played tracks have a single play, so treating
         -- unknown as generated would empty the seed pool on upgrade. The filter
         -- therefore tightens gradually as new plays are recorded.
-        HAVING COUNT(*) > 1
+        --
+        -- Counted per play, not per row: the join to track_artists repeats each
+        -- play once per credited artist, so COUNT(*) read a collaboration heard
+        -- once as two plays.
+        HAVING COUNT(DISTINCT ph.id) > 1
             OR SUM(CASE WHEN ph.origin IN ('smart_mix', 'genre_radio') THEN 0 ELSE 1 END) > 0
         ORDER BY lastPlayedAt DESC
         """
