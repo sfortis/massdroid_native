@@ -131,7 +131,18 @@ fi
 echo "=== Install ==="
 echo "Using adb: $ADB_BIN"
 
-mapfile -t CONNECTED < <("$ADB_BIN" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}')
+list_connected() {
+  "$ADB_BIN" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}'
+}
+mapfile -t CONNECTED < <(list_connected)
+
+# ADB_CONNECT_CMD is an optional local command that brings a network device back, for example
+# after a phone reboot closed its wireless adb port. Nothing in the repo sets it.
+if [[ ${#CONNECTED[@]} -eq 0 && -n "${ADB_CONNECT_CMD:-}" ]]; then
+  echo "No connected devices; running ADB_CONNECT_CMD ($ADB_CONNECT_CMD)"
+  $ADB_CONNECT_CMD > /dev/null || true
+  mapfile -t CONNECTED < <(list_connected)
+fi
 
 if [[ ${#CONNECTED[@]} -eq 0 ]]; then
   echo "No connected devices"
