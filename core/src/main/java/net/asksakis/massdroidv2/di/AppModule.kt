@@ -20,6 +20,7 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinSyncEngine
 import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
+import net.asksakis.massdroidv2.data.sendspin.noise.NoisePairingCredentials
 import net.asksakis.massdroidv2.data.sendspin.noise.SendspinIdentityStore
 import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -112,6 +113,11 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideNoisePairingCredentials(store: SendspinIdentityStore): NoisePairingCredentials =
+        NoisePairingCredentials(store)
+
+    @Provides
+    @Singleton
     fun provideSendspinSyncEngine(
         @ApplicationContext ctx: Context
     ): SendspinSyncEngine = SendspinSyncEngine(ctx)
@@ -135,7 +141,8 @@ object AppModule {
         syncEngine: SendspinSyncEngine,
         directEngine: net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine,
         sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus,
-    ): SendspinManager = SendspinManager(client, syncEngine, directEngine, sessionEventBus)
+        noisePairing: NoisePairingCredentials,
+    ): SendspinManager = SendspinManager(client, syncEngine, directEngine, sessionEventBus, noisePairing)
 
     @Provides
     @Singleton

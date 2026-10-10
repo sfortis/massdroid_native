@@ -318,6 +318,21 @@ sealed class SendspinIncoming {
     data object StreamClear : SendspinIncoming()
     data class ServerState(val payload: ServerStatePayload) : SendspinIncoming()
     data class ServerCommand(val payload: ServerCommandPayload) : SendspinIncoming()
+
+    // Noise transport only.
+    data class ServerActivate(val payload: ServerActivatePayload) : SendspinIncoming()
+    data object ServerPairFinalize : SendspinIncoming()
+    data class PairAbort(val reason: String) : SendspinIncoming()
+    data object ServerUnpair : SendspinIncoming()
+
+    /**
+     * Not server messages: the client reports, in wire order, that a Noise connection
+     * completed its handshake, or that the server moved it onto another PSK. Either
+     * way the server sends `server/hello` next.
+     */
+    data object NoiseSessionUp : SendspinIncoming()
+    data object NoiseRehandshake : SendspinIncoming()
+
     data class Unknown(val type: String) : SendspinIncoming()
 
     companion object {
@@ -358,6 +373,17 @@ sealed class SendspinIncoming {
                         obj["payload"]!!
                     )
                 )
+                "server/activate" -> ServerActivate(
+                    json.decodeFromJsonElement(
+                        ServerActivatePayload.serializer(),
+                        obj["payload"]!!
+                    )
+                )
+                "server/pair-finalize" -> ServerPairFinalize
+                "pair/abort" -> PairAbort(
+                    obj["payload"]?.jsonObject?.get("reason")?.jsonPrimitive?.content ?: "unknown"
+                )
+                "server/unpair" -> ServerUnpair
                 else -> {
                     Log.d("SendspinParse", "Unknown type=$type payload=${obj["payload"]}")
                     Unknown(type)

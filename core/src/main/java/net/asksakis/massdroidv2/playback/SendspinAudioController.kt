@@ -1072,7 +1072,7 @@ class SendspinAudioController(
                 // for car BT and we don't want that echoed into MA).
                 val seedVolume = volumeCoordinator.seedStartupVolume()
                 sendspinManager.setVolume(seedVolume)
-                sendspinManager.start(clientId, clientName, buildCredentialsProvider())
+                sendspinManager.start(clientId, clientName, credentialsProvider = buildCredentialsProvider())
                 Log.d(TAG, "Sendspin started, playerId=$clientId seedVol=$seedVolume")
             } else {
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")

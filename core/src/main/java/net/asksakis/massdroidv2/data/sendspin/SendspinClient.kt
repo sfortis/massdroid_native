@@ -17,6 +17,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.asksakis.massdroidv2.data.sendspin.noise.NoiseClientSession
 import net.asksakis.massdroidv2.data.sendspin.noise.NoiseProtocolException
+import net.asksakis.massdroidv2.data.sendspin.noise.ResolvedPsk
+import net.asksakis.massdroidv2.data.sendspin.noise.SendspinNoise
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -395,7 +397,7 @@ class SendspinClient(
             // we play late. Only server/time needs it.
             val rxUs = System.nanoTime() / 1000
             when {
-                noise == null -> deliverText(text, rxUs)
+                noise == null -> deliverText(text, rxUs, null)
                 !noise.isEstablished -> onNoiseBringUpText(webSocket, noise, text)
                 else -> abortConnection(gen, "cleartext frame on an encrypted connection")
             }
@@ -417,10 +419,12 @@ class SendspinClient(
             }
             when (received) {
                 null -> Unit
-                is NoiseClientSession.Received.Text -> deliverText(received.text, rxUs)
+                is NoiseClientSession.Received.Text -> deliverText(received.text, rxUs, noise)
                 is NoiseClientSession.Received.Binary -> deliverBinary(received.data)
-                is NoiseClientSession.Received.Rehandshake ->
+                is NoiseClientSession.Received.Rehandshake -> {
                     Log.d(TAG, "Noise re-handshake onto a ${received.psk.category} PSK")
+                    emitText(SendspinIncoming.NoiseRehandshake)
+                }
             }
         }
 
@@ -467,6 +471,7 @@ class SendspinClient(
                     // Message 2 is queued, so encrypted frames may follow it.
                     link = Link(webSocket, noise)
                     Log.d(TAG, "Noise session up: server=${noise.serverId}, psk=${noise.psk?.category}")
+                    emitText(SendspinIncoming.NoiseSessionUp)
                 }
             } catch (e: NoiseProtocolException) {
                 abortConnection(gen, e.message ?: "handshake failed")
@@ -476,8 +481,16 @@ class SendspinClient(
         }
     }
 
-    private fun deliverText(text: String, rxUs: Long) {
+    private fun deliverText(text: String, rxUs: Long, noise: NoiseClientSession?) {
         val parsed = SendspinIncoming.parse(text, json)
+        // Ended here on the reader thread rather than in the manager, so the
+        // exchange is closed before any later frame is read. During pairing it
+        // stays open: the server then waits for client/pair-finalize.
+        if (noise != null && parsed is SendspinIncoming.ServerActivate &&
+            ACTIVITY_PAIRING !in parsed.payload.activities
+        ) {
+            noise.endExchange()
+        }
         val incoming = if (parsed is SendspinIncoming.ServerTime) {
             parsed.copy(clientReceivedUs = rxUs)
         } else {
@@ -608,17 +621,44 @@ class SendspinClient(
 
     fun sendGoodbye(reason: String = "user_request") {
         val goodbye = SendspinGoodbye(payload = GoodbyePayload(reason = reason))
-        sendText(json.encodeToString(goodbye))
+        sendText(json.encodeToString(goodbye), force = true)
     }
 
-    /** Sends a control message on the published link, encrypted when the link is Noise. */
-    private fun sendText(text: String) {
+    /** `client/hello` on the Noise transport, the answer to `server/hello`. */
+    fun sendNoiseHello(payload: NoiseClientHelloPayload) {
+        sendText(json.encodeToString(SendspinNoiseClientHello(payload = payload)), force = true)
+    }
+
+    fun sendPairFinalize(longTermPsk: ByteArray) {
+        val finalize = SendspinClientPairFinalize(
+            payload = ClientPairFinalizePayload(longTermPsk = SendspinNoise.b64urlEncode(longTermPsk))
+        )
+        sendText(json.encodeToString(finalize), force = true)
+    }
+
+    fun sendPairAbort(reason: String) {
+        sendText(json.encodeToString(SendspinPairAbort(payload = PairAbortPayload(reason))), force = true)
+    }
+
+    /** The PSK of the current Noise connection, or null on the legacy transport or before the handshake. */
+    fun noisePsk(): ResolvedPsk? = link?.noise?.psk
+
+    /** The server id of the current Noise connection. */
+    fun noiseServerId(): String? = link?.noise?.serverId
+
+    /**
+     * Sends a control message on the published link, encrypted when the link is
+     * Noise. On Noise only a [force]d message passes while a hello exchange is
+     * open (see [NoiseClientSession]); the others are dropped, which is harmless
+     * because the manager reports its full state once the exchange ends.
+     */
+    private fun sendText(text: String, force: Boolean = false) {
         val current = link ?: return
         val noise = current.noise
         if (noise == null) {
             current.socket.send(text)
         } else {
-            noise.sendText(text) { frame -> current.socket.send(frame.toByteString()) }
+            noise.sendText(text, force) { frame -> current.socket.send(frame.toByteString()) }
         }
     }
 

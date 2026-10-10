@@ -75,6 +75,7 @@ class NoiseClientSessionTest {
         val big = ByteArray(vectors.getValue("fragment_plaintext_length").jsonPrimitive.int) {
             if (it == 0) 4 else ((it - 1) % 251).toByte()
         }
+        session.endExchange()
         session.sendText(helloText) { true }
         session.sendBinary(big) { true }
 
@@ -85,12 +86,27 @@ class NoiseClientSessionTest {
         assertThat(session.psk?.category).isEqualTo(PskCategory.PAIRING)
         assertThat(sent.map(SendspinNoise::b64urlEncode)).containsExactly(str("rehandshake_client_frame"))
 
-        // After the swap both directions use the new keys.
+        // After the swap both directions use the new keys, and only the hello may go out.
         val serverHello = session.receive(bytes("post_rehandshake_server_frame"), noSink) as NoiseClientSession.Received.Text
         assertThat(serverHello.text).contains("server/hello")
+        assertThat(session.sendText("{\"type\":\"client/time\"}", sink = noSink)).isFalse()
         val after = mutableListOf<ByteArray>()
-        session.sendText(helloText) { after += it; true }
+        session.sendText(helloText, force = true) { after += it; true }
         assertThat(after.map(SendspinNoise::b64urlEncode)).containsExactly(str("post_rehandshake_client_frame"))
+    }
+
+    @Test
+    fun `until the exchange ends only forced sends leave`() {
+        val session = session()
+        session.onHandshakeText(str("server_init"))
+        session.onHandshakeText(message1Text())
+        val sent = mutableListOf<ByteArray>()
+
+        assertThat(session.sendText("{\"type\":\"client/time\"}") { sent += it; true }).isFalse()
+        assertThat(session.sendText("{\"type\":\"client/hello\"}", force = true) { sent += it; true }).isTrue()
+        session.endExchange()
+        assertThat(session.sendText("{\"type\":\"client/time\"}") { sent += it; true }).isTrue()
+        assertThat(sent).hasSize(2)
     }
 
     @Test

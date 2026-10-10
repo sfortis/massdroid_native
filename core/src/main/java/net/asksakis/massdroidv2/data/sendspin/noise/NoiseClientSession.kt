@@ -22,6 +22,13 @@ import kotlinx.serialization.json.putJsonObject
  *
  * Receiving must happen on one thread, the socket's reader. Sending is safe from any thread.
  *
+ * **Hello exchange.** Right after the handshake, and again after every re-handshake, the server
+ * reads the next frame as `client/hello`, and during pairing as `client/pair-finalize`. Any other
+ * frame there breaks the connection. So from the handshake until the caller calls [endExchange],
+ * only sends marked `force` go out; the others are dropped, as aiosendspin's client suppresses
+ * them. The re-handshake opens the exchange under the same lock as its key swap, so a periodic
+ * send on another thread cannot slip in between.
+ *
  * @param ephemerals the source of ephemeral key pairs, one per handshake; fixed ones for tests only.
  */
 class NoiseClientSession(
@@ -43,6 +50,8 @@ class NoiseClientSession(
     private var serverStatic: ByteArray? = null
     private var handshakeHash = ByteArray(0)
     @Volatile private var transport: NoiseTransport? = null
+    private val gateLock = Any()
+    private var exchangeOpen = true
 
     /** The server's peer id, known once `server/init` has arrived. */
     @Volatile var serverId: String? = null
@@ -98,9 +107,27 @@ class NoiseClientSession(
         }
     }
 
-    fun sendText(text: String, sink: (ByteArray) -> Boolean): Boolean = established().sendText(text, sink)
+    /**
+     * Encrypts and sends a control message. Returns false when the socket refused it, or when a
+     * hello exchange is open and [force] is false, in which case nothing is sent.
+     */
+    fun sendText(text: String, force: Boolean = false, sink: (ByteArray) -> Boolean): Boolean =
+        synchronized(gateLock) {
+            if (exchangeOpen && !force) return false
+            established().sendText(text, sink)
+        }
 
-    fun sendBinary(data: ByteArray, sink: (ByteArray) -> Boolean): Boolean = established().sendBinary(data, sink)
+    fun sendBinary(data: ByteArray, sink: (ByteArray) -> Boolean): Boolean = synchronized(gateLock) {
+        if (exchangeOpen) return false
+        established().sendBinary(data, sink)
+    }
+
+    /** Ends the hello exchange: the server has activated the connection for something other than pairing. */
+    fun endExchange() {
+        synchronized(gateLock) { exchangeOpen = false }
+    }
+
+    val isExchangeOpen: Boolean get() = synchronized(gateLock) { exchangeOpen }
 
     private fun established(): NoiseTransport = checkNotNull(transport) { "Noise handshake has not completed" }
 
@@ -147,9 +174,11 @@ class NoiseClientSession(
             ephemeral = ephemerals(),
         )
         val (resolved, result) = respond(next, text)
-        if (!current.sendTextThenSwap(handshakeText(result.message), result.transport, sink)) {
-            throw NoiseProtocolException("socket refused re-handshake message 2")
+        val sent = synchronized(gateLock) {
+            exchangeOpen = true
+            current.sendTextThenSwap(handshakeText(result.message), result.transport, sink)
         }
+        if (!sent) throw NoiseProtocolException("socket refused re-handshake message 2")
         handshakeHash = result.handshakeHash
         psk = resolved
         return Received.Rehandshake(resolved)

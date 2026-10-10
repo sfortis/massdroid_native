@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import net.asksakis.massdroidv2.data.sendspin.noise.NoisePairingCredentials
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 
 class SendspinManager(
@@ -23,6 +24,7 @@ class SendspinManager(
     private val syncEngine: SendspinSyncEngine,
     private val directEngine: SendspinDirectEngine,
     sessionEventBus: SessionEventBus,
+    noisePairing: NoisePairingCredentials,
 ) {
     // Active engine. Solo (DIRECT) by default; swapped to the grouped engine on
     // a group join and back on leave. The two are fully separate instances so
@@ -194,6 +196,19 @@ class SendspinManager(
     private var clientId: String = ""
     private var clientName: String = ""
 
+    // Set by start(): whether this lifecycle runs on the Noise transport (MA 2.10.0+).
+    @Volatile private var noiseMode = false
+    private val noiseFlow = SendspinNoiseFlow(
+        client = client,
+        pairing = noisePairing,
+        player = object : SendspinNoiseFlow.Player {
+            override fun sendHello(trustLevel: String) = sendNoiseHello(trustLevel)
+            override fun startPlayer() = beginPlayerSession()
+            override fun stopPlayer() = endPlayerSession()
+            override fun resendState() = sendCurrentState()
+        },
+    )
+
     init {
         // Both engines exist for the app's lifetime (swapped on group join/leave);
         // wire the output-active handler on each so locks track playback on either.
@@ -219,10 +234,12 @@ class SendspinManager(
     fun start(
         clientId: String,
         clientName: String,
+        noiseSessionFactory: NoiseSessionFactory? = null,
         credentialsProvider: suspend () -> SendspinClient.Credentials?
     ) {
         this.clientId = clientId
         this.clientName = clientName
+        noiseMode = noiseSessionFactory != null
         _enabled.value = true
         _connectionState.value = SendspinState.CONNECTING
 
@@ -267,7 +284,7 @@ class SendspinManager(
             }
         }
 
-        client.start(clientId, credentialsProvider = credentialsProvider)
+        client.start(clientId, noiseSessionFactory, credentialsProvider)
     }
 
     /**
@@ -307,14 +324,21 @@ class SendspinManager(
 
             is SendspinIncoming.ServerHello -> {
                 Log.d(TAG, "Server hello received")
-                client.updateState(SendspinState.SYNCING)
-                setupSyncStateCallback()
-                sendCurrentState()
-                startHeartbeat()
-                // Always run time sync, even in DIRECT mode. Keeps the Kalman
-                // clock warm so group join has instant precision (no 2-3s wait).
-                startTimeSync()
+                // On Noise the hello opens the exchange; the player starts on server/activate.
+                if (noiseMode) noiseFlow.onServerHello() else beginPlayerSession()
             }
+
+            SendspinIncoming.NoiseSessionUp -> {
+                // The jobs of the previous connection must not report into this one
+                // before its server/activate has named a player role.
+                endPlayerSession()
+                noiseFlow.reset()
+            }
+            SendspinIncoming.NoiseRehandshake -> noiseFlow.onRehandshake()
+            is SendspinIncoming.ServerActivate -> noiseFlow.onActivate(incoming.payload)
+            SendspinIncoming.ServerPairFinalize -> noiseFlow.onPairFinalize()
+            is SendspinIncoming.PairAbort -> noiseFlow.onPairAbort(incoming.reason)
+            SendspinIncoming.ServerUnpair -> noiseFlow.onUnpair()
 
             is SendspinIncoming.ServerTime -> {
                 val t1 = incoming.payload.clientTransmitted
@@ -465,6 +489,42 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> unknown type: ${incoming.type}")
             }
         }
+    }
+
+    /**
+     * The server has accepted the player: on the legacy transport at server/hello,
+     * on Noise at the first server/activate that names a player role.
+     */
+    private fun beginPlayerSession() {
+        client.updateState(SendspinState.SYNCING)
+        setupSyncStateCallback()
+        sendCurrentState()
+        startHeartbeat()
+        // Always run time sync, even in DIRECT mode. Keeps the Kalman
+        // clock warm so group join has instant precision (no 2-3s wait).
+        startTimeSync()
+    }
+
+    /** The server withdrew the player role (Noise only); the connection stays open. */
+    private fun endPlayerSession() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        timeSyncJob?.cancel()
+        timeSyncJob = null
+        client.updateState(SendspinState.HANDSHAKING)
+    }
+
+    private fun sendNoiseHello(trustLevel: String) {
+        val formats = helloSupportedFormats(_preferredCodec.value)
+        announcedCodec = formats.first().codec
+        Log.d(TAG, "Sending Noise hello formats=${formats.joinToString { it.codec }} trust=$trustLevel")
+        client.sendNoiseHello(
+            NoiseClientHelloPayload(
+                name = clientName,
+                playerV1Support = PlayerV1Support(supportedFormats = formats),
+                trustLevel = trustLevel,
+            )
+        )
     }
 
     private fun handleCommand(payload: ServerCommandPayload) {
