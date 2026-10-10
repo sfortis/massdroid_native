@@ -1292,6 +1292,7 @@ private fun sourceKindLabel(mediaType: MediaType): String = when (mediaType) {
     MediaType.RADIO -> "Radio, what is playing now"
     MediaType.PODCAST -> "Podcast, what is playing now"
     MediaType.AUDIOBOOK -> "Audiobook, what is playing now"
+    MediaType.GENRE -> "Genre, what is playing now"
     else -> "What is playing now"
 }
 

@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.domain.model.*
 import net.asksakis.massdroidv2.domain.model.RecommendationFolder
 import net.asksakis.massdroidv2.domain.model.RecommendationItems
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
+import net.asksakis.massdroidv2.domain.recommendation.genresMatching
 import net.asksakis.massdroidv2.domain.repository.EverythingBlockedException
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
@@ -341,7 +342,11 @@ class MusicRepositoryImpl @Inject constructor(
             playlists = obj["playlists"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPlaylist() } ?: emptyList(),
             radios = obj["radio"]?.let { parseMediaItems(it) }?.mapNotNull { it.toRadio() } ?: emptyList(),
             audiobooks = obj["audiobooks"]?.let { parseMediaItems(it) }?.mapNotNull { it.toTrack() } ?: emptyList(),
-            podcasts = obj["podcasts"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPodcast() } ?: emptyList()
+            podcasts = obj["podcasts"]?.let { parseMediaItems(it) }?.mapNotNull { it.toPodcast() } ?: emptyList(),
+            genres = genresMatching(
+                query,
+                obj["genres"]?.let { parseMediaItems(it) }?.mapNotNull { it.toGenre() } ?: emptyList()
+            ) { it.name }
         )
     }
 
@@ -1179,6 +1184,17 @@ class MusicRepositoryImpl @Inject constructor(
             imageUrl = imageResolver.resolveItem(this),
             favorite = favorite,
             providerDomains = extractProviderDomains()
+        )
+    }
+
+    private fun ServerMediaItem.toGenre(): Genre? {
+        if (mediaType.isNotEmpty() && mediaType != "genre") return null
+        return Genre(
+            itemId = itemId,
+            name = name,
+            uri = uri,
+            imageUrl = imageResolver.resolveItem(this),
+            description = metadata?.description
         )
     }
 

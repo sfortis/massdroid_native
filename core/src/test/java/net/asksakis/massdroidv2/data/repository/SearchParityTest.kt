@@ -50,7 +50,10 @@ class SearchParityTest {
         encodeDefaults = true
     }
 
-    /** The response keys, paired with the uris [SearchResult] ends up holding for each. */
+    /**
+     * The response keys, paired with the uris [SearchResult] ends up holding for each. Genres
+     * are left out because the app keeps only those the query names; see the genre test below.
+     */
     private val keys = listOf(
         "artists" to { r: SearchResult -> r.artists.map { it.uri } },
         "albums" to { r: SearchResult -> r.albums.map { it.uri } },
@@ -163,6 +166,34 @@ class SearchParityTest {
         assertThat(args["search_query"]!!.jsonPrimitive.content).isEqualTo("anything")
         assertThat(args["limit"]!!.jsonPrimitive.int).isEqualTo(25)
         assertThat(args["media_types"]!!.jsonArray.map { it.jsonPrimitive.content })
-            .containsExactly("artist", "album", "track", "playlist", "radio", "audiobook", "podcast")
+            .containsExactly("artist", "album", "track", "playlist", "radio", "audiobook", "podcast", "genre")
+    }
+
+    /**
+     * The one place the app shows less than the server sent, on purpose. MA 2.10.5 answered
+     * "metal" with Metal, Funk, Punk, Rock and Trap, the last four through aliases such as
+     * "funk metal", so only the genre the query names is kept. The genre carries the SVG
+     * image and the description the server gives it.
+     */
+    @Test
+    fun `a search keeps only the genres its query names`() = runTest {
+        fun genre(id: Int, name: String) = """
+            {"item_id": "$id", "provider": "library", "name": "$name", "uri": "library://genre/$id",
+             "media_type": "genre", "favorite": false, "provider_mappings": [],
+             "metadata": {"description": "$name music", "images": [{"type": "thumb",
+               "path": "genres/${name.lowercase()}.svg", "provider": "builtin",
+               "remotely_accessible": false, "proxy_id": "abc$id"}]}}
+        """
+        val answer = json.parseToJsonElement(
+            """{"genres": [${listOf(33 to "Metal", 23 to "Funk", 47 to "Rock").joinToString { genre(it.first, it.second) }}]}"""
+        )
+
+        val result = repository(answer).search("metal")
+
+        val metal = result.genres.single()
+        assertThat(metal.uri).isEqualTo("library://genre/33")
+        assertThat(metal.description).isEqualTo("Metal music")
+        assertThat(metal.imageUrl).contains("abc33")
+        assertThat(result.isEmpty).isFalse()
     }
 }

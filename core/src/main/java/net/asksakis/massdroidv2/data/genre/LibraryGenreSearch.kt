@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import net.asksakis.massdroidv2.domain.model.ServerGenre
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
+import net.asksakis.massdroidv2.domain.recommendation.genresMatching
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,8 +26,7 @@ data class LibraryGenreMatch(
 
 /**
  * Finds the genres a Library search names. The server's genre list is matched on the genre's
- * name, not its aliases: the server's own search also reads aliases, and "metal" then returned
- * Funk, Rock, Punk and Trap through aliases such as "funk metal".
+ * name, not its aliases ([genresMatching]).
  */
 @Singleton
 class LibraryGenreSearch @Inject constructor(
@@ -49,7 +49,7 @@ class LibraryGenreSearch @Inject constructor(
             emptyList()
         }
         val localKeys = localUris.mapNotNullTo(HashSet()) { MediaIdentity.artistKeyFromUri(it) }
-        val serverIds = serverGenres().filter { genreKey(it.name).contains(queryKey) }.map { it.id }
+        val serverIds = genresMatching(query, serverGenres()) { it.name }.map { it.id }
         return LibraryGenreMatch(localKeys, serverIds).takeUnless { it.isEmpty }
     }
 

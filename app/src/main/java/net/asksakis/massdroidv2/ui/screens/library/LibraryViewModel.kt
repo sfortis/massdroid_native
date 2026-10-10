@@ -1042,7 +1042,8 @@ class LibraryViewModel @Inject constructor(
                     MediaType.PODCAST -> podcastsPager.update { list ->
                         list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
                     }
-                    MediaType.PODCAST_EPISODE -> {} // Episodes aren't a library tab; no list to patch.
+                    // Neither is a library tab, so there is no list to patch.
+                    MediaType.PODCAST_EPISODE, MediaType.GENRE -> {}
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "toggleFavorite failed: ${e.message}")
@@ -1062,7 +1063,8 @@ class LibraryViewModel @Inject constructor(
                     MediaType.RADIO -> radiosPager.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.AUDIOBOOK -> audiobooksPager.update { list -> list.filter { it.itemId != itemId } }
                     MediaType.PODCAST -> podcastsPager.update { list -> list.filter { it.itemId != itemId } }
-                    MediaType.PODCAST_EPISODE -> {} // Episodes aren't a library tab; no list to patch.
+                    // Neither is a library tab, so there is no list to patch.
+                    MediaType.PODCAST_EPISODE, MediaType.GENRE -> {}
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "removeFromLibrary failed: ${e.message}")

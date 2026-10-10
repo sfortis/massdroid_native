@@ -230,7 +230,10 @@ enum class MediaType(val apiValue: String) {
     RADIO("radio"),
     AUDIOBOOK("audiobook"),
     PODCAST("podcast"),
-    PODCAST_EPISODE("podcast_episode");
+    PODCAST_EPISODE("podcast_episode"),
+
+    /** A server genre (MA 2.10+). Playing one makes the server pick tracks from its albums and artists. */
+    GENRE("genre");
 
     companion object {
         fun fromApi(value: String): MediaType? = entries.find { it.apiValue == value }
@@ -239,3 +242,15 @@ enum class MediaType(val apiValue: String) {
 
 /** One of the server's own genres (MA 2.10+): its numeric id and its name. */
 data class ServerGenre(val id: Int, val name: String)
+
+/**
+ * A server genre as a search result (MA 2.10+), with what the result shows: its image and its
+ * written description. Genres exist only in the library, so the uri is always `library://genre/N`.
+ */
+data class Genre(
+    val itemId: String,
+    val name: String,
+    val uri: String,
+    val imageUrl: String? = null,
+    val description: String? = null
+)

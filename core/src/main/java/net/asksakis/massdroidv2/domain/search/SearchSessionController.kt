@@ -221,6 +221,7 @@ class SearchSessionController(
             MediaType.RADIO -> copy(radios = from.radios)
             MediaType.AUDIOBOOK -> copy(audiobooks = from.audiobooks)
             MediaType.PODCAST -> copy(podcasts = from.podcasts)
+            MediaType.GENRE -> copy(genres = from.genres)
             else -> this
         }
 }

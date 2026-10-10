@@ -695,5 +695,6 @@ private fun sourceLabel(mediaType: MediaType): String = when (mediaType) {
     MediaType.RADIO -> "Radio"
     MediaType.PODCAST -> "Podcast"
     MediaType.AUDIOBOOK -> "Audiobook"
+    MediaType.GENRE -> "Genre"
     else -> "Queue"
 }

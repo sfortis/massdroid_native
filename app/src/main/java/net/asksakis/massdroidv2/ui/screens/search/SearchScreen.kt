@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
@@ -88,6 +89,7 @@ fun SearchScreen(
         results.artists.firstOrNull { it.uri == wanted }?.toActionSheetItem()
             ?: results.albums.firstOrNull { it.uri == wanted }?.toActionSheetItem()
             ?: results.tracks.firstOrNull { it.uri == wanted }?.toActionSheetItem()
+            ?: results.genres.firstOrNull { it.uri == wanted }?.toActionSheetItem()
     }
     val actionSheetItem = resultItem(actionSheetUri)
     val pendingLibraryRemove = resultItem(pendingLibraryRemoveUri)
@@ -396,6 +398,7 @@ fun SearchScreen(
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onAudiobookClick = { viewModel.playUri(it.uri) },
                     onPodcastClick = onPodcastClick,
+                    onGenreClick = { viewModel.playUri(it.uri) },
                     onLongPress = { actionSheetUri = it.uri }
                 )
                 else -> SearchResultsList(
@@ -403,6 +406,7 @@ fun SearchScreen(
                     onPlaylistClick, { viewModel.playTrack(it) }, { viewModel.playRadio(it) },
                     onAudiobookClick = { viewModel.playUri(it.uri) },
                     onPodcastClick = onPodcastClick,
+                    onGenreClick = { viewModel.playUri(it.uri) },
                     onLongPress = { actionSheetUri = it.uri }
                 )
             }
@@ -416,6 +420,9 @@ fun SearchScreen(
     }
 
     actionSheetItem?.let { target ->
+        // A genre result offers playing only. A genre exists only in the server's library,
+        // so there is nothing to add or remove, and favourites and radio are left out.
+        val isGenre = target.mediaType == MediaType.GENRE
         MediaActionSheet(
             title = target.title,
             subtitle = target.subtitle,
@@ -423,23 +430,25 @@ fun SearchScreen(
             players = players,
             selectedPlayerId = players.firstOrNull()?.playerId,
             favorite = target.favorite,
-            onToggleFavorite = {
-                viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite)
+            onToggleFavorite = if (isGenre) null else {
+                { viewModel.toggleFavorite(target.uri, target.mediaType, target.itemId, target.favorite) }
             },
             inLibrary = target.inLibrary,
-            onToggleLibrary = {
-                if (target.inLibrary) {
-                    pendingLibraryRemoveUri = target.uri
-                } else {
-                    viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
+            onToggleLibrary = if (isGenre) null else {
+                {
+                    if (target.inLibrary) {
+                        pendingLibraryRemoveUri = target.uri
+                    } else {
+                        viewModel.toggleLibrary(target.uri, target.mediaType, target.itemId, false)
+                    }
+                    actionSheetUri = null
                 }
-                actionSheetUri = null
             },
             onPlayNow = { viewModel.playUri(target.uri) },
             onPlayOnPlayer = { player -> viewModel.playOnPlayer(target.uri, player.playerId) },
             onPlayNext = { viewModel.enqueueNext(target.uri) },
             onAddToQueue = { viewModel.enqueue(target.uri) },
-            onStartRadio = if (target.mediaType == MediaType.RADIO) null else {
+            onStartRadio = if (target.mediaType == MediaType.RADIO || isGenre) null else {
                 { viewModel.startRadio(target.uri) }
             },
             onDismiss = { actionSheetUri = null }
@@ -533,9 +542,23 @@ private fun SearchResultsList(
     onRadioClick: (Radio) -> Unit,
     onAudiobookClick: (Track) -> Unit,
     onPodcastClick: (Podcast) -> Unit,
+    onGenreClick: (Genre) -> Unit,
     onLongPress: (ActionSheetItem) -> Unit
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize().fadingEdges(), contentPadding = PaddingValues(bottom = LocalMiniPlayerPadding.current)) {
+        // First, because a genre shows up only when the query names it, and then it is the
+        // result the listener meant.
+        if (filtered.genres.isNotEmpty()) {
+            item { SectionHeader("Genres") }
+            items(filtered.genres, key = { it.uri }) { genre ->
+                MediaItemRow(
+                    title = genre.name, subtitle = genre.subtitle, imageUrl = genre.imageUrl,
+                    onClick = { onGenreClick(genre) },
+                    onLongClick = { onLongPress(genre.toActionSheetItem()) },
+                    fallbackIcon = Icons.Default.Category
+                )
+            }
+        }
         if (filtered.artists.isNotEmpty()) {
             item { SectionHeader("Artists") }
             items(filtered.artists, key = { it.uri }) { artist ->
@@ -637,6 +660,7 @@ private fun SearchResultsGrid(
     onRadioClick: (Radio) -> Unit,
     onAudiobookClick: (Track) -> Unit,
     onPodcastClick: (Podcast) -> Unit,
+    onGenreClick: (Genre) -> Unit,
     onLongPress: (ActionSheetItem) -> Unit
 ) {
     LazyVerticalGrid(
@@ -646,6 +670,17 @@ private fun SearchResultsGrid(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (filtered.genres.isNotEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) { SectionHeader("Genres") }
+            items(filtered.genres, key = { it.uri }) { genre ->
+                MediaItemGrid(
+                    title = genre.name, subtitle = genre.subtitle, imageUrl = genre.imageUrl,
+                    onClick = { onGenreClick(genre) },
+                    onLongClick = { onLongPress(genre.toActionSheetItem()) },
+                    fallbackIcon = Icons.Default.Category
+                )
+            }
+        }
         if (filtered.artists.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) { SectionHeader("Artists") }
             items(filtered.artists, key = { it.uri }) { artist ->
@@ -749,6 +784,10 @@ private fun albumSearchSubtitle(album: Album): String =
  * the renderers cannot disagree about what a selection means.
  */
 private enum class SearchTypeFilter(val label: String, val mediaType: MediaType) {
+    GENRES("Genres", MediaType.GENRE) {
+        override fun count(r: SearchResult) = r.genres.size
+        override fun slice(r: SearchResult) = SearchResult(genres = r.genres)
+    },
     ARTISTS("Artists", MediaType.ARTIST) {
         override fun count(r: SearchResult) = r.artists.size
         override fun slice(r: SearchResult) = SearchResult(artists = r.artists)
@@ -928,4 +967,16 @@ private fun Track.toActionSheetItem() = ActionSheetItem(
     inLibrary = uri.startsWith("library://"),
     primaryArtistUri = artistUri,
     primaryArtistName = artistNames.split(",").firstOrNull()?.trim()
+)
+
+/**
+ * The server's description of a genre, which it writes in lower case ("umbrella category of
+ * music genres of metal branch, ..."), with its first letter raised to read as a subtitle.
+ */
+private val Genre.subtitle: String
+    get() = description.orEmpty().replaceFirstChar { it.uppercase() }
+
+private fun Genre.toActionSheetItem() = ActionSheetItem(
+    title = name, subtitle = subtitle, uri = uri, imageUrl = imageUrl,
+    favorite = false, mediaType = MediaType.GENRE, itemId = itemId
 )

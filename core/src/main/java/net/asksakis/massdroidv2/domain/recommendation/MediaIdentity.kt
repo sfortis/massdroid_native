@@ -87,10 +87,18 @@ fun distinctGenres(genres: Iterable<String>): List<String> = genres.distinctBy(:
  * A search is a substring match as before, so "rock" still finds "post rock", but letter case,
  * spaces and hyphens no longer matter: "synth pop", "synth-pop" and "synthpop" find each other.
  */
-fun genreNamesMatching(query: String, names: Iterable<String>): List<String> {
+fun genreNamesMatching(query: String, names: Iterable<String>): List<String> =
+    genresMatching(query, names) { it }
+
+/**
+ * The [genres] a search for [query] finds by name, by the rule of [genreNamesMatching], in their
+ * order. Only the name counts: the server's own genre search also reads each genre's aliases, so
+ * "metal" brought back Funk, Punk, Rock and Trap through aliases such as "funk metal".
+ */
+fun <T> genresMatching(query: String, genres: Iterable<T>, nameOf: (T) -> String): List<T> {
     val queryKey = genreKey(query)
     if (queryKey.isEmpty()) return emptyList()
-    return names.filter { genreKey(it).contains(queryKey) }
+    return genres.filter { genreKey(nameOf(it)).contains(queryKey) }
 }
 
 /**

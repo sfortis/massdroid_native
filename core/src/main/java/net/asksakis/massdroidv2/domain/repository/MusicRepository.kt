@@ -191,8 +191,11 @@ interface MusicRepository {
  * provider for whatever it considers the default, and Deezer then labels the same records
  * as audiobooks: "gruselkabinett folge 12:" returned 25 audiobooks and no albums, while the
  * same query with these types named returned those 25 as albums. Naming them also skips the
- * genres, audiobooks, podcasts and sound effects a [SearchResult] would drop anyway, which
- * measured about a quarter faster on the same query.
+ * sound effects a [SearchResult] would drop anyway, which measured about a quarter faster on
+ * the same query.
+ *
+ * A server older than MA 2.10 has no genres. It reads the unknown "genre" as its UNKNOWN media
+ * type and answers the rest of the search as before.
  */
 val SEARCHABLE_MEDIA_TYPES = listOf(
     MediaType.ARTIST,
@@ -201,7 +204,8 @@ val SEARCHABLE_MEDIA_TYPES = listOf(
     MediaType.PLAYLIST,
     MediaType.RADIO,
     MediaType.AUDIOBOOK,
-    MediaType.PODCAST
+    MediaType.PODCAST,
+    MediaType.GENRE
 )
 
 data class SearchResult(
@@ -212,10 +216,13 @@ data class SearchResult(
     val radios: List<Radio> = emptyList(),
     /** Modelled as [Track], the same as the library tab does: one playable item with chapters. */
     val audiobooks: List<Track> = emptyList(),
-    val podcasts: List<Podcast> = emptyList()
+    val podcasts: List<Podcast> = emptyList(),
+    /** Only the genres whose name the query names, not every genre the server matched by alias. */
+    val genres: List<Genre> = emptyList()
 ) {
     /** True when the server matched nothing at all, in any category. */
     val isEmpty: Boolean
         get() = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty() &&
-            playlists.isEmpty() && radios.isEmpty() && audiobooks.isEmpty() && podcasts.isEmpty()
+            playlists.isEmpty() && radios.isEmpty() && audiobooks.isEmpty() && podcasts.isEmpty() &&
+            genres.isEmpty()
 }

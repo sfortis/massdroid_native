@@ -32,6 +32,13 @@ class GenreSearchAndFamilyTest {
     }
 
     @Test
+    fun `items are matched by their name and keep their order`() {
+        val serverGenres = listOf(41 to "Punk", 33 to "Metal", 47 to "Rock", 30 to "Heavy Metal")
+        assertThat(genresMatching("METAL", serverGenres) { it.second }.map { it.first })
+            .containsExactly(33, 30).inOrder()
+    }
+
+    @Test
     fun `glued, spaced and hyphenated spellings land in the same family`() {
         assertThat(genreFamily("synthpop")).isEqualTo("pop")
         assertThat(genreFamily("synth pop")).isEqualTo("pop")
