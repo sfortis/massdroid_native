@@ -981,6 +981,51 @@ interface PlayHistoryDao {
     suspend fun deleteOrphanAlbums()
 
     /**
+     * Moves the artist feedback of every artist [deleteOrphanArtists] is about to
+     * remove onto another uri of the same name that stays, preferring
+     * `library://`. Run it just before the sweep.
+     *
+     * `smart_feedback` points at artists with SET NULL, so the sweep used to strip
+     * the artist from those rows, and artist scoring dropped them. That happens
+     * when consolidation moves a track from a provider uri to the library one: the
+     * first play of an artist can be recorded under the provider uri while the
+     * library uri is still being resolved. Artist scoring groups signals by name,
+     * so a row moved to a same-name uri counts exactly as before. A row with no
+     * such uri to go to is left to the sweep.
+     *
+     * The "stays" condition must mirror the WHERE clause of [deleteOrphanArtists].
+     */
+    @Query(
+        """
+        UPDATE smart_feedback SET artist_uri = (
+            SELECT heir.uri FROM artists doomed
+            JOIN artists heir ON heir.name = doomed.name AND heir.uri <> doomed.uri
+            WHERE doomed.uri = smart_feedback.artist_uri
+              AND (heir.uri IN (SELECT artist_uri FROM track_artists)
+                   OR heir.uri LIKE 'library://%'
+                   OR heir.uri IN (SELECT artist_uri FROM artist_genres))
+            ORDER BY CASE WHEN heir.uri LIKE 'library://%' THEN 0 ELSE 1 END, heir.uri
+            LIMIT 1
+        )
+        WHERE artist_uri IN (
+            SELECT uri FROM artists
+            WHERE uri NOT IN (SELECT DISTINCT artist_uri FROM track_artists)
+              AND uri NOT LIKE 'library://%'
+              AND uri NOT IN (SELECT DISTINCT artist_uri FROM artist_genres)
+        )
+          AND EXISTS (
+            SELECT 1 FROM artists doomed
+            JOIN artists heir ON heir.name = doomed.name AND heir.uri <> doomed.uri
+            WHERE doomed.uri = smart_feedback.artist_uri
+              AND (heir.uri IN (SELECT artist_uri FROM track_artists)
+                   OR heir.uri LIKE 'library://%'
+                   OR heir.uri IN (SELECT artist_uri FROM artist_genres))
+          )
+        """
+    )
+    suspend fun moveFeedbackOffOrphanArtists()
+
+    /**
      * Removes artists no track points at, except the ones stored for their own
      * sake: library artists (`syncLibraryArtists` stores every one, played or not)
      * and artists that hold genres (the discovery artists the genre gate judges).

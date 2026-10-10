@@ -606,6 +606,7 @@ class PlayHistoryRepositoryImpl @Inject constructor(
             val faded = forgottenTrackUris(dao.getUnplayedScoredTracks(), System.currentTimeMillis())
             faded.chunked(SQL_IN_CHUNK).forEach { dao.deleteTracks(it) }
             dao.deleteOrphanAlbums()
+            dao.moveFeedbackOffOrphanArtists()
             dao.deleteOrphanArtists()
             dao.deleteOrphanArtistGenres()
             dao.deleteOrphanGenres()
