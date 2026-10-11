@@ -100,8 +100,20 @@ class ClockSynchronizer(
         val measurementVariance = maxError * maxError
 
         if (clientReceivedUs == lastUpdateUs) return
-        lastSampleBootUs = bootNowUs()
-        lastSampleBootMinusMonoUs = lastSampleBootUs - nowMonotonicUs()
+        val bootUs = bootNowUs()
+        val bootMinusMonoUs = bootUs - nowMonotonicUs()
+        // The sample times are on the monotonic clock, which stands still while the phone
+        // sleeps; the server's clock does not. Between two samples that straddle a sleep the
+        // offset therefore steps by the slept time, and fed in as it is, the filter takes the
+        // step for drift: 0.67 after a few idle minutes on 2026-10-11. The step is known
+        // exactly from the boot clock, so it moves the offset and never reaches the drift.
+        val pauseUs = if (lastSampleBootUs == 0L || count <= 0) 0L else bootMinusMonoUs - lastSampleBootMinusMonoUs
+        lastSampleBootUs = bootUs
+        lastSampleBootMinusMonoUs = bootMinusMonoUs
+        if (kotlin.math.abs(pauseUs) > ClockSeedPolicy.PAUSE_TOLERANCE_US) {
+            offset += pauseUs
+            Log.d(TAG, "Monotonic clock paused ${pauseUs / 1000} ms since the last sample: offset moved, drift kept")
+        }
 
         // Any sample that makes it into the filter clears the rejection
         // streak; the next reject is treated as fresh and pays a small
@@ -339,6 +351,10 @@ class ClockSynchronizer(
             // garbage dt, blowing the covariance up and discarding the seed on the spot.
             // Dating the seed "now" keeps the prediction honest and the seed in force.
             lastUpdateUs = nowMonotonicUs()
+            // The seed already allows for any sleep since the last sample (ClockSeedPolicy),
+            // so the next sample measures pauses from here, not from that sample.
+            lastSampleBootUs = bootNowUs()
+            lastSampleBootMinusMonoUs = lastSampleBootUs - lastUpdateUs
             publishState()
             Log.d(TAG, "Soft reset: seeded offset=${previousOffsetUs}us " +
                 "drift=${"%.6f".format(drift)} useDrift=$useDrift covariance=${"%.0f".format(initialCovariance)}")

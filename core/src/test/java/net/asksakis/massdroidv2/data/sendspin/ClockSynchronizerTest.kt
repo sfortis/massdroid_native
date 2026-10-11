@@ -67,4 +67,26 @@ class ClockSynchronizerTest {
         assertThat(sync.isSynced()).isFalse()
         seededWithOffset(5_000L).let { assertThat(it.isSynced()).isTrue() }
     }
+
+    @Test
+    fun `a sleep between samples moves the offset and leaves the drift alone`() {
+        // The boot clock runs on through a sleep, the monotonic clock (the sample times) stops.
+        var sleptUs = 0L
+        val sync = ClockSynchronizer(bootNowUs = { System.nanoTime() / 1000 + sleptUs })
+        val offsetUs = 5_000L
+        var localUs = 1_000_000L
+        fun sample() {
+            // Symmetric 10 ms round trip; the server is ahead by the offset plus the slept time.
+            val server = localUs + 5_000L + offsetUs + sleptUs
+            sync.processTimeResponse(localUs, server, server, localUs + 10_000L)
+            localUs += 1_000_000L
+        }
+        repeat(20) { sample() }
+
+        sleptUs = 60_000_000L
+        repeat(5) { sample() }
+
+        assertThat(kotlin.math.abs(sync.rawDrift())).isLessThan(1e-6)
+        assertThat(sync.rawOffsetUs()).isWithin(1_000.0).of((offsetUs + sleptUs).toDouble())
+    }
 }
