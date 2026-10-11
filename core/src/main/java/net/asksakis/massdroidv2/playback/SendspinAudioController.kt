@@ -826,9 +826,12 @@ class SendspinAudioController(
 
         // Collector 2: Observe sendspin player metadata from the players list
         collectorJobs += scope.launch {
-            playerRepository.players
-                .map { list ->
-                    val ssId = sendspinPlayerId ?: return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
+            // Keyed on the stored id as well as the list: the id is settled only once the start has
+            // seen the MA version, often after the list arrived, and the list may not change again
+            // for minutes. Until this runs the clock sync keeps going, which a sleeping phone corrupts.
+            combine(playerRepository.players, settingsRepository.sendspinClientId) { list, ssId -> list to ssId }
+                .map { (list, ssId) ->
+                    if (ssId == null) return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
                     val self = list.find { it.playerId == ssId }
                     // Match the eager pre-connect check exactly. MA's group_childs
                     // includes the parent ITSELF, and activeGroup is unreliable (can be
