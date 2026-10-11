@@ -118,6 +118,7 @@ data class CachedTrackDisplay(
 
 data class SendspinStatusUi(
     val connectionState: SendspinState,
+    val linkSecurity: net.asksakis.massdroidv2.data.sendspin.SendspinLinkSecurity? = null,
     val syncState: SyncState,
     val codec: String?,
     val configuredFormat: String,
@@ -370,6 +371,7 @@ class NowPlayingViewModel @Inject constructor(
             }
         },
         sendspinManager.streamFormat,
+        sendspinManager.linkSecurity,
     ) { values: Array<*> ->
         val conn = values[0] as SendspinState
         val sync = values[1] as SyncState
@@ -384,6 +386,7 @@ class NowPlayingViewModel @Inject constructor(
         val fmt = values[6] as net.asksakis.massdroidv2.data.sendspin.SendspinManager.StreamFormatSnapshot?
         SendspinStatusUi(
             connectionState = conn,
+            linkSecurity = values[7] as net.asksakis.massdroidv2.data.sendspin.SendspinLinkSecurity?,
             syncState = sync,
             codec = codec,
             configuredFormat = cachedSendspinAudioFormat,

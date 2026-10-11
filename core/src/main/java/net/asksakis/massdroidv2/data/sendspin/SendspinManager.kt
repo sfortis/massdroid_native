@@ -76,6 +76,10 @@ class SendspinManager(
     private val _connectionState = MutableStateFlow(SendspinState.DISCONNECTED)
     val connectionState: StateFlow<SendspinState> = _connectionState.asStateFlow()
 
+    // Null while no connection is up, or before the transport has said which kind it is.
+    private val _linkSecurity = MutableStateFlow<SendspinLinkSecurity?>(null)
+    val linkSecurity: StateFlow<SendspinLinkSecurity?> = _linkSecurity.asStateFlow()
+
     private val _enabled = MutableStateFlow(false)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
@@ -266,6 +270,7 @@ class SendspinManager(
                 // A dropped socket ends the stream without a stream/end message.
                 if (state == SendspinState.DISCONNECTED || state == SendspinState.ERROR) {
                     _streamActive.value = false
+                    _linkSecurity.value = null
                 }
             }
         }
@@ -333,7 +338,12 @@ class SendspinManager(
             is SendspinIncoming.ServerHello -> {
                 Log.d(TAG, "Server hello received")
                 // On Noise the hello opens the exchange; the player starts on server/activate.
-                if (noiseMode) noiseFlow.onServerHello() else beginPlayerSession()
+                if (noiseMode) {
+                    noiseFlow.onServerHello()
+                } else {
+                    _linkSecurity.value = SendspinLinkSecurity.UNENCRYPTED
+                    beginPlayerSession()
+                }
             }
 
             SendspinIncoming.NoiseSessionUp -> {
@@ -341,8 +351,12 @@ class SendspinManager(
                 // before its server/activate has named a player role.
                 endPlayerSession()
                 noiseFlow.reset()
+                publishNoiseSecurity()
             }
-            SendspinIncoming.NoiseRehandshake -> noiseFlow.onRehandshake()
+            SendspinIncoming.NoiseRehandshake -> {
+                noiseFlow.onRehandshake()
+                publishNoiseSecurity()
+            }
             is SendspinIncoming.ServerActivate -> noiseFlow.onActivate(incoming.payload)
             SendspinIncoming.ServerPairFinalize -> noiseFlow.onPairFinalize()
             is SendspinIncoming.PairAbort -> noiseFlow.onPairAbort(incoming.reason)
@@ -497,6 +511,10 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> unknown type: ${incoming.type}")
             }
         }
+    }
+
+    private fun publishNoiseSecurity() {
+        _linkSecurity.value = client.noisePsk()?.category?.let(SendspinLinkSecurity::of)
     }
 
     /**
@@ -1095,6 +1113,7 @@ class SendspinManager(
         val finalSyncState = audio.syncState
         engine.release()
         _connectionState.value = SendspinState.DISCONNECTED
+        _linkSecurity.value = null
         _streamCodec.value = null
         _streamFormat.value = null
         _syncState.value = finalSyncState

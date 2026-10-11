@@ -141,6 +141,7 @@ class SettingsViewModel @Inject constructor(
     val isReconnecting = wsClient.isReconnecting
 
     val sendspinState = sendspinManager.connectionState
+    val sendspinLinkSecurity = sendspinManager.linkSecurity
     val sendspinEnabled = settingsRepository.sendspinEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val knownBtDevices = settingsRepository.knownBtDevices

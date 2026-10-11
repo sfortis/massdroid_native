@@ -24,6 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
+import net.asksakis.massdroidv2.data.sendspin.SendspinLinkSecurity
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
@@ -142,6 +143,7 @@ internal fun SendspinStatusSheet(
             StatusLine(label = "Input", value = formatAudioDescriptor(inputAudioFormat) ?: "Unknown")
             StatusLine(label = "Output", value = formatOutputDescriptor(status) ?: "Unknown")
             StatusLine(label = "Network", value = status.networkMode)
+            status.linkSecurity?.let { StatusLine(label = "Connection", value = it.label()) }
 
             HorizontalDivider()
 
@@ -218,4 +220,10 @@ internal fun SendspinStatusSheet(
             Spacer(modifier = Modifier.height(12.dp))
         }
     }
+}
+
+private fun SendspinLinkSecurity.label(): String = when (this) {
+    SendspinLinkSecurity.ENCRYPTED_PAIRED -> "Encrypted, paired"
+    SendspinLinkSecurity.ENCRYPTED_UNPAIRED -> "Encrypted, not paired"
+    SendspinLinkSecurity.UNENCRYPTED -> "Not encrypted"
 }

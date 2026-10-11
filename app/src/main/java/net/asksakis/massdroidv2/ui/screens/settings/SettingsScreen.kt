@@ -1267,6 +1267,7 @@ private fun pairedBtAudioRouteKeys(context: Context): List<String> {
 private fun SendspinSection(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
+    val linkSecurity by viewModel.sendspinLinkSecurity.collectAsStateWithLifecycle()
 
     SettingsSectionHeader("Sendspin")
     SettingsSwitchRow(
@@ -1275,10 +1276,10 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
         checked = sendspinEnabled,
         onCheckedChange = { viewModel.toggleSendspin(it) },
         supporting = when (sendspinState) {
-            // The badge says it streams; the line says what that means.
             SendspinState.STREAMING -> "This phone plays as a speaker"
             SendspinState.SYNCING -> "Ready"
-            SendspinState.HANDSHAKING -> "Handshaking"
+            // On Noise the connection waits here until MA pairs or approves the phone.
+            SendspinState.HANDSHAKING -> if (linkSecurity != null) "Waiting for approval in Music Assistant" else "Handshaking"
             SendspinState.AUTHENTICATING -> "Authenticating"
             SendspinState.CONNECTING -> "Connecting"
             // The manager exposes the state only, not why it failed.
@@ -1286,7 +1287,8 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
             SendspinState.DISCONNECTED -> if (sendspinEnabled) "Stopped" else "Disabled"
         },
         tone = if (sendspinState == SendspinState.ERROR) SettingsTone.ERROR else SettingsTone.NORMAL,
-        badge = SettingsBadge("Streaming").takeIf { sendspinState == SendspinState.STREAMING }
+        // The badge says how the connection is protected; the line says whether it streams.
+        badge = linkSecurity?.let { SettingsBadge(if (it.isEncrypted) "Encrypted" else "Not encrypted") }
     )
 }
 
