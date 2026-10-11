@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.sendspin
 
 import android.util.Log
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -24,15 +25,21 @@ import javax.inject.Singleton
 
 /**
  * Moves the settings of the player this phone used before its Sendspin Noise identity onto the
- * new player, then removes the old one. It runs once, after the first pairing.
+ * new player ([migrate]), and later removes the old one ([removeOldPlayer]). It runs once, after
+ * the first pairing.
  *
- * The name, every stored player value apart from identity and bridge fields, and the queue
- * configuration (Don't Stop the Music among it) are copied. Group memberships are not.
+ * The name, every player value apart from identity and bridge fields, and the queue configuration
+ * (Don't Stop the Music among it) are copied. Group memberships are not.
  *
- * The old player is not connected any more, and MA builds a disconnected player's config without
- * its entries, so `config/players/get` returns its name but no values. The values are read one by
- * one with `config/players/get_value`, which reads storage first, for every key the new player
- * (connected, same provider) has an entry for.
+ * The values are read one by one with `config/players/get_value` for every key the new player
+ * (connected, same provider) has an entry for. That command reads storage first. For a key never
+ * stored it answers the entry's default while the old player is still registered, and the
+ * sentinel `default` once it is gone, because MA then builds its config without entries. Only
+ * values that differ from the new player's default are saved.
+ *
+ * The removal is separate because MA refuses it while the old player is registered. An app update
+ * ends the old connection without a goodbye, and aiosendspin keeps such a client for 180 seconds
+ * in case it reconnects, so the first Noise connection always arrives inside that window.
  */
 @Singleton
 class SendspinPlayerMigration @Inject constructor(
@@ -48,6 +55,16 @@ class SendspinPlayerMigration @Inject constructor(
         NEW_PLAYER_NOT_READY,
     }
 
+    enum class RemoveOutcome {
+        REMOVED,
+
+        /** MA has no config for the old player any more. */
+        GONE,
+
+        /** MA still has the old player registered and refused. */
+        STILL_REGISTERED,
+    }
+
     /**
      * @throws MaApiException when a read or a save fails; nothing is removed then, so a later
      *   attempt starts over.
@@ -61,6 +78,7 @@ class SendspinPlayerMigration @Inject constructor(
 
         val target = wsClient.sendCommand(MaCommands.ConfigPlayers.GET, ConfigPlayerGetArgs(toId))?.jsonObject
             ?: return Outcome.NEW_PLAYER_NOT_READY
+        val defaults = entryDefaults(target)
         val values = buildJsonObject {
             stored["name"]?.jsonPrimitive?.contentOrNull?.let { put("name", JsonPrimitive(it)) }
             for (key in migratableKeys(target)) {
@@ -68,7 +86,8 @@ class SendspinPlayerMigration @Inject constructor(
                     MaCommands.ConfigPlayers.GET_VALUE,
                     ConfigPlayerValueArgs(fromId, key, MISSING),
                 )
-                if (value != null && value !is JsonNull && value != JsonPrimitive(MISSING)) put(key, value)
+                if (value == null || value is JsonNull || value == JsonPrimitive(MISSING)) continue
+                if (value != defaults[key]) put(key, value)
             }
         }
         if (values.isNotEmpty()) {
@@ -81,14 +100,28 @@ class SendspinPlayerMigration @Inject constructor(
             wsClient.sendCommand(MaCommands.ConfigPlayerQueues.SAVE, ConfigQueueSaveArgs(toId, queueValues))
         }
         Log.i(TAG, "Moved ${values.keys} and queue ${queueValues.keys} from $fromId to $toId")
-
-        try {
-            wsClient.sendCommand(MaCommands.ConfigPlayers.REMOVE, PlayerIdArgs(fromId))
-        } catch (e: MaApiException) {
-            // The settings already live on the new player; the old entry can be removed in MA by hand.
-            Log.w(TAG, "Old player $fromId not removed: ${e.message}")
-        }
         return Outcome.MOVED
+    }
+
+    /**
+     * Removes the old player's config.
+     *
+     * @throws MaApiException for a failure other than the two MA answers [RemoveOutcome] names.
+     */
+    suspend fun removeOldPlayer(playerId: String): RemoveOutcome {
+        val known = wsClient.sendCommand(MaCommands.ConfigPlayers.LIST)
+            ?.jsonArray.orEmpty()
+            .any { it.jsonObject["player_id"]?.jsonPrimitive?.contentOrNull == playerId }
+        if (!known) return RemoveOutcome.GONE
+        return try {
+            wsClient.sendCommand(MaCommands.ConfigPlayers.REMOVE, PlayerIdArgs(playerId))
+            RemoveOutcome.REMOVED
+        } catch (e: MaApiException) {
+            // MA answers ActionUnavailable ("Can not remove config for an active player!").
+            if (e.isTimeout) throw e
+            Log.i(TAG, "Old player $playerId not removed yet: ${e.message}")
+            RemoveOutcome.STILL_REGISTERED
+        }
     }
 
     companion object {
@@ -106,6 +139,12 @@ class SendspinPlayerMigration @Inject constructor(
 
         /** Entry types that are only shown, never stored. */
         private val NON_VALUE_TYPES = setOf("label", "divider", "action", "alert", "url", "pairing_code", "image")
+
+        /** The default of each of the target's config entries. */
+        internal fun entryDefaults(config: JsonObject): Map<String, JsonElement> =
+            config["values"]?.jsonObject.orEmpty().mapNotNull { (key, entry) ->
+                (entry as? JsonObject)?.get("default_value")?.let { key to it }
+            }.toMap()
 
         /** Keys of the target's config entries that can hold a user's value. */
         internal fun migratableKeys(config: JsonObject): List<String> =

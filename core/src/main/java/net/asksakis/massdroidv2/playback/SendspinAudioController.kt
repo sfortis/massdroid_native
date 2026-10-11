@@ -49,7 +49,6 @@ import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntentCause
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
-import java.util.UUID
 
 data class SendspinMetadata(
     val title: String,
@@ -1061,11 +1060,14 @@ class SendspinAudioController(
                 return@launch
             }
 
-            var clientId = settingsRepository.sendspinClientId.first()
-            if (clientId == null) {
-                clientId = UUID.randomUUID().toString()
-                settingsRepository.setSendspinClientId(clientId)
+            // The protocol and the player id depend on the MA version, which the plan waits for.
+            val plan = try {
+                noiseConnector.planStart()
+            } catch (e: java.io.IOException) {
+                Log.e(TAG, "Sendspin identity unavailable, cannot start", e)
+                return@launch
             }
+            val clientId = plan.clientId
 
             sendspinPlayerId = clientId
             val ssState = sendspinManager.connectionState.value
@@ -1077,8 +1079,13 @@ class SendspinAudioController(
                 // for car BT and we don't want that echoed into MA).
                 val seedVolume = volumeCoordinator.seedStartupVolume()
                 sendspinManager.setVolume(seedVolume)
-                sendspinManager.start(clientId, clientName, credentialsProvider = buildCredentialsProvider())
-                Log.d(TAG, "Sendspin started, playerId=$clientId seedVol=$seedVolume")
+                sendspinManager.start(
+                    clientId,
+                    clientName,
+                    noiseSessionFactory = plan.noiseSessionFactory,
+                    credentialsProvider = buildCredentialsProvider(),
+                )
+                Log.d(TAG, "Sendspin started, playerId=$clientId noise=${plan.noiseSessionFactory != null} seedVol=$seedVolume")
             } else {
                 Log.d(TAG, "Sendspin already $ssState, skipping redundant start")
             }

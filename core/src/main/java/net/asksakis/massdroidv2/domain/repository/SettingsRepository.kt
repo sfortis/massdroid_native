@@ -85,6 +85,11 @@ interface SettingsRepository {
      * until that old player's settings have been moved to the new one. Null once done.
      */
     val sendspinMigrationSourceId: Flow<String?>
+    /**
+     * The old player whose settings were moved but whose config MA still has to remove. MA refuses
+     * while the player is registered, which lasts until its Sendspin client is cleaned up. Null once done.
+     */
+    val sendspinRemovalPendingId: Flow<String?>
     val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
     val librarySortDescending: Flow<Map<Int, Boolean>>
@@ -221,6 +226,7 @@ interface SettingsRepository {
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
     suspend fun setSendspinMigrationSourceId(playerId: String?)
+    suspend fun setSendspinRemovalPendingId(playerId: String?)
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)

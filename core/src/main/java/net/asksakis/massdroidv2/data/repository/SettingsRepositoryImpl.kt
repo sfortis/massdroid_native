@@ -57,6 +57,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
         private val KEY_SENDSPIN_MIGRATION_SOURCE_ID = stringPreferencesKey("sendspin_migration_source_id")
+        private val KEY_SENDSPIN_REMOVAL_PENDING_ID = stringPreferencesKey("sendspin_removal_pending_id")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -294,6 +295,17 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit {
             if (playerId != null) it[KEY_SENDSPIN_MIGRATION_SOURCE_ID] = playerId
             else it.remove(KEY_SENDSPIN_MIGRATION_SOURCE_ID)
+        }
+    }
+
+    override val sendspinRemovalPendingId: Flow<String?> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_REMOVAL_PENDING_ID]
+    }
+
+    override suspend fun setSendspinRemovalPendingId(playerId: String?) {
+        context.dataStore.edit {
+            if (playerId != null) it[KEY_SENDSPIN_REMOVAL_PENDING_ID] = playerId
+            else it.remove(KEY_SENDSPIN_REMOVAL_PENDING_ID)
         }
     }
 

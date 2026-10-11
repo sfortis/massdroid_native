@@ -70,6 +70,13 @@ android {
         jvmTarget = "17"
     }
 
+    packaging {
+        resources {
+            // BouncyCastle (Sendspin Noise) ships an OSGi manifest another jar also has; Android never reads it.
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
+
     buildFeatures {
         compose = true
     }

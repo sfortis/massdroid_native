@@ -10,14 +10,15 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import org.junit.Test
 
 /**
  * The one-time move of the old UUID player's settings onto the Noise player. The JSON shapes are
- * the ones MA 2.10 returns: a disconnected player's `config/players/get` has no values, so they
- * come from `config/players/get_value`, which answers the sentinel default for a key never stored.
+ * the ones MA 2.10 returns. For a key never stored, `config/players/get_value` answers the entry's
+ * default while the old player is still registered, and the sentinel default once it is gone.
  */
 class SendspinPlayerMigrationTest {
 
@@ -43,7 +44,7 @@ class SendspinPlayerMigrationTest {
         "hide_in_ui" to JsonPrimitive(false),
     )
 
-    private fun client(oldPlayerKnown: Boolean = true): MaWebSocketClient = mockk(relaxed = true) {
+    private fun client(oldPlayerKnown: Boolean = true, oldPlayerRegistered: Boolean = false): MaWebSocketClient = mockk(relaxed = true) {
         coEvery { sendCommand(MaCommands.ConfigPlayers.LIST, any(), any(), any(), any()) } returns json(
             if (oldPlayerKnown) """[{"player_id":"$old","name":"MassDroid S25"},{"player_id":"other","name":"x"}]"""
             else """[{"player_id":"other","name":"x"}]"""
@@ -51,7 +52,9 @@ class SendspinPlayerMigrationTest {
         coEvery { sendCommand(MaCommands.ConfigPlayers.GET, any(), any(), any(), any()) } returns newPlayerConfig
         coEvery { sendCommand(MaCommands.ConfigPlayers.GET_VALUE, any(), any(), any(), any()) } answers {
             val args = checkNotNull(secondArg<JsonObject?>())
-            storedOldValues[args.getValue("key").jsonPrimitive.content] ?: args.getValue("default")
+            val key = args.getValue("key").jsonPrimitive.content
+            val entryDefault = newPlayerConfig.getValue("values").jsonObject.getValue(key).jsonObject.getValue("default_value")
+            storedOldValues[key] ?: if (oldPlayerRegistered) entryDefault else args.getValue("default")
         }
         coEvery { sendCommand(MaCommands.ConfigPlayerQueues.GET, any(), any(), any(), any()) } returns json(
             """{"queue_id":"$old","values":{
@@ -62,8 +65,17 @@ class SendspinPlayerMigrationTest {
     }
 
     @Test
-    fun `the name, the stored values and the changed queue values move, and the old player goes`() = runBlocking {
-        val ws = client()
+    fun `the name, the stored values and the changed queue values move`() = runBlocking {
+        assertMoved(oldPlayerRegistered = false)
+    }
+
+    @Test
+    fun `defaults answered for a still registered old player are not copied`() = runBlocking {
+        assertMoved(oldPlayerRegistered = true)
+    }
+
+    private suspend fun assertMoved(oldPlayerRegistered: Boolean) {
+        val ws = client(oldPlayerRegistered = oldPlayerRegistered)
         val saved = mutableListOf<JsonObject>()
         val queueSaved = mutableListOf<JsonObject>()
         coEvery { ws.sendCommand(MaCommands.ConfigPlayers.SAVE, any(), any(), any(), any()) } answers {
@@ -85,7 +97,39 @@ class SendspinPlayerMigrationTest {
         assertThat(queueSaved.single().getValue("queue_id").jsonPrimitive.content).isEqualTo(new)
         assertThat(queueSaved.single().getValue("values").jsonObject)
             .isEqualTo(JsonObject(mapOf("crossfade_mode" to JsonPrimitive("standard_crossfade"))))
+        // Removal is a separate step: MA refuses it while the old player is registered.
+        coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `the old player is removed once MA has let go of it`() = runBlocking {
+        val ws = client()
+
+        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
+
+        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.REMOVED)
         coVerify { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, matchNullable<JsonObject> { it?.get("player_id")?.jsonPrimitive?.content == old }, any(), any(), any()) }
+    }
+
+    @Test
+    fun `a refusal while the old player is registered keeps it pending`() = runBlocking {
+        val ws = client()
+        coEvery { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) } throws
+            MaApiException("Can not remove config for an active player!", 0)
+
+        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
+
+        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.STILL_REGISTERED)
+    }
+
+    @Test
+    fun `an old player MA no longer knows is not removed again`() = runBlocking {
+        val ws = client(oldPlayerKnown = false)
+
+        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
+
+        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.GONE)
+        coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) }
     }
 
     @Test
