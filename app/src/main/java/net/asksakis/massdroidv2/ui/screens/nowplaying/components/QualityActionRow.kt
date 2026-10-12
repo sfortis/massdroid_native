@@ -4,6 +4,10 @@ import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
@@ -75,7 +79,7 @@ internal fun QualityActionRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).padding(end = BADGE_GAP),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Start
             ) {
@@ -84,7 +88,7 @@ internal fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onShowPlaylistDialog()
                     },
-                    modifier = Modifier.size(actionButtonSize),
+                    modifier = actionSlot(actionButtonSize),
                     enabled = enabled
                 ) {
                     Icon(
@@ -108,7 +112,7 @@ internal fun QualityActionRow(
                 // also never resolves lyrics for an audiobook, so no API calls). Keep a same-sized
                 // spacer so the row's icon alignment / centred quality badge stays put.
                 if (isAudiobook) {
-                    Spacer(modifier = Modifier.size(actionButtonSize))
+                    Spacer(modifier = actionSlot(actionButtonSize))
                 } else {
                     MdIconButton(
                         onClick = {
@@ -124,7 +128,7 @@ internal fun QualityActionRow(
                                 LyricsAvailability.UNAVAILABLE -> Unit
                             }
                         },
-                        modifier = Modifier.size(actionButtonSize),
+                        modifier = actionSlot(actionButtonSize),
                         enabled = lyricsEnabled
                     ) {
                         Icon(
@@ -137,7 +141,7 @@ internal fun QualityActionRow(
                 }
                 AutoplayButton(
                     viewModel = viewModel,
-                    buttonSize = actionButtonSize,
+                    modifier = actionSlot(actionButtonSize),
                     iconSize = actionIconSize,
                     enabled = enabled
                 )
@@ -149,7 +153,7 @@ internal fun QualityActionRow(
                 onClick = if (isSendspinPlayer) onShowSendspinStatus else null,
             )
             Row(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).padding(start = BADGE_GAP),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.End
             ) {
@@ -159,7 +163,7 @@ internal fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onNavigateToQueue()
                     },
-                    modifier = Modifier.size(actionButtonSize),
+                    modifier = actionSlot(actionButtonSize),
                     enabled = enabled
                 ) {
                     Icon(
@@ -174,7 +178,7 @@ internal fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.dislikeCurrentTrack()
                     },
-                    modifier = Modifier.size(actionButtonSize),
+                    modifier = actionSlot(actionButtonSize),
                     enabled = enabled
                 ) {
                     Icon(
@@ -189,7 +193,7 @@ internal fun QualityActionRow(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.toggleFavorite()
                     },
-                    modifier = Modifier.size(actionButtonSize),
+                    modifier = actionSlot(actionButtonSize),
                     enabled = enabled
                 ) {
                     Icon(
@@ -214,7 +218,7 @@ internal fun QualityActionRow(
 @Composable
 private fun AutoplayButton(
     viewModel: NowPlayingViewModel,
-    buttonSize: Dp,
+    modifier: Modifier,
     iconSize: Dp,
     enabled: Boolean
 ) {
@@ -238,7 +242,7 @@ private fun AutoplayButton(
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             viewModel.toggleAutoplay()
         },
-        modifier = Modifier.size(buttonSize),
+        modifier = modifier,
         enabled = enabled && current != null
     ) {
         Icon(
@@ -249,3 +253,18 @@ private fun AutoplayButton(
         )
     }
 }
+
+/**
+ * A button's place in a side group: its full [size] while the side has room, and an equal share
+ * of the side, still square, when it has not. Six buttons and the badge need about 334 dp at
+ * full size, and the landscape column is narrower than that on a phone; at a fixed size the Row
+ * squeezed the last button of each side against its neighbour instead.
+ */
+private fun RowScope.actionSlot(size: Dp): Modifier =
+    Modifier
+        .weight(1f, fill = false)
+        .sizeIn(maxWidth = size, maxHeight = size)
+        .aspectRatio(1f)
+
+/** The least space between the badge and the buttons either side of it. */
+private val BADGE_GAP = 6.dp
