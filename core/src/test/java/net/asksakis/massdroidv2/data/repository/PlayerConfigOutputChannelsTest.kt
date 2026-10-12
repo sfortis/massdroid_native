@@ -12,12 +12,17 @@ import kotlinx.serialization.json.jsonObject
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.ServerPlayer
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
+import net.asksakis.massdroidv2.domain.model.IntSetting
+import net.asksakis.massdroidv2.domain.model.OutputProtocol
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -217,5 +222,113 @@ class PlayerConfigOutputChannelsTest {
             "sp_a||protocol||output_channels",
             repository().resolveProtocolConfigKey(values, "output_channels")
         )
+    }
+
+    /** The entries MA lists for a Sendspin output bridged over Cast while the Cast device is idle. */
+    private val idleCastSendspin = """
+        "spb_a||protocol||sendspin_cast_experimental": {"type": "alert", "category": "protocol_sendspin", "value": null},
+        "spb_a||protocol||enabled": {"type": "boolean", "category": "protocol_sendspin", "value": true}
+    """.trimIndent()
+
+    @Test
+    fun `an idle Sendspin over Cast output waits for playback to show its delay`() = runBlocking {
+        serverConfig("""{"output_channels": ${channelEntry.format("left")}, $idleCastSendspin}""")
+
+        val config = repository().getPlayerConfig("p1")!!
+
+        assertNull(config.sendspinStaticDelayKey)
+        assertTrue(config.sendspinDelayWaitsForPlayback)
+    }
+
+    @Test
+    fun `a playing Sendspin over Cast output has its delay`() = runBlocking {
+        serverConfig(
+            """{$idleCastSendspin,
+              "spb_a||protocol||sendspin_static_delay": {"type": "integer", "category": "protocol_sendspin", "value": 415}
+            }"""
+        )
+
+        val config = repository().getPlayerConfig("p1")!!
+
+        assertEquals("spb_a||protocol||sendspin_static_delay", config.sendspinStaticDelayKey)
+        assertEquals(415, config.sendspinStaticDelayMs)
+        assertFalse(config.sendspinDelayWaitsForPlayback)
+    }
+
+    @Test
+    fun `a registered Sendspin output without a delay entry does not wait for playback`() = runBlocking {
+        serverConfig(
+            """{
+              "sp_a||protocol||enabled": {"type": "boolean", "category": "protocol_sendspin", "value": true},
+              "sp_a||protocol||preferred_sendspin_format": {"type": "string", "category": "protocol_sendspin", "value": "automatic"}
+            }"""
+        )
+
+        assertFalse(repository().getPlayerConfig("p1")!!.sendspinDelayWaitsForPlayback)
+    }
+
+    @Test
+    fun `a disabled Sendspin output does not wait for playback`() = runBlocking {
+        serverConfig(
+            """{"spb_a||protocol||enabled": {"type": "boolean", "category": "protocol_sendspin", "value": false}}"""
+        )
+
+        assertFalse(repository().getPlayerConfig("p1")!!.sendspinDelayWaitsForPlayback)
+    }
+
+    @Test
+    fun `sync adjust is read for every output that has one`() = runBlocking {
+        serverConfig(
+            """{
+              "sync_adjust": {"type": "integer", "value": -10},
+              "apf0||protocol||sync_adjust": {"type": "integer", "value": 40},
+              "apf0||protocol||enabled": {"type": "boolean", "category": "protocol_airplay", "value": true}
+            }"""
+        )
+
+        val config = repository().getPlayerConfig("p1")!!
+
+        assertEquals(
+            mapOf(
+                "native" to IntSetting("sync_adjust", -10),
+                "apf0" to IntSetting("apf0||protocol||sync_adjust", 40),
+            ),
+            config.syncAdjust
+        )
+    }
+
+    @Test
+    fun `a player's outputs are read from output_protocols`() {
+        val server = json.decodeFromString<ServerPlayer>(
+            """{"player_id": "p1", "output_protocols": [
+              {"output_protocol_id": "native", "name": "SONOS S1", "protocol_domain": "sonos_s1", "is_native": true, "derived_from": null},
+              {"output_protocol_id": "spb_f0", "name": "Sendspin", "protocol_domain": "sendspin", "is_native": false, "derived_from": "apf0"}
+            ]}"""
+        )
+
+        val player = server.toDomain(imageResolver = mockk(relaxed = true))
+
+        assertEquals(
+            listOf(
+                OutputProtocol("native", "sonos_s1"),
+                OutputProtocol("spb_f0", "sendspin", derivedFrom = "apf0"),
+            ),
+            player.outputProtocols
+        )
+    }
+
+    @Test
+    fun `an output without an id is dropped and the player still decodes`() {
+        val server = json.decodeFromString<ServerPlayer>(
+            """{"player_id": "p1", "active_output_protocol": "spb_ac", "output_protocols": [
+              {"name": "Broken", "protocol_domain": "airplay"},
+              {"output_protocol_id": "spb_ac", "protocol_domain": "sendspin", "derived_from": "native"}
+            ]}"""
+        )
+
+        val player = server.toDomain(imageResolver = mockk(relaxed = true))
+
+        assertEquals(listOf(OutputProtocol("spb_ac", "sendspin", derivedFrom = "native")), player.outputProtocols)
+        assertEquals("spb_ac", player.activeOutputProtocol)
     }
 }

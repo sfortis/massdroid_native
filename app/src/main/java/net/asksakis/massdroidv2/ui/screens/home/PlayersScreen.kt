@@ -452,8 +452,9 @@ fun PlayersScreen(
                             ourPlayerId = sendspinClientId,
                             localFineTune = localFineTune,
                             onLocalFineTuneChanged = { routeKey, ms -> viewModel.setOutputFineTuneMs(routeKey, ms) },
-                            onLoadConfig = { viewModel.getPlayerConfig(it) },
+                            onLoadMember = { viewModel.loadSyncMember(it) },
                             onSave = { id, values -> viewModel.savePlayerConfig(id, values) },
+                            onApply = { id, values -> viewModel.savePlayerConfigAndWait(id, values) },
                             onDismiss = { syncSpeakersForId = null },
                             configRevision = configRevision,
                             autoSync = if (BuildConfig.DEBUG && ourId != null && members.any { it.playerId == ourId }) {

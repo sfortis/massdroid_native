@@ -74,7 +74,17 @@ data class ServerPlayer(
     @SerialName("supported_features") val supportedFeatures: List<String> = emptyList(),
     @SerialName("can_group_with") val canGroupWith: List<String> = emptyList(),
     @SerialName("current_media") val currentMedia: CurrentMedia? = null,
-    val icon: String? = null
+    val icon: String? = null,
+    @SerialName("output_protocols") val outputProtocols: List<ServerOutputProtocol> = emptyList(),
+    @SerialName("active_output_protocol") val activeOutputProtocol: String? = null,
+)
+
+@Serializable
+data class ServerOutputProtocol(
+    // Defaulted so one malformed entry cannot fail the decode of the whole player.
+    @SerialName("output_protocol_id") val id: String = "",
+    @SerialName("protocol_domain") val domain: String = "",
+    @SerialName("derived_from") val derivedFrom: String? = null,
 )
 
 @Serializable

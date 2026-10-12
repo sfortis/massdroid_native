@@ -51,6 +51,10 @@ class PlayerRepositoryImpl @Inject constructor(
         private const val LIBRARY_URI_PREFIX = "library://"
         /** Joins a protocol sub-player id to an entry key in a universal player's config. */
         private const val PROTOCOL_KEY_SEPARATOR = "||protocol||"
+        private const val SENDSPIN_PROTOCOL_CATEGORY = "protocol_sendspin"
+        private const val CONFIG_ENTRY_TYPE_ALERT = "alert"
+        private const val SYNC_ADJUST_KEY = "sync_adjust"
+        private const val NATIVE_PROTOCOL_ID = "native"
         private const val BLOCKED_AUTO_SKIP_COOLDOWN_MS = 2_500L
         /**
          * How long after a pause command a second one counts as the same
@@ -1989,6 +1993,19 @@ class PlayerRepositoryImpl @Inject constructor(
             val staticDelayKey = values?.keys?.firstOrNull { it.endsWith("sendspin_static_delay") }
             val staticDelayEntry = staticDelayKey?.let { values[it] }
 
+            // The sync_adjust of every output that has one, by output id; the bare entry
+            // belongs to the player's native output.
+            val syncAdjust = values?.entries.orEmpty().mapNotNull { (key, entry) ->
+                val protocolId = when {
+                    key == SYNC_ADJUST_KEY -> NATIVE_PROTOCOL_ID
+                    key.endsWith("$PROTOCOL_KEY_SEPARATOR$SYNC_ADJUST_KEY") ->
+                        key.removeSuffix("$PROTOCOL_KEY_SEPARATOR$SYNC_ADJUST_KEY")
+                    else -> return@mapNotNull null
+                }
+                protocolId to IntSetting(key, entry.configInt() ?: 0)
+            }.toMap()
+
+
             // Generic per-provider output codec (e.g. Sonos `output_codec`: flac/mp3/aac/wav).
             val outputCodecEntry = values?.get("output_codec")
             val outputCodecOptions = outputCodecEntry.choiceOptions()
@@ -2018,6 +2035,10 @@ class PlayerRepositoryImpl @Inject constructor(
                 sendspinSyncDelayMs = syncDelayEntry?.configInt(),
                 sendspinSyncDelayDefault =
                     (syncDelayEntry as? JsonObject)?.get("default_value")?.jsonPrimitive?.intOrNull,
+                sendspinDelayWaitsForPlayback =
+                    syncDelayKey == null && staticDelayKey == null &&
+                        values != null && hasUnregisteredSendspinOutput(values),
+                syncAdjust = syncAdjust,
             )
         } catch (e: Exception) {
             Log.w(TAG, "getPlayerConfig failed: ${e.message}")
@@ -2083,6 +2104,32 @@ class PlayerRepositoryImpl @Inject constructor(
         }?.let { return it }
         return candidates.first()
     }
+
+    /**
+     * True when the config lists an enabled Sendspin output that MA has not registered.
+     *
+     * MA registers a Sendspin output bridged over another protocol (Cast, AirPlay) only while
+     * that protocol plays, and only a registered output has its entries in the config, the
+     * delay among them. Until then the output shows as its `||protocol||enabled` toggle and,
+     * for an experimental output, a warning. A registered output without a delay (an ESPHome
+     * client) still lists its other entries, so it does not count.
+     */
+    internal fun hasUnregisteredSendspinOutput(values: JsonObject): Boolean {
+        val enabledSuffix = "${PROTOCOL_KEY_SEPARATOR}enabled"
+        return values.entries.any { (key, entry) ->
+            val prefix = key.removeSuffix("enabled")
+            key.endsWith(enabledSuffix) &&
+                entry.entryField("category") == SENDSPIN_PROTOCOL_CATEGORY &&
+                entry.entryValue() == "true" &&
+                values.none { (other, otherEntry) ->
+                    other != key && other.startsWith(prefix) &&
+                        otherEntry.entryField("type") != CONFIG_ENTRY_TYPE_ALERT
+                }
+        }
+    }
+
+    private fun JsonElement?.entryField(name: String): String? =
+        ((this as? JsonObject)?.get(name) as? JsonPrimitive)?.contentOrNull
 
     /**
      * The value of a config entry, which the server sends either as the bare value or as an
@@ -2350,7 +2397,11 @@ fun ServerPlayer.toDomain(
             value.contains("://") -> value
             else -> value // MDI name, pass through
         }
-    }
+    },
+    outputProtocols = outputProtocols
+        .filter { it.id.isNotEmpty() }
+        .map { OutputProtocol(it.id, it.domain, it.derivedFrom) },
+    activeOutputProtocol = activeOutputProtocol,
 )
 
 /**

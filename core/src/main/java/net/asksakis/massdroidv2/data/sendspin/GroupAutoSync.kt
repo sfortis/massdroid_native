@@ -102,7 +102,14 @@ class GroupAutoSync @Inject constructor(
         if (_state.value is State.Done || _state.value is State.Failed) _state.value = State.Idle
     }
 
-    private class Member(val id: String, val name: String, val control: DelayControl, val key: String?)
+    /** [key] is null for this phone, which moves by its fine-tune instead. */
+    private class Member(
+        val id: String,
+        val name: String,
+        val control: DelayControl,
+        val key: String?,
+        val restartsPlayback: Boolean = false,
+    )
 
     private suspend fun run(memberIds: List<String>, ourPlayerId: String): State {
         sendspinManager.syncProbeBlocker()?.let { return State.Failed(it) }
@@ -122,14 +129,11 @@ class GroupAutoSync @Inject constructor(
                 Member(player.playerId, player.displayName, control, key = null)
             } else {
                 val config = playerRepository.getPlayerConfig(player.playerId)
-                val syncKey = config?.sendspinSyncDelayKey
-                val staticKey = config?.sendspinStaticDelayKey
-                when {
-                    syncKey != null ->
-                        Member(player.playerId, player.displayName, DelayControl.Signed(config.sendspinSyncDelayMs ?: 0), syncKey)
-                    staticKey != null ->
-                        Member(player.playerId, player.displayName, DelayControl.Static(config.sendspinStaticDelayMs ?: 0), staticKey)
-                    else -> Member(player.playerId, player.displayName, DelayControl.None, key = null)
+                when (val delay = MemberDelayResolver.resolve(player, config)) {
+                    is MemberDelay.Adjustable ->
+                        Member(player.playerId, player.displayName, delay.control, delay.key, delay.restartsPlayback)
+                    MemberDelay.WaitsForPlayback, MemberDelay.OnDevice ->
+                        Member(player.playerId, player.displayName, DelayControl.None, key = null)
                 }
             }
         }
@@ -242,9 +246,15 @@ class GroupAutoSync @Inject constructor(
         return strongest.lagUs
     }
 
+    /**
+     * Writes the planned delays. A delay whose save restarts the group's playback is written
+     * last, so the other saves do not land while the group restarts. Each such save restarts
+     * the group again: with one member of that kind the group restarts once, with two members
+     * it restarts twice, and the second save arrives while the first restart is still running.
+     */
     private suspend fun apply(plan: SyncDelayPlan, members: List<Member>, ourRouteKey: String?) {
         val byId = members.associateBy { it.id }
-        plan.members.forEach { p ->
+        plan.members.sortedBy { byId[it.playerId]?.restartsPlayback == true }.forEach { p ->
             val member = byId[p.playerId] ?: return@forEach
             val value = p.newValueMs ?: return@forEach
             val current = when (val c = member.control) {

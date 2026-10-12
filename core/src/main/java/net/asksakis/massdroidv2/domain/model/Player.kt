@@ -29,8 +29,22 @@ data class Player(
     val supportedFeatures: Set<String> = emptySet(),
     val canGroupWith: List<String> = emptyList(),
     val currentMedia: NowPlaying? = null,
-    val icon: String? = null
+    val icon: String? = null,
+    /** The outputs MA can play this player through (MA `output_protocols`). */
+    val outputProtocols: List<OutputProtocol> = emptyList(),
+    /**
+     * The output MA plays this player through right now (MA `active_output_protocol`), null
+     * while it does not play. MA sets it only once that output's player is registered.
+     */
+    val activeOutputProtocol: String? = null,
 )
+
+/**
+ * One output of a player. [id] is `native` for the player's own protocol. A derived output
+ * runs on top of another output of the same player, named by [derivedFrom]: Sendspin over
+ * AirPlay, for one.
+ */
+data class OutputProtocol(val id: String, val domain: String, val derivedFrom: String? = null)
 
 enum class PlayerType { PLAYER, GROUP, STEREO_PAIR }
 
@@ -86,7 +100,21 @@ data class PlayerConfig(
     val sendspinSyncDelayMs: Int? = null,
     /** Server-advertised default for the sync delay; Reset restores this (per speaker). */
     val sendspinSyncDelayDefault: Int? = null,
+    /**
+     * True when the player has an enabled Sendspin output that MA has not registered yet, so
+     * the config holds no delay. MA registers a Sendspin output bridged over Cast or AirPlay
+     * only while that output plays.
+     */
+    val sendspinDelayWaitsForPlayback: Boolean = false,
+    /**
+     * The `sync_adjust` of each output that has one, by output id (`native` for the bare
+     * entry). MA applies an AirPlay output's sync_adjust to Sendspin played over it.
+     */
+    val syncAdjust: Map<String, IntSetting> = emptyMap(),
 )
+
+/** An integer config value with the exact key to save it under. */
+data class IntSetting(val key: String, val value: Int)
 
 enum class CrossfadeMode(val apiValue: String, val label: String) {
     DISABLED("disabled", "Disabled"),

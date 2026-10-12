@@ -8,10 +8,14 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import net.asksakis.massdroidv2.data.sendspin.MemberDelay
+import net.asksakis.massdroidv2.data.sendspin.MemberDelayResolver
 import net.asksakis.massdroidv2.data.sendspin.OutputFineTune
+import net.asksakis.massdroidv2.data.sendspin.SyncMemberSetup
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.repository.DynamicQueueSource
@@ -287,6 +291,35 @@ class HomeViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * A member of a sync group for the Sync speakers sheet: its config and the setting that
+     * moves it in time, resolved from the member's outputs as they are now.
+     */
+    suspend fun loadSyncMember(playerId: String): SyncMemberSetup {
+        val config = getPlayerConfig(playerId)
+        val player = players.value.firstOrNull { it.playerId == playerId }
+        val delay = player?.let { MemberDelayResolver.resolve(it, config) } ?: MemberDelay.OnDevice
+        return SyncMemberSetup(config, delay)
+    }
+
+    /**
+     * Saves a player config and reports whether MA accepted it. The save runs in the
+     * ViewModel's scope, so a caller that goes away (a closed sheet) does not cancel a save
+     * that was already sent.
+     */
+    suspend fun savePlayerConfigAndWait(playerId: String, values: Map<String, Any>): Boolean =
+        viewModelScope.async {
+            try {
+                playerRepository.savePlayerConfig(playerId, values)
+                true
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "savePlayerConfig failed: ${e.message}")
+                false
+            }
+        }.await()
 
     fun savePlayerConfig(playerId: String, values: Map<String, Any>) {
         viewModelScope.launch {

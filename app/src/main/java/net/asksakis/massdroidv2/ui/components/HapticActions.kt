@@ -18,6 +18,9 @@ import androidx.compose.material3.IconButtonColors
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -144,6 +147,30 @@ fun MdFilledTonalButton(
         colors = colors,
         contentPadding = contentPadding,
         content = content
+    )
+}
+
+/**
+ * A small selectable choice drawn like the settings badges: a rounded square rather than a
+ * pill, filled when selected, with the same tap haptic as the buttons above.
+ */
+@Composable
+fun MdFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = rememberHapticOnClick(onClick),
+        label = label,
+        modifier = modifier,
+        shape = MaterialTheme.shapes.extraSmall,
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primary,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+        ),
     )
 }
 
