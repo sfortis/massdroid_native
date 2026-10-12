@@ -81,6 +81,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import net.asksakis.massdroidv2.ui.screens.settings.SettingsCategory
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
@@ -521,21 +522,19 @@ private fun MassDroidApp(
 
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // A first run has no server, so it opens where one is entered, and goes Home once the
+    // first sign-in connects.
     LaunchedEffect(Unit) {
         if (!miniPlayerViewModel.isServerConfigured()) {
-            navController.navigate(Routes.PLAYERS) {
-                popUpTo(Routes.HOME)
-                launchSingleTop = true
-            }
+            navController.navigate(Routes.settings(SettingsCategory.CONNECTION)) { launchSingleTop = true }
+            miniPlayerViewModel.miniPlayerUiState.first { it.connected }
+            navController.popBackStack(Routes.HOME, inclusive = false)
         }
     }
 
     LaunchedEffect(Unit) {
         miniPlayerViewModel.noPlayerSelectedEvent.collect {
-            navController.navigate(Routes.PLAYERS) {
-                popUpTo(Routes.HOME)
-                launchSingleTop = true
-            }
+            navController.navigateToTopLevel(Routes.PLAYERS)
             snackbarHostState.showSnackbar(
                 message = "Select a player first",
                 duration = SnackbarDuration.Short
@@ -684,7 +683,7 @@ private fun PortraitLayout(
 ) {
     val density = LocalDensity.current
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppSnackbarHost(snackbarHostState) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(
@@ -731,7 +730,7 @@ private fun LandscapeLayout(
 ) {
     val density = LocalDensity.current
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppSnackbarHost(snackbarHostState) },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             Column(modifier = Modifier
@@ -771,6 +770,16 @@ private fun LandscapeLayout(
             )
         }
     }
+}
+
+/**
+ * The app's snackbars, raised by the mini player's height. The mini player floats over the
+ * Scaffold (ExpandingPlayerSheet) rather than sitting in its bottom bar, so a host placed above
+ * the bar alone was hidden behind it.
+ */
+@Composable
+private fun AppSnackbarHost(state: SnackbarHostState) {
+    SnackbarHost(state, modifier = Modifier.padding(bottom = LocalMiniPlayerPadding.current))
 }
 
 @Composable
@@ -822,15 +831,7 @@ private fun BottomNavBar(navController: NavHostController, currentRoute: String?
                 icon = { Icon(item.icon, contentDescription = item.label) },
                 label = { Text(item.label) },
                 selected = currentRoute == item.route,
-                onClick = {
-                    navController.navigate(item.route) {
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                }
+                onClick = { navController.navigateToTopLevel(item.route) }
             )
         }
     }
@@ -856,17 +857,27 @@ private fun SideNavRail(
                 icon = { Icon(item.icon, contentDescription = item.label) },
                 label = { Text(item.label) },
                 selected = currentRoute == item.route,
-                onClick = {
-                    navController.navigate(item.route) {
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                }
+                onClick = { navController.navigateToTopLevel(item.route) }
             )
         }
+    }
+}
+
+/**
+ * Opens a top-level destination the way its tab does, keeping each tab's back stack.
+ *
+ * Home is opened without restoring state. It is the root and is never popped, so it has nothing
+ * of its own to restore, while Navigation files the stack a non-inclusive saving pop removes under
+ * the destination it pops up to, which is Home. When the first such pop removed a screen (the first
+ * run used to open Players this way), tapping Home restored that screen at once and the tab
+ * appeared to do nothing (2026-10-12).
+ */
+private fun NavHostController.navigateToTopLevel(route: String) {
+    val start = graph.findStartDestination()
+    navigate(route) {
+        popUpTo(start.id) { saveState = true }
+        launchSingleTop = true
+        restoreState = route != start.route
     }
 }
 
