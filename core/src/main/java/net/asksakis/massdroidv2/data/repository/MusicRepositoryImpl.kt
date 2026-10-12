@@ -86,6 +86,9 @@ class MusicRepositoryImpl @Inject constructor(
     }
     private val librarySyncMutex = Mutex()
     private var lastLibrarySyncAtMs = 0L
+    // The MA auth token under which the server refused music/sync (not an admin), or null.
+    // A new login can bring another account, so the refusal holds for one token only.
+    private var librarySyncRefusedForToken: String? = null
 
     override val mediaItemUpdates: Flow<MediaItemUpdate> = wsClient.events.mapNotNull { event ->
         if (event.event != EventType.MEDIA_ITEM_UPDATED) return@mapNotNull null
@@ -876,6 +879,11 @@ class MusicRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Skipping music/sync due cooldown")
                 return@withLock false
             }
+            val token = wsClient.authToken
+            if (token != null && token == librarySyncRefusedForToken) {
+                Log.d(TAG, "Skipping music/sync: this account may not sync the library")
+                return@withLock false
+            }
             try {
                 wsClient.sendCommand(
                     command = MaCommands.Music.SYNC,
@@ -885,6 +893,10 @@ class MusicRepositoryImpl @Inject constructor(
                 lastLibrarySyncAtMs = now
                 Log.d(TAG, "Triggered MA library sync")
                 true
+            } catch (e: MaApiException) {
+                if (e.isPermissionDenied) librarySyncRefusedForToken = token
+                Log.w(TAG, "music/sync failed: ${e.message}")
+                false
             } catch (e: Exception) {
                 Log.w(TAG, "music/sync failed: ${e.message}")
                 false

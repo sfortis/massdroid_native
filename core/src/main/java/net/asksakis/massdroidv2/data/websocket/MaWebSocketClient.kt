@@ -74,7 +74,14 @@ class MaWebSocketClient(
          */
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
-        private const val ERROR_INSUFFICIENT_PERMISSIONS = 22
+        private const val ERROR_INSUFFICIENT_PERMISSIONS = MaApiException.INSUFFICIENT_PERMISSIONS_CODE
+
+        /**
+         * Admin-gated commands the app sends without the user asking for them, so a refusal is
+         * not worth a notice: a pull-to-refresh asks for a library sync on the side, and for a
+         * non-admin account the notice came up on every refresh (2026-10-12).
+         */
+        private val UNPROMPTED_COMMANDS = setOf(MaCommands.Music.SYNC)
         /** Argument values never written to the log; see [redactSecrets]. */
         private val SENSITIVE_ARG_KEYS = setOf("password", "token", "pairing_token")
         private const val ARGS_LOG_LIMIT = 120
@@ -100,6 +107,8 @@ class MaWebSocketClient(
 
     @VisibleForTesting
     internal val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<JsonElement?>>()
+    // Message ids of pending UNPROMPTED_COMMANDS, whose permission refusal raises no notice.
+    private val unpromptedRequests = ConcurrentHashMap.newKeySet<String>()
     private val partialResults = ConcurrentHashMap<String, MutableList<JsonElement>>()
 
     /**
@@ -636,7 +645,7 @@ class MaWebSocketClient(
                         // config, ...) behind an admin role and returns InsufficientPermissions
                         // for everyone else. Surface a single friendly app-level notice from this
                         // one choke point so every admin-gated command is covered.
-                        if (errorCode == ERROR_INSUFFICIENT_PERMISSIONS) {
+                        if (errorCode == ERROR_INSUFFICIENT_PERMISSIONS && messageId !in unpromptedRequests) {
                             accountNoticeReporter?.reportPermissionDenied()
                         }
                         pendingRequests.remove(messageId)?.completeExceptionally(
@@ -812,6 +821,7 @@ class MaWebSocketClient(
             val messageId = UUID.randomUUID().toString().replace("-", "").take(12)
             val deferred = if (awaitResponse) {
                 CompletableDeferred<JsonElement?>().also { pendingRequests[messageId] = it }
+                    .also { if (command in UNPROMPTED_COMMANDS) unpromptedRequests += messageId }
             } else {
                 null
             }
@@ -861,6 +871,7 @@ class MaWebSocketClient(
                 // Ensure no stale pending/partial state remains if request times out or caller is canceled.
                 pendingRequests.remove(messageId)
                 partialResults.remove(messageId)
+                unpromptedRequests.remove(messageId)
             }
         }
 
@@ -1029,7 +1040,13 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
      */
     val isConnectionLost: Boolean get() = code == CONNECTION_LOST_CODE
 
+    /** True when the server refused the command because the account is not an admin (MA 2.9.0+). */
+    val isPermissionDenied: Boolean get() = code == INSUFFICIENT_PERMISSIONS_CODE
+
     companion object {
+        /** MA's InsufficientPermissions error code. */
+        const val INSUFFICIENT_PERMISSIONS_CODE = 22
+
         /** Marks "no response", as opposed to any error code the server itself returns. */
         const val TIMEOUT_CODE = -2
 
