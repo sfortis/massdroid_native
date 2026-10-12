@@ -31,6 +31,14 @@ sealed class DiscoverSection {
 private const val MIN_SECTION_ITEMS = 3
 private val IGNORED_FOLDERS = setOf("in_progress", "favorite_radio", "favorite_playlists")
 
+/**
+ * Providers of Music Assistant's own folders (recently favorited, random albums and artists).
+ * MA 2.10 serves them from its "recommendations" provider; the app's local favorite albums folder,
+ * and the servers this was first written against, use "library". Matching only "library" dropped
+ * every server folder on 2.10, so Recent Favorite Tracks and the Explore rows never appeared.
+ */
+private val BUILT_IN_FOLDER_PROVIDERS = setOf("library", "recommendations")
+
 @Singleton
 class DiscoverSectionBuilder @Inject constructor() {
 
@@ -45,7 +53,7 @@ class DiscoverSectionBuilder @Inject constructor() {
         val sections = mutableListOf<DiscoverSection>()
 
         val filtered = serverFolders.filter { it.itemId !in IGNORED_FOLDERS }
-        val libraryFolders = filtered.filter { it.provider == "library" }
+        val libraryFolders = filtered.filter { it.provider in BUILT_IN_FOLDER_PROVIDERS }
             .associateBy { it.itemId }
 
         // 1. Genre Radio (BLL-weighted, top 10)

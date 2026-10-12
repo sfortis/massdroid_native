@@ -55,4 +55,34 @@ class DiscoverSectionBuilderTest {
     fun `an empty folder yields no section`() {
         assertThat(builder.folderToSection(folder(RecommendationItems()))).isNull()
     }
+
+    @Test
+    fun `MA 2_10 built-in folders from the recommendations provider still give the explore rows`() {
+        val folders = listOf(
+            RecommendationFolder(
+                itemId = "random_albums", name = "Random albums", provider = "recommendations",
+                items = RecommendationItems(albums = (1..3).map(::album))
+            ),
+            RecommendationFolder(
+                itemId = "recent_favorite_tracks", name = "Recently favorited tracks", provider = "recommendations",
+                items = RecommendationItems(tracks = (1..3).map(::track))
+            ),
+        )
+
+        val titles = builder.buildSections(
+            serverFolders = folders,
+            suggestedArtists = emptyList(),
+            suggestedAlbums = emptyList(),
+            genreItems = emptyList(),
+            bllGenreScores = emptyList(),
+        ).map { section ->
+            when (section) {
+                is DiscoverSection.TrackSection -> section.title
+                is DiscoverSection.AlbumSection -> section.title
+                else -> section::class.simpleName
+            }
+        }
+
+        assertThat(titles).containsExactly("Recent Favorite Tracks", "Explore Albums").inOrder()
+    }
 }

@@ -57,6 +57,8 @@ object MaCommands {
         const val ITEM_BY_URI = "music/item_by_uri"
         const val REFRESH_ITEM = "music/refresh_item"
         const val RECOMMENDATIONS = "music/recommendations"
+        /** One recommendation row's items. From MA 2.10 the listing above comes without them. */
+        const val RECOMMENDATION_ITEMS = "music/recommendations/items"
         const val FAVORITES_ADD = "music/favorites/add_item"
         const val FAVORITES_REMOVE = "music/favorites/remove_item"
         const val LIBRARY_ADD_ITEM = "music/library/add_item"
@@ -424,6 +426,13 @@ data class SetAutoplayEnabledArgs(
     override fun toJson(): JsonObject = buildJsonObject {
         put("queue_id", queueId)
         put("dont_stop_the_music_enabled", enabled)
+    }
+}
+
+data class RecommendationItemsArgs(val provider: String, val itemId: String) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("provider", provider)
+        put("item_id", itemId)
     }
 }
 
