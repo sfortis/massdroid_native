@@ -48,6 +48,10 @@ class SendspinIdentityStore(
     @Synchronized
     fun hasLongTermPsk(serverId: String): Boolean = serverId in current().longTermPsks
 
+    /** The long-term PSK stored for [serverId], or null. */
+    @Synchronized
+    fun longTermPsk(serverId: String): ByteArray? = current().longTermPsks[serverId]?.copyOf()
+
     @Synchronized
     fun saveLongTermPsk(serverId: String, psk: ByteArray) {
         require(psk.size == SendspinNoise.PSK_SIZE) { "PSK must be ${SendspinNoise.PSK_SIZE} bytes" }
@@ -81,10 +85,17 @@ class SendspinIdentityStore(
             val text = file.readText()
             val decoded = runCatching { decode(text) }
             decoded.getOrNull()?.let { return it }
-            // Malformed content. Keep the bad file for inspection; it cannot be used.
+            // Malformed content. Keep the bad file for inspection, but only the latest one: it may
+            // still hold a private key and PSKs, and older copies serve no purpose.
             val aside = File(file.parentFile, "${file.name}.corrupt")
-            Log.e(TAG, "Unreadable Sendspin identity, moved to ${aside.name}; creating a new one", decoded.exceptionOrNull())
-            file.renameTo(aside)
+            aside.delete()
+            if (!file.renameTo(aside)) throw IOException("cannot move the unreadable ${file.name} aside")
+            Log.e(
+                TAG,
+                "Unreadable Sendspin identity, moved to ${aside.name}; creating a new one. " +
+                    "The phone gets a new player id and must pair again.",
+                decoded.exceptionOrNull(),
+            )
         }
         val fresh = State(NoiseKeyPair.generate(random), emptyMap())
         write(fresh)

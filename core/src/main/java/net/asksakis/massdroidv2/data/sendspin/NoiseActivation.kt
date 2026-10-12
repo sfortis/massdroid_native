@@ -30,6 +30,12 @@ sealed class NoiseActivationStep {
     /** Nothing to do: the player stays as it was. Unpaired and not approved, it waits for pairing. */
     data object None : NoiseActivationStep()
 
+    /**
+     * The server asked for more than this PSK admits (a player on the pairing PSK, pairing mixed
+     * with other activities). The client says goodbye with [reason] and starts nothing.
+     */
+    data class Reject(val reason: String) : NoiseActivationStep()
+
     companion object {
         /**
          * @param effectiveRoles the active roles after applying this message's sticky set.
@@ -43,13 +49,17 @@ sealed class NoiseActivationStep {
             playerActive: Boolean,
             resync: Boolean,
         ): NoiseActivationStep {
-            if (ACTIVITY_PAIRING in payload.activities) {
+            val activities = payload.activities.toSet()
+            if (!admissible(pskCategory, activities, hasRoles = effectiveRoles.isNotEmpty())) {
+                return Reject(GOODBYE_REASON_UNAUTHORIZED)
+            }
+            if (ACTIVITY_PAIRING in activities) {
                 // A pairing PSK admits only pairing_psk; the PIN methods are not offered.
                 val runnable = payload.pairing?.method == PAIR_METHOD_PAIRING_PSK &&
                     pskCategory == PskCategory.PAIRING
                 return if (runnable) FinalizePairing else AbortPairing(PAIR_ABORT_METHOD_NOT_SUPPORTED)
             }
-            val playerRole = effectiveRoles.any { it.substringBefore('@') == PLAYER_ROLE_FAMILY }
+            val playerRole = hasPlayerRole(effectiveRoles)
             return when {
                 playerRole && !playerActive -> StartPlayer
                 playerRole && resync -> ResendState
@@ -57,6 +67,26 @@ sealed class NoiseActivationStep {
                 else -> None
             }
         }
+
+        /**
+         * aiosendspin's `_admissible`: the activities, and any active role, must be ones the
+         * matched PSK allows. The phone always advertises unpaired access, so a sentinel
+         * connection may carry playback.
+         */
+        private fun admissible(category: PskCategory, activities: Set<String>, hasRoles: Boolean): Boolean =
+            activitiesAllowed(category, activities) &&
+                (!hasRoles || activitiesAllowed(category, activities + ACTIVITY_PLAYBACK))
+
+        private fun activitiesAllowed(category: PskCategory, activities: Set<String>): Boolean = when {
+            ACTIVITY_PAIRING in activities -> activities == setOf(ACTIVITY_PAIRING)
+            category == PskCategory.LONG_TERM -> activities.all { it == ACTIVITY_PLAYBACK || it == ACTIVITY_MANAGEMENT }
+            category == PskCategory.SENTINEL -> activities.isEmpty() || activities == setOf(ACTIVITY_PLAYBACK)
+            // The pairing PSK admits only the pairing activity, handled above.
+            else -> false
+        }
+
+        /** Whether [roles] (as `family@version`) include a player role. */
+        fun hasPlayerRole(roles: List<String>): Boolean = roles.any { it.substringBefore('@') == PLAYER_ROLE_FAMILY }
 
         private const val PLAYER_ROLE_FAMILY = "player"
     }

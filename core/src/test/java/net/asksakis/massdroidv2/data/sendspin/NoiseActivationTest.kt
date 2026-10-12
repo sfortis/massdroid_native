@@ -78,6 +78,34 @@ class NoiseActivationTest {
     }
 
     @Test
+    fun `a player role on the pairing psk is refused`() {
+        val step = decide(ServerActivatePayload(activities = emptyList(), activeRoles = roles), psk = PskCategory.PAIRING)
+
+        assertThat(step).isEqualTo(NoiseActivationStep.Reject(GOODBYE_REASON_UNAUTHORIZED))
+    }
+
+    @Test
+    fun `pairing mixed with another activity is refused`() {
+        val payload = ServerActivatePayload(activities = listOf("pairing", "playback"), pairing = ActivatePairing("pairing_psk"))
+
+        assertThat(decide(payload, psk = PskCategory.PAIRING)).isEqualTo(NoiseActivationStep.Reject(GOODBYE_REASON_UNAUTHORIZED))
+    }
+
+    @Test
+    fun `an unpaired phone the operator approved plays`() {
+        val step = decide(ServerActivatePayload(activities = listOf("playback"), activeRoles = roles), psk = PskCategory.SENTINEL)
+
+        assertThat(step).isEqualTo(NoiseActivationStep.StartPlayer)
+    }
+
+    @Test
+    fun `management on the sentinel psk is refused`() {
+        val step = decide(ServerActivatePayload(activities = listOf("management")), psk = PskCategory.SENTINEL)
+
+        assertThat(step).isEqualTo(NoiseActivationStep.Reject(GOODBYE_REASON_UNAUTHORIZED))
+    }
+
+    @Test
     fun `server activate and the pairing messages parse`() {
         val json = Json { ignoreUnknownKeys = true }
         val activate = SendspinIncoming.parse(
@@ -114,5 +142,13 @@ class NoiseActivationTest {
         assertThat(payload.getValue("device_info").jsonObject.getValue("product_name").jsonPrimitive.content)
             .isEqualTo("Mobile Application")
         assertThat(payload.keys).contains("player@v1_support")
+    }
+
+    @Test
+    fun `only a player family role counts as a player role`() {
+        assertThat(NoiseActivationStep.hasPlayerRole(listOf("player@v1"))).isTrue()
+        assertThat(NoiseActivationStep.hasPlayerRole(listOf("metadata@v1", "player@v2"))).isTrue()
+        assertThat(NoiseActivationStep.hasPlayerRole(emptyList())).isFalse()
+        assertThat(NoiseActivationStep.hasPlayerRole(listOf("metadata@v1", "controller@v1"))).isFalse()
     }
 }

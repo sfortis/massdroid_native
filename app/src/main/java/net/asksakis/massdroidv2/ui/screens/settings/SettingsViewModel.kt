@@ -42,6 +42,7 @@ class SettingsViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val appUpdateChecker: AppUpdateChecker,
     private val sendspinManager: SendspinManager,
+    private val sendspinNoiseConnector: net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector,
     private val playHistoryRepository: PlayHistoryRepository,
     private val smartListeningRepository: SmartListeningRepository,
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
@@ -142,6 +143,8 @@ class SettingsViewModel @Inject constructor(
 
     val sendspinState = sendspinManager.connectionState
     val sendspinLinkSecurity = sendspinManager.linkSecurity
+    /** The Sendspin server that unpaired this phone, while the phone waits to be asked to pair again. */
+    val sendspinPairingHeld = sendspinNoiseConnector.pairingHeld
     val sendspinEnabled = settingsRepository.sendspinEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val knownBtDevices = settingsRepository.knownBtDevices
@@ -469,9 +472,13 @@ class SettingsViewModel @Inject constructor(
 
     fun toggleSendspin(enabled: Boolean) {
         viewModelScope.launch {
+            // Switching it on is the user's go-ahead to pair again with a server that unpaired it.
+            if (enabled) settingsRepository.clearSendspinUnpairedServers()
             settingsRepository.setSendspinEnabled(enabled)
         }
     }
+
+    fun pairSendspinAgain() = sendspinNoiseConnector.pairAgain()
 
     sealed interface SyncProbeUiState {
         data object Idle : SyncProbeUiState

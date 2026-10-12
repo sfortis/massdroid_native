@@ -98,6 +98,19 @@ class SendspinCoordinator(
     var controller: SendspinAudioController? = null
         private set
 
+    // The MA server and protocol the running controller planned its start for.
+    private var startedFor: SendspinServerKey? = null
+
+    /**
+     * What a Sendspin start depends on: the transport and the player id are picked once per
+     * start from the MA server and its version, so a reconnect to another server, or to the same
+     * server upgraded across 2.10.0 or downgraded below it, needs a new start.
+     */
+    private data class SendspinServerKey(val serverId: String, val noise: Boolean)
+
+    private fun ConnectionState.Connected.sendspinKey() =
+        SendspinServerKey(serverInfo.serverId, SendspinNoiseConnector.supportsNoise(serverInfo.serverVersion))
+
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var volumeReceiver: BroadcastReceiver? = null
     private var btAudioCallback: AudioDeviceCallback? = null
@@ -230,16 +243,28 @@ class SendspinCoordinator(
             wsClient.connectionState.collect { state ->
                 onConnectionStateChanged()
                 if (state is ConnectionState.Connected && settingsRepository.sendspinEnabled.first()) {
+                    stopIfServerChanged(state)
                     startIfConnected("ws_connected")
                 }
             }
         }
     }
 
+    /** Stops a controller whose start was planned for another MA server or protocol. */
+    private fun stopIfServerChanged(state: ConnectionState.Connected) {
+        val key = state.sendspinKey()
+        if (!isActive || startedFor == null || startedFor == key) return
+        Log.i(TAG, "MA server changed ($startedFor -> $key), restarting Sendspin")
+        isActive = false
+        controller?.stop()
+        onInactive("ma_server_changed")
+    }
+
     private fun startIfConnected(reason: String) {
         if (isActive) return
-        if (wsClient.connectionState.value !is ConnectionState.Connected) return
+        val connected = wsClient.connectionState.value as? ConnectionState.Connected ?: return
         isActive = true
+        startedFor = connected.sendspinKey()
         controller?.start()
         onActive(reason)
         autoSelectSendspinForBt(reason)

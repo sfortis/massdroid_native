@@ -67,4 +67,18 @@ class ClientStateWireTest {
 
         assertThat(player.getValue("min_buffer_ms").jsonPrimitive.int).isEqualTo(1000)
     }
+
+    @Test
+    fun `a state without a player role carries no player object`() {
+        // aiosendspin flags a player object sent while the connection has no player role.
+        val payload = json.parseToJsonElement(
+            json.encodeToString(
+                SendspinClientState.serializer(),
+                SendspinClientState(payload = ClientStatePayload(available = true, player = null))
+            )
+        ).jsonObject.getValue("payload").jsonObject
+
+        assertThat(payload.getValue("available").jsonPrimitive.boolean).isTrue()
+        assertThat(payload["player"]).isAnyOf(null, kotlinx.serialization.json.JsonNull)
+    }
 }

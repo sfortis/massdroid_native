@@ -18,15 +18,14 @@ import net.asksakis.massdroidv2.data.websocket.ConfigQueueSaveArgs
 import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
-import net.asksakis.massdroidv2.data.websocket.PlayerIdArgs
 import net.asksakis.massdroidv2.data.websocket.sendCommand
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Moves the settings of the player this phone used before its Sendspin Noise identity onto the
- * new player ([migrate]), and later removes the old one ([removeOldPlayer]). It runs once, after
- * the first pairing.
+ * new player ([migrate]). It runs once per MA server, on the first connection that registers the
+ * new player there. The old player's config is left on the server.
  *
  * The name, every player value apart from identity and bridge fields, and the queue configuration
  * (Don't Stop the Music among it) are copied. Group memberships are not.
@@ -36,10 +35,6 @@ import javax.inject.Singleton
  * stored it answers the entry's default while the old player is still registered, and the
  * sentinel `default` once it is gone, because MA then builds its config without entries. Only
  * values that differ from the new player's default are saved.
- *
- * The removal is separate because MA refuses it while the old player is registered. An app update
- * ends the old connection without a goodbye, and aiosendspin keeps such a client for 180 seconds
- * in case it reconnects, so the first Noise connection always arrives inside that window.
  */
 @Singleton
 class SendspinPlayerMigration @Inject constructor(
@@ -55,19 +50,8 @@ class SendspinPlayerMigration @Inject constructor(
         NEW_PLAYER_NOT_READY,
     }
 
-    enum class RemoveOutcome {
-        REMOVED,
-
-        /** MA has no config for the old player any more. */
-        GONE,
-
-        /** MA still has the old player registered and refused. */
-        STILL_REGISTERED,
-    }
-
     /**
-     * @throws MaApiException when a read or a save fails; nothing is removed then, so a later
-     *   attempt starts over.
+     * @throws MaApiException when a read or a save fails; a later connection then starts over.
      */
     suspend fun migrate(fromId: String, toId: String): Outcome {
         val stored = wsClient.sendCommand(MaCommands.ConfigPlayers.LIST)
@@ -90,38 +74,18 @@ class SendspinPlayerMigration @Inject constructor(
                 if (value != defaults[key]) put(key, value)
             }
         }
+        // Every read comes before the first save, so a failed read leaves the new player untouched
+        // and the retry on a later connection does not write the old values over newer ones.
+        val queue = wsClient.sendCommand(MaCommands.ConfigPlayerQueues.GET, ConfigQueueGetArgs(fromId))?.jsonObject
+        val queueValues = queue?.let(::changedValues) ?: JsonObject(emptyMap())
         if (values.isNotEmpty()) {
             wsClient.sendCommand(MaCommands.ConfigPlayers.SAVE, ConfigPlayerSaveArgs(toId, values))
         }
-
-        val queue = wsClient.sendCommand(MaCommands.ConfigPlayerQueues.GET, ConfigQueueGetArgs(fromId))?.jsonObject
-        val queueValues = queue?.let(::changedValues) ?: JsonObject(emptyMap())
         if (queueValues.isNotEmpty()) {
             wsClient.sendCommand(MaCommands.ConfigPlayerQueues.SAVE, ConfigQueueSaveArgs(toId, queueValues))
         }
         Log.i(TAG, "Moved ${values.keys} and queue ${queueValues.keys} from $fromId to $toId")
         return Outcome.MOVED
-    }
-
-    /**
-     * Removes the old player's config.
-     *
-     * @throws MaApiException for a failure other than the two MA answers [RemoveOutcome] names.
-     */
-    suspend fun removeOldPlayer(playerId: String): RemoveOutcome {
-        val known = wsClient.sendCommand(MaCommands.ConfigPlayers.LIST)
-            ?.jsonArray.orEmpty()
-            .any { it.jsonObject["player_id"]?.jsonPrimitive?.contentOrNull == playerId }
-        if (!known) return RemoveOutcome.GONE
-        return try {
-            wsClient.sendCommand(MaCommands.ConfigPlayers.REMOVE, PlayerIdArgs(playerId))
-            RemoveOutcome.REMOVED
-        } catch (e: MaApiException) {
-            // MA answers ActionUnavailable ("Can not remove config for an active player!").
-            if (e.isTimeout) throw e
-            Log.i(TAG, "Old player $playerId not removed yet: ${e.message}")
-            RemoveOutcome.STILL_REGISTERED
-        }
     }
 
     companion object {

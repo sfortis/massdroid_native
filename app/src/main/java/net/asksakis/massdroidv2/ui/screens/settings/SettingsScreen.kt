@@ -134,6 +134,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.asksakis.massdroidv2.BuildConfig
+import net.asksakis.massdroidv2.data.sendspin.SendspinLinkSecurity
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
 import net.asksakis.massdroidv2.ui.components.MdTextButton
@@ -1268,6 +1269,8 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
     val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
     val sendspinState by viewModel.sendspinState.collectAsStateWithLifecycle()
     val linkSecurity by viewModel.sendspinLinkSecurity.collectAsStateWithLifecycle()
+    val pairingHeld by viewModel.sendspinPairingHeld.collectAsStateWithLifecycle()
+    val unpaired = linkSecurity == SendspinLinkSecurity.ENCRYPTED_UNPAIRED
 
     SettingsSectionHeader("Sendspin")
     SettingsSwitchRow(
@@ -1278,8 +1281,9 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
         supporting = when (sendspinState) {
             SendspinState.STREAMING -> "This phone plays as a speaker"
             SendspinState.SYNCING -> "Ready"
-            // On Noise the connection waits here until MA pairs or approves the phone.
-            SendspinState.HANDSHAKING -> if (linkSecurity != null) "Waiting for approval in Music Assistant" else "Handshaking"
+            // On Noise an unpaired connection waits here until MA pairs or approves the phone. A
+            // paired one passes through on its way to server/activate, which is not a wait.
+            SendspinState.HANDSHAKING -> if (unpaired) "Waiting for approval in Music Assistant" else "Handshaking"
             SendspinState.AUTHENTICATING -> "Authenticating"
             SendspinState.CONNECTING -> "Connecting"
             // The manager exposes the state only, not why it failed.
@@ -1288,8 +1292,24 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
         },
         tone = if (sendspinState == SendspinState.ERROR) SettingsTone.ERROR else SettingsTone.NORMAL,
         // The badge says how the connection is protected; the line says whether it streams.
-        badge = linkSecurity?.let { SettingsBadge(if (it.isEncrypted) "Encrypted" else "Not encrypted") }
+        // Unpaired (the sentinel PSK) is encrypted but authenticates nobody, so it is not
+        // called encrypted here.
+        badge = linkSecurity?.let { SettingsBadge(it.badgeLabel()) }
     )
+    if (sendspinEnabled && unpaired && pairingHeld != null) {
+        SettingsRow(
+            title = "Pair again",
+            icon = Icons.Default.VerifiedUser,
+            supporting = "Music Assistant unpaired this phone, so it is not paired again by itself",
+            onClick = viewModel::pairSendspinAgain,
+        )
+    }
+}
+
+private fun SendspinLinkSecurity.badgeLabel(): String = when (this) {
+    SendspinLinkSecurity.ENCRYPTED_PAIRED -> "Encrypted"
+    SendspinLinkSecurity.ENCRYPTED_UNPAIRED -> "Not paired"
+    SendspinLinkSecurity.UNENCRYPTED -> "Not encrypted"
 }
 
 /**

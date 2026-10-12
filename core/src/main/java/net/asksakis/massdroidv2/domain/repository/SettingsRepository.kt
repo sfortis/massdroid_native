@@ -81,15 +81,20 @@ interface SettingsRepository {
     val includeBetaUpdates: Flow<Boolean>
     val sendspinClientId: Flow<String?>
     /**
-     * The player id this phone used before it switched to its Sendspin Noise identity, kept
-     * until that old player's settings have been moved to the new one. Null once done.
+     * The player id this phone used before it switched to its Sendspin Noise identity, null when
+     * it never had one. Kept for good: each MA server moves that player's settings on its own
+     * connection, and NFC tags and the saved selection still name it.
      */
-    val sendspinMigrationSourceId: Flow<String?>
+    val sendspinLegacyClientId: Flow<String?>
+    /** MA server ids on which the legacy player's settings have been moved, or that never had it. */
+    val sendspinMigratedServers: Flow<Set<String>>
     /**
-     * The old player whose settings were moved but whose config MA still has to remove. MA refuses
-     * while the player is registered, which lasts until its Sendspin client is cleaned up. Null once done.
+     * Unpairs this phone is holding to, one entry per Sendspin server (Noise `server_id`) and MA
+     * session, as `server_id@session` (see `SendspinNoiseConnector.unpairedSessionKey`). Within that
+     * session the phone does not pair with the server again by itself; "Pair again", switching
+     * Sendspin on, or a new MA login ends the hold.
      */
-    val sendspinRemovalPendingId: Flow<String?>
+    val sendspinUnpairedServers: Flow<Set<String>>
     val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>>
     val librarySortOptions: Flow<Map<Int, SortOption>>
     val librarySortDescending: Flow<Map<Int, Boolean>>
@@ -225,8 +230,11 @@ interface SettingsRepository {
     suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
-    suspend fun setSendspinMigrationSourceId(playerId: String?)
-    suspend fun setSendspinRemovalPendingId(playerId: String?)
+    suspend fun setSendspinLegacyClientId(playerId: String)
+    suspend fun addSendspinMigratedServer(serverId: String)
+    suspend fun addSendspinUnpairedServer(serverId: String)
+    suspend fun removeSendspinUnpairedServer(serverId: String)
+    suspend fun clearSendspinUnpairedServers()
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)

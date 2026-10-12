@@ -13,8 +13,6 @@ enum class SendspinLinkSecurity {
     /** Noise with this server's long-term PSK. */
     ENCRYPTED_PAIRED;
 
-    val isEncrypted: Boolean get() = this != UNENCRYPTED
-
     companion object {
         fun of(category: PskCategory): SendspinLinkSecurity =
             if (category == PskCategory.LONG_TERM) ENCRYPTED_PAIRED else ENCRYPTED_UNPAIRED

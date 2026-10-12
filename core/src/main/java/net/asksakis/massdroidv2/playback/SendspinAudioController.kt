@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -548,6 +549,11 @@ class SendspinAudioController(
     private var currentDurationMs = 0L
     private var currentPositionMs = 0L
     var sendspinPlayerId: String? = null; private set
+
+    // The player id this start planned (planStart), null until then. The group checks wait for it
+    // rather than read the stored id: on the first Noise start the stored id is still the legacy
+    // one, whose player MA keeps listing for minutes, and its groups are not ours.
+    private val plannedPlayerId = MutableStateFlow<String?>(null)
     private val collectorJobs = mutableListOf<Job>()
     private var autoRecoveryJob: Job? = null
     private var reconnectJob: Deferred<Boolean>? = null
@@ -643,38 +649,38 @@ class SendspinAudioController(
         sendspinManager.onClockOffsetPersist = { serverMinusWallUs ->
             scope.launch { settingsRepository.setSendspinClockOffsetUs(serverMinusWallUs) }
         }
-        // Eager group check before connect so engine starts in correct mode
-        scope.launch {
-            val ssId = settingsRepository.sendspinClientId.first()
-            if (ssId != null) {
-                // Wait for player data (up to 5s) if empty on cold start
-                val allPlayers = playerRepository.players.value.ifEmpty {
-                    kotlinx.coroutines.withTimeoutOrNull(5000) {
-                        playerRepository.players.first { it.isNotEmpty() }
-                    } ?: emptyList()
-                }
-                val self = allPlayers.find { it.playerId == ssId }
-                val selfInGroup = self?.groupChilds?.any { it != ssId } == true
-                val childOfOther = allPlayers.any { it.playerId != ssId && ssId in it.groupChilds }
-                if (selfInGroup || childOfOther) {
-                    lastObservedInGroup = true
-                    sendspinManager.setInSyncGroup(true)
-                    Log.d(TAG, "Eager group check: inGroup=true before connect")
-                } else if (self != null) {
-                    // Our own player IS in the list -> player data is loaded and
-                    // reliable, and no group references it: genuinely solo. Commit
-                    // DIRECT now so playback does not start with a few seconds of
-                    // needless SYNC correction (Measuring + resampling warble)
-                    // before the collector downgrades. (self==null = data not yet
-                    // loaded -> NOT authoritative, keep SYNC default below.)
-                    lastObservedInGroup = false
-                    sendspinManager.setInSyncGroup(false)
-                    Log.d(TAG, "Eager group check: solo confirmed (self present, no group) -> DIRECT before connect")
-                } else {
-                    // No reliable player data yet: keep default SYNC (safe). The
-                    // continuous collector + deferred-solo timer refine it.
-                    Log.d(TAG, "Eager group check: no player data, keeping SYNC default (collector will refine)")
-                }
+        // Eager group check so the engine starts in the correct mode. It waits for the planned id,
+        // so a first Noise start does not judge by the legacy player's groups, and runs while the
+        // connection comes up, before any stream starts.
+        collectorJobs += scope.launch {
+            val ssId = plannedPlayerId.filterNotNull().first()
+            // Wait for player data (up to 5s) if empty on cold start
+            val allPlayers = playerRepository.players.value.ifEmpty {
+                kotlinx.coroutines.withTimeoutOrNull(5000) {
+                    playerRepository.players.first { it.isNotEmpty() }
+                } ?: emptyList()
+            }
+            val self = allPlayers.find { it.playerId == ssId }
+            val selfInGroup = self?.groupChilds?.any { it != ssId } == true
+            val childOfOther = allPlayers.any { it.playerId != ssId && ssId in it.groupChilds }
+            if (selfInGroup || childOfOther) {
+                lastObservedInGroup = true
+                sendspinManager.setInSyncGroup(true)
+                Log.d(TAG, "Eager group check: inGroup=true before connect")
+            } else if (self != null) {
+                // Our own player IS in the list -> player data is loaded and
+                // reliable, and no group references it: genuinely solo. Commit
+                // DIRECT now so playback does not start with a few seconds of
+                // needless SYNC correction (Measuring + resampling warble)
+                // before the collector downgrades. (self==null = data not yet
+                // loaded -> NOT authoritative, keep SYNC default below.)
+                lastObservedInGroup = false
+                sendspinManager.setInSyncGroup(false)
+                Log.d(TAG, "Eager group check: solo confirmed (self present, no group) -> DIRECT before connect")
+            } else {
+                // No reliable player data yet: keep default SYNC (safe). The
+                // continuous collector + deferred-solo timer refine it.
+                Log.d(TAG, "Eager group check: no player data, keeping SYNC default (collector will refine)")
             }
             ensureSendspinConnected()
         }
@@ -826,10 +832,10 @@ class SendspinAudioController(
 
         // Collector 2: Observe sendspin player metadata from the players list
         collectorJobs += scope.launch {
-            // Keyed on the stored id as well as the list: the id is settled only once the start has
+            // Keyed on the planned id as well as the list: the id is settled only once the start has
             // seen the MA version, often after the list arrived, and the list may not change again
             // for minutes. Until this runs the clock sync keeps going, which a sleeping phone corrupts.
-            combine(playerRepository.players, settingsRepository.sendspinClientId) { list, ssId -> list to ssId }
+            combine(playerRepository.players, plannedPlayerId) { list, ssId -> list to ssId }
                 .map { (list, ssId) ->
                     if (ssId == null) return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
                     val self = list.find { it.playerId == ssId }
@@ -1073,6 +1079,7 @@ class SendspinAudioController(
             val clientId = plan.clientId
 
             sendspinPlayerId = clientId
+            plannedPlayerId.value = clientId
             val ssState = sendspinManager.connectionState.value
             if (ssState == SendspinState.DISCONNECTED || ssState == SendspinState.ERROR) {
                 // Seed the Sendspin player volume so the server doesn't reset
@@ -1306,6 +1313,8 @@ class SendspinAudioController(
         sendspinManager.setOutputAllowed { true }
         for (job in collectorJobs) job.cancel(CancellationException("Sendspin stop"))
         collectorJobs.clear()
+        // The next start plans again, possibly for another server.
+        plannedPlayerId.value = null
         autoRecoveryJob?.cancel()
         autoRecoveryJob = null
         // A duck left in place would be a silent player on the next start, and

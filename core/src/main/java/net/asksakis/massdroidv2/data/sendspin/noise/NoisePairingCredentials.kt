@@ -15,9 +15,11 @@ import java.security.SecureRandom
  * would offer a PSK the client no longer has, and every handshake would fail until an operator
  * unpaired the phone in MA.
  *
- * Replacing a stored PSK there is safe. Pairing only starts from a sentinel connection, and the
- * server picks the sentinel only when it holds no pairing with this client, so an older PSK for
- * that server is already dead. If the finalize never lands, the saved PSK simply goes unused.
+ * A PSK already stored for the server is sent again rather than replaced. Pairing only starts
+ * from a sentinel connection, where the server holds no pairing with this client, so the stored
+ * PSK is unused there; sending it again keeps a repeated finalize from leaving the server and the
+ * client with two different PSKs when an acknowledgement was lost. If the finalize never lands,
+ * the saved PSK simply goes unused.
  */
 class NoisePairingCredentials(
     private val store: SendspinIdentityStore,
@@ -31,12 +33,14 @@ class NoisePairingCredentials(
     fun newPairingPsk(): ByteArray = randomPsk().also { pairingPsk = it }.copyOf()
 
     /**
-     * Makes and saves the long-term PSK to send in `client/pair-finalize` to [serverId].
+     * The long-term PSK to send in `client/pair-finalize` to [serverId]: the one already stored
+     * for that server, or a new one, saved before it is returned.
      *
      * @throws IOException when it cannot be saved; it must not be sent then.
      */
     @Synchronized
     fun beginFinalize(serverId: String): ByteArray {
+        store.longTermPsk(serverId)?.let { return it }
         val psk = randomPsk()
         store.saveLongTermPsk(serverId, psk)
         return psk.copyOf()

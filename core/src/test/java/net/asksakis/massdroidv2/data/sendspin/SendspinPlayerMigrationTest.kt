@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import net.asksakis.massdroidv2.data.websocket.MaApiException
 import net.asksakis.massdroidv2.data.websocket.MaCommands
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import org.junit.Test
@@ -97,39 +96,8 @@ class SendspinPlayerMigrationTest {
         assertThat(queueSaved.single().getValue("queue_id").jsonPrimitive.content).isEqualTo(new)
         assertThat(queueSaved.single().getValue("values").jsonObject)
             .isEqualTo(JsonObject(mapOf("crossfade_mode" to JsonPrimitive("standard_crossfade"))))
-        // Removal is a separate step: MA refuses it while the old player is registered.
-        coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) }
-    }
-
-    @Test
-    fun `the old player is removed once MA has let go of it`() = runBlocking {
-        val ws = client()
-
-        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
-
-        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.REMOVED)
-        coVerify { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, matchNullable<JsonObject> { it?.get("player_id")?.jsonPrimitive?.content == old }, any(), any(), any()) }
-    }
-
-    @Test
-    fun `a refusal while the old player is registered keeps it pending`() = runBlocking {
-        val ws = client()
-        coEvery { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) } throws
-            MaApiException("Can not remove config for an active player!", 0)
-
-        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
-
-        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.STILL_REGISTERED)
-    }
-
-    @Test
-    fun `an old player MA no longer knows is not removed again`() = runBlocking {
-        val ws = client(oldPlayerKnown = false)
-
-        val outcome = SendspinPlayerMigration(ws).removeOldPlayer(old)
-
-        assertThat(outcome).isEqualTo(SendspinPlayerMigration.RemoveOutcome.GONE)
-        coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) }
+        // The old player's config stays on the server.
+        coVerify(exactly = 0) { ws.sendCommand(CONFIG_PLAYERS_REMOVE, any(), any(), any(), any()) }
     }
 
     @Test
@@ -153,6 +121,9 @@ class SendspinPlayerMigrationTest {
 
         assertThat(outcome).isEqualTo(SendspinPlayerMigration.Outcome.NO_OLD_PLAYER)
         coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.SAVE, any(), any(), any(), any()) }
-        coVerify(exactly = 0) { ws.sendCommand(MaCommands.ConfigPlayers.REMOVE, any(), any(), any(), any()) }
+        coVerify(exactly = 0) { ws.sendCommand(CONFIG_PLAYERS_REMOVE, any(), any(), any(), any()) }
     }
 }
+
+/** MA's command for deleting a player config, which the migration must never send. */
+private const val CONFIG_PLAYERS_REMOVE = "config/players/remove"

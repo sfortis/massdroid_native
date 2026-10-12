@@ -74,7 +74,10 @@ data class SendspinPairAbort(
 
 const val PAIR_METHOD_PAIRING_PSK = "pairing_psk"
 const val ACTIVITY_PAIRING = "pairing"
+const val ACTIVITY_PLAYBACK = "playback"
+const val ACTIVITY_MANAGEMENT = "management"
 const val TRUST_LEVEL_USER = "user"
 const val TRUST_LEVEL_NONE = "none"
 const val PAIR_ABORT_METHOD_NOT_SUPPORTED = "method_not_supported"
 const val GOODBYE_REASON_UNPAIRED = "unpaired"
+const val GOODBYE_REASON_UNAUTHORIZED = "unauthorized"

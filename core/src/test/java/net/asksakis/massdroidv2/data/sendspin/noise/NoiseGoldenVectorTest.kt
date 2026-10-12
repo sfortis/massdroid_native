@@ -149,6 +149,35 @@ class NoiseGoldenVectorTest {
         assertThat((decoded.last() as NoiseTransport.Incoming.Binary).data).isEqualTo(big)
     }
 
+    @Test
+    fun `a frame longer than a Noise message is refused before decrypting`() {
+        val key = ByteArray(32) { it.toByte() }
+        val receiver = NoiseTransport(send = NoiseCipherState(null), receive = NoiseCipherState(key))
+
+        assertThrows(NoiseProtocolException::class.java) {
+            receiver.decode(ByteArray(SendspinNoise.MAX_NOISE_MESSAGE + 1))
+        }
+    }
+
+    @Test
+    fun `a refused re-handshake reply keeps the old keys`() {
+        val oldKey = ByteArray(32) { it.toByte() }
+        val newKey = ByteArray(32) { (it + 1).toByte() }
+        val transport = NoiseTransport(send = NoiseCipherState(oldKey), receive = NoiseCipherState(null))
+        val next = NoiseTransport(send = NoiseCipherState(newKey), receive = NoiseCipherState(null))
+        val peer = NoiseTransport(send = NoiseCipherState(null), receive = NoiseCipherState(oldKey))
+
+        val sent = transport.sendTextThenSwap("{}", next) { false }
+        val frames = mutableListOf<ByteArray>()
+        transport.sendText("{\"type\":\"x\"}") { frames += it; true }
+
+        assertThat(sent).isFalse()
+        // Still the old key: the peer, which never got the reply, reads it. The refused reply
+        // consumed nonce 0, so the peer skips that frame to stay in step.
+        peer.decode(NoiseCipherState(oldKey).encryptWithAd(ByteArray(0), byteArrayOf(0, '{'.code.toByte(), '}'.code.toByte())))
+        assertThat(peer.decode(frames.single())).isInstanceOf(NoiseTransport.Incoming.Text::class.java)
+    }
+
     private fun sha256Hex(data: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
 }

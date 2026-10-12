@@ -218,6 +218,12 @@ class SendspinManager(
 
     private val _noiseLinkEvents = MutableSharedFlow<NoiseLinkEvent>(extraBufferCapacity = 8)
 
+    /** The pairing supervisor is about to ask MA to pair this phone; see [SendspinNoiseFlow.onPairingRequested]. */
+    fun onNoisePairingRequested() = noiseFlow.onPairingRequested()
+
+    /** The pairing request returned, done or failed. */
+    fun onNoisePairingRequestEnded() = noiseFlow.onPairingRequestEnded()
+
     /** Pairing state of Noise connections, for the pairing supervisor; empty on the legacy transport. */
     val noiseLinkEvents: SharedFlow<NoiseLinkEvent> = _noiseLinkEvents.asSharedFlow()
 
@@ -948,15 +954,21 @@ class SendspinManager(
         } else {
             ((audio.routeAcousticExtraUs ?: 0L) / 1000L).coerceIn(0L, 5000L).toInt()
         }
+        // On Noise the player object goes out only while the server has the player role active.
+        val reportPlayer = !noiseMode || noiseFlow.playerRoleActive
         client.sendClientState(
             available = currentAvailability(),
-            player = PlayerStateInfo(
-                volume = currentVolume,
-                muted = muted,
-                staticDelayMs = specStaticDelayMs,
-                requiredLeadTimeMs = SENDSPIN_REQUIRED_LEAD_TIME_MS,
-                minBufferMs = sendspinMinBufferMs(isCellularTransport)
-            )
+            player = if (reportPlayer) {
+                PlayerStateInfo(
+                    volume = currentVolume,
+                    muted = muted,
+                    staticDelayMs = specStaticDelayMs,
+                    requiredLeadTimeMs = SENDSPIN_REQUIRED_LEAD_TIME_MS,
+                    minBufferMs = sendspinMinBufferMs(isCellularTransport)
+                )
+            } else {
+                null
+            }
         )
     }
 

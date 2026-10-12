@@ -25,8 +25,11 @@ object SendspinNoise {
     const val TYPE_FRAGMENT_MORE: Byte = 2
     const val TYPE_FRAGMENT_END: Byte = 3
 
+    /** Noise's limit on one message, the AEAD tag included. */
+    const val MAX_NOISE_MESSAGE = 65535
+
     /** Noise's 65535-byte transport message limit minus the 16-byte AEAD tag. */
-    const val MAX_TRANSPORT_PLAINTEXT = 65535 - 16
+    const val MAX_TRANSPORT_PLAINTEXT = MAX_NOISE_MESSAGE - 16
 
     private val PSK_ID_LABEL = "sendspin-psk-id-v1".toByteArray(Charsets.US_ASCII)
 

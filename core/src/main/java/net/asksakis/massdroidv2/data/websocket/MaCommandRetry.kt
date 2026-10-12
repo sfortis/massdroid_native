@@ -35,8 +35,6 @@ private val NON_IDEMPOTENT_COMMANDS: Set<String> = setOf(
     MaCommands.Players.CMD_PREVIOUS,
     // A late answer means the first attempt is still pairing; a second one is refused as concurrent.
     MaCommands.Sendspin.PAIR_WEB_PLAYER,
-    // Succeeds once; a second run fails because the config is already gone.
-    MaCommands.ConfigPlayers.REMOVE,
 )
 
 /**

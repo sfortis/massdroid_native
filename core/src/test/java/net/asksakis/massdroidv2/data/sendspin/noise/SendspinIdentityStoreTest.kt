@@ -61,4 +61,14 @@ class SendspinIdentityStoreTest {
         assertThat(File(folder.root, "sendspin_identity.json.corrupt").readText()).isEqualTo("{ not json")
         assertThat(SendspinIdentityStore(file).identity().peerId).isEqualTo(identity.peerId)
     }
+
+    @Test
+    fun `only the latest unreadable file is kept aside`() {
+        File(folder.root, "sendspin_identity.json.corrupt").writeText("older copy")
+        file.writeText("{ not json")
+
+        SendspinIdentityStore(file).identity()
+
+        assertThat(File(folder.root, "sendspin_identity.json.corrupt").readText()).isEqualTo("{ not json")
+    }
 }

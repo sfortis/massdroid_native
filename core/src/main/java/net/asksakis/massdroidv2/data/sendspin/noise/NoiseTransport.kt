@@ -51,6 +51,10 @@ class NoiseTransport internal constructor(
      *   The connection cannot recover from either, because the receive nonce is then out of step.
      */
     fun decode(frame: ByteArray): Incoming? {
+        // A Noise message is never longer; a larger frame is not from a conforming peer.
+        if (frame.size > SendspinNoise.MAX_NOISE_MESSAGE) {
+            throw NoiseProtocolException("frame of ${frame.size} bytes exceeds the Noise message limit")
+        }
         val plaintext = receive.decryptWithAd(EMPTY, frame)
         if (plaintext.isEmpty()) throw NoiseProtocolException("empty plaintext after decrypt")
         return when (plaintext[0]) {
@@ -72,13 +76,16 @@ class NoiseTransport internal constructor(
      * Sends re-handshake message 2 under the current keys, then takes over the ciphers of [next].
      * Both happen under the send lock, so no frame from another thread can be encrypted with the
      * old keys after message 2 or with the new keys before it. Must be called on the receiving
-     * thread, which owns [receive].
+     * thread, which owns [receive]. When the socket refused message 2 the keys stay as they were,
+     * since the server never received it; the caller closes the connection then.
      */
     fun sendTextThenSwap(text: String, next: NoiseTransport, sink: (ByteArray) -> Boolean): Boolean =
         synchronized(sendLock) {
             val sent = sendText(text, sink)
-            send = next.send
-            receive = next.receive
+            if (sent) {
+                send = next.send
+                receive = next.receive
+            }
             sent
         }
 
@@ -97,7 +104,12 @@ class NoiseTransport internal constructor(
         val buffer = reassembly ?: throw NoiseProtocolException("fragment end frame with no message in flight")
         append(buffer, plaintext)
         reassembly = null
-        return byteArrayOf(reassemblyType) + buffer.toByteArray()
+        // One copy into the result, not a second one through concatenation.
+        val body = buffer.toByteArray()
+        return ByteArray(body.size + 1).also {
+            it[0] = reassemblyType
+            body.copyInto(it, destinationOffset = 1)
+        }
     }
 
     private fun append(buffer: ByteArrayOutputStream, plaintext: ByteArray) {

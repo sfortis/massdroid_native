@@ -57,7 +57,7 @@ class NfcTapExecutor @Inject constructor(
             return NfcTapOutcome.NotConnected
         }
 
-        val targetId = payload.playerId ?: playerRepository.requireSelectedPlayerId()
+        val targetId = payload.playerId?.let { currentIdOf(it) } ?: playerRepository.requireSelectedPlayerId()
         if (targetId.isNullOrBlank()) return NfcTapOutcome.NoPlayer
 
         // The phone can only play for itself once the local speaker is switched on, and a
@@ -156,6 +156,17 @@ class NfcTapExecutor @Inject constructor(
             NfcTapOutcome.Failed(e.message)
         }
     }
+
+    /**
+     * A tag written for this phone before it switched to its Sendspin Noise identity names the
+     * legacy player id, which MA drops once the phone has moved on; it means the phone.
+     */
+    private suspend fun currentIdOf(tagPlayerId: String): String =
+        if (tagPlayerId == settingsRepository.sendspinLegacyClientId.first()) {
+            settingsRepository.sendspinClientId.first() ?: tagPlayerId
+        } else {
+            tagPlayerId
+        }
 
     private companion object {
         /**

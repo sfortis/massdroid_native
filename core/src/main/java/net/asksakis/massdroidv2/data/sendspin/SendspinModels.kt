@@ -179,7 +179,8 @@ data class PlayerStateInfo(
 @Serializable
 data class ClientStatePayload(
     val available: Boolean = true,
-    val player: PlayerStateInfo = PlayerStateInfo()
+    /** Null while the server has no player role active on the connection (Noise, before approval or during a pairing). */
+    val player: PlayerStateInfo? = PlayerStateInfo()
 )
 
 @Serializable

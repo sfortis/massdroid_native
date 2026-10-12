@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.Flow
@@ -56,8 +57,9 @@ class SettingsRepositoryImpl @Inject constructor(
         private const val DEFAULT_SMART_MIX_STRICTNESS = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
-        private val KEY_SENDSPIN_MIGRATION_SOURCE_ID = stringPreferencesKey("sendspin_migration_source_id")
-        private val KEY_SENDSPIN_REMOVAL_PENDING_ID = stringPreferencesKey("sendspin_removal_pending_id")
+        private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
+        private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
+        private val KEY_SENDSPIN_UNPAIRED_SERVERS = stringSetPreferencesKey("sendspin_unpaired_servers")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -287,26 +289,36 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
     }
 
-    override val sendspinMigrationSourceId: Flow<String?> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_MIGRATION_SOURCE_ID]
+    override val sendspinLegacyClientId: Flow<String?> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_LEGACY_CLIENT_ID]
     }
 
-    override suspend fun setSendspinMigrationSourceId(playerId: String?) {
-        context.dataStore.edit {
-            if (playerId != null) it[KEY_SENDSPIN_MIGRATION_SOURCE_ID] = playerId
-            else it.remove(KEY_SENDSPIN_MIGRATION_SOURCE_ID)
-        }
+    override suspend fun setSendspinLegacyClientId(playerId: String) {
+        context.dataStore.edit { it[KEY_SENDSPIN_LEGACY_CLIENT_ID] = playerId }
     }
 
-    override val sendspinRemovalPendingId: Flow<String?> = safeData.map { prefs ->
-        prefs[KEY_SENDSPIN_REMOVAL_PENDING_ID]
+    override val sendspinMigratedServers: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty()
     }
 
-    override suspend fun setSendspinRemovalPendingId(playerId: String?) {
-        context.dataStore.edit {
-            if (playerId != null) it[KEY_SENDSPIN_REMOVAL_PENDING_ID] = playerId
-            else it.remove(KEY_SENDSPIN_REMOVAL_PENDING_ID)
-        }
+    override suspend fun addSendspinMigratedServer(serverId: String) {
+        context.dataStore.edit { it[KEY_SENDSPIN_MIGRATED_SERVERS] = it[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty() + serverId }
+    }
+
+    override val sendspinUnpairedServers: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty()
+    }
+
+    override suspend fun addSendspinUnpairedServer(serverId: String) {
+        context.dataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() + serverId }
+    }
+
+    override suspend fun removeSendspinUnpairedServer(serverId: String) {
+        context.dataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() - serverId }
+    }
+
+    override suspend fun clearSendspinUnpairedServers() {
+        context.dataStore.edit { it.remove(KEY_SENDSPIN_UNPAIRED_SERVERS) }
     }
 
     override val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>> = safeData.map { prefs ->

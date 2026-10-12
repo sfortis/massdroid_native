@@ -14,6 +14,9 @@ sealed class NoiseLinkEvent {
 
     /** Activated on a long-term PSK: the phone is paired with this server. */
     data class Paired(override val serverId: String) : NoiseLinkEvent()
+
+    /** The server dropped its pairing with the phone (`server/unpair`). */
+    data class Revoked(override val serverId: String) : NoiseLinkEvent()
 }
 
 /**
@@ -42,15 +45,26 @@ internal class SendspinNoiseFlow(
         fun resendState()
     }
 
-    private var activeRoles: List<String> = emptyList()
+    // Read off the collector too, by the manager's client/state sends.
+    @Volatile private var activeRoles: List<String> = emptyList()
+    // Set while a pairing the phone asked for has not reached its re-handshake; see onPairingRequested.
+    @Volatile private var pairingRequested = false
     private var playerActive = false
     private var resyncPending = false
     // The PSK category last reported through onLinkEvent on this connection.
     private var reportedCategory: PskCategory? = null
 
+    /**
+     * Whether a `client/state` may carry the player object: the server's last `server/activate`
+     * gave this connection a player role, and no pairing is about to take it away. aiosendspin
+     * flags a player object sent while the role is inactive.
+     */
+    val playerRoleActive: Boolean get() = !pairingRequested && NoiseActivationStep.hasPlayerRole(activeRoles)
+
     /** A new connection starts from scratch: no roles, no active player. */
     fun reset() {
         activeRoles = emptyList()
+        pairingRequested = false
         playerActive = false
         resyncPending = false
         reportedCategory = null
@@ -64,6 +78,27 @@ internal class SendspinNoiseFlow(
 
     fun onRehandshake() {
         resyncPending = true
+        // The server drops every role before it re-handshakes and names them again in the next
+        // server/activate, so from here the roles are the ones that activate gives.
+        activeRoles = emptyList()
+        pairingRequested = false
+    }
+
+    /**
+     * The phone has asked MA to pair it. aiosendspin will quiesce the connection, dropping its
+     * roles without a message, and only then re-handshake. MA approves guest access on the same
+     * connection at about the same time, and its server/activate with a player role can land
+     * before the quiesce: the phone then reported its first state for a role the server had just
+     * dropped (2026-10-12). Until the re-handshake, or [onPairingRequestEnded], no state carries
+     * the player object. Safe to call off the collector.
+     */
+    fun onPairingRequested() {
+        pairingRequested = true
+    }
+
+    /** The pairing request returned, done or failed; see [onPairingRequested]. */
+    fun onPairingRequestEnded() {
+        pairingRequested = false
     }
 
     fun onActivate(payload: ServerActivatePayload) {
@@ -95,6 +130,15 @@ internal class SendspinNoiseFlow(
             }
             NoiseActivationStep.None -> if (!playerActive) {
                 Log.i(TAG, "Connected without a player role: waiting for pairing or approval in MA")
+            }
+            is NoiseActivationStep.Reject -> {
+                Log.w(TAG, "server/activate not admissible on the ${psk.category} PSK, saying goodbye")
+                if (playerActive) {
+                    playerActive = false
+                    player.stopPlayer()
+                }
+                client.sendGoodbye(step.reason)
+                return
             }
         }
         if (step !is NoiseActivationStep.FinalizePairing && step !is NoiseActivationStep.AbortPairing) {
@@ -139,13 +183,17 @@ internal class SendspinNoiseFlow(
     /**
      * The server dropped the pairing. Only a connection on a long-term PSK can be unpaired; on
      * any other the message is ignored, as the spec says. The client forgets the PSK, says goodbye
-     * and reconnects, which lands on the sentinel PSK.
+     * and reconnects, which lands on the sentinel PSK. It does not pair again until the user asks.
      */
     fun onUnpair() {
         val psk = client.noisePsk()
         if (psk?.category != PskCategory.LONG_TERM) return
         Log.i(TAG, "server/unpair: forgetting the pairing with ${psk.serverId}")
-        psk.serverId?.let(pairing::forget)
+        psk.serverId?.let { serverId ->
+            pairing.forget(serverId)
+            // Reported before the reconnect, so the supervisor knows not to pair again by itself.
+            onLinkEvent(NoiseLinkEvent.Revoked(serverId))
+        }
         client.sendGoodbye(GOODBYE_REASON_UNPAIRED)
         client.refresh()
     }

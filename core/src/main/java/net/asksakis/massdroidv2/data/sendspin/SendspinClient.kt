@@ -596,7 +596,7 @@ class SendspinClient(
         sendText(json.encodeToString(hello))
     }
 
-    fun sendClientState(available: Boolean, player: PlayerStateInfo) {
+    fun sendClientState(available: Boolean, player: PlayerStateInfo?) {
         val state = SendspinClientState(
             payload = ClientStatePayload(available = available, player = player)
         )

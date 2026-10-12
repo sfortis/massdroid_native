@@ -43,6 +43,26 @@ class NoisePairingCredentialsTest {
     }
 
     @Test
+    fun `a repeated finalize sends the psk already saved for that server`() {
+        val first = credentials().beginFinalize(serverId)
+
+        // A retry, possibly in a new process, after an acknowledgement that never arrived.
+        val second = credentials().beginFinalize(serverId)
+
+        assertThat(second).isEqualTo(first)
+    }
+
+    @Test
+    fun `a finalize with another server gets its own psk`() {
+        val credentials = credentials()
+        val first = credentials.beginFinalize(serverId)
+
+        val other = credentials.beginFinalize("another-server")
+
+        assertThat(other).isNotEqualTo(first)
+    }
+
+    @Test
     fun `the ack ends the pairing psk`() {
         val credentials = credentials()
         val pairing = credentials.newPairingPsk()

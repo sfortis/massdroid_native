@@ -136,7 +136,6 @@ object MaCommands {
         /** One value, read from storage first, so it also works for a player that is not connected. */
         const val GET_VALUE = "config/players/get_value"
         const val SAVE = "config/players/save"
-        const val REMOVE = "config/players/remove"
     }
 
     /** Sendspin provider commands (MA 2.10+). */
@@ -584,13 +583,18 @@ data class ConfigPlayerValueArgs(
     }
 }
 
-/** The token carries a pairing secret, so the command log redacts it (see MaWebSocketClient). */
-data class PairWebPlayerArgs(
+/**
+ * The token carries a pairing secret, so the command log redacts it (see MaWebSocketClient) and
+ * [toString] leaves it out.
+ */
+class PairWebPlayerArgs(
     val pairingToken: String
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("pairing_token", pairingToken)
     }
+
+    override fun toString(): String = "PairWebPlayerArgs(pairingToken=<redacted>)"
 }
 
 data class ConfigQueueGetArgs(
