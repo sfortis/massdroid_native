@@ -88,7 +88,7 @@ class MaWebSocketClient(
     }
 
     private var okHttpClient: OkHttpClient = baseOkHttpClient
-    private var webSocket: WebSocket? = null
+    @Volatile private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -158,6 +158,8 @@ class MaWebSocketClient(
     @Volatile var userDisconnected = false
         private set
     private var reconnectJob: Job? = null
+    // The reconnect job while it sleeps out its delay; after that it only runs doConnect.
+    @Volatile private var sleepingReconnectJob: Job? = null
 
     /** Consumed retry budget; drives the aggressive -> patient -> give-up escalation. */
     @VisibleForTesting
@@ -175,6 +177,9 @@ class MaWebSocketClient(
     @Volatile private var lastNetworkReviveMs = 0L
     @Volatile
     private var connectionGeneration = 0
+    // The last generation whose socket closed or failed; see doConnect.
+    @Volatile
+    private var endedGeneration = 0
 
     /**
      * When the current connection authenticated, or 0 once that has been consumed
@@ -337,7 +342,7 @@ class MaWebSocketClient(
             _connectionState.value = ConnectionState.Error("Invalid server URL. Include http:// or https://")
             return
         }
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val socket = client.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (gen != connectionGeneration) return
@@ -363,6 +368,7 @@ class MaWebSocketClient(
                 if (gen != connectionGeneration) return
                 Log.d(TAG, "WebSocket closed: $code $reason")
                 cancelHandshakeWatchdog()
+                endedGeneration = gen
                 this@MaWebSocketClient.webSocket = null
                 _connectionState.value = ConnectionState.Disconnected
                 consumeStableConnectionBackoffReset()
@@ -374,6 +380,7 @@ class MaWebSocketClient(
                 if (gen != connectionGeneration) return
                 Log.e(TAG, "WebSocket failure: ${t.message}")
                 cancelHandshakeWatchdog()
+                endedGeneration = gen
                 this@MaWebSocketClient.webSocket = null
                 failAllPending("Connection lost")
 
@@ -390,6 +397,14 @@ class MaWebSocketClient(
                 scheduleReconnect()
             }
         })
+        // OkHttp can call onFailure before newWebSocket returns: an unresolvable host fails in
+        // milliseconds from the DNS cache. Assigning unconditionally then kept a dead socket,
+        // and connect() refused to replace it ("ignored") until the next retry. The listener
+        // marks the generation ended before it clears the field, and the field is written here
+        // before the mark is read, so either this check sees the mark or the listener's clear
+        // comes after this write.
+        webSocket = socket
+        if (endedGeneration == gen && webSocket === socket) webSocket = null
     }
 
     /**
@@ -497,25 +512,56 @@ class MaWebSocketClient(
     private fun onNetworkAvailable(reason: String) {
         scope.launch {
             handleTransportChange()
-            if (userDisconnected || !hasConnectedSuccessfully) return@launch
-            val url = serverUrl ?: return@launch
-            val state = _connectionState.value
-            if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return@launch
-            val now = System.currentTimeMillis()
-            if (now - lastNetworkReviveMs < NETWORK_REVIVE_DEBOUNCE_MS) return@launch
-            lastNetworkReviveMs = now
-            // An idle-phase sleep can be IDLE_RETRY_MS long: fresh connectivity must
-            // preempt it rather than wait out the window. Read before the reset clears it.
-            val wasIdleRetry = isIdleRetrySleeping()
-            resetReconnectBackoff()
-            if (reconnectJob?.isActive == true && !wasIdleRetry) {
-                Log.d(TAG, "Network $reason: backoff reset, retry already in flight")
-                return@launch
-            }
-            if (wasIdleRetry) reconnectJob?.cancel()
-            Log.d(TAG, "Network $reason: reviving WS connection")
-            doConnect(url)
+            revive("Network $reason", ReviveBudget.FULL)
         }
+    }
+
+    /**
+     * Connect now if the connection is down: something says the server is likely reachable
+     * again, or the user is waiting on it. A phone call on mobile data suspends the data and
+     * ends without any network event, so after a long call the retry budget is spent and the
+     * next idle probe can be up to [IDLE_RETRY_MS] away. Called when audio focus returns after
+     * an interruption (the end of a call) and when a player command finds the socket down.
+     *
+     * Unlike a network revive this does not refill the whole retry budget, because nothing says
+     * the server is reachable again and the callers can repeat often. A pending short retry is
+     * left alone. From the idle phase it connects at once and, if that fails, runs one patient
+     * cycle ([PATIENT_RETRY_COUNT] retries at [PATIENT_RETRY_MS]) before going idle again.
+     */
+    fun reconnectNow(reason: String) {
+        scope.launch { revive(reason, ReviveBudget.PATIENT_CYCLE) }
+    }
+
+    /** How much of the retry budget a revive grants, as the attempts it counts as spent. */
+    private enum class ReviveBudget(val attemptsSpent: Int) {
+        /** The network changed: the server may well be reachable, start from the fast retries. */
+        FULL(0),
+
+        /** Only a hint that it may be: one round of the slower retries. */
+        PATIENT_CYCLE(AGGRESSIVE_RETRY_COUNT),
+    }
+
+    private fun revive(reason: String, budget: ReviveBudget) {
+        if (userDisconnected || !hasConnectedSuccessfully) return
+        val url = serverUrl ?: return
+        val state = _connectionState.value
+        if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return
+        val now = System.currentTimeMillis()
+        if (now - lastNetworkReviveMs < NETWORK_REVIVE_DEBOUNCE_MS) return
+        lastNetworkReviveMs = now
+        // An idle-phase sleep can be IDLE_RETRY_MS long: a fresh reason to connect must
+        // preempt it rather than wait out the window. A short retry is left to run.
+        if (reconnectJob?.isActive == true && !isIdleRetrySleeping()) {
+            if (budget == ReviveBudget.FULL) {
+                resetReconnectBackoff()
+                Log.d(TAG, "$reason: backoff reset, retry already in flight")
+            }
+            return
+        }
+        reconnectJob?.cancel()
+        reconnectAttempts = budget.attemptsSpent
+        Log.d(TAG, "$reason: reviving WS connection")
+        doConnect(url)
     }
 
     private fun scheduleReconnect() {
@@ -523,7 +569,13 @@ class MaWebSocketClient(
         if (!hasConnectedSuccessfully) return // don't auto-retry initial connection failures
         val url = serverUrl ?: return
         if (authToken == null && pendingLogin == null && savedCredentials == null) return
-        if (reconnectJob?.isActive == true) return
+        // Only a job still sleeping is a pending retry. A job that has woken is inside
+        // doConnect, and a connect can fail before that call returns: an unresolvable host
+        // fails in milliseconds from the DNS cache. Returning here then left no retry at all.
+        // Measured in the field (2026-10-12): mobile data dropped during two phone calls, the
+        // tenth attempt failed 5 ms after it started, and the app stayed offline for ten
+        // minutes until it was reopened.
+        if (sleepingReconnectJob?.isActive == true) return
 
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
@@ -554,7 +606,15 @@ class MaWebSocketClient(
             // Coerced to the sentinel so the counter cannot run away over a long
             // outage.
             reconnectAttempts = pinnedAttemptCounter(attempt)
-            delay(delayMs)
+            // Cleared only by this job: a cancelled job's finally can run after its successor
+            // has started sleeping.
+            val self = coroutineContext.job
+            sleepingReconnectJob = self
+            try {
+                delay(delayMs)
+            } finally {
+                if (sleepingReconnectJob === self) sleepingReconnectJob = null
+            }
             if (userDisconnected) return@launch
             doConnect(url)
         }

@@ -1630,6 +1630,7 @@ class SendspinAudioController(
                 return
             }
             owedResume = null
+            reconnectMaAfterInterruption()
             Log.i(
                 TAG,
                 when (owed) {
@@ -1652,6 +1653,7 @@ class SendspinAudioController(
         // and click-free from the intact buffer, no flush/rebuffer.
         if (unfreezeOutput("focus")) {
             Log.i(TAG, "Focus regained: unfroze output, buffer preserved")
+            reconnectMaAfterInterruption()
             return
         }
         // Resume is gated on `_userIntent` — the canonical
@@ -1673,6 +1675,7 @@ class SendspinAudioController(
             // playback so the server restarts the stream and
             // audio comes back; reconnect first if the transport
             // is no longer ready.
+            reconnectMaAfterInterruption()
             sendspinManager.resumeAudio()
             val id = sendspinPlayerId
             if (id != null) {
@@ -1682,6 +1685,17 @@ class SendspinAudioController(
                 }
             }
         }
+    }
+
+    /**
+     * The end of a phone call or another interruption lands in [handleFocusGain]. On mobile data
+     * a call suspends the data, and the MA socket may have dropped and spent its retry budget
+     * meanwhile; reconnect now so the resume does not wait for an idle retry minutes away
+     * (2026-10-12). Not called after a duck: navigation prompts duck many times an hour, and a
+     * server that is really down would then be retried without end.
+     */
+    private fun reconnectMaAfterInterruption() {
+        if (wsClient.connectionState.value !is ConnectionState.Connected) wsClient.reconnectNow("Audio focus back")
     }
 
     // The mode listener waiting to act on a gain that arrived during a call, or null.

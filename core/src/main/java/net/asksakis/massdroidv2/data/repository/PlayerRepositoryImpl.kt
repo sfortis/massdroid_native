@@ -2315,6 +2315,9 @@ class PlayerRepositoryImpl @Inject constructor(
                 attempt++
                 if (attempt >= 2) break
                 Log.d(TAG, "Transient '$command' failure, waiting for reconnect and retrying")
+                // The user is waiting on this command: do not leave the connection to an idle
+                // retry that may be minutes away.
+                wsClient.reconnectNow("'$command' with the socket down")
                 withTimeoutOrNull(2_000) {
                     wsClient.connectionState.first { it is ConnectionState.Connected }
                 }
