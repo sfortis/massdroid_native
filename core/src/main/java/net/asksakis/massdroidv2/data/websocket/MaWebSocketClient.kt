@@ -533,13 +533,37 @@ class MaWebSocketClient(
     }
 
     /** How much of the retry budget a revive grants, as the attempts it counts as spent. */
-    private enum class ReviveBudget(val attemptsSpent: Int) {
+    @VisibleForTesting
+    internal enum class ReviveBudget(val attemptsSpent: Int) {
         /** The network changed: the server may well be reachable, start from the fast retries. */
         FULL(0),
 
         /** Only a hint that it may be: one round of the slower retries. */
         PATIENT_CYCLE(AGGRESSIVE_RETRY_COUNT),
     }
+
+    /** What a revive does: connect now, or leave a pending short retry to run. */
+    @VisibleForTesting
+    internal sealed interface ReviveAction {
+        /** The retry counter after the revive. */
+        val attempts: Int
+
+        data class ConnectNow(override val attempts: Int) : ReviveAction
+        data class KeepPendingRetry(override val attempts: Int) : ReviveAction
+    }
+
+    /**
+     * An idle-phase sleep can be [IDLE_RETRY_MS] long: a fresh reason to connect must preempt it
+     * rather than wait out the window. A short retry is left to run; a network change still
+     * restarts its budget, a [ReviveBudget.PATIENT_CYCLE] leaves it as it is.
+     */
+    @VisibleForTesting
+    internal fun reviveAction(budget: ReviveBudget, shortRetryPending: Boolean, attempts: Int): ReviveAction =
+        when {
+            !shortRetryPending -> ReviveAction.ConnectNow(budget.attemptsSpent)
+            budget == ReviveBudget.FULL -> ReviveAction.KeepPendingRetry(budget.attemptsSpent)
+            else -> ReviveAction.KeepPendingRetry(attempts)
+        }
 
     private fun revive(reason: String, budget: ReviveBudget) {
         if (userDisconnected || !hasConnectedSuccessfully) return
@@ -549,19 +573,18 @@ class MaWebSocketClient(
         val now = System.currentTimeMillis()
         if (now - lastNetworkReviveMs < NETWORK_REVIVE_DEBOUNCE_MS) return
         lastNetworkReviveMs = now
-        // An idle-phase sleep can be IDLE_RETRY_MS long: a fresh reason to connect must
-        // preempt it rather than wait out the window. A short retry is left to run.
-        if (reconnectJob?.isActive == true && !isIdleRetrySleeping()) {
-            if (budget == ReviveBudget.FULL) {
-                resetReconnectBackoff()
-                Log.d(TAG, "$reason: backoff reset, retry already in flight")
+        val shortRetryPending = reconnectJob?.isActive == true && !isIdleRetrySleeping()
+        val action = reviveAction(budget, shortRetryPending, reconnectAttempts)
+        reconnectAttempts = action.attempts
+        when (action) {
+            is ReviveAction.KeepPendingRetry ->
+                Log.d(TAG, "$reason: retry already in flight (attempts=${action.attempts})")
+            is ReviveAction.ConnectNow -> {
+                reconnectJob?.cancel()
+                Log.d(TAG, "$reason: reviving WS connection")
+                doConnect(url)
             }
-            return
         }
-        reconnectJob?.cancel()
-        reconnectAttempts = budget.attemptsSpent
-        Log.d(TAG, "$reason: reviving WS connection")
-        doConnect(url)
     }
 
     private fun scheduleReconnect() {
