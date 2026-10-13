@@ -35,7 +35,8 @@ internal class SendspinNoiseFlow(
     private val client: SendspinClient,
     private val pairing: NoisePairingCredentials,
     private val player: Player,
-    private val onLinkEvent: (NoiseLinkEvent) -> Unit,
+    /** Reports a link event; false when it could not be delivered. */
+    private val onLinkEvent: (NoiseLinkEvent) -> Boolean,
 ) {
     /** What the flow asks of the manager's player machinery. */
     interface Player {
@@ -47,24 +48,50 @@ internal class SendspinNoiseFlow(
 
     // Read off the collector too, by the manager's client/state sends.
     @Volatile private var activeRoles: List<String> = emptyList()
-    // Set while a pairing the phone asked for has not reached its re-handshake; see onPairingRequested.
-    @Volatile private var pairingRequested = false
+    // The pairing hold and the connection it belongs to. Changed on the collector and by the
+    // pairing supervisor, so every change goes through holdLock; see stateHeldForPairing.
+    private val holdLock = Any()
+    @Volatile private var pairingHold = PairingHold.NONE
+    private var connectionEpoch = 0
     private var playerActive = false
     private var resyncPending = false
     // The PSK category last reported through onLinkEvent on this connection.
     private var reportedCategory: PskCategory? = null
 
-    /**
-     * Whether a `client/state` may carry the player object: the server's last `server/activate`
-     * gave this connection a player role, and no pairing is about to take it away. aiosendspin
-     * flags a player object sent while the role is inactive.
-     */
-    val playerRoleActive: Boolean get() = !pairingRequested && NoiseActivationStep.hasPlayerRole(activeRoles)
+    /** Whether the server's last `server/activate` gave this connection a player role. */
+    val playerRoleActive: Boolean get() = NoiseActivationStep.hasPlayerRole(activeRoles)
 
-    /** A new connection starts from scratch: no roles, no active player. */
+    /**
+     * Whether `client/state` is held back because a pairing is under way. aiosendspin quiesces a
+     * connection it is about to pair, dropping its roles without a message, and only then
+     * re-handshakes. MA approves guest access on the unpaired connection at about the same time,
+     * and the phone's first state for that guest player role raced the quiesce: the pairing
+     * request goes over the MA socket, the state over the Sendspin one, and the state arrived for
+     * a role the server had just dropped (2026-10-12, on both the phone and the TV). The state
+     * cannot simply leave the player out either, because the server requires it in the first state
+     * of an active player role. So nothing is sent from the first unpaired activate until the
+     * activate that follows the pairing's re-handshake, or until the supervisor says no pairing
+     * follows.
+     */
+    val stateHeldForPairing: Boolean get() = pairingHold != PairingHold.NONE
+
+    private enum class PairingHold {
+        NONE,
+
+        /** The connection is unpaired and a pairing request is expected or open. */
+        PAIRING_EXPECTED,
+
+        /** The pairing re-handshake happened; the roles come with the next activate. */
+        AWAIT_ACTIVATE,
+    }
+
+    /** A new connection starts from scratch: no roles, no active player, no hold. */
     fun reset() {
         activeRoles = emptyList()
-        pairingRequested = false
+        synchronized(holdLock) {
+            pairingHold = PairingHold.NONE
+            connectionEpoch++
+        }
         playerActive = false
         resyncPending = false
         reportedCategory = null
@@ -81,24 +108,39 @@ internal class SendspinNoiseFlow(
         // The server drops every role before it re-handshakes and names them again in the next
         // server/activate, so from here the roles are the ones that activate gives.
         activeRoles = emptyList()
-        pairingRequested = false
+        synchronized(holdLock) {
+            if (pairingHold == PairingHold.PAIRING_EXPECTED) pairingHold = PairingHold.AWAIT_ACTIVATE
+        }
     }
 
     /**
-     * The phone has asked MA to pair it. aiosendspin will quiesce the connection, dropping its
-     * roles without a message, and only then re-handshake. MA approves guest access on the same
-     * connection at about the same time, and its server/activate with a player role can land
-     * before the quiesce: the phone then reported its first state for a role the server had just
-     * dropped (2026-10-12). Until the re-handshake, or [onPairingRequestEnded], no state carries
-     * the player object. Safe to call off the collector.
+     * The phone is about to ask MA to pair it; see [stateHeldForPairing]. Returns the connection
+     * the attempt belongs to, for [onPairingAttemptEnded]. Safe to call off the collector.
      */
-    fun onPairingRequested() {
-        pairingRequested = true
+    fun onPairingRequested(): Int = synchronized(holdLock) {
+        if (pairingHold == PairingHold.NONE) pairingHold = PairingHold.PAIRING_EXPECTED
+        connectionEpoch
     }
 
-    /** The pairing request returned, done or failed; see [onPairingRequested]. */
-    fun onPairingRequestEnded() {
-        pairingRequested = false
+    /**
+     * A pairing attempt ended. Unless it reached the re-handshake, no pairing is under way any
+     * more and the hold ends. An attempt that belonged to an earlier connection changes nothing.
+     * Returns whether the hold ended. Safe to call off the collector.
+     */
+    fun onPairingAttemptEnded(epoch: Int): Boolean = synchronized(holdLock) {
+        epoch == connectionEpoch && endHold(PairingHold.PAIRING_EXPECTED)
+    }
+
+    /**
+     * The supervisor will not pair this connection (the server unpaired the phone in this MA
+     * session), so the hold ends. Returns whether it did. Safe to call off the collector.
+     */
+    fun onPairingHeldBack(): Boolean = endHold(PairingHold.PAIRING_EXPECTED)
+
+    private fun endHold(from: PairingHold): Boolean = synchronized(holdLock) {
+        val ends = pairingHold == from
+        if (ends) pairingHold = PairingHold.NONE
+        ends
     }
 
     fun onActivate(payload: ServerActivatePayload) {
@@ -113,6 +155,19 @@ internal class SendspinNoiseFlow(
         )
         resyncPending = false
         Log.d(TAG, "server/activate activities=${payload.activities} roles=$activeRoles psk=${psk.category} -> $step")
+        val pairingStep = step is NoiseActivationStep.FinalizePairing || step is NoiseActivationStep.AbortPairing
+        // Before the step, which may start the player and send its first state.
+        if (!pairingStep) {
+            val firstUnpaired = psk.category == PskCategory.SENTINEL && reportedCategory != PskCategory.SENTINEL
+            // Without a server id reportLink reports nothing, and nothing would end the hold.
+            if (firstUnpaired && client.noiseServerId() != null) {
+                // Unpaired: a pairing follows unless the supervisor holds it back, which it then
+                // reports through onPairingHeldBack.
+                synchronized(holdLock) { pairingHold = PairingHold.PAIRING_EXPECTED }
+            } else {
+                endHold(PairingHold.AWAIT_ACTIVATE)
+            }
+        }
         when (step) {
             NoiseActivationStep.FinalizePairing -> finalizePairing()
             is NoiseActivationStep.AbortPairing -> {
@@ -141,9 +196,7 @@ internal class SendspinNoiseFlow(
                 return
             }
         }
-        if (step !is NoiseActivationStep.FinalizePairing && step !is NoiseActivationStep.AbortPairing) {
-            reportLink(psk.category)
-        }
+        if (!pairingStep) reportLink(psk.category)
     }
 
     /** Reports the first activation per PSK category on this connection. */
@@ -156,7 +209,11 @@ internal class SendspinNoiseFlow(
             PskCategory.PAIRING -> return
         }
         reportedCategory = category
-        onLinkEvent(event)
+        if (!onLinkEvent(event) && category == PskCategory.SENTINEL) {
+            // No supervisor will pair this connection or hold it back, so nothing else would end
+            // the hold.
+            if (endHold(PairingHold.PAIRING_EXPECTED) && playerActive) player.resendState()
+        }
     }
 
     private fun finalizePairing() {

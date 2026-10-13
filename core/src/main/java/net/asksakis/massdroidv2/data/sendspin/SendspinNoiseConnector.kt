@@ -130,6 +130,7 @@ class SendspinNoiseConnector @Inject constructor(
                         if (held != null && held in settingsRepository.sendspinUnpairedServers.first()) {
                             Log.i(TAG, "Server ${event.serverId} unpaired this phone; not pairing until asked")
                             _pairingHeld.value = event.serverId
+                            sendspinManager.onNoisePairingHeldBack()
                         } else {
                             _pairingHeld.value = null
                             pairing = launch { pairWhileUnpaired(event.serverId) }
@@ -194,8 +195,22 @@ class SendspinNoiseConnector @Inject constructor(
         }
     }
 
-    /** One pairing attempt; true when MA accepted the token. */
+    /**
+     * One pairing attempt; true when MA accepted the token. The Sendspin connection holds its
+     * client/state from the moment it reports itself unpaired. An attempt that ends before the
+     * pairing's re-handshake releases the hold; after it, the next activate does. The token keeps
+     * an attempt cancelled by a newer connection from releasing that connection's hold.
+     */
     private suspend fun pair(serverId: String): Boolean {
+        val holdEpoch = sendspinManager.onNoisePairingRequested()
+        return try {
+            requestPairing(serverId)
+        } finally {
+            sendspinManager.onNoisePairingAttemptEnded(holdEpoch)
+        }
+    }
+
+    private suspend fun requestPairing(serverId: String): Boolean {
         if (!awaitMaConnected()) {
             Log.w(TAG, "MA is not connected; pairing with $serverId waits")
             return false
@@ -209,7 +224,6 @@ class SendspinNoiseConnector @Inject constructor(
             return false
         }
         Log.i(TAG, "Pairing with Sendspin server $serverId")
-        sendspinManager.onNoisePairingRequested()
         return try {
             wsClient.sendCommand(MaCommands.Sendspin.PAIR_WEB_PLAYER, PairWebPlayerArgs(token), timeoutMs = PAIR_TIMEOUT_MS)
             true
@@ -217,8 +231,6 @@ class SendspinNoiseConnector @Inject constructor(
             credentials.abandon()
             Log.w(TAG, "Pairing with $serverId failed: ${e.message}")
             false
-        } finally {
-            sendspinManager.onNoisePairingRequestEnded()
         }
     }
 

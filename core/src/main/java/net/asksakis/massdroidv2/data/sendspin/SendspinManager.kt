@@ -212,17 +212,29 @@ class SendspinManager(
             override fun resendState() = sendCurrentState()
         },
         onLinkEvent = { event ->
-            if (!_noiseLinkEvents.tryEmit(event)) Log.w(TAG, "Dropping Noise link event $event")
+            _noiseLinkEvents.tryEmit(event).also { delivered ->
+                if (!delivered) Log.w(TAG, "Dropping Noise link event $event")
+            }
         },
     )
 
     private val _noiseLinkEvents = MutableSharedFlow<NoiseLinkEvent>(extraBufferCapacity = 8)
 
-    /** The pairing supervisor is about to ask MA to pair this phone; see [SendspinNoiseFlow.onPairingRequested]. */
-    fun onNoisePairingRequested() = noiseFlow.onPairingRequested()
+    /**
+     * The pairing supervisor is about to ask MA to pair this phone; see
+     * [SendspinNoiseFlow.onPairingRequested]. Returns the token for [onNoisePairingAttemptEnded].
+     */
+    fun onNoisePairingRequested(): Int = noiseFlow.onPairingRequested()
 
-    /** The pairing request returned, done or failed. */
-    fun onNoisePairingRequestEnded() = noiseFlow.onPairingRequestEnded()
+    /** A pairing attempt ended; if that ends the hold, the state held back goes out now. */
+    fun onNoisePairingAttemptEnded(epoch: Int) = sendHeldState(noiseFlow.onPairingAttemptEnded(epoch))
+
+    /** The supervisor will not pair this connection; the state held back goes out now. */
+    fun onNoisePairingHeldBack() = sendHeldState(noiseFlow.onPairingHeldBack())
+
+    private fun sendHeldState(holdEnded: Boolean) {
+        if (holdEnded && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
+    }
 
     /** Pairing state of Noise connections, for the pairing supervisor; empty on the legacy transport. */
     val noiseLinkEvents: SharedFlow<NoiseLinkEvent> = _noiseLinkEvents.asSharedFlow()
@@ -939,6 +951,7 @@ class SendspinManager(
     }
 
     private fun sendCurrentState() {
+        if (noiseMode && noiseFlow.stateHeldForPairing) return
         // Per the Sendspin spec, static_delay_ms reports the device's known
         // external delay beyond the audio port; the server sends chunks that
         // much earlier and judges lateness with it. The output calibration of a
