@@ -219,7 +219,11 @@ class AndroidAutoBrowseController(
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
                 knownParentIds.add(parentId)
-                val effectivePageSize = if (pageSize > 0) pageSize else PAGE_SIZE_DEFAULT
+                // Android Auto asks for a whole list at once (pageSize = Int.MAX_VALUE), and the
+                // size goes to MA as the limit: a large library came back as one JSON message
+                // big enough to run the heap out (#78), and as more items than a binder
+                // transaction can carry back to the host.
+                val effectivePageSize = if (pageSize > 0) pageSize.coerceAtMost(PAGE_SIZE_MAX) else PAGE_SIZE_DEFAULT
                 return scope.future(Dispatchers.IO) {
                     try {
                         val items = children(parentId, page, effectivePageSize)
@@ -882,6 +886,8 @@ class AndroidAutoBrowseController(
         private const val TAG = "AndroidAutoBrowse"
         private const val ROOT = "root"
         private const val PAGE_SIZE_DEFAULT = 50
+        /** The most items one browse page asks MA for; the library screens page by 500 too. */
+        private const val PAGE_SIZE_MAX = 500
         private const val DISCOVER_FEED_TTL_MS = 10 * 60 * 1000L
 
         /** mediaId type of a dynamic playlist, whose track rows continue with its feed. */
