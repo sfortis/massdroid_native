@@ -220,8 +220,26 @@ class AndroidAutoController(
         }
     }
 
+    /**
+     * Whether a transport command goes to the phone's own Sendspin player instead of the selected
+     * one. Besides the coordinator's Bluetooth rule, a command from the Android Auto host goes there
+     * whenever Sendspin is up. The selection lock says the same once projection is seen, but
+     * CarConnection reports projection asynchronously: Android Auto's autoplay on connect arrived
+     * 60 ms before the lock and started the previously selected cast group at home (2026-10-14).
+     * Must run on the application thread, inside the request, like every player callback.
+     */
+    private fun routeToSendspin(): Boolean {
+        if (shouldRouteToSendspin()) return true
+        val sendspinId = sendspinPlayerId() ?: return false
+        return requestFromCarHost() && isSendspinActive() &&
+            playerRepository.selectedPlayer.value?.playerId != sendspinId
+    }
+
+    private fun requestFromCarHost(): Boolean =
+        session?.controllerForCurrentRequest?.packageName in CAR_HOST_PACKAGES
+
     fun dispatchTransport(command: TransportCommand) {
-        val sendspin = if (shouldRouteToSendspin()) sendspinController() else null
+        val sendspin = if (routeToSendspin()) sendspinController() else null
         when (command) {
             TransportCommand.PLAY_PAUSE -> {
                 if (sendspin != null) return sendspin.handlePlay()
@@ -245,7 +263,7 @@ class AndroidAutoController(
         return RemoteControlPlayer(
             Looper.getMainLooper(),
             onPlay = {
-                if (shouldRouteToSendspin()) {
+                if (routeToSendspin()) {
                     sendspinController()?.handlePlay()
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
@@ -253,7 +271,7 @@ class AndroidAutoController(
                 }
             },
             onPause = {
-                if (shouldRouteToSendspin()) {
+                if (routeToSendspin()) {
                     sendspinController()?.handlePause()
                 } else {
                     val id = activePlayerId() ?: return@RemoteControlPlayer
@@ -267,7 +285,7 @@ class AndroidAutoController(
             },
             onSeek = { positionMs ->
                 remotePlayer?.publishPosition(positionMs)
-                val id = if (shouldRouteToSendspin()) sendspinPlayerId() else activePlayerId()
+                val id = if (routeToSendspin()) sendspinPlayerId() else activePlayerId()
                 id ?: return@RemoteControlPlayer
                 transport("seek") { playerRepository.seek(id, positionMs / 1000.0) }
             },
@@ -306,7 +324,7 @@ class AndroidAutoController(
         val track = playerRepository.queueState.value?.currentItem?.track
         if (track?.mediaType == MediaType.AUDIOBOOK) {
             val target = track.chapters.getOrNull(index) ?: return
-            val id = if (shouldRouteToSendspin()) sendspinPlayerId() else activePlayerId()
+            val id = if (routeToSendspin()) sendspinPlayerId() else activePlayerId()
             id ?: return
             scope.launch {
                 try {
@@ -322,7 +340,7 @@ class AndroidAutoController(
         // (directly selected OR BT-routed), not only when it is the selected
         // player — otherwise a routed queue jump leaves the gate un-warned.
         if (isSendspinActive() &&
-            (shouldRouteToSendspin() || playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId())
+            (routeToSendspin() || playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId())
         ) {
             sendspinManager.expectDiscontinuity(reason)
         }
@@ -770,6 +788,11 @@ class AndroidAutoController(
         // the device-volume mapping (now 1:1 with MA), so it can be tuned freely.
         private const val VOLUME_OVERRIDE_MS = 15_000L
         private const val ARTWORK_FETCH_TIMEOUT_S = 8L
+        /** The Android Auto host on the phone, and its embedded variant. */
+        private val CAR_HOST_PACKAGES = setOf(
+            "com.google.android.projection.gearhead",
+            "com.google.android.embedded.projection",
+        )
     }
 
     /**
