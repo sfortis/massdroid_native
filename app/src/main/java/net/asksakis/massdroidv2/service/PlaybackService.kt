@@ -103,8 +103,9 @@ class PlaybackService : MediaLibraryService() {
      * In the car (AAOS) the system media center binds this service WITHOUT ever
      * launching an activity, so the UI-layer auto-connect (Home/Discover view models)
      * never runs and the browse tree stays empty ("Media isn't available"). Mirror
-     * that token auto-connect here, service-side, for the automotive build only -
-     * phone/TV keep connecting from their UI as before (gated to avoid a double connect).
+     * that token auto-connect here, service-side, for the automotive build. On the phone a
+     * media browser's root request opens the connection instead (AndroidAutoBrowseController),
+     * so a process started for something else does not connect without a reason.
      */
     private fun autoConnectForCar() {
         if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
@@ -174,6 +175,7 @@ class PlaybackService : MediaLibraryService() {
             sendspinController = { sendspinCoordinator.controller },
             onCustomCommand = { action -> androidAutoController.handleCustomCommand(action) },
             hasStoredCredentials = { hasStoredCredentials() },
+            connectIfNeeded = { scope.launch { savedCredentialsConnector.connectIfNeeded() } },
         )
     }
 

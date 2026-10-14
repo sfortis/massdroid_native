@@ -37,7 +37,11 @@ class SavedCredentialsConnector @Inject constructor(
         if (wsClient.connectionState.value is ConnectionState.Connected) return true
         if (wsClient.connectionState.value.needsConnect() && !wsClient.userDisconnected) {
             if (!hasSavedToken()) return false
-            wsClient.connect(settingsRepository.serverUrl.first(), settingsRepository.authToken.first())
+            wsClient.connect(
+                settingsRepository.serverUrl.first(),
+                settingsRepository.authToken.first(),
+                MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS,
+            )
         }
         return withTimeoutOrNull(timeoutMs) {
             wsClient.connectionState.first { it is ConnectionState.Connected }

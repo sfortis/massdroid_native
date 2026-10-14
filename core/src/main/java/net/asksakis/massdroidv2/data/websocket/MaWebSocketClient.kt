@@ -95,8 +95,12 @@ class MaWebSocketClient(
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     private val _isReconnecting = MutableStateFlow(false)
-    /** True after at least one successful connection (enables auto-reconnect). */
-    @Volatile private var hasConnectedSuccessfully = false
+    /**
+     * Whether a failed connect is retried and revived by a network change. True once a connection
+     * has authenticated, or when the credentials are saved ones ([ConnectOrigin.SAVED_CREDENTIALS]):
+     * those worked before, so a failure is far more likely the network than the address.
+     */
+    @Volatile private var retriesEnabled = false
     /** True when a reconnect attempt is scheduled or in-flight. */
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
@@ -253,7 +257,22 @@ class MaWebSocketClient(
         _startupReady.value = true
     }
 
-    fun connect(url: String, token: String) {
+    /** Where the credentials of a [connect] come from; decides whether a first failure is retried. */
+    enum class ConnectOrigin {
+        /**
+         * Saved after an earlier sign-in. A failure is retried like a lost connection. A process
+         * started in the background (Android Auto on mobile data) can connect before a VPN such
+         * as Tailscale is up, and that first failure used to leave the client dead until the app
+         * was opened (issue #78).
+         */
+        SAVED_CREDENTIALS,
+
+        /** Just entered by the user. A failure is reported and not retried, since it is most likely a wrong address. */
+        SIGN_IN,
+    }
+
+    fun connect(url: String, token: String, origin: ConnectOrigin) {
+        if (origin == ConnectOrigin.SAVED_CREDENTIALS) retriesEnabled = true
         // A pending retry suppresses this call, EXCEPT an idle-phase sleep: that one
         // is up to IDLE_RETRY_MS away, and a caller asking to connect now (the user
         // opening the app, an auto-connect site seeing a dead client) must not be
@@ -413,7 +432,7 @@ class MaWebSocketClient(
      * and still [ConnectionState.Connecting]; a completed handshake cancels it
      * ([cancelHandshakeWatchdog]), so it never preempts a slow auth. Mirrors the
      * [onFailure] path (surface an error, then let [scheduleReconnect]'s
-     * `hasConnectedSuccessfully` guard decide whether to retry).
+     * `retriesEnabled` guard decide whether to retry).
      */
     private fun startHandshakeWatchdog(gen: Int) {
         handshakeWatchdogJob?.cancel()
@@ -440,7 +459,7 @@ class MaWebSocketClient(
 
     fun disconnect() {
         userDisconnected = true
-        hasConnectedSuccessfully = false
+        retriesEnabled = false
         lastAuthenticatedAtMs = 0L
         cancelReconnect()
         cancelHandshakeWatchdog()
@@ -506,8 +525,9 @@ class MaWebSocketClient(
      * then revive the WS if it isn't live: reset the backoff to aggressive and
      * reconnect, even out of the terminal Error state the exhausted retry budget
      * left us in. No-op while connected/connecting, after a user disconnect, or
-     * before the first successful connection (don't auto-connect a never-connected
-     * client). Debounced so one transition's callback burst yields one revive.
+     * while retries are off (a fresh sign-in that has not connected yet; a VPN
+     * coming up revives a saved-credentials client that never connected).
+     * Debounced so one transition's callback burst yields one revive.
      */
     private fun onNetworkAvailable(reason: String) {
         scope.launch {
@@ -566,7 +586,7 @@ class MaWebSocketClient(
         }
 
     private fun revive(reason: String, budget: ReviveBudget) {
-        if (userDisconnected || !hasConnectedSuccessfully) return
+        if (userDisconnected || !retriesEnabled) return
         val url = serverUrl ?: return
         val state = _connectionState.value
         if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return
@@ -589,7 +609,7 @@ class MaWebSocketClient(
 
     private fun scheduleReconnect() {
         if (userDisconnected) return
-        if (!hasConnectedSuccessfully) return // don't auto-retry initial connection failures
+        if (!retriesEnabled) return // a first sign-in that fails is not retried
         val url = serverUrl ?: return
         if (authToken == null && pendingLogin == null && savedCredentials == null) return
         // Only a job still sleeping is a pending retry. A job that has woken is inside
@@ -805,7 +825,7 @@ class MaWebSocketClient(
                     return@launch
                 }
                 _connectionState.value = ConnectionState.Connected(info)
-                hasConnectedSuccessfully = true
+                retriesEnabled = true
             } catch (e: Exception) {
                 Log.e(TAG, "Auth failed: ${e.message}")
                 authToken = null

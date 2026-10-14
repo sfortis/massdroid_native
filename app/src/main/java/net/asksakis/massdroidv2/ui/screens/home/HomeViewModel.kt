@@ -161,7 +161,7 @@ class HomeViewModel @Inject constructor(
                 val url = settingsRepository.serverUrl.first()
                 val token = settingsRepository.authToken.first()
                 if (url.isNotBlank() && token.isNotBlank()) {
-                    wsClient.connect(url, token)
+                    wsClient.connect(url, token, MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS)
                 }
             }
         }

@@ -62,6 +62,8 @@ class AndroidAutoBrowseController(
     private val sendspinController: () -> SendspinAudioController?,
     private val onCustomCommand: (String) -> Boolean,
     private val hasStoredCredentials: suspend () -> Boolean = { true },
+    /** Opens the MA connection if nothing has; see onGetLibraryRoot. */
+    private val connectIfNeeded: () -> Unit = {},
 ) {
     // Keyed by the query that produced it: onGetSearchResult must never serve a
     // previous query's results when the host requests a newer one.
@@ -187,6 +189,10 @@ class AndroidAutoBrowseController(
                 browser: MediaSession.ControllerInfo,
                 params: MediaLibraryService.LibraryParams?
             ): ListenableFuture<LibraryResult<MediaItem>> {
+                // A browser is about to ask for content, and Android Auto may have started the
+                // process with no screen to open the connection (#30, #78). The system's media
+                // resumption asks for the recent root only and needs no connection.
+                if (params?.isRecent != true) connectIfNeeded()
                 val root = MediaItem.Builder()
                     .setMediaId(ROOT)
                     .setMediaMetadata(

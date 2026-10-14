@@ -165,7 +165,7 @@ class MaAuthRepositoryImpl @Inject constructor(
                 // Notify everyone holding per-account in-memory state to drop it
                 // before the new connection brings fresh data in.
                 sessionEventBus.emitReset()
-                wsClient.connect(url, token)
+                wsClient.connect(url, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
                 Log.d(TAG, "OAuth completed, connecting to $url with new token")
             } catch (e: Exception) {
                 Log.w(TAG, "OAuth completion failed: ${e.message}")

@@ -65,7 +65,7 @@ class TvRootViewModel @Inject constructor(
                     }
                     is ConnectionState.Connecting -> delay(RETRY_DELAY_MS)
                     else -> {
-                        wsClient.connect(savedUrl, token)
+                        wsClient.connect(savedUrl, token, MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS)
                         delay(RETRY_DELAY_MS)
                     }
                 }

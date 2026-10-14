@@ -296,7 +296,7 @@ class SettingsViewModel @Inject constructor(
         }
         _loginError.value = null
         viewModelScope.launch { settingsRepository.setServerUrl(connectUrl) }
-        wsClient.connect(connectUrl, token)
+        wsClient.connect(connectUrl, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
     }
 
     fun disconnect() {
