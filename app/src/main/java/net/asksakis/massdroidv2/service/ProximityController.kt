@@ -126,6 +126,13 @@ class ProximityController(
     /** Away mode may not start before this wall-clock time; set when the car is left. */
     private var awayModeHeldUntilMs = 0L
     private var suppressNextProximityRoomAction = false
+    /**
+     * The room whose selection the Bluetooth hold skipped, for [reapplyConfirmedRoom]. Null when
+     * nothing was skipped, and then audio that stops flowing changes nothing: a phone call paused
+     * the phone at home, Follow Me selected the room's speaker, and that selection dropped the
+     * resume owed to the phone, so the music never came back after the call (2026-10-14).
+     */
+    private var roomSkippedByBtHoldId: String? = null
     private var lastConfirmedWifiRoomId: String? = null
     private var lastConfirmedWifiBssid: String? = null
     private var lastConfirmedWifiSsid: String? = null
@@ -613,8 +620,10 @@ class ProximityController(
         val room = roomDetector.currentRoom.value ?: return
         if (shouldBlockProximitySelectionForBt.invoke()) {
             Log.d(TAG, "Proximity selected player skipped ($reason): BT A2DP sendspin active")
+            roomSkippedByBtHoldId = room.roomId
             return
         }
+        roomSkippedByBtHoldId = null
         if (!playbackController.isPlayerAvailable(room.playerId)) return
         if (playerRepository.selectedPlayer.value?.playerId == room.playerId) return
         if (playerRepository.selectPlayer(room.playerId)) {
@@ -1101,6 +1110,7 @@ class ProximityController(
         Log.d(TAG, "Room confirmed: ${detected.roomName} -> ${detected.playerName}")
         if (suppressNextProximityRoomAction) {
             suppressNextProximityRoomAction = false
+            roomSkippedByBtHoldId = detected.roomId.takeIf { shouldBlockProximitySelectionForBt.invoke() }
             if (
                 !shouldBlockProximitySelectionForBt.invoke() &&
                 playbackController.isPlayerAvailable(detected.playerId) &&
@@ -1160,8 +1170,10 @@ class ProximityController(
     private fun selectProximityPlayer(detected: DetectedRoom, reason: String) {
         if (shouldBlockProximitySelectionForBt.invoke()) {
             Log.d(TAG, "Proximity select skipped ($reason): BT A2DP sendspin active")
+            roomSkippedByBtHoldId = detected.roomId
             return
         }
+        roomSkippedByBtHoldId = null
         if (!playbackController.isPlayerAvailable(detected.playerId)) return
         if (playerRepository.selectedPlayer.value?.playerId == detected.playerId) return
         if (playerRepository.selectPlayer(detected.playerId)) {
@@ -1202,20 +1214,26 @@ class ProximityController(
     }
 
     /**
-     * Re-apply the room already confirmed, for when whatever was blocking the
-     * switch has gone.
+     * Re-apply the room already confirmed, for when the Bluetooth hold that skipped its
+     * selection has gone.
      *
      * A room is confirmed once. If the Bluetooth hold was up at that moment the
      * selection is skipped and nothing ever revisits it, so parking the car and
      * walking into a room the app had already recognised left the wrong player
-     * selected until the room changed again. The detector still holds the
-     * confirmed room, so re-applying needs no extra state.
+     * selected until the room changed again. Only a selection the hold really skipped
+     * is applied here ([roomSkippedByBtHoldId]); any other stop of the audio, a pause
+     * or a call, leaves the listener's selection alone.
      */
     fun reapplyConfirmedRoom(reason: String) {
-        val detected = roomDetector.currentRoom.value ?: return
+        val skippedRoomId = roomSkippedByBtHoldId ?: return
+        val detected = roomDetector.currentRoom.value?.takeIf { it.roomId == skippedRoomId }
+        if (detected == null) {
+            // The room has changed or been lost since; the skipped selection no longer applies.
+            roomSkippedByBtHoldId = null
+            return
+        }
         if (!shouldRunProximity(proximityConfigStore.config.value)) return
         if (!isWithinSchedule()) return
-        if (playerRepository.selectedPlayer.value?.playerId == detected.playerId) return
         selectProximityPlayer(detected, reason)
     }
 

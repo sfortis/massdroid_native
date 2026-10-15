@@ -147,7 +147,9 @@ class FollowMeService : Service() {
         // and by then the room has usually already been confirmed - so nothing
         // would revisit it. Audio stopping flowing is that moment: it covers a
         // Bluetooth disconnect, a pause, and a route change back to the phone
-        // alike, without this service having to track any of them.
+        // alike, without this service having to track any of them. The controller
+        // acts only if the hold really skipped a selection, so a pause or a call
+        // at home leaves the selection alone.
         scope.launch {
             sendspinManager.audioResourcesActive.collect { flowing ->
                 if (!flowing) proximityController?.reapplyConfirmedRoom("bt-audio-released")
