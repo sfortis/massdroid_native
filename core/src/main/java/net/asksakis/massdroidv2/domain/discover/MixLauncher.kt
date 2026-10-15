@@ -65,7 +65,8 @@ class MixLauncher @Inject constructor(
     private var lastRadioAtMs = 0L
 
     init {
-        scope.launch { sessionEventBus.resets.collect { reset() } }
+        // Subscribed before the constructor returns; the resets flow replays nothing.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { sessionEventBus.resets.collect { reset() } }
     }
 
     /**

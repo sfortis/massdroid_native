@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -115,6 +116,9 @@ class DiscoverFeedStore @Inject constructor(
     /** Starts the store for this process. Every consumer calls it; only the first call acts. */
     fun activate() {
         if (!activated.compareAndSet(false, true)) return
+        // Subscribed before this returns: the resets flow replays nothing, so a switch that lands
+        // while a dispatched collector is still waiting for a thread would be lost.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { sessionEventBus.resets.collect { reset() } }
         scope.launch {
             try {
                 loadFromCache()
@@ -125,7 +129,6 @@ class DiscoverFeedStore @Inject constructor(
             observeConnection()
         }
         scope.launch { observeMediaEvents() }
-        scope.launch { sessionEventBus.resets.collect { reset() } }
     }
 
     /** A pull to refresh: asks MA to sync its library, then rebuilds the feed. */
