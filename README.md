@@ -51,21 +51,32 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
 ### Added
-- NFC tags: tap your phone on a tag to start an album or a playlist on a speaker, or to move what is already playing into that room.
-- Audiobooks and podcasts in search, each with a filter of its own.
+- Android TV: Home shows the same Discover feed as the phone, with Smart Mix and Genre Radio.
+- Android TV: the mini player stays at the bottom of the screen, one press down away.
+- The phone speaker connects securely to Music Assistant 2.10 and later, and pairs by itself.
+- Sync speakers: set a delay for each speaker in a group.
+- Dynamic playlists keep playing after a song you tap, with a switch in the full player.
+- Search: genres that match what you type come first, and a tap plays the genre.
 
 ### Improved
-- The full player opens to the top of the screen, however you open it.
-- The cover keeps its shadow while you swipe to the next track.
-- In landscape the cover is larger and the controls fit beside it.
+- Android Auto: Smart Mix and Genre Radio start without opening the app, and the car tells you when a mix cannot play.
+- The phone speaker stays closer in time with the other speakers in a group.
+- Output calibration runs in rounds and can be fine-tuned for each output.
+- A skipped song is no longer hidden for good; the skip fades over time. "Not for me" still hides it.
+- One genre spelled several ways, such as synth pop and synth-pop, is now a single genre.
+- Insights merges duplicate artists and ranks every list by plays.
+- Settings share one clean layout across every screen.
+- Follow Me uses less battery, and rests while car audio is connected.
+- Sheets and dialogs stay open when you rotate the phone.
 
 ### Fixed
-- Search no longer reports a failure while the server is still answering, or leaves the previous results under new text. (#76)
-- The audiobook library no longer comes up empty. (#77)
-- Covers for local music load from outside your home network. (#66)
-- A tab no longer keeps showing something that was added or removed on the server until you pull to refresh.
-- Playlists that cannot hold songs are no longer offered when adding one.
-- Album track numbers follow the disc, so a second disc starts at one again.
+- Android Auto shows your library when it starts the app itself, also over a VPN, and large libraries no longer run out of memory. (#78)
+- Android Auto no longer starts music on a speaker at home when the car connects.
+- Music on the phone resumes after a call when Follow Me is on.
+- The connection to Music Assistant comes back by itself after a call or a network drop.
+- The phone speaker recovers when an alarm or a lost audio route takes the sound. (#68, #69)
+- Grouped playback in Opus no longer plays early.
+- The full player's buttons fit in landscape.
 
 ## Screenshots
 
@@ -110,7 +121,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade, volume normalization, streaming codec, and the output channels a speaker plays. Setting one speaker to left and another to right turns a group into a stereo pair, and a sync sheet lines every member of a group up by ear.
-- **Android TV** : Full client for Shield and Google TV: browse the library, control any player, and use the TV as a synced speaker
+- **Android TV** : Full client for Shield and Google TV: the same Discover Home as the phone with Smart Mix and Genre Radio, library browsing, control of any player from a mini player always at hand, and the TV as a synced speaker
 - **Diagnostics** : A settings screen with the app and server versions, the logs the app keeps on disk, and the battery setting that decides whether it may work in the background, which is what a problem report needs. A separate connection view shows a live latency graph with roundtrip stats.
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens
