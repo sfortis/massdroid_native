@@ -13,8 +13,8 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 /**
- * Backs the floating mini player: the selected player's live state, the full player list
- * for the switch dialog, and the transport shortcuts exposed while the pill is expanded.
+ * Backs the mini player bar: the selected player's live state, the full player list
+ * for the switch dialog, and the transport buttons on the bar.
  */
 @HiltViewModel
 class TvMiniPlayerViewModel @Inject constructor(

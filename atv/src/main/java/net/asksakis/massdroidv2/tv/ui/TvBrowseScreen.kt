@@ -64,7 +64,7 @@ fun TvBrowseScreen(
 
     // Shared D-pad focus: remembers the focused card, serves the mini player's exit
     // restore, and validates the remembered key against the current list so a stale key
-    // (after a category switch) never escapes to the pill or the category chips.
+    // (after a category switch) never escapes to the mini player bar or the category chips.
     // autoFocusOnLoad = false: the category chips sit above the grid, so entering the
     // screen must not yank focus into the grid; the grid never loses focus on its own.
     val itemKeys = remember(items) { items.map { it.uri } }

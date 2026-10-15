@@ -1,5 +1,16 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import net.asksakis.massdroidv2.domain.discover.MixLauncher
+import net.asksakis.massdroidv2.presentation.discover.genrePalette
+import net.asksakis.massdroidv2.domain.model.GenreItem
+import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,7 +27,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,7 +42,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,14 +49,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
-import net.asksakis.massdroidv2.tv.R
 import androidx.tv.material3.Card
 import androidx.tv.material3.Icon
 import androidx.tv.material3.IconButton
@@ -63,10 +70,16 @@ fun TvHomeScreen(
     onOpenBrowse: () -> Unit,
     viewModel: TvHomeViewModel = hiltViewModel()
 ) {
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
-    val albums by viewModel.albums.collectAsStateWithLifecycle()
-    val artists by viewModel.artists.collectAsStateWithLifecycle()
-    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val sections by viewModel.sections.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val mixBuilding by viewModel.mixBuilding.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(message) {
+        val text = message ?: return@LaunchedEffect
+        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+        viewModel.messageShown()
+    }
 
     // Back-stack focus restoration: remember the last focused card key (survives the
     // detail screen via rememberSaveable) and return focus there when home recomposes,
@@ -108,65 +121,156 @@ fun TvHomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(top = 40.dp, bottom = 48.dp)
+                .padding(top = 24.dp, bottom = 24.dp)
         ) {
+            // No logo or title: the screen is for the content, as on the phone.
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = EDGE),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.End
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Image(
-                        painter = painterResource(R.drawable.logo_md),
-                        contentDescription = null,
-                        // The logo_md vector has internal padding, so render it a bit
-                        // larger than the cap height to visually match the wordmark.
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text("MassDroid TV", style = MaterialTheme.typography.headlineMedium)
+                IconButton(onClick = onOpenBrowse) {
+                    Icon(Icons.Filled.GridView, contentDescription = "Browse")
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(onClick = onOpenBrowse) {
-                        Icon(Icons.Filled.GridView, contentDescription = "Browse")
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
                 }
             }
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(8.dp))
 
-            ContentShelf(
-                "Recently Played",
-                recentlyPlayed.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
-                onClick = { viewModel.playMedia(it.uri) },
+            MixShelf(
+                genres = sections.filterIsInstance<DiscoverSection.GenreRadioSection>().firstOrNull()?.genres.orEmpty(),
+                building = mixBuilding,
+                onSmartMix = viewModel::startSmartMix,
+                onGenreRadio = viewModel::startGenreRadio,
                 focusModifierFor = focusModifierFor
             )
-            ContentShelf(
-                "Albums",
-                albums.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
-                onClick = { viewModel.playMedia(it.uri) },
-                onLoadMore = viewModel::loadMoreAlbums,
-                focusModifierFor = focusModifierFor
+            sections.forEach { section ->
+                when (section) {
+                    is DiscoverSection.AlbumSection -> ContentShelf(
+                        section.title,
+                        section.albums.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
+                        onClick = { viewModel.playMedia(it.uri) },
+                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                    )
+                    is DiscoverSection.ArtistSection -> ContentShelf(
+                        section.title,
+                        section.artists.map { MediaCardData(it.uri, it.imageUrl, it.name, null, it.itemId, it.provider) },
+                        onClick = { onOpenArtist(it.itemId, it.provider) },
+                        circular = true,
+                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                    )
+                    is DiscoverSection.PlaylistSection -> ContentShelf(
+                        section.title,
+                        section.playlists.map { MediaCardData(it.uri, it.imageUrl, it.name, null) },
+                        onClick = { viewModel.playMedia(it.uri) },
+                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                    )
+                    is DiscoverSection.TrackSection -> ContentShelf(
+                        section.title,
+                        section.tracks.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
+                        onClick = { viewModel.playMedia(it.uri) },
+                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                    )
+                    // Drawn above, together with Smart Mix.
+                    is DiscoverSection.GenreRadioSection -> Unit
+                }
+            }
+            if (sections.isEmpty() && isLoading) {
+                Text(
+                    "Loading recommendations\u2026",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = LocalContentColor.current.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(horizontal = EDGE)
+                )
+            }
+        }
+    }
+}
+
+// The same item can be in two shelves (a favourite album that is also recommended), so the
+// key that brings focus back after Back names the shelf as well.
+private fun sectionFocus(title: String, focusModifierFor: (String) -> Modifier): (String) -> Modifier =
+    { uri -> focusModifierFor("$title|$uri") }
+
+/** Smart Mix first, then a radio per genre, as on the phone's Home. */
+@Composable
+private fun MixShelf(
+    genres: List<GenreItem>,
+    building: MixLauncher.Mix?,
+    onSmartMix: () -> Unit,
+    onGenreRadio: (String) -> Unit,
+    focusModifierFor: (String) -> Modifier
+) {
+    Shelf("Mixes") {
+        item(key = SMART_MIX_KEY) {
+            MixTile(
+                title = "Smart Mix",
+                subtitle = if (building == MixLauncher.Mix.SmartMix) "Building\u2026" else null,
+                colors = SMART_MIX_COLORS,
+                icon = true,
+                modifier = focusModifierFor(SMART_MIX_KEY),
+                onClick = onSmartMix
             )
-            ContentShelf(
-                "Artists",
-                artists.map { MediaCardData(it.uri, it.imageUrl, it.name, null, it.itemId, it.provider) },
-                onClick = { onOpenArtist(it.itemId, it.provider) },
-                circular = true,
-                onLoadMore = viewModel::loadMoreArtists,
-                focusModifierFor = focusModifierFor
-            )
-            ContentShelf(
-                "Playlists",
-                playlists.map { MediaCardData(it.uri, it.imageUrl, it.name, null) },
-                onClick = { viewModel.playMedia(it.uri) },
-                focusModifierFor = focusModifierFor
+        }
+        items(genres, key = { it.name }) { genre ->
+            val (start, end, _) = remember(genre.name) { genrePalette(genre.name) }
+            val starting = (building as? MixLauncher.Mix.GenreRadio)?.genre == genre.name
+            MixTile(
+                title = genre.name,
+                subtitle = if (starting) "Starting\u2026" else null,
+                colors = start to end,
+                icon = false,
+                modifier = focusModifierFor("genre|${genre.name}"),
+                onClick = { onGenreRadio(genre.name) }
             )
         }
     }
 }
+
+@Composable
+private fun MixTile(
+    title: String,
+    subtitle: String?,
+    colors: Pair<Color, Color>,
+    icon: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(onClick = onClick, modifier = modifier.width(MIX_TILE_WIDTH)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(MIX_TILE_HEIGHT)
+                .background(Brush.linearGradient(listOf(colors.first, colors.second))),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (icon) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = Color.White)
+                    Spacer(Modifier.height(6.dp))
+                }
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 10.dp)
+                )
+                if (subtitle != null) {
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.8f))
+                }
+            }
+        }
+    }
+}
+
+private const val SMART_MIX_KEY = "smart_mix"
+private val SMART_MIX_COLORS = Color(0xFF3A2F6B) to Color(0xFF141026)
+private val MIX_TILE_WIDTH = 180.dp
+private val MIX_TILE_HEIGHT = 116.dp
 
 private data class MediaCardData(
     val uri: String,
@@ -183,28 +287,16 @@ private fun ContentShelf(
     items: List<MediaCardData>,
     onClick: (MediaCardData) -> Unit,
     circular: Boolean = false,
-    onLoadMore: (() -> Unit)? = null,
     focusModifierFor: (String) -> Modifier = { Modifier }
 ) {
     if (items.isEmpty()) return
-    val state = rememberLazyListState()
-    // Paginate: pull the next page as focus/scroll nears the end of the row.
-    if (onLoadMore != null) {
-        LaunchedEffect(state, items.size) {
-            snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-                .collect { lastVisible ->
-                    if (lastVisible >= items.size - LOAD_MORE_THRESHOLD) onLoadMore()
-                }
-        }
-    }
-    Shelf(title, state) {
-        items(items, key = { it.uri }) { item ->
+    Shelf(title) {
+        items(items.distinctBy { it.uri }, key = { it.uri }) { item ->
             MediaCard(item, circular, modifier = focusModifierFor(item.uri)) { onClick(item) }
         }
     }
 }
 
-private const val LOAD_MORE_THRESHOLD = 10
 private const val FOCUS_RESTORE_TRIES = 25
 private const val FOCUS_RESTORE_RETRY_MS = 60L
 

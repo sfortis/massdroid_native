@@ -25,7 +25,7 @@ private const val GRID_FOCUS_RETRY_MS = 60L
  * Shared D-pad focus management for a single-grid TV screen (Browse, Folders, Artist…).
  *
  * Solves the app-wide bug where content focus is lost and escapes to the only
- * always-present focusable, the floating mini player pill — and the related bug where
+ * always-present focusable, the mini player bar — and the related bug where
  * returning from the mini player jumped to the FIRST item instead of the scrolled
  * position. The fix never leaves the content unfocused and always restores the exact
  * remembered card, scrolling it back into view first (a card that scrolled out of the
@@ -81,7 +81,7 @@ fun rememberGridItemFocus(
         val idx = keys.indexOf(t)
         // Scroll the target into view ONLY if it isn't already on screen. When it's already
         // visible (the usual mini-player-exit case — the grid didn't move while we were on
-        // the pill), scrollToItem would yank it to the top and lose the exact scroll
+        // the bar), scrollToItem would yank it to the top and lose the exact scroll
         // position the user expects. Only a target that scrolled out needs a scroll.
         val visible = gridState.layoutInfo.visibleItemsInfo.any { it.index == idx }
         if (idx >= 0 && !visible) runCatching { gridState.scrollToItem(idx) }

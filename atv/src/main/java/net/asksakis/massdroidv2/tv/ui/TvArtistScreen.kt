@@ -37,7 +37,7 @@ fun TvArtistScreen(viewModel: TvArtistViewModel = hiltViewModel()) {
     val albums by viewModel.albums.collectAsStateWithLifecycle()
 
     // The albums load async after navigation; the shared grid-focus helper focuses the
-    // first card on load so focus never escapes to the floating mini player pill, and
+    // first card on load so focus never escapes to the mini player bar, and
     // restores the scrolled card (not the top) when returning from the mini player.
     val gridState = rememberLazyGridState()
     val albumKeys = remember(albums) { albums.map { it.uri } }

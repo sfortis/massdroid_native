@@ -12,7 +12,7 @@ import net.asksakis.massdroidv2.tv.ui.theme.MassDroidTvTheme
 @AndroidEntryPoint
 class TvMainActivity : ComponentActivity() {
 
-    /** Long-press BACK anywhere = jump to the floating mini player (10-foot shortcut). */
+    /** Long-press BACK anywhere jumps to the mini player bar (10-foot shortcut). */
     private val miniPlayerShortcut = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     override fun onCreate(savedInstanceState: Bundle?) {

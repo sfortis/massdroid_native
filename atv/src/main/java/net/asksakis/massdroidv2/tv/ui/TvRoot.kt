@@ -5,9 +5,11 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +19,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
@@ -28,9 +35,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.flow.MutableSharedFlow
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
-/** Routes that float the corner mini player (browsing surfaces; never over the full player). */
+/** Routes that show the mini player bar (browsing surfaces; never under the full player). */
 private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse")
 
 /**
@@ -56,7 +64,7 @@ fun TvRoot(
             val route = backStackEntry?.destination?.route
             val miniPlayerVisible = route in MINI_PLAYER_ROUTES || route?.startsWith("artist/") == true
             val miniPlayerFocus = remember { FocusRequester() }
-            // True while the mini player is expanded or holds the cursor: it owns BACK then,
+            // True while the mini player bar holds the cursor: it owns BACK and the D-pad then,
             // and the home exit-confirmation must stay out of the way regardless of the order
             // the two BackHandlers were (re)registered in.
             var miniPlayerActive by remember { mutableStateOf(false) }
@@ -74,12 +82,36 @@ fun TvRoot(
                     }
                 }
             }
-            // The pill is reachable ONLY by the deliberate hold-BACK shortcut — never by
-            // scrolling/navigating the content (it must not behave like a "last row"), so
-            // there is no DPAD-DOWN interception here.
+            // Both deliberate ways into the mini player bar: holding BACK, and DOWN with nothing
+            // below in the content.
+            val miniPlayerEntry = remember { MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
+            if (miniPlayerShortcut != null) {
+                LaunchedEffect(miniPlayerShortcut) { miniPlayerShortcut.collect { miniPlayerEntry.tryEmit(Unit) } }
+            }
             Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
             androidx.compose.runtime.CompositionLocalProvider(LocalTvFocusMemory provides focusMemory) {
-            NavHost(navController = nav, startDestination = "home") {
+            NavHost(
+                navController = nav,
+                startDestination = "home",
+                modifier = Modifier
+                    .weight(1f)
+                    // DOWN in the content moves focus down as usual; only when nothing is below
+                    // does it enter the bar. The bar is never a candidate of the focus search
+                    // itself (it is not focusable until entered), so content focus can never
+                    // fall onto it by accident.
+                    .onPreviewKeyEvent { event ->
+                        if (!miniPlayerVisible || miniPlayerActive) return@onPreviewKeyEvent false
+                        if (event.type != KeyEventType.KeyDown || event.key != Key.DirectionDown) {
+                            return@onPreviewKeyEvent false
+                        }
+                        // Only a fresh press enters the bar: a held DOWN scrolling a list that is
+                        // still loading its next page must not drop into it.
+                        val moved = focusManager.moveFocus(FocusDirection.Down)
+                        if (!moved && event.nativeKeyEvent.repeatCount == 0) miniPlayerEntry.tryEmit(Unit)
+                        true
+                    }
+            ) {
                 composable("home") {
                     ExitConfirmation(enabled = !miniPlayerActive)
                     TvHomeScreen(
@@ -118,19 +150,17 @@ fun TvRoot(
                 composable("settings") { TvSettingsScreen() }
             }
             }
-            // Floating corner mini player over the browsing surfaces: collapsed pill,
-            // expand on OK, player switching + open-full-player from there.
+            // The mini player bar under the browsing screens, which end above it.
             if (miniPlayerVisible) {
                 TvMiniPlayer(
                     onOpenPlayer = { playerId -> nav.navigate("nowplaying/$playerId") },
-                    expandSignal = miniPlayerShortcut,
+                    entrySignal = miniPlayerEntry,
                     entryFocus = miniPlayerFocus,
                     onExitToContent = restoreContentFocus,
                     onActiveChange = { miniPlayerActive = it },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 48.dp, bottom = 32.dp)
+                    modifier = Modifier.padding(start = 48.dp, end = 48.dp, top = 8.dp, bottom = 20.dp)
                 )
+            }
             }
             // Volume OSD: pops on any volume change of the selected player, fades on its own.
             TvVolumeOsd(

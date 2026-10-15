@@ -49,7 +49,7 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
     BackHandler(enabled = canGoBack) { viewModel.back() }
 
     // Drilling into a folder replaces the whole list; the shared grid-focus helper keeps
-    // the cursor on a content item so it never escapes to the mini player pill.
+    // the cursor on a content item so it never escapes to the mini player bar.
     val gridState = rememberLazyGridState()
     val entryKeys = remember(entries) { entries.map { it.uri } }
     val gridFocus = rememberGridItemFocus(entryKeys, gridState)
