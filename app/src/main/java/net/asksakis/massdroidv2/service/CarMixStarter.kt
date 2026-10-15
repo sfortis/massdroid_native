@@ -1,6 +1,8 @@
 package net.asksakis.massdroidv2.service
 
 import android.util.Log
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionError
 import kotlinx.coroutines.CoroutineScope
@@ -66,6 +68,7 @@ internal class CarMixStarter(
         if (!accepted) ownMix = previous
     }
 
+    @OptIn(UnstableApi::class)
     private fun report(outcome: MixLauncher.Outcome) {
         if (outcome.mix != ownMix) return
         ownMix = null
