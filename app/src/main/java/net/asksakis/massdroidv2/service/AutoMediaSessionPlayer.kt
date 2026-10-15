@@ -463,6 +463,16 @@ class RemoteControlPlayer(
         return Futures.immediateVoidFuture()
     }
 
+    // COMMAND_SET_MEDIA_ITEM is advertised so the car can play a browse item at all, and the
+    // browse controller's onAddMediaItems already sends that item to MA. Media3 then hands the
+    // same items to the player, which mirrors the MA queue and has nothing to set; without this
+    // override SimpleBasePlayer throws on every item the car plays.
+    override fun handleSetMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long
+    ): ListenableFuture<*> = Futures.immediateVoidFuture()
+
     /** The notch the advertised grid is currently showing. */
     private fun currentDeviceVolumeNotch(): Int = deviceVolume
 
