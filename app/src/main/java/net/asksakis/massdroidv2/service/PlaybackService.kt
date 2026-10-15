@@ -57,13 +57,15 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
     @Inject lateinit var playHistoryRepository: net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
     @Inject lateinit var genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository
-    @Inject lateinit var mixOrchestrator: net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
-    @Inject lateinit var discoverFeedOrchestrator: net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
+    @Inject lateinit var mixLauncher: net.asksakis.massdroidv2.domain.discover.MixLauncher
+    @Inject lateinit var discoverFeedStore: net.asksakis.massdroidv2.domain.discover.DiscoverFeedStore
+    @Inject lateinit var sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var sendspinCoordinator: SendspinCoordinator
     private lateinit var androidAutoController: AndroidAutoController
     private lateinit var androidAutoBrowseController: AndroidAutoBrowseController
+    private lateinit var carMixStarter: CarMixStarter
     private lateinit var sleepTimerManager: SleepTimerManager
     private val sleepTimerOriginalVolumes = mutableMapOf<String, Int>()
 
@@ -72,6 +74,7 @@ class PlaybackService : MediaLibraryService() {
         AaMetrics.start()
         createConnectionNotificationChannel()
         createSendspinCoordinator()
+        createCarMixStarter()
         createAndroidAutoBrowseController()
         createAndroidAutoController()
         sendspinCoordinator.start()
@@ -168,8 +171,8 @@ class PlaybackService : MediaLibraryService() {
             musicRepository = musicRepository,
             playerRepository = playerRepository,
             genreRepository = genreRepository,
-            discoverFeedOrchestrator = discoverFeedOrchestrator,
-            shortcutDispatcher = shortcutDispatcher,
+            discoverFeedStore = discoverFeedStore,
+            startMix = { queueId, mix -> carMixStarter.startMix(queueId, mix) },
             activeQueueId = { activePlayerId() ?: playerRepository.queueState.value?.queueId },
             isSendspinActive = { sendspinCoordinator.isActive },
             sendspinController = { sendspinCoordinator.controller },
@@ -177,6 +180,19 @@ class PlaybackService : MediaLibraryService() {
             hasStoredCredentials = { hasStoredCredentials() },
             connectIfNeeded = { scope.launch { savedCredentialsConnector.connectIfNeeded() } },
         )
+    }
+
+    // A mix asked for from the car. The phone starts it at once on the queue Android Auto plays
+    // on, with or without the app on screen, and the car is told when it plays nothing.
+    private fun createCarMixStarter() {
+        carMixStarter = CarMixStarter(
+            scope = scope,
+            mixLauncher = mixLauncher,
+            shortcutDispatcher = shortcutDispatcher,
+            sessionEventBus = sessionEventBus,
+            isAutomotive = net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE,
+            session = { androidAutoController.getSession() },
+        ).also { it.start() }
     }
 
     private fun createSendspinCoordinator() {
@@ -190,7 +206,7 @@ class PlaybackService : MediaLibraryService() {
             volumeCoordinator = sendspinVolumeCoordinator,
             noiseConnector = sendspinNoiseConnector,
             shortcutDispatcher = shortcutDispatcher,
-            mixOrchestrator = mixOrchestrator,
+            mixLauncher = mixLauncher,
             isAutomotive = net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE,
             onConnectionStateChanged = { updateConnectionNotification() },
             onTargetChanged = { reason -> androidAutoController.onSendspinTargetChanged(reason) },

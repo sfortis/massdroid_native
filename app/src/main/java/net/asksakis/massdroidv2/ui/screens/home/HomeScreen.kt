@@ -100,7 +100,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import kotlin.math.absoluteValue
 import coil.request.ImageRequest
 import kotlinx.coroutines.delay
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -109,8 +108,8 @@ import net.asksakis.massdroidv2.domain.model.GenreItem
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
+import net.asksakis.massdroidv2.presentation.discover.genrePalette
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
-import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.ui.components.formatAlbumTypeYear
 import net.asksakis.massdroidv2.ui.components.EqualizerBars
 
@@ -1398,19 +1397,6 @@ private fun GenreChip(
             )
         }
     }
-}
-
-private fun genrePalette(name: String): Triple<Color, Color, Color> {
-    val palettes = listOf(
-        Triple(Color(0xFF233247), Color(0xFF101722), Color(0x553DB7FF)),
-        Triple(Color(0xFF35273E), Color(0xFF16121B), Color(0x554DA3FF)),
-        Triple(Color(0xFF21383A), Color(0xFF0F1718), Color(0x5540D6C3)),
-        Triple(Color(0xFF40311F), Color(0xFF17120D), Color(0x55FF9F43)),
-        Triple(Color(0xFF2B2B46), Color(0xFF11111C), Color(0x556C8CFF)),
-        Triple(Color(0xFF3A2531), Color(0xFF160E12), Color(0x55FF6FAE))
-    )
-    // By genre identity, so every spelling of a genre gets the same colours.
-    return palettes[(genreKey(name).hashCode().absoluteValue) % palettes.size]
 }
 
 /**

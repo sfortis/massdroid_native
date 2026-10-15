@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.first
 import net.asksakis.massdroidv2.data.genre.GenreRepository
 import net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher
 import net.asksakis.massdroidv2.domain.model.Artist
+import net.asksakis.massdroidv2.domain.model.GenreItem
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -56,6 +57,8 @@ class DiscoverFeedOrchestrator @Inject constructor(
         val artistByUri: Map<String, Artist>,
         val genreArtists: Map<String, List<String>>,
         val strictGenreArtists: Map<String, List<String>>,
+        /** Every genre with artists in the maps, by display name; the sections show only the top ten. */
+        val genreItems: List<GenreItem> = emptyList(),
     )
 
     @Suppress("TooGenericExceptionCaught")
@@ -130,6 +133,7 @@ class DiscoverFeedOrchestrator @Inject constructor(
             artistByUri = artistByUri,
             genreArtists = genreArtists,
             strictGenreArtists = strictGenreArtists,
+            genreItems = genreItems,
         )
     }
 }

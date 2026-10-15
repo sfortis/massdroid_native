@@ -232,7 +232,13 @@ class MixPlaybackOrchestrator @Inject constructor(
         val artistByUri: Map<String, Artist>,
         val genreArtists: Map<String, List<String>>,
         val strictGenreArtists: Map<String, List<String>>,
-    )
+    ) {
+        /** Whether either map lists an artist for [genre], in any spelling. */
+        fun hasArtistsForGenre(genre: String): Boolean {
+            val key = genreKey(genre)
+            return !genreArtists[key].isNullOrEmpty() || !strictGenreArtists[key].isNullOrEmpty()
+        }
+    }
 
     sealed interface MixResult {
         /** Smart Mix or finite seed-track Genre Radio: the queue was replaced with [count] tracks. */

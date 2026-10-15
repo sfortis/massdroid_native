@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.screens.home
+package net.asksakis.massdroidv2.domain.discover
 
 import net.asksakis.massdroidv2.domain.model.Album
 import net.asksakis.massdroidv2.domain.model.Track
@@ -6,9 +6,14 @@ import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 
 private const val MIN_SECTION_ITEMS = 3
 
+/**
+ * Replaces single sections of a built Discover feed when a media event changes them, so a new
+ * favourite shows without rebuilding the whole feed. The titles are the ones
+ * [net.asksakis.massdroidv2.domain.recommendation.DiscoverSectionBuilder] gives these sections.
+ */
 class DiscoverSectionCoordinator(
-    private val recentFavoriteAlbumsTitle: String,
-    private val recentFavoriteTracksTitle: String
+    private val recentFavoriteAlbumsTitle: String = RECENT_FAVORITE_ALBUMS_TITLE,
+    private val recentFavoriteTracksTitle: String = RECENT_FAVORITE_TRACKS_TITLE
 ) {
 
     fun updateRecentFavoriteTracks(
@@ -122,3 +127,6 @@ class DiscoverSectionCoordinator(
         }
     }
 }
+
+internal const val RECENT_FAVORITE_ALBUMS_TITLE = "Recent Favorite Albums"
+internal const val RECENT_FAVORITE_TRACKS_TITLE = "Recent Favorite Tracks"

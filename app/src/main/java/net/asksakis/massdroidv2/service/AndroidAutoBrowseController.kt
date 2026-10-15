@@ -26,8 +26,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import net.asksakis.massdroidv2.auto.AutoBrowseExtras
 import net.asksakis.massdroidv2.auto.PackageValidator
 import net.asksakis.massdroidv2.domain.model.Album
@@ -35,13 +33,11 @@ import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.BrowseItem
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Track
-import net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SearchResult
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
-import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 
 /**
  * Opted in for the whole class. Nearly everything Media3 offers a media library session is
@@ -55,8 +51,9 @@ class AndroidAutoBrowseController(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val discoverFeedOrchestrator: net.asksakis.massdroidv2.domain.recommendation.DiscoverFeedOrchestrator,
-    private val shortcutDispatcher: ShortcutActionDispatcher,
+    private val discoverFeedStore: net.asksakis.massdroidv2.domain.discover.DiscoverFeedStore,
+    /** Starts a Smart Mix or Genre Radio the car asked for on the given queue. */
+    private val startMix: (queueId: String, mix: ShortcutAction) -> Unit,
     private val activeQueueId: () -> String?,
     private val isSendspinActive: () -> Boolean,
     private val sendspinController: () -> SendspinAudioController?,
@@ -80,10 +77,9 @@ class AndroidAutoBrowseController(
     /** Snapshot of parentIds the AA host has queried/subscribed to so far. */
     fun trackedParentIds(): Set<String> = knownParentIds.toSet()
 
-    /** Clear tracked subscriptions + the cached Discover feed on session stop. */
+    /** Clear tracked subscriptions on session stop. */
     fun clearTrackedParentIds() {
         knownParentIds.clear()
-        cachedFeed = null
     }
 
     val callback: MediaLibraryService.MediaLibrarySession.Callback =
@@ -344,10 +340,10 @@ class AndroidAutoBrowseController(
         val searchQuery = item.requestMetadata.searchQuery?.trim()
         when {
             !searchQuery.isNullOrBlank() && mediaId.isEmpty() -> handleVoiceSearch(queueId, searchQuery)
-            searchQuery != null && mediaId.isEmpty() -> shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
-            mediaId == "smart_mix" -> shortcutDispatcher.dispatch(ShortcutAction.SmartMix)
+            searchQuery != null && mediaId.isEmpty() -> startMix(queueId, ShortcutAction.SmartMix)
+            mediaId == "smart_mix" -> startMix(queueId, ShortcutAction.SmartMix)
             mediaId.startsWith("genre_radio|") -> {
-                shortcutDispatcher.dispatch(ShortcutAction.GenreRadio(mediaId.removePrefix("genre_radio|")))
+                startMix(queueId, ShortcutAction.GenreRadio(mediaId.removePrefix("genre_radio|")))
             }
             // Checked before the request URI, which on these rows is the bare track's.
             mediaId.startsWith(DYNAMIC_TRACK_PREFIX) -> {
@@ -447,7 +443,7 @@ class AndroidAutoBrowseController(
     )
 
     // The "Smart Mixes" tab: the one-tap Smart Mix generator followed by a radio for
-    // every library genre. "smart_mix" -> ShortcutAction.SmartMix, "genre_radio|<g>" ->
+    // every genre a radio can start from. "smart_mix" -> ShortcutAction.SmartMix, "genre_radio|<g>" ->
     // ShortcutAction.GenreRadio (both via handleAddMediaItem).
     private suspend fun buildSmartMixesItems(): List<MediaItem> = buildList {
         add(
@@ -462,13 +458,13 @@ class AndroidAutoBrowseController(
         addAll(buildGenreRadioList())
     }
 
-    // The "Discover" landing tab: the SAME engine-driven feed the phone app shows
-    // (recommended/discovery artists + albums, genre radios, recent), built by the
-    // shared :core DiscoverFeedOrchestrator and flattened into grouped rows (each
-    // DiscoverSection becomes a labeled group via its title).
+    // The "Discover" landing tab: the same feed the phone and the TV show, from the shared
+    // :core DiscoverFeedStore, flattened into grouped rows (each DiscoverSection becomes a
+    // labeled group via its title). The store builds it once per process for every screen; a
+    // feed older than DISCOVER_FEED_TTL_MS is rebuilt before the car gets it.
     private suspend fun buildDiscoverItems(): List<MediaItem> {
-        val feed = discoverFeed() ?: return emptyList()
-        return feed.sections.flatMap { section ->
+        val sections = discoverFeedStore.awaitFeed(maxAgeMs = DISCOVER_FEED_TTL_MS)
+        return sections.flatMap { section ->
             when (section) {
                 is DiscoverSection.ArtistSection ->
                     section.artists.map { it.toBrowsableMediaItem(section.title) }
@@ -482,44 +478,6 @@ class AndroidAutoBrowseController(
                 // not duplicated in Discover - which makes the album recommendations
                 // ("Albums You Might Like") the lead section.
                 is DiscoverSection.GenreRadioSection -> emptyList()
-            }
-        }
-    }
-
-    // Cache the built feed for the browse session: building it is a network-heavy
-    // library + discovery pass, so it must not run on every onGetChildren. Rebuilt
-    // after DISCOVER_FEED_TTL_MS or on session stop (clearTrackedParentIds).
-    @Volatile private var cachedFeed: DiscoverFeedOrchestrator.DiscoverFeed? = null
-    @Volatile private var cachedFeedAtMs = 0L
-    // Serialises the (network-heavy) feed build: the host can call onGetChildren from
-    // multiple threads, so without this two concurrent "discover" queries would each
-    // run a full buildFeed. Second caller waits and gets the fresh cache.
-    private val feedMutex = Mutex()
-
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun discoverFeed(): DiscoverFeedOrchestrator.DiscoverFeed? {
-        fun fresh(): DiscoverFeedOrchestrator.DiscoverFeed? =
-            cachedFeed?.takeIf { System.currentTimeMillis() - cachedFeedAtMs < DISCOVER_FEED_TTL_MS }
-        fresh()?.let { return it }
-        return feedMutex.withLock {
-            // Double-check: another caller may have built it while we waited.
-            fresh()?.let { return@withLock it }
-            try {
-                val feed = discoverFeedOrchestrator.buildFeed()
-                // Only cache a NON-EMPTY feed. A cold-start build before the WS has
-                // connected returns empty sections; caching that would survive the
-                // WS-connect invalidation re-query and leave Discover permanently blank.
-                // Leaving it uncached makes the connect refresh rebuild it once online.
-                if (feed.sections.isNotEmpty()) {
-                    cachedFeed = feed
-                    cachedFeedAtMs = System.currentTimeMillis()
-                }
-                feed
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Discover feed build failed: ${e.message}")
-                cachedFeed // serve stale if we have one
             }
         }
     }
@@ -642,13 +600,14 @@ class AndroidAutoBrowseController(
     }
 
     private suspend fun buildGenreRadioList(): List<MediaItem> {
-        // Offer a radio for EVERY library genre (same full set as the Genres browse
-        // tab), not just the handful of recently-played top genres - the car user
-        // should be able to start a radio for any genre they own.
-        return genreRepository.libraryGenres().map { genre ->
+        // Every genre of the Discover feed, not only the ten top genres its tiles show. A
+        // library genre whose artists are outside the feed's artist pool and history has no
+        // radio, so the Genres browse tab lists genres this list leaves out.
+        discoverFeedStore.awaitFeed(maxAgeMs = DISCOVER_FEED_TTL_MS)
+        return discoverFeedStore.radioGenres().sortedBy { it.name.lowercase() }.map { genre ->
             playableItem(
-                "genre_radio|$genre",
-                genre.replaceFirstChar { it.uppercase() },
+                "genre_radio|${genre.name}",
+                genre.name.replaceFirstChar { it.uppercase() },
                 MediaMetadata.MEDIA_TYPE_PLAYLIST,
                 listItem = true
             )

@@ -29,7 +29,7 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
-import net.asksakis.massdroidv2.domain.recommendation.MixPlaybackOrchestrator
+import net.asksakis.massdroidv2.domain.discover.MixLauncher
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutAction
@@ -47,7 +47,7 @@ class SendspinCoordinator(
     private val shortcutDispatcher: ShortcutActionDispatcher,
     // Shared Smart Mix / Genre Radio build+play engine. Only the headless car uses
     // it (the phone/TV drive mixes from DiscoverViewModel); null where unused (TV).
-    private val mixOrchestrator: MixPlaybackOrchestrator? = null,
+    private val mixLauncher: MixLauncher? = null,
     // Sendspin player name for this device; defaults to "MassDroid" (phone).
     private val clientName: String = "MassDroid",
     // Android Automotive OS build: the device IS the car speaker, so Sendspin is
@@ -414,9 +414,10 @@ class SendspinCoordinator(
                                 controller?.handlePlay()
                             }
                         }
-                        // Smart Mix / Genre Radio: on the phone/TV the DiscoverViewModel owns
-                        // these (and consumes them). In the headless car there is no Discover UI,
-                        // so the coordinator runs the same shared build+play orchestration itself.
+                        // Smart Mix / Genre Radio: on the phone the app shortcuts reach the
+                        // DiscoverViewModel, and Android Auto starts its mixes through the
+                        // MixLauncher directly. In the headless car there is no Discover UI, so
+                        // the coordinator starts them on the car's Sendspin player.
                         is ShortcutAction.SmartMix -> if (isAutomotive) {
                             shortcutDispatcher.consume()
                             buildCarMix(action)
@@ -430,23 +431,22 @@ class SendspinCoordinator(
         }
     }
 
-    // Headless (car) Smart Mix / Genre Radio: resolve the Sendspin player id and
-    // delegate to the shared orchestrator, which builds the mix and replaces the
-    // queue (MA then plays it on the car). Launched off the collector so a slow
-    // build does not stall subsequent shortcut events; the orchestrator is
-    // single-flight internally.
+    // Headless (car) Smart Mix / Genre Radio: resolve the Sendspin player id and hand the mix
+    // to the shared launcher, which builds it and replaces the queue (MA then plays it on the
+    // car). Launched off the collector so turning Sendspin on does not stall later shortcut
+    // events; the launcher runs one mix at a time.
     private fun buildCarMix(action: ShortcutAction) {
-        val orchestrator = mixOrchestrator ?: return
+        val launcher = mixLauncher ?: return
         scope.launch {
             val sendspinOn = settingsRepository.sendspinEnabled.first()
             if (!sendspinOn) settingsRepository.setSendspinEnabled(true)
             val queueId = playerId ?: settingsRepository.sendspinClientId.first() ?: return@launch
-            val result = when (action) {
-                is ShortcutAction.SmartMix -> orchestrator.playSmartMix(queueId)
-                is ShortcutAction.GenreRadio -> orchestrator.playGenreRadio(queueId, action.genre)
-                else -> return@launch
+            when (action) {
+                is ShortcutAction.SmartMix -> launcher.startSmartMix(queueId)
+                is ShortcutAction.GenreRadio -> launcher.startGenreRadio(queueId, action.genre)
+                else -> Unit
             }
-            Log.d(TAG, "Car mix shortcut $action -> $result")
+            Log.d(TAG, "Car mix shortcut $action started on $queueId")
         }
     }
 
