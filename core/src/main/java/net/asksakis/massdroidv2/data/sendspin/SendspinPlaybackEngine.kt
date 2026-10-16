@@ -350,7 +350,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     // route-change chain (controller -> onOutputRouteChanged) for the relock.
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-            mainHandler.post { handleDeviceChange() }
+            val captureRouteAdded = addedDevices.orEmpty().any { it.type == AudioDeviceInfo.TYPE_REMOTE_SUBMIX }
+            mainHandler.post { handleDeviceChange(captureRouteAdded) }
         }
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
             mainHandler.post { handleDeviceChange() }
@@ -795,8 +796,14 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
      * stream to a momentary SCO/earpiece. While a reopen is already pending, every
      * further device change just pushes the settle window out (the route is still
      * moving). Then re-resolve + notify so the route-change chain runs the relock.
+     *
+     * [captureRouteAdded] means a remote submix output just appeared: Android Auto
+     * (and screen capture) takes app audio through a dynamic audio policy that adds
+     * one. Android never moves an open MMAP stream into that policy, so a stream
+     * opened on the speaker before Android Auto connected keeps playing on the
+     * phone. A fresh open is refused MMAP and lands in the policy, so reopen.
      */
-    private fun handleDeviceChange() {
+    private fun handleDeviceChange(captureRouteAdded: Boolean = false) {
         if (!configured) return
         if (reopenInFlight) {
             // Route still changing while we wait to reopen: keep waiting for quiet.
@@ -818,6 +825,10 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // sound (issue #52). Reopen onto the new route. Skip when already bound to
         // an external sink so a spurious add doesn't churn an active BT stream.
         val boundType = outputs.firstOrNull { it.id == boundId }?.type
+        if (captureRouteAdded && boundType != AudioDeviceInfo.TYPE_REMOTE_SUBMIX) {
+            scheduleReopen("capture route appeared while bound to type $boundType")
+            return
+        }
         val boundIsExternal = boundType != null && isExternalSink(boundType)
         val externalSinkPresent = outputs.any { isExternalSink(it.type) }
         if (!boundIsExternal && externalSinkPresent) {
