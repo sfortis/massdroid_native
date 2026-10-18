@@ -16,6 +16,7 @@ import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.CachedSimilarArtist
 import net.asksakis.massdroidv2.domain.repository.SeedTrack
+import java.text.Normalizer
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.pow
@@ -562,15 +563,23 @@ internal fun productiveFirst(seeds: List<SeedTrack>): List<SeedTrack> {
     return productive + rest
 }
 
+private val ARTIST_KEY_BRACKETS = Regex("\\(.*?\\)|\\[.*?]")
+private val ARTIST_KEY_MARKS = Regex("\\p{M}+")
+private val ARTIST_KEY_SEPARATORS = Regex("[^\\p{L}\\p{N}]+")
+
 /**
- * Artist identity for blocking and de-duplication: case, bracketed suffixes and
- * punctuation removed, so `Röyksopp (Live)` and `royksopp` are the same artist.
+ * Artist identity for blocking and de-duplication: case, accents, bracketed suffixes
+ * and punctuation removed, so `Röyksopp (Live)` and `royksopp` are the same artist.
+ *
+ * Letters outside the Latin alphabet are kept. Only `[a-z0-9]` used to survive, which
+ * turned the blocked "Étienne Daho" into "tienne daho" (never equal to the "Etienne
+ * Daho" a provider sends) and a Greek or Cyrillic name into nothing at all.
  */
 @VisibleForTesting
 internal fun normalizeArtistKey(raw: String): String =
-    raw.lowercase()
-        .replace(Regex("\\(.*?\\)|\\[.*?]"), " ")
-        .replace(Regex("[^a-z0-9]+"), " ")
+    Normalizer.normalize(raw.lowercase().replace(ARTIST_KEY_BRACKETS, " "), Normalizer.Form.NFD)
+        .replace(ARTIST_KEY_MARKS, "")
+        .replace(ARTIST_KEY_SEPARATORS, " ")
         .trim()
 
 @VisibleForTesting
@@ -719,8 +728,8 @@ class SeedTrackMixGenerator @Inject constructor(
         val excludedTrackKeys: Set<String> = emptySet(),
         val recentArtistCounts: Map<String, Int>,
         val recentMixTrackUris: Set<String>,
-        /** Raw names of blocked artists; the generator normalizes and excludes them from seeds, candidates and injection. */
-        val blockedArtistNames: Set<String> = emptySet(),
+        /** Blocked artists, excluded from seeds, candidates and injection. */
+        val blockedArtists: BlockedArtists = BlockedArtists.NONE,
         /**
          * Normalized cluster genres of the last few smart mixes. The next
          * primary seed prefers a genre family OUTSIDE this set, so consecutive
@@ -822,12 +831,9 @@ class SeedTrackMixGenerator @Inject constructor(
         deadlineAt: Long
     ): List<Track> {
         // Blocked artists are excluded everywhere: as seeds, as similar
-        // candidates, and from loved injection. Matched by normalized name.
-        val blockedKeys = recency.blockedArtistNames
-            .map { normalizeArtistKey(it) }
-            .filter { it.isNotBlank() }
-            .toSet()
-        val activeSeeds = seeds.filterNot { normalizeArtistKey(it.artistName) in blockedKeys }
+        // candidates, and from loved injection.
+        val blocked = recency.blockedArtists
+        val activeSeeds = seeds.filterNot { blocked.blocksArtist(it.artistUri, it.artistName) }
         if (activeSeeds.isEmpty()) return emptyList()
 
         // Two independent routes, run together rather than one as the other's
@@ -863,13 +869,13 @@ class SeedTrackMixGenerator @Inject constructor(
         val candidates = coroutineScope {
             val artistRoute = async {
                 gatherFromMa(
-                    activeSeeds, blockedKeys, coreFamilies, target,
+                    activeSeeds, blocked, coreFamilies, target,
                     tuning.discovery, mixSeed, deadlineAt, serverGate
                 )
             }
             val trackRoute = async {
                 gatherSimilarTracks(
-                    activeSeeds, blockedKeys, coreFamilies,
+                    activeSeeds, blocked, coreFamilies,
                     SIMILAR_TRACKS_PER_SEED, deadlineAt, serverGate
                 )
             }
@@ -953,7 +959,7 @@ class SeedTrackMixGenerator @Inject constructor(
     @Suppress("LongParameterList")
     private suspend fun gatherFromMa(
         activeSeeds: List<SeedTrack>,
-        blockedKeys: Set<String>,
+        blocked: BlockedArtists,
         coreFamilies: Set<String>,
         target: Int,
         discovery: Double,
@@ -1036,7 +1042,7 @@ class SeedTrackMixGenerator @Inject constructor(
             list.forEachIndexed { rank, art ->
                 val key = art.name.trim().lowercase()
                 if (key.isEmpty() || key in seedNames) return@forEachIndexed
-                if (normalizeArtistKey(art.name) in blockedKeys) return@forEachIndexed
+                if (blocked.blocksArtist(art.uri, art.name)) return@forEachIndexed
                 pool.putIfAbsent(key, art)
                 rankByArtist[art.uri] = minOf(rankByArtist[art.uri] ?: Int.MAX_VALUE, rank)
             }
@@ -1191,6 +1197,8 @@ class SeedTrackMixGenerator @Inject constructor(
                 // MA can return the same recording twice (album + single/remaster).
                 val titleKey = "${art.name.lowercase()}|${normalizeGenre(t.name)}"
                 if (t.uri.isBlank() || !seenTitles.add(titleKey)) continue
+                // A top track of an allowed artist can still credit a blocked one.
+                if (blocked.blocksAnyArtistOf(t)) continue
                 // Second track of an artist ranks just below the first.
                 out += CandidateTrack(
                     track = t,
@@ -1227,7 +1235,7 @@ class SeedTrackMixGenerator @Inject constructor(
     @Suppress("LongParameterList")
     private suspend fun gatherSimilarTracks(
         seeds: List<SeedTrack>,
-        blockedKeys: Set<String>,
+        blocked: BlockedArtists,
         coreFamilies: Set<String>,
         perSeed: Int,
         deadlineAt: Long,
@@ -1310,7 +1318,7 @@ class SeedTrackMixGenerator @Inject constructor(
             list.forEachIndexed { rank, track ->
                 // The seed track itself always comes back first.
                 if (track.uri.isBlank() || track.uri in seedTrackUris) return@forEachIndexed
-                if (normalizeArtistKey(track.artistNames) in blockedKeys) return@forEachIndexed
+                if (blocked.blocksAnyArtistOf(track)) return@forEachIndexed
                 if (!seen.add(track.uri)) return@forEachIndexed
                 val genres = trackCandidateGenres(track, dbGenres)
                 val match = classifyFamily(genres, coreFamilies)
@@ -1424,10 +1432,6 @@ class SeedTrackMixGenerator @Inject constructor(
         strictness: Double
     ): List<CandidateTrack> {
         val since = System.currentTimeMillis() - GENRE_SEED_LOOKBACK_DAYS * 24L * 60 * 60 * 1000
-        val blockedKeys = recency.blockedArtistNames
-            .map { normalizeArtistKey(it) }
-            .filter { it.isNotBlank() }
-            .toSet()
         // Floor derives from the Strictness slider, matching the seed threshold
         // (strictness * STRICTNESS_MAX_SCORE). A low Discovery therefore reserves
         // a slice for genuinely loved tracks, not weakly-liked (score ~0.1) filler.
@@ -1436,7 +1440,7 @@ class SeedTrackMixGenerator @Inject constructor(
         val notRecent = raw.filter {
             it.trackUri.isNotBlank() &&
                 it.trackUri !in recency.recentMixTrackUris &&
-                normalizeArtistKey(it.artistName) !in blockedKeys
+                !recency.blockedArtists.blocksArtist(it.artistUri, it.artistName)
         }
         // Same gate as the discovery candidates, on the same data: the artist's
         // weight-ordered artist tags. Judging on the DB's track genres let an
@@ -1605,12 +1609,9 @@ class SeedTrackMixGenerator @Inject constructor(
         // artist but kept the cluster built around them: their genres still became
         // the envelope the whole mix was gated on, so blocking an artist did not
         // stop mixes that sound like them.
-        val blocked = recency.blockedArtistNames
-            .map { normalizeArtistKey(it) }
-            .filter { it.isNotBlank() }
-            .toSet()
+        val blocked = recency.blockedArtists
         val pool = if (blocked.isEmpty()) ranked
-        else ranked.filterNot { normalizeArtistKey(it.artistName) in blocked }
+        else ranked.filterNot { blocked.blocksArtist(it.artistUri, it.artistName) }
         val byArtist = dedupeByArtist(pool)
         if (byArtist.size <= SEED_COUNT) return SeedSelection(byArtist, emptySet())
 

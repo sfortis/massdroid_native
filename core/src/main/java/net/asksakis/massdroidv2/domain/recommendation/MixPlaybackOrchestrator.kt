@@ -288,7 +288,7 @@ class MixPlaybackOrchestrator @Inject constructor(
     private var excludedTrackKeys = emptySet<String>()
     private var anchorFamiliesCache = emptySet<String>()
     private var anchorFamiliesAtMs = 0L
-    private var blockedArtistNames = emptySet<String>()
+    private var blockedArtists = BlockedArtists.NONE
 
     // ---- Recent-mix cool-down history (shared across taps for variety) ----
     private val recentSmartMixHistory: ArrayDeque<Set<String>> = ArrayDeque()
@@ -348,7 +348,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         excludedArtistUris = emptySet()
         excludedTrackUris = emptySet()
         excludedTrackKeys = emptySet()
-        blockedArtistNames = emptySet()
+        blockedArtists = BlockedArtists.NONE
         recentSmartMixHistory.clear()
         recentSmartMixArtists.clear()
         recentSmartMixGenres.clear()
@@ -526,7 +526,10 @@ class MixPlaybackOrchestrator @Inject constructor(
         // Smart Listening (the preference-learning layer) is off.
         val blockedInfos = smartListeningRepository.getBlockedArtists()
         val blocked = blockedInfos.map { it.artistUri }.toSet()
-        blockedArtistNames = blockedInfos.mapNotNull { it.artistName?.takeIf(String::isNotBlank) }.toSet()
+        blockedArtists = BlockedArtists(
+            uris = blocked,
+            names = blockedInfos.mapNotNull { it.artistName?.takeIf(String::isNotBlank) }
+        )
         val smartListeningEnabled = settingsRepository.smartListeningEnabled.first()
         if (smartListeningEnabled) {
             val suppressed = smartListeningRepository.getSuppressedArtistUris(days = 120)
@@ -872,7 +875,7 @@ class MixPlaybackOrchestrator @Inject constructor(
         anchorFamilies = anchorFamiliesCache,
         recentArtistCounts = recentSmartMixArtists.flatten().groupingBy { it }.eachCount(),
         recentMixTrackUris = recentSmartMixHistory.flatten().toSet(),
-        blockedArtistNames = blockedArtistNames,
+        blockedArtists = blockedArtists,
         recentClusterGenres = recentSeedClusterGenres.flatten().toSet()
     )
 
