@@ -86,7 +86,7 @@ private const val HINT_PREFS = "tv_hints"
 private const val HINT_KEY_OPEN_PLAYER = "mini_player_open_hint_shown"
 private const val HINT_VISIBLE_MS = 12_000L
 
-private val BAR_ART = 56.dp
+private val BAR_ART = 44.dp
 // The gap between the one-time hint and the bar's top edge.
 private val HINT_LIFT = (-8).dp
 
@@ -297,7 +297,9 @@ private fun MiniPlayerBar(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
+            // A lighter fill than the screen, so the bar reads as a bar over the content and
+            // not as an empty band at the bottom.
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp))
             .padding(6.dp)
     ) {
         // Pressed is pinned to the focused fill so OK never flashes the white inverseSurface
@@ -323,7 +325,7 @@ private fun MiniPlayerBar(
                 .pointerClick(pressScale = POINTER_PRESS_SCALE_SUBTLE, onClick = onOpen)
                 .onFocusChanged { if (it.isFocused) onElementFocused(0) }
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
                 MiniArtwork(player, Modifier.size(BAR_ART))
                 Spacer(Modifier.width(14.dp))
                 Column {

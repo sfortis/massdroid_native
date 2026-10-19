@@ -4,13 +4,20 @@ import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,8 +31,11 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -88,14 +98,25 @@ fun TvRoot(
             if (miniPlayerShortcut != null) {
                 LaunchedEffect(miniPlayerShortcut) { miniPlayerShortcut.collect { miniPlayerEntry.tryEmit(Unit) } }
             }
+            // The bar is drawn over the screens instead of below them, so opening the full
+            // player is one step: the bar fades out together with the screen it belongs to,
+            // and the player fades in at full height. Before, the bar was removed at once and
+            // the screen grew, and only then did the crossfade start. The screens that show
+            // the bar leave its height empty at their bottom (MiniPlayerSpace), so nothing
+            // they draw or focus sits behind it.
+            var miniPlayerHeightPx by remember { mutableIntStateOf(0) }
+            val miniPlayerHeight = with(LocalDensity.current) { miniPlayerHeightPx.toDp() }
             Box(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize()) {
             androidx.compose.runtime.CompositionLocalProvider(LocalTvFocusMemory provides focusMemory) {
             NavHost(
                 navController = nav,
                 startDestination = "home",
+                enterTransition = { fadeIn(tween(NAV_FADE_MS)) },
+                exitTransition = { fadeOut(tween(NAV_FADE_MS)) },
+                popEnterTransition = { fadeIn(tween(NAV_FADE_MS)) },
+                popExitTransition = { fadeOut(tween(NAV_FADE_MS)) },
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxSize()
                     // DOWN in the content moves focus down as usual; only when nothing is below
                     // does it enter the bar. The bar is never a candidate of the focus search
                     // itself (it is not focusable until entered), so content focus can never
@@ -114,23 +135,27 @@ fun TvRoot(
             ) {
                 composable("home") {
                     ExitConfirmation(enabled = !miniPlayerActive)
-                    TvHomeScreen(
-                        onOpenSettings = { nav.navigate("settings") },
-                        onOpenArtist = { itemId, provider ->
-                            nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
-                        },
-                        onOpenBrowse = { nav.navigate("browse") }
-                    )
+                    MiniPlayerSpace(miniPlayerHeight) {
+                        TvHomeScreen(
+                            onOpenSettings = { nav.navigate("settings") },
+                            onOpenArtist = { itemId, provider ->
+                                nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
+                            },
+                            onOpenBrowse = { nav.navigate("browse") }
+                        )
+                    }
                 }
                 composable("browse") {
-                    TvBrowseScreen(
-                        onOpenArtist = { itemId, provider ->
-                            nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
-                        },
-                        onOpenFolders = { nav.navigate("serverbrowse") }
-                    )
+                    MiniPlayerSpace(miniPlayerHeight) {
+                        TvBrowseScreen(
+                            onOpenArtist = { itemId, provider ->
+                                nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
+                            },
+                            onOpenFolders = { nav.navigate("serverbrowse") }
+                        )
+                    }
                 }
-                composable("serverbrowse") { TvServerBrowseScreen() }
+                composable("serverbrowse") { MiniPlayerSpace(miniPlayerHeight) { TvServerBrowseScreen() } }
                 composable(
                     route = "nowplaying/{playerId}",
                     arguments = listOf(navArgument("playerId") { type = NavType.StringType })
@@ -145,22 +170,29 @@ fun TvRoot(
                         navArgument("provider") { type = NavType.StringType }
                     )
                 ) {
-                    TvArtistScreen()
+                    MiniPlayerSpace(miniPlayerHeight) { TvArtistScreen() }
                 }
                 composable("settings") { TvSettingsScreen() }
             }
             }
-            // The mini player bar under the browsing screens, which end above it.
-            if (miniPlayerVisible) {
+            // The mini player bar over the bottom of the browsing screens. It fades with the
+            // same timing as the screens, so it leaves and returns together with them.
+            AnimatedVisibility(
+                visible = miniPlayerVisible,
+                enter = fadeIn(tween(NAV_FADE_MS)),
+                exit = fadeOut(tween(NAV_FADE_MS)),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
                 TvMiniPlayer(
                     onOpenPlayer = { playerId -> nav.navigate("nowplaying/$playerId") },
                     entrySignal = miniPlayerEntry,
                     entryFocus = miniPlayerFocus,
                     onExitToContent = restoreContentFocus,
                     onActiveChange = { miniPlayerActive = it },
-                    modifier = Modifier.padding(start = 48.dp, end = 48.dp, top = 8.dp, bottom = 20.dp)
+                    modifier = Modifier
+                        .onSizeChanged { miniPlayerHeightPx = it.height }
+                        .padding(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 16.dp)
                 )
-            }
             }
             // Volume OSD: pops on any volume change of the selected player, fades on its own.
             TvVolumeOsd(
@@ -179,6 +211,18 @@ fun TvRoot(
 }
 
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+
+/** The screen crossfade, the same as Navigation's default, shared with the mini player bar. */
+private const val NAV_FADE_MS = 700
+
+/** A screen that shows the mini player bar, ending above the bar's height. */
+@Composable
+private fun MiniPlayerSpace(barHeight: Dp, content: @Composable () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f)) { content() }
+        Spacer(Modifier.height(barHeight))
+    }
+}
 
 /** Double-BACK to exit: the root screen asks for a second press instead of quitting outright. */
 @Composable
