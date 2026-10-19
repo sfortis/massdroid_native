@@ -25,6 +25,13 @@ android {
         // Versioned in lockstep with the phone app so the TV APK in a release matches the tag.
         versionCode = 44
         versionName = "2.39.1"
+
+        // Only the ABIs :core builds its native code for. Without this filter, AndroidX libraries
+        // add a lib/x86 folder without our native libraries, so the app would install on an x86
+        // device and crash when Sendspin loads its output library.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     signingConfigs {
