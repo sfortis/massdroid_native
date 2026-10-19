@@ -49,15 +49,49 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            // Unsigned when no keystore is configured, as in the phone app: F-Droid builds the
+            // fdroid flavor without our key, after deleting the signingConfigs block above.
+            signingConfig = signingConfigs.findByName("release")?.takeIf { it.storeFile != null }
+            // Reproducible build: keep the commit hash out of the manifest.
+            vcsInfo.include = false
+        }
+    }
+
+    // The same reproducible-build settings as the phone app: no AGP dependency metadata block,
+    // which F-Droid's scanner flags, and no generated baseline profile, whose ordering differs
+    // between build hosts.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+    tasks.whenTaskAdded {
+        if (name.contains("ArtProfile")) {
+            enabled = false
+        }
+    }
+
+    // github = the GitHub release APK, with the in-app updater. fdroid = the F-Droid build: the
+    // updater is switched off and its install permission removed (src/fdroid/AndroidManifest.xml),
+    // because F-Droid updates the app through its own repository.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("github") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
+        }
+        create("fdroid") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
         }
     }
 
     applicationVariants.all {
         val variant = this
         outputs.all {
+            // variant.name carries the flavor (githubRelease, fdroidRelease), so the two
+            // flavors do not collide on one file name.
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
-                "massdroid-tv-${variant.versionName}-${variant.buildType.name}.apk"
+                "massdroid-tv-${variant.versionName}-${variant.name}.apk"
         }
     }
 
@@ -80,7 +114,8 @@ android {
     buildFeatures {
         compose = true
         // BuildConfig.DEBUG keeps the GitHub updater off in debug builds, whose package
-        // (.tv.debug) the release APK would not update.
+        // (.tv.debug) the release APK would not update; ENABLE_UPDATE_CHECK keeps it off in
+        // the fdroid flavor.
         buildConfig = true
     }
 }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Flavor-specific manifest overrides for the fdroid build of the TV app, as in the phone app:
+    tools:node="remove" strips the in-app updater's install permission. The updater itself is
+    switched off through BuildConfig.ENABLE_UPDATE_CHECK.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+</manifest>

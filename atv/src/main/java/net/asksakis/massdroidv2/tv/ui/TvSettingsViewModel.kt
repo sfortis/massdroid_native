@@ -20,6 +20,7 @@ import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.tv.BuildConfig
 import javax.inject.Inject
 
 /** The result of a manual update check, for the message under the button. */
@@ -48,6 +49,9 @@ class TvSettingsViewModel @Inject constructor(
 
     val appVersion: String = updateChecker.getCurrentVersion()
 
+    /** False in the F-Droid build, which F-Droid updates through its own repository. */
+    val updateCheckEnabled: Boolean = BuildConfig.ENABLE_UPDATE_CHECK
+
     private val _updateCheck = MutableStateFlow(UpdateCheckStatus.IDLE)
     val updateCheck: StateFlow<UpdateCheckStatus> = _updateCheck.asStateFlow()
 
@@ -56,7 +60,7 @@ class TvSettingsViewModel @Inject constructor(
      * opens the same update dialog as the automatic check.
      */
     fun checkForUpdates() {
-        if (_updateCheck.value == UpdateCheckStatus.CHECKING) return
+        if (!updateCheckEnabled || _updateCheck.value == UpdateCheckStatus.CHECKING) return
         _updateCheck.value = UpdateCheckStatus.CHECKING
         viewModelScope.launch {
             _updateCheck.value = when (updateChecker.checkForUpdates(force = true, includePrerelease = false)) {

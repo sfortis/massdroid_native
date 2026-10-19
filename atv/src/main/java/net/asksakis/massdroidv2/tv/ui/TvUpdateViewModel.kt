@@ -48,7 +48,7 @@ class TvUpdateViewModel @Inject constructor(
     val installIntent: SharedFlow<Intent> = _installIntent.asSharedFlow()
 
     init {
-        if (!BuildConfig.DEBUG) viewModelScope.launch { checkWhenConnected() }
+        if (BuildConfig.ENABLE_UPDATE_CHECK && !BuildConfig.DEBUG) viewModelScope.launch { checkWhenConnected() }
     }
 
     private suspend fun checkWhenConnected() {

@@ -84,6 +84,7 @@ fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
             Spacer(Modifier.height(40.dp))
             UpdatesSection(
                 version = viewModel.appVersion,
+                canCheck = viewModel.updateCheckEnabled,
                 status = updateCheck,
                 onCheck = viewModel::checkForUpdates
             )
@@ -179,17 +180,21 @@ private fun PlayerNameSection(
 
 private val PLAYER_NAME_FIELD_WIDTH = 480.dp
 
-/** The installed version and a manual check for a new release. */
+/**
+ * The installed version and a manual check for a new release. The F-Droid build has no updater,
+ * so it shows the version alone ([canCheck] false).
+ */
 @Composable
-private fun UpdatesSection(version: String, status: UpdateCheckStatus, onCheck: () -> Unit) {
+private fun UpdatesSection(version: String, canCheck: Boolean, status: UpdateCheckStatus, onCheck: () -> Unit) {
     val checking = status == UpdateCheckStatus.CHECKING
-    Text("Updates", style = MaterialTheme.typography.titleMedium)
+    Text(if (canCheck) "Updates" else "Version", style = MaterialTheme.typography.titleMedium)
     Spacer(Modifier.height(4.dp))
     Text(
         "MassDroid TV $version",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
+    if (!canCheck) return
     Spacer(Modifier.height(12.dp))
     Button(onClick = onCheck, enabled = !checking, modifier = Modifier.pointerClick(enabled = !checking, onClick = onCheck)) {
         Text(if (checking) "Checking..." else "Check for updates")
