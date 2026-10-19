@@ -20,7 +20,7 @@ Genres come from your Music Assistant library and from MusicBrainz, with no acco
 
 About permissions:
 
-* Microphone is optional and used only to measure this phone's speaker output latency for tighter group sync (a short tone is played and heard back through the mic). Nothing is recorded or uploaded.
+* Microphone is optional and used only by the sync measurements: the output calibration (the latency of this phone's speaker or Bluetooth device) and Auto Sync (it listens to each speaker in a group to line them up). The sound is analysed on the phone; nothing is stored or uploaded.
 * Location is optional and used only by the "Follow Me" room-detection feature (Wi-Fi/Bluetooth fingerprint to detect which room you are in). It stays off unless you enable Follow Me.
 
 This app is an unofficial, third-party client and is not affiliated with the Music Assistant project.
