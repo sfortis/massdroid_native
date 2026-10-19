@@ -17,10 +17,19 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Names the GitHub release asset that updates this app, for a release version. Each app
+ * module provides its own: a release carries the phone, F-Droid and TV APKs side by side.
+ */
+fun interface UpdateAssetName {
+    fun forVersion(version: String): String
+}
+
 @Singleton
 class AppUpdateChecker @Inject constructor(
     @ApplicationContext private val context: Context,
-    baseOkHttpClient: OkHttpClient
+    baseOkHttpClient: OkHttpClient,
+    private val assetName: UpdateAssetName
 ) {
 
     companion object {
@@ -119,12 +128,16 @@ class AppUpdateChecker @Inject constructor(
                     return@withContext CheckResult.UpToDate
                 }
 
+                // The asset is picked by its exact name. Taking the first .apk picked the F-Droid
+                // build, which GitHub lists first: it has the phone's package and signing key, so
+                // it installed over the GitHub build and left the phone without an updater.
+                val expectedName = assetName.forVersion(latestVersion)
                 val assets = releaseJson.optJSONArray("assets")
                 var apkAsset: JSONObject? = null
                 if (assets != null) {
                     for (i in 0 until assets.length()) {
                         val asset = assets.getJSONObject(i)
-                        if (asset.optString("name").endsWith(".apk", ignoreCase = true)) {
+                        if (asset.optString("name") == expectedName) {
                             apkAsset = asset
                             break
                         }
@@ -132,7 +145,7 @@ class AppUpdateChecker @Inject constructor(
                 }
 
                 if (apkAsset == null) {
-                    return@withContext CheckResult.Error("No APK asset found in latest release")
+                    return@withContext CheckResult.Error("No $expectedName in the latest release")
                 }
 
                 val info = UpdateInfo(
