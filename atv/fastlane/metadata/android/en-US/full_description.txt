@@ -1,0 +1,16 @@
+MassDroid TV is the Android TV edition of MassDroid, a native client for Music Assistant (music-assistant.io), the open-source music server that unifies your streaming services, local files and players into one library. It is built for the remote: every screen works with the D-pad, and a mouse works too.
+
+You need your own Music Assistant server to use this app.
+
+Features:
+
+* Discover home: recently played, top picks, Smart Mix and Genre Radio, built from your own listening history.
+* Browse your library: artists, albums, tracks, playlists, radios and audiobooks.
+* Control any Music Assistant player from a mini player that is always at hand, with a full-screen now playing view.
+* The TV as a speaker (Sendspin): the TV becomes a Music Assistant player, on its own or in time with your other speakers, with an output delay you can adjust.
+* Rename the TV's player from Settings.
+* Shows what is playing to the Android TV system controls.
+
+The recommendation data stays on the device.
+
+This app is an unofficial, third-party client and is not affiliated with the Music Assistant project.
