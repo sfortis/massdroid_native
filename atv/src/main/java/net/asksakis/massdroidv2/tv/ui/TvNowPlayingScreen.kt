@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Pause
@@ -41,8 +42,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.Button
 import coil.compose.AsyncImage
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.LaunchedEffect
@@ -160,10 +163,6 @@ fun TvNowPlayingScreen(
                         TransportIcon(Icons.Filled.VolumeUp, "Volume up") { viewModel.volumeUp() }
                     }
 
-                    if (showOptions) {
-                        Spacer(Modifier.height(24.dp))
-                        OutputDelayControl(outputDelay = outputDelay, onChange = settingsViewModel::setOutputDelay)
-                    }
                     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
                 }
             }
@@ -177,14 +176,48 @@ fun TvNowPlayingScreen(
                 IconButton(onClick = onOpenQueue, modifier = Modifier.pointerClick(onClick = onOpenQueue)) {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Queue")
                 }
-                val toggleOptions = { showOptions = !showOptions }
-                IconButton(onClick = toggleOptions, modifier = Modifier.pointerClick(onClick = toggleOptions)) {
+                val openOptions = { showOptions = true }
+                IconButton(onClick = openOptions, modifier = Modifier.pointerClick(onClick = openOptions)) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "Audio options")
                 }
             }
         }
     }
+    // A dialog and not a section under the controls: the column beside the artwork does not
+    // scroll, so a section added below the volume row ran off the bottom of the screen and
+    // the slider could not be reached.
+    if (showOptions) {
+        OutputDelayDialog(
+            outputDelay = outputDelay,
+            onChange = settingsViewModel::setOutputDelay,
+            onDismiss = { showOptions = false }
+        )
+    }
 }
+
+@Composable
+private fun OutputDelayDialog(
+    outputDelay: TvOutputDelay?,
+    onChange: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sliderFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(16.dp)) {
+            OutputDelayContent(
+                outputDelay = outputDelay,
+                onChange = onChange,
+                sliderFocus = sliderFocus,
+                modifier = Modifier.padding(24.dp).width(OPTIONS_DIALOG_WIDTH)
+            ) {
+                Button(onClick = onDismiss, modifier = Modifier.pointerClick(onClick = onDismiss)) { Text("Done") }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { sliderFocus.requestFocus() } }
+}
+
+private val OPTIONS_DIALOG_WIDTH = 600.dp
 
 @Composable
 private fun TransportIcon(
