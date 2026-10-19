@@ -53,15 +53,19 @@ jobs:
           FD_APK=$(find build-output/app/outputs/apk/fdroid/release -name "*.apk" | head -1)
           TV_APK=$(find build-output/atv/outputs/apk/release -name "*.apk" | head -1)
           mv "$GH_APK" "build-output/massdroid-${{ steps.version.outputs.version }}.apk"
-          mv "$FD_APK" "build-output/massdroid-fdroid-${{ steps.version.outputs.version }}.apk"
-          mv "$TV_APK" "build-output/massdroid-tv-${{ steps.version.outputs.version }}.apk"
+          # The phone APK must sort first: GitHub lists release assets by name, and the
+          # in-app updater of v2.38.1 and older installs the first .apk it finds. With the
+          # F-Droid build named massdroid-fdroid-vX.apk, it sorted first and phones updated
+          # into the F-Droid build, which has no updater.
+          mv "$FD_APK" "build-output/massdroid-${{ steps.version.outputs.version }}_fdroid.apk"
+          mv "$TV_APK" "build-output/massdroid-${{ steps.version.outputs.version }}_tv.apk"
 
       - name: Create GitHub Release
         run: |
           gh release create ${{ steps.version.outputs.version }} \
             "build-output/massdroid-${{ steps.version.outputs.version }}.apk" \
-            "build-output/massdroid-fdroid-${{ steps.version.outputs.version }}.apk" \
-            "build-output/massdroid-tv-${{ steps.version.outputs.version }}.apk" \
+            "build-output/massdroid-${{ steps.version.outputs.version }}_fdroid.apk" \
+            "build-output/massdroid-${{ steps.version.outputs.version }}_tv.apk" \
             --title "${{ steps.version.outputs.version }}" \
             --notes-file WHATSNEW.md
         env:

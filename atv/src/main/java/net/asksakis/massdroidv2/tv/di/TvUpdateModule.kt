@@ -11,5 +11,5 @@ import net.asksakis.massdroidv2.data.update.UpdateAssetName
 object TvUpdateModule {
     /** The Android TV APK of a release, named as release.yml publishes it. */
     @Provides
-    fun updateAssetName(): UpdateAssetName = UpdateAssetName { version -> "massdroid-tv-v$version.apk" }
+    fun updateAssetName(): UpdateAssetName = UpdateAssetName { version -> "massdroid-v${version}_tv.apk" }
 }
