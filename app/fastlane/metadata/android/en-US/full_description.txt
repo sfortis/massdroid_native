@@ -16,7 +16,7 @@ Features:
 * Android Auto and Android TV support.
 * Material You dynamic theming.
 
-Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device.
+Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device. Artist bios come from Wikipedia when Music Assistant has none.
 
 About permissions:
 
