@@ -11,6 +11,7 @@ import net.asksakis.massdroidv2.domain.discover.MixLauncher
 import net.asksakis.massdroidv2.presentation.discover.genrePalette
 import net.asksakis.massdroidv2.domain.model.GenreItem
 import net.asksakis.massdroidv2.domain.recommendation.DiscoverSection
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -317,6 +320,21 @@ private fun Shelf(
         // so focused edge cards can scale without being clipped at the screen edge.
         LazyRow(
             state = state,
+            // At either end of the row there is no card left in that direction, and Compose
+            // would search the whole screen instead: RIGHT on the last card jumped to the
+            // Browse and Settings buttons at the top. LEFT and RIGHT stay in the row; UP and
+            // DOWN still move between rows.
+            modifier = Modifier
+                .focusProperties {
+                    onExit = {
+                        if (requestedFocusDirection == FocusDirection.Left ||
+                            requestedFocusDirection == FocusDirection.Right
+                        ) {
+                            cancelFocusChange()
+                        }
+                    }
+                }
+                .focusGroup(),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(horizontal = EDGE),
             content = content
