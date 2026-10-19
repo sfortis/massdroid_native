@@ -1,0 +1,4 @@
+- Android TV: the remote moves between the login fields, and a mouse click works on every button.
+- Android TV: rename the TV's player from Settings.
+- Android TV: a slimmer mini player, and the full player opens in one smooth step.
+- Android TV: Home Assistant no longer sees the TV as paused when nothing is playing.
