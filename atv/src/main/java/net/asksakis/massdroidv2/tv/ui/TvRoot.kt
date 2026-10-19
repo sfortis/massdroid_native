@@ -170,7 +170,8 @@ fun TvRoot(
             )
             }
         }
-        (!initialized || hasSavedServer) && !changeServer -> {
+        !initialized -> TvStartupScreen()
+        hasSavedServer && !changeServer -> {
             TvConnectingScreen(server = viewModel.serverLabel(), onChangeServer = { viewModel.changeServer() })
         }
         else -> TvOnboardingScreen()

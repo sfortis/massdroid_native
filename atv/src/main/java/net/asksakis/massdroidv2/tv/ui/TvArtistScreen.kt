@@ -83,7 +83,7 @@ private const val ARTIST_GRID_COLUMNS = 5
 
 @Composable
 private fun AlbumCard(album: Album, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    Card(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Column {
             AsyncImage(
                 model = album.imageUrl,

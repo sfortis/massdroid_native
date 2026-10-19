@@ -83,7 +83,10 @@ fun TvBrowseScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Browse", style = MaterialTheme.typography.headlineMedium)
-                IconButton(onClick = { showSortDialog = true }) {
+                IconButton(
+                    onClick = { showSortDialog = true },
+                    modifier = Modifier.pointerClick { showSortDialog = true }
+                ) {
                     Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
                 }
             }
@@ -170,8 +173,8 @@ private fun SortDialog(
                         shape = ClickableSurfaceDefaults.shape(
                             androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
                         ),
-                        modifier = if (selected) Modifier.fillMaxWidth().focusRequester(initialFocus)
-                                   else Modifier.fillMaxWidth()
+                        modifier = (if (selected) Modifier.fillMaxWidth().focusRequester(initialFocus)
+                                    else Modifier.fillMaxWidth()).pointerClick { onSelect(option) }
                     ) {
                         Text(
                             option.label,
@@ -209,7 +212,8 @@ private fun DirectionChip(label: String, selected: Boolean, onClick: () -> Unit)
         } else {
             ClickableSurfaceDefaults.colors()
         },
-        shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+        modifier = Modifier.pointerClick(onClick = onClick)
     ) {
         Text(
             label,
@@ -236,7 +240,8 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
     Surface(
         onClick = onClick,
         colors = colors,
-        shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+        modifier = Modifier.pointerClick(onClick = onClick)
     ) {
         Text(
             label,
@@ -248,7 +253,7 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
 
 @Composable
 private fun BrowseCard(item: BrowseItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    Card(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Column {
             val imageModifier = Modifier.fillMaxWidth().aspectRatio(1f)
             AsyncImage(

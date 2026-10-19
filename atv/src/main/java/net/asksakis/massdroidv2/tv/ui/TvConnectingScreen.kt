@@ -1,11 +1,13 @@
 package net.asksakis.massdroidv2.tv.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,7 +40,24 @@ fun TvConnectingScreen(server: String, onChangeServer: () -> Unit) {
                 )
             }
             Spacer(Modifier.height(32.dp))
-            Button(onClick = onChangeServer) { Text("Change server") }
+            Button(onClick = onChangeServer, modifier = Modifier.pointerClick(onClick = onChangeServer)) {
+                Text("Change server")
+            }
         }
     }
 }
+
+/**
+ * Shown for the moment it takes to read whether a server is saved. It carries no text, because
+ * at that point the app does not yet know whether it will connect or ask for a server.
+ */
+@Composable
+fun TvStartupScreen() {
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            TvLogo(Modifier.size(STARTUP_LOGO_SIZE))
+        }
+    }
+}
+
+private val STARTUP_LOGO_SIZE = 128.dp

@@ -69,7 +69,8 @@ private fun QualityChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         colors = colors,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp))
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+        modifier = Modifier.pointerClick(onClick = onClick)
     ) {
         Text(
             label,

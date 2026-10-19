@@ -109,7 +109,7 @@ private fun ChapterRow(
     isCurrent: Boolean,
     onClick: () -> Unit
 ) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -157,7 +157,7 @@ private fun QueueRow(
     isCurrent: Boolean,
     onClick: () -> Unit
 ) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         // Colors inherit the Surface's focus-aware content color (inverts on
         // focus) so the row stays readable focused or not. "Current" is shown by
         // a bold title + equalizer glyph, not a hardcoded bright color.

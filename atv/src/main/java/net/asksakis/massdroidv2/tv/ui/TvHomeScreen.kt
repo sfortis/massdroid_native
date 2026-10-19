@@ -128,11 +128,11 @@ fun TvHomeScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = EDGE),
                 horizontalArrangement = Arrangement.End
             ) {
-                IconButton(onClick = onOpenBrowse) {
+                IconButton(onClick = onOpenBrowse, modifier = Modifier.pointerClick(onClick = onOpenBrowse)) {
                     Icon(Icons.Filled.GridView, contentDescription = "Browse")
                 }
                 Spacer(Modifier.width(8.dp))
-                IconButton(onClick = onOpenSettings) {
+                IconButton(onClick = onOpenSettings, modifier = Modifier.pointerClick(onClick = onOpenSettings)) {
                     Icon(Icons.Filled.Settings, contentDescription = "Settings")
                 }
             }
@@ -237,7 +237,7 @@ private fun MixTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Card(onClick = onClick, modifier = modifier.width(MIX_TILE_WIDTH)) {
+    Card(onClick = onClick, modifier = modifier.width(MIX_TILE_WIDTH).pointerClick(onClick = onClick)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -337,7 +337,7 @@ private fun MediaCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Card(onClick = onClick, modifier = modifier.width(CARD_SIZE)) {
+    Card(onClick = onClick, modifier = modifier.width(CARD_SIZE).pointerClick(onClick = onClick)) {
         Column {
             val imageModifier = if (circular) {
                 Modifier.size(CARD_SIZE).clip(CircleShape)

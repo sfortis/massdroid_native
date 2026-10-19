@@ -91,7 +91,7 @@ private const val SERVER_GRID_COLUMNS = 6
 
 @Composable
 private fun BrowseTreeCard(item: ServerBrowseItem, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    Card(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Column {
             Box(
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f),

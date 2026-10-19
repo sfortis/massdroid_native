@@ -174,10 +174,11 @@ fun TvNowPlayingScreen(
                 modifier = Modifier.align(Alignment.TopEnd).padding(28.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(onClick = onOpenQueue) {
+                IconButton(onClick = onOpenQueue, modifier = Modifier.pointerClick(onClick = onOpenQueue)) {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Queue")
                 }
-                IconButton(onClick = { showOptions = !showOptions }) {
+                val toggleOptions = { showOptions = !showOptions }
+                IconButton(onClick = toggleOptions, modifier = Modifier.pointerClick(onClick = toggleOptions)) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "Audio options")
                 }
             }
@@ -204,7 +205,7 @@ private fun TransportIcon(
     } else {
         IconButtonDefaults.colors()
     }
-    IconButton(onClick = onClick, modifier = modifier, colors = colors) {
+    IconButton(onClick = onClick, modifier = modifier.pointerClick(onClick = onClick), colors = colors) {
         Icon(icon, contentDescription = description)
     }
 }

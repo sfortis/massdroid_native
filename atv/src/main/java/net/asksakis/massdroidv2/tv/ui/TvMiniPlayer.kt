@@ -320,6 +320,7 @@ private fun MiniPlayerBar(
                 .weight(1f)
                 .focusProperties { this.canFocus = canFocus }
                 .focusRequester(mediaFocus)
+                .pointerClick(pressScale = POINTER_PRESS_SCALE_SUBTLE, onClick = onOpen)
                 .onFocusChanged { if (it.isFocused) onElementFocused(0) }
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
@@ -363,26 +364,26 @@ private fun MiniPlayerBar(
                 .focusProperties { this.canFocus = canFocus }
                 .transportFocus(buttonFocus[index - 1], index, onElementFocused)
         }
-        IconButton(onClick = onPlayPause, modifier = buttonModifier(1)) {
+        IconButton(onClick = onPlayPause, modifier = buttonModifier(1).pointerClick(onClick = onPlayPause)) {
             Icon(
                 if (player?.state == PlaybackState.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = if (player?.state == PlaybackState.PLAYING) "Pause" else "Play"
             )
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onNext, modifier = buttonModifier(2)) {
+        IconButton(onClick = onNext, modifier = buttonModifier(2).pointerClick(onClick = onNext)) {
             Icon(Icons.Filled.SkipNext, contentDescription = "Next")
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onVolumeDown, modifier = buttonModifier(3)) {
+        IconButton(onClick = onVolumeDown, modifier = buttonModifier(3).pointerClick(onClick = onVolumeDown)) {
             Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = "Volume down")
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onVolumeUp, modifier = buttonModifier(4)) {
+        IconButton(onClick = onVolumeUp, modifier = buttonModifier(4).pointerClick(onClick = onVolumeUp)) {
             Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Volume up")
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onSwitchPlayer, modifier = buttonModifier(5)) {
+        IconButton(onClick = onSwitchPlayer, modifier = buttonModifier(5).pointerClick(onClick = onSwitchPlayer)) {
             Icon(Icons.Filled.Speaker, contentDescription = "Switch player")
         }
         Spacer(Modifier.width(6.dp))
@@ -490,7 +491,7 @@ private fun PlayerPickerCard(
         border = if (selected) selectedBorder else CardDefaults.border(),
         // Color/border focus feedback only: the default zoom overflows the dialog insets.
         scale = CardDefaults.scale(focusedScale = 1f),
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth().pointerClick(pressScale = POINTER_PRESS_SCALE_SUBTLE, onClick = onClick)
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {

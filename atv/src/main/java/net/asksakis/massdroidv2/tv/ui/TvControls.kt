@@ -157,7 +157,7 @@ fun OutputDelayControl(
                     onChange = onChange,
                     modifier = Modifier.weight(1f)
                 )
-                Button(onClick = { onChange(0) }) { Text("Reset") }
+                Button(onClick = { onChange(0) }, modifier = Modifier.pointerClick { onChange(0) }) { Text("Reset") }
             }
         }
         Spacer(Modifier.height(16.dp))

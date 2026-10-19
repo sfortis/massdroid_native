@@ -1,20 +1,25 @@
 package net.asksakis.massdroidv2.tv.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,23 +28,30 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Button
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.tv.R
+
+private val SCREEN_EDGE = 64.dp
+private val COLUMN_GAP = 56.dp
+private val FORM_WIDTH = 480.dp
+private val LOGO_SIZE = 96.dp
 
 @Composable
 fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
@@ -50,6 +62,7 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
     var url by remember { mutableStateOf("https://") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
 
     val statusMessage = error
         ?: (connection as? ConnectionState.Error)?.message
@@ -61,100 +74,141 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
     // reads as "frozen".
     val firstFieldFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { firstFieldFocus.requestFocus() } }
+    val connectFocus = remember { FocusRequester() }
+
+    val focusManager = LocalFocusManager.current
+    val nextField: () -> Unit = { focusManager.moveFocus(FocusDirection.Down) }
+    // Guarded here as well as by the button's enabled flag, because the keyboard's Done
+    // reaches it without going through the button.
+    val connect: () -> Unit = { if (!attempting) viewModel.login(url, username, password) }
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        // Scrollable + top-aligned: the form is taller than a 1080p TV viewport
-        // once overscan is accounted for, so a centered non-scrolling column
-        // clipped the Connect button and the status/error text off-screen. The
-        // scroll container also brings whatever child holds focus into view, so
-        // D-pad focus on the button auto-scrolls it into sight.
-        Column(
+        // The introduction sits on the left and the form on the right, as in the platform's
+        // own TV forms, so the fields start near the top of the screen and most of the form
+        // stays visible above the on-screen keyboard. imePadding shrinks the screen above the
+        // keyboard where the system does not already resize the window (edge-to-edge).
+        Row(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 80.dp, vertical = 48.dp),
-            verticalArrangement = Arrangement.Top
+                .imePadding()
+                .padding(horizontal = SCREEN_EDGE),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Connect to Music Assistant", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Enter your Music Assistant server and credentials.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(32.dp))
-
-            TvField("Server URL", url, KeyboardType.Uri, focusRequester = firstFieldFocus) { url = it }
-            Spacer(Modifier.height(16.dp))
-            TvField("Username", username, KeyboardType.Text) { username = it }
-            Spacer(Modifier.height(16.dp))
-            TvField("Password", password, KeyboardType.Password, password = true) { password = it }
-
-            Spacer(Modifier.height(28.dp))
-            Button(
-                onClick = { viewModel.login(url, username, password) },
-                enabled = !attempting
-            ) {
-                Text(if (attempting) "Connecting..." else "Connect")
-            }
-
-            if (statusMessage != null) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    statusMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isError) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+            OnboardingIntro(Modifier.weight(1f))
+            Spacer(Modifier.width(COLUMN_GAP))
+            // Centered while the form fits, scrollable once the keyboard leaves less room. The
+            // scroll container also brings the focused field or button into view.
+            BoxWithConstraints(modifier = Modifier.width(FORM_WIDTH).fillMaxHeight()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(min = maxHeight)
+                        .padding(vertical = 32.dp),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    TvTextField(
+                        "Server URL", url, KeyboardType.Uri, ImeAction.Next, onImeAction = nextField,
+                        focusRequester = firstFieldFocus
+                    ) { url = it }
+                    Spacer(Modifier.height(12.dp))
+                    TvTextField("Username", username, KeyboardType.Text, ImeAction.Next, onImeAction = nextField) {
+                        username = it
                     }
-                )
+                    Spacer(Modifier.height(12.dp))
+                    // Showing the password changes only how it is drawn. The keyboard is always
+                    // told this is a password field, so it never learns the password. Done moves
+                    // the cursor to Connect, which closes the keyboard so the status line is
+                    // visible, and starts the login.
+                    TvTextField(
+                        "Password", password, KeyboardType.Password, ImeAction.Done,
+                        onImeAction = {
+                            runCatching { connectFocus.requestFocus() }
+                            connect()
+                        },
+                        masked = !showPassword
+                    ) { password = it }
+                    Spacer(Modifier.height(8.dp))
+                    ShowPasswordToggle(showPassword) { showPassword = !showPassword }
+
+                    Spacer(Modifier.height(20.dp))
+                    Button(
+                        onClick = connect,
+                        enabled = !attempting,
+                        modifier = Modifier
+                            .focusRequester(connectFocus)
+                            .pointerClick(enabled = !attempting, onClick = connect)
+                    ) {
+                        Text(if (attempting) "Connecting..." else "Connect")
+                    }
+
+                    if (statusMessage != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            statusMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TvField(
-    label: String,
-    value: String,
-    keyboardType: KeyboardType,
-    password: Boolean = false,
-    focusRequester: FocusRequester? = null,
-    onValueChange: (String) -> Unit
-) {
-    var focused by remember { mutableStateOf(false) }
-    Column(modifier = Modifier.width(560.dp)) {
+private fun OnboardingIntro(modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        TvLogo(Modifier.size(LOGO_SIZE))
+        Spacer(Modifier.height(20.dp))
+        Text("Connect to Music Assistant", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(8.dp))
         Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
+            "Enter your Music Assistant server and credentials.",
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(6.dp))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small)
-                .border(
-                    width = if (focused) 2.dp else 1.dp,
-                    color = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    shape = MaterialTheme.shapes.small
-                )
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            contentAlignment = Alignment.CenterStart
+    }
+}
+
+/** The MassDroid "MD" mark, shared by the onboarding and the startup screen. */
+@Composable
+internal fun TvLogo(modifier: Modifier = Modifier) {
+    // The vector is drawn in two mid grays that fade into the dark surface. One light
+    // tint matches the TV banner.
+    Image(
+        painter = painterResource(R.drawable.logo_md),
+        contentDescription = null,
+        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary),
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun ShowPasswordToggle(shown: Boolean, onToggle: () -> Unit) {
+    Surface(
+        onClick = onToggle,
+        shape = ClickableSurfaceDefaults.shape(MaterialTheme.shapes.small),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        modifier = Modifier.pointerClick(onClick = onToggle)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                singleLine = true,
-                textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = 20.sp),
-                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                    .onFocusChanged { focused = it.isFocused }
+            Icon(
+                if (shown) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (shown) "Hide password" else "Show password",
+                style = MaterialTheme.typography.labelLarge
             )
         }
     }

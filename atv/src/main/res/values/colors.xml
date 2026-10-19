@@ -1,3 +1,6 @@
 <resources>
     <color name="banner_bg">#14141F</color>
+    <!-- Same value as the Compose theme's surface. The window background shows around the
+         on-screen keyboard while the window is resized above it. -->
+    <color name="tv_surface">#121212</color>
 </resources>
