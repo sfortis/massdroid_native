@@ -141,7 +141,16 @@ class TvPlaybackService : Service() {
 
     private fun onPlayingChanged(playing: Boolean) {
         isPlaying = playing
-        val state = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        // The coordinator reports playing=false on every controller state change, including the
+        // Sendspin client connecting after boot with nothing loaded and the pushes that follow a
+        // cleared session. Only a live stream with a track is a real pause. Anything else is
+        // stopped, because an inactive session still reports its state, and anything that reads
+        // it (Home Assistant through ADB, for one) saw an idle Shield as paused.
+        val state = when {
+            playing -> PlaybackStateCompat.STATE_PLAYING
+            streamLive && hasTrack() -> PlaybackStateCompat.STATE_PAUSED
+            else -> PlaybackStateCompat.STATE_STOPPED
+        }
         val pb = PlaybackStateCompat.Builder()
             .setActions(
                 PlaybackStateCompat.ACTION_PLAY or
