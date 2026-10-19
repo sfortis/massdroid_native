@@ -74,8 +74,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 43
-        versionName = "2.39.0"
+        versionCode = 44
+        versionName = "2.39.1"
     }
 
     signingConfigs {
