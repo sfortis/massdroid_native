@@ -104,7 +104,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // Unsigned when no keystore is configured. F-Droid builds the fdroid flavor without
+            // our key and compares the result with the published APK; a release signing config
+            // with no storeFile failed the packaging step instead.
+            signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
             // Reproducible-build: strip VCS info so the commit hash AGP embeds in
             // the manifest does not differ between build hosts. AGP 8.3+.
             vcsInfo.include = false
