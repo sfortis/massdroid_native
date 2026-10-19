@@ -38,6 +38,7 @@ fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
     val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
     val playerName by viewModel.playerName.collectAsStateWithLifecycle()
     val renameStatus by viewModel.renameStatus.collectAsStateWithLifecycle()
+    val updateCheck by viewModel.updateCheck.collectAsStateWithLifecycle()
 
     Surface(modifier = Modifier.fillMaxSize()) {
         // Scrollable: the sections are taller than the screen, and the scroll brings the
@@ -79,6 +80,13 @@ fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
 
             Spacer(Modifier.height(40.dp))
             OutputDelayControl(outputDelay = outputDelay, onChange = viewModel::setOutputDelay)
+
+            Spacer(Modifier.height(40.dp))
+            UpdatesSection(
+                version = viewModel.appVersion,
+                status = updateCheck,
+                onCheck = viewModel::checkForUpdates
+            )
         }
     }
 }
@@ -170,3 +178,37 @@ private fun PlayerNameSection(
 }
 
 private val PLAYER_NAME_FIELD_WIDTH = 480.dp
+
+/** The installed version and a manual check for a new release. */
+@Composable
+private fun UpdatesSection(version: String, status: UpdateCheckStatus, onCheck: () -> Unit) {
+    val checking = status == UpdateCheckStatus.CHECKING
+    Text("Updates", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "MassDroid TV $version",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(12.dp))
+    Button(onClick = onCheck, enabled = !checking, modifier = Modifier.pointerClick(enabled = !checking, onClick = onCheck)) {
+        Text(if (checking) "Checking..." else "Check for updates")
+    }
+    val message = when (status) {
+        UpdateCheckStatus.UP_TO_DATE -> "This is the latest version."
+        UpdateCheckStatus.FAILED -> "Could not reach GitHub. Check the network and try again."
+        UpdateCheckStatus.IDLE, UpdateCheckStatus.CHECKING, UpdateCheckStatus.AVAILABLE -> null
+    }
+    if (message != null) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            message,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (status == UpdateCheckStatus.FAILED) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        )
+    }
+}

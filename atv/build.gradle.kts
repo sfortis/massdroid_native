@@ -79,6 +79,9 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.DEBUG keeps the GitHub updater off in debug builds, whose package
+        // (.tv.debug) the release APK would not update.
+        buildConfig = true
     }
 }
 

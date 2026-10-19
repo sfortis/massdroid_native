@@ -200,6 +200,8 @@ fun TvRoot(
                     .align(Alignment.TopCenter)
                     .padding(top = 28.dp)
             )
+            // Offers a new release once the updater has found one.
+            TvUpdatePrompt()
             }
         }
         !initialized -> TvStartupScreen()

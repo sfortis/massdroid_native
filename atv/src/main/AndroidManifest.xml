@@ -10,6 +10,8 @@
     <!-- The playback notification. A foreground service shows its own notification without
          this, but the service also posts updates, and from Android 13 those need it. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The in-app updater installs the TV APK of a new GitHub release. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- TV does not have a touchscreen; declare leanback and make touch optional
          so the app is installable on Android TV / Shield. -->
@@ -44,6 +46,17 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Hands the downloaded update APK to the package installer. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Foreground service: the Shield as a synced Sendspin player.
 

@@ -15,11 +15,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
+import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
+
+/** The result of a manual update check, for the message under the button. */
+enum class UpdateCheckStatus { IDLE, CHECKING, UP_TO_DATE, AVAILABLE, FAILED }
 
 /** Where a rename of this TV's player stands, for the Save button and its message. */
 enum class PlayerRenameStatus { IDLE, SAVING, SAVED, FAILED }
@@ -38,8 +42,30 @@ data class TvOutputDelay(val routeKey: String, val outputName: String, val delay
 class TvSettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val playerRepository: PlayerRepository,
+    private val updateChecker: AppUpdateChecker,
     calibrationCoordinator: AcousticCalibrationCoordinator,
 ) : ViewModel() {
+
+    val appVersion: String = updateChecker.getCurrentVersion()
+
+    private val _updateCheck = MutableStateFlow(UpdateCheckStatus.IDLE)
+    val updateCheck: StateFlow<UpdateCheckStatus> = _updateCheck.asStateFlow()
+
+    /**
+     * Checks GitHub now, past the once-a-day limit of the automatic check. A newer release
+     * opens the same update dialog as the automatic check.
+     */
+    fun checkForUpdates() {
+        if (_updateCheck.value == UpdateCheckStatus.CHECKING) return
+        _updateCheck.value = UpdateCheckStatus.CHECKING
+        viewModelScope.launch {
+            _updateCheck.value = when (updateChecker.checkForUpdates(force = true, includePrerelease = false)) {
+                is AppUpdateChecker.CheckResult.UpdateAvailable -> UpdateCheckStatus.AVAILABLE
+                AppUpdateChecker.CheckResult.UpToDate -> UpdateCheckStatus.UP_TO_DATE
+                is AppUpdateChecker.CheckResult.Error -> UpdateCheckStatus.FAILED
+            }
+        }
+    }
 
     /**
      * The name Music Assistant shows for this TV's own Sendspin player, or null until the
