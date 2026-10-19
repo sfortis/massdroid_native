@@ -74,8 +74,8 @@ android {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 44
-        versionName = "2.39.1"
+        versionCode = 45
+        versionName = "2.39.2"
 
         // Only the ABIs :core builds its native code for. Without this filter, AndroidX libraries
         // add a lib/x86 folder without our native libraries, so the app would install on an x86
