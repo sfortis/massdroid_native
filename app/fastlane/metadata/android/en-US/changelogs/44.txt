@@ -1,0 +1,1 @@
+- No changes in the app. This release adds an F-Droid build of the Android TV app.
