@@ -96,3 +96,100 @@ jobs:
           gh release upload dev-latest build-output/app/outputs/apk/github/debug/*.apk --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Google Play: phone, Android TV and Android Automotive OS share one listing, each on its own
+  # form factor track. A separate job, so a Play problem never holds back the GitHub release or
+  # the F-Droid APKs. The bundles are always kept as a workflow artifact, because Play accepts the
+  # first bundle of a new app only through the Console. The upload runs only when the service
+  # account secret exists.
+  PLAY_AABS:
+    name: Google Play bundles
+    runs-on: ubuntu-latest
+    env:
+      # internal while the app is in testing. An app that was never published accepts only draft
+      # releases; switch to completed once it is live.
+      PLAY_TRACK: internal
+      PLAY_STATUS: draft
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: 'gradle'
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > ${{ github.workspace }}/release.jks
+
+      - name: Build release bundles
+        # play = the phone, automotive = AAOS (versionCode 1_000_000 + N), atv play = the TV
+        # under the phone's package (versionCode 2_000_000 + N).
+        run: ./gradlew app:bundlePlayRelease app:bundleAutomotiveRelease atv:bundlePlayRelease -PmassdroidBuildRoot=${{ github.workspace }}/build-output --stacktrace
+        env:
+          RELEASE_STORE_FILE: ${{ github.workspace }}/release.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Stage bundles and release notes
+        id: stage
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p build-output/play
+          mv "$(find build-output/app/outputs/bundle/playRelease -name '*.aab' | head -1)" "build-output/play/massdroid-${VERSION}_play.aab"
+          mv "$(find build-output/app/outputs/bundle/automotiveRelease -name '*.aab' | head -1)" "build-output/play/massdroid-${VERSION}_automotive.aab"
+          mv "$(find build-output/atv/outputs/bundle/playRelease -name '*.aab' | head -1)" "build-output/play/massdroid-${VERSION}_tv_play.aab"
+          ls -la build-output/play
+          # The F-Droid changelog of this version doubles as the Play "What's new" text.
+          CODE=$(grep -E 'versionCode\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+).*/\1/')
+          NOTES="app/fastlane/metadata/android/en-US/changelogs/${CODE}.txt"
+          if [ -f "$NOTES" ]; then
+            mkdir -p build-output/whatsnew
+            cp "$NOTES" build-output/whatsnew/whatsnew-en-US
+            echo "whatsnew=build-output/whatsnew" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Keep bundles as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: massdroid-${{ steps.stage.outputs.version }}-play-bundles
+          path: build-output/play/*.aab
+
+      - name: Upload phone bundle to Google Play
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: net.asksakis.massdroidv2
+          releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_play.aab
+          track: ${{ env.PLAY_TRACK }}
+          status: ${{ env.PLAY_STATUS }}
+          releaseName: ${{ steps.stage.outputs.version }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
+
+      - name: Upload Android Automotive OS bundle to Google Play
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: net.asksakis.massdroidv2
+          releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_automotive.aab
+          track: automotive:${{ env.PLAY_TRACK }}
+          status: ${{ env.PLAY_STATUS }}
+          releaseName: ${{ steps.stage.outputs.version }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
+
+      - name: Upload Android TV bundle to Google Play
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: net.asksakis.massdroidv2
+          releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_tv_play.aab
+          track: tv:${{ env.PLAY_TRACK }}
+          status: ${{ env.PLAY_STATUS }}
+          releaseName: ${{ steps.stage.outputs.version }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
