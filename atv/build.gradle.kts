@@ -16,7 +16,7 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "net.asksakis.massdroidv2.tv"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "net.asksakis.massdroidv2.tv"
@@ -79,7 +79,9 @@ android {
 
     // github = the GitHub release APK, with the in-app updater. fdroid = the F-Droid build: the
     // updater is switched off and its install permission removed (src/fdroid/AndroidManifest.xml),
-    // because F-Droid updates the app through its own repository.
+    // because F-Droid updates the app through its own repository. play = the Google Play build: no
+    // updater and no install permission either (src/play/AndroidManifest.xml), published under the
+    // phone app's package (see androidComponents below).
     flavorDimensions += "distribution"
     productFlavors {
         create("github") {
@@ -87,6 +89,10 @@ android {
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
         }
         create("fdroid") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
+        }
+        create("play") {
             dimension = "distribution"
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
         }
@@ -124,6 +130,24 @@ android {
         // (.tv.debug) the release APK would not update; ENABLE_UPDATE_CHECK keeps it off in
         // the fdroid flavor.
         buildConfig = true
+    }
+}
+
+// On Google Play the TV app ships in the phone app's listing, on the dedicated Android TV track, so
+// the play build takes the phone's package and a versionCode of 2_000_000 + N that no phone or
+// automotive bundle uses (app/build.gradle.kts). Both are set here rather than in the flavor,
+// because F-Droid reads the package and the version from this file with a regex and must keep
+// seeing the TV package and N. The GitHub and F-Droid builds keep the TV package.
+val playTvApplicationId = "net.asksakis.massdroidv2"
+val playTvVersionOffset = 2_000_000
+
+androidComponents {
+    onVariants(selector().withFlavor("distribution" to "play")) { variant ->
+        val suffix = if (variant.buildType == "debug") ".debug" else ""
+        variant.applicationId.set(playTvApplicationId + suffix)
+        variant.outputs.forEach { output ->
+            output.versionCode.set(output.versionCode.get() + playTvVersionOffset)
+        }
     }
 }
 

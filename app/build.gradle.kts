@@ -216,6 +216,20 @@ android {
     sourceSets.getByName("main").assets.srcDir(whatsNewAssetDir)
 }
 
+// Phone, Android TV and Android Automotive OS share one Google Play listing, so every bundle needs
+// its own versionCode: the phone keeps N, automotive gets 1_000_000 + N and the TV play build gets
+// 2_000_000 + N (atv/build.gradle.kts). The offset is applied here rather than written into the
+// flavor, because F-Droid reads the version from this file with a regex and must keep seeing N.
+val automotiveVersionOffset = 1_000_000
+
+androidComponents {
+    onVariants(selector().withFlavor("distribution" to "automotive")) { variant ->
+        variant.outputs.forEach { output ->
+            output.versionCode.set(output.versionCode.get() + automotiveVersionOffset)
+        }
+    }
+}
+
 dependencies {
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
