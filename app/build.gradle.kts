@@ -68,12 +68,12 @@ tasks.named("preBuild") { dependsOn(copyWhatsNew) }
 
 android {
     namespace = "net.asksakis.massdroidv2"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "net.asksakis.massdroidv2"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 45
         versionName = "2.39.2"
 

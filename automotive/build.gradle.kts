@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "net.asksakis.massdroidv2.automotive"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 26
