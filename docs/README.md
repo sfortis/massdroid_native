@@ -10,3 +10,4 @@ Public user-facing documentation for MassDroid features and setup.
 - [Recommendation Engine](recommendations.md)
 - [Configuration](configuration.md)
 - [Permissions](permissions.md)
+- [Privacy policy](privacy.md)
