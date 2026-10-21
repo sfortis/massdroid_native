@@ -37,6 +37,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_SERVER_URL = stringPreferencesKey("server_url")
         private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
         private val KEY_SELECTED_PLAYER = stringPreferencesKey("selected_player_id")
+        private val KEY_TRUSTED_SERVER_ID = stringPreferencesKey("trusted_server_id")
         private val KEY_CLIENT_CERT_ALIAS = stringPreferencesKey("client_cert_alias")
         private val KEY_USERNAME = stringPreferencesKey("username")
         private val KEY_PASSWORD = stringPreferencesKey("password")
@@ -108,6 +109,17 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override val selectedPlayerId: Flow<String?> = safeData.map { prefs ->
         prefs[KEY_SELECTED_PLAYER]
+    }
+
+    override val trustedServerId: Flow<String?> = safeData.map { prefs ->
+        prefs[KEY_TRUSTED_SERVER_ID]
+    }
+
+    override suspend fun setTrustedServerId(serverId: String?) {
+        context.dataStore.edit {
+            if (serverId != null) it[KEY_TRUSTED_SERVER_ID] = serverId
+            else it.remove(KEY_TRUSTED_SERVER_ID)
+        }
     }
 
     override suspend fun setServerUrl(url: String) {

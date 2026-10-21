@@ -5,7 +5,7 @@ import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SortOption
 
-interface SettingsRepository {
+interface SettingsRepository : TrustedServerStore {
     val serverUrl: Flow<String>
     val authToken: Flow<String>
     val selectedPlayerId: Flow<String?>

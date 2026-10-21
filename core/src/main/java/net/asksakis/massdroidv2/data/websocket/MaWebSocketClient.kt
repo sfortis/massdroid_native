@@ -45,7 +45,9 @@ class MaWebSocketClient(
     // Application context for the default-network callback that auto-revives the
     // WS when connectivity returns after the retry budget is exhausted. Nullable
     // so non-Android callers/tests can construct the client without it.
-    private val appContext: Context? = null
+    private val appContext: Context? = null,
+    // The server the user signed in to; automatic reconnects send credentials only to it.
+    private val trustedServers: net.asksakis.massdroidv2.domain.repository.TrustedServerStore? = null,
 ) {
     companion object {
         private const val TAG = "MaWsClient"
@@ -101,6 +103,13 @@ class MaWebSocketClient(
      * those worked before, so a failure is far more likely the network than the address.
      */
     @Volatile private var retriesEnabled = false
+
+    /**
+     * Whether the current connection was started by the user signing in (credentials, OAuth or
+     * a token entered in Settings). Such a connection trusts the server that answers; reconnects
+     * after it are automatic and may only send credentials to that trusted server.
+     */
+    @Volatile private var explicitSignIn = false
     /** True when a reconnect attempt is scheduled or in-flight. */
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
 
@@ -273,6 +282,7 @@ class MaWebSocketClient(
 
     fun connect(url: String, token: String, origin: ConnectOrigin) {
         if (origin == ConnectOrigin.SAVED_CREDENTIALS) retriesEnabled = true
+        explicitSignIn = origin == ConnectOrigin.SIGN_IN
         // A pending retry suppresses this call, EXCEPT an idle-phase sleep: that one
         // is up to IDLE_RETRY_MS away, and a caller asking to connect now (the user
         // opening the app, an auto-connect site seeing a dead client) must not be
@@ -316,6 +326,7 @@ class MaWebSocketClient(
         }
         serverUrl = url
         authToken = null
+        explicitSignIn = true
         pendingLogin = username to password
         onTokenReceived = onToken
         userDisconnected = false
@@ -799,6 +810,18 @@ class MaWebSocketClient(
         val gen = connectionGeneration
         scope.launch {
             try {
+                val offered = serverInfo?.serverId
+                val trusted = trustedServers?.trustedServerId?.first()
+                if (!credentialsAllowedFor(explicitSignIn, trusted, offered)) {
+                    // Another machine answers at the saved address, typically a device on a
+                    // foreign network at the same private IP. Neither the token nor the password
+                    // goes to it; a retrying client tries again later, and the real server
+                    // signs in as usual once the phone is back on its network.
+                    Log.w(TAG, "Server at $serverUrl is not the one signed in to; not sending credentials")
+                    _connectionState.value = ConnectionState.Error(DIFFERENT_SERVER_MESSAGE)
+                    if (retriesEnabled) webSocket?.close(1000, "different server")
+                    return@launch
+                }
                 val login = pendingLogin
                 if (login != null) {
                     loginWithCredentials(login.first, login.second)
@@ -830,6 +853,8 @@ class MaWebSocketClient(
                 if (gen != connectionGeneration) return@launch
                 _connectionState.value = ConnectionState.Connected(info)
                 retriesEnabled = true
+                explicitSignIn = false
+                if (trusted != info.serverId) trustedServers?.setTrustedServerId(info.serverId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1137,6 +1162,18 @@ class MaWebSocketClient(
         }
     }
 }
+
+/**
+ * Whether the client may send the token or the password to the server that offered [offered].
+ * An explicit sign-in may; an automatic reconnect only to the [trusted] server, or to any server
+ * while none has been trusted yet (the first connection after an update).
+ */
+internal fun credentialsAllowedFor(explicitSignIn: Boolean, trusted: String?, offered: String?): Boolean =
+    explicitSignIn || trusted == null || offered == null || offered == trusted
+
+internal const val DIFFERENT_SERVER_MESSAGE =
+    "This address answered as a different Music Assistant server, so the app did not sign in. " +
+        "Sign in again in Settings if it is yours."
 
 /**
  * Whether a failed sign-in only lacked an answer (a timeout, or the socket went away) rather

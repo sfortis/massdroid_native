@@ -110,6 +110,8 @@ class MaAuthRepositoryImpl @Inject constructor(
         settingsRepository.setAuthToken("")
         settingsRepository.setUsername("")
         settingsRepository.setPassword("")
+        // The next sign-in is explicit and trusts whichever server answers it.
+        runCatching { settingsRepository.setTrustedServerId(null) }
         // Drop the saved player choice too, otherwise reconnecting against a
         // server that happens to expose a same-id player would silently latch
         // back onto something the user did not choose.

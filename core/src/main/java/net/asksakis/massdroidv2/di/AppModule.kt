@@ -92,8 +92,9 @@ object AppModule {
         okHttpClient: OkHttpClient,
         json: Json,
         accountNoticeReporter: net.asksakis.massdroidv2.data.util.AccountNoticeReporter,
-        @ApplicationContext ctx: Context
-    ): MaWebSocketClient = MaWebSocketClient(okHttpClient, json, accountNoticeReporter, ctx)
+        @ApplicationContext ctx: Context,
+        settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
+    ): MaWebSocketClient = MaWebSocketClient(okHttpClient, json, accountNoticeReporter, ctx, settingsRepository)
 
     @Provides
     @Singleton
