@@ -18,6 +18,7 @@ import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.distinctGenres
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
 import net.asksakis.massdroidv2.domain.recommendation.normalizeGenre
+import net.asksakis.massdroidv2.domain.recommendation.trackIdentityKey
 import net.asksakis.massdroidv2.domain.repository.LocalPlaybackGate
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.PlaybackIntent
@@ -247,6 +248,11 @@ class PlayerRepositoryImpl @Inject constructor(
     private val blockedAutoSkipByQueue = ConcurrentHashMap<String, Pair<String, Long>>()
     private val blockedQueueCleanupAtByQueue = ConcurrentHashMap<String, Long>()
     private val queueFilterModeByQueue = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
+    // The list the app sent to a generated queue, so a reconnect can tell whether the queue
+    // still plays it (see recheckGeneratedQueue).
+    private val generatedQueueContent = ConcurrentHashMap<String, GeneratedQueueContent>()
+    // Generated modes set aside at a disconnect, until the queue is seen again.
+    private val generatedModesAwaitingRecheck = ConcurrentHashMap<String, PlayerRepository.QueueFilterMode>()
     private var blockedQueueCleanupJob: Job? = null
     // Debounced authoritative player resync. PLAYER_ADDED/REMOVED events carry
     // each player's can_group_with as of ITS registration; when players register
@@ -326,7 +332,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         queueReplacementByQueue.clear()
                         blockedAutoSkipByQueue.clear()
                         blockedQueueCleanupAtByQueue.clear()
-                        queueFilterModeByQueue.clear()
+                        setAsideGeneratedModes()
                         blockedQueueCleanupJob?.cancel()
                         suppressedArtistUrisSnapshot = emptySet()
                     }
@@ -423,6 +429,8 @@ class PlayerRepositoryImpl @Inject constructor(
         blockedAutoSkipByQueue.clear()
         blockedQueueCleanupAtByQueue.clear()
         queueFilterModeByQueue.clear()
+        generatedQueueContent.clear()
+        generatedModesAwaitingRecheck.clear()
         volumeOverride.clear()
         suppressedArtistUrisSnapshot = emptySet()
     }
@@ -555,6 +563,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     blockedAutoSkipByQueue.remove(id)
                     blockedQueueCleanupAtByQueue.remove(id)
                     queueFilterModeByQueue.remove(id)
+                    generatedQueueContent.remove(id)
+                    generatedModesAwaitingRecheck.remove(id)
                     if (selectedPlayerId == id) {
                         selectedPlayerId = null
                         _selectedPlayer.value = null
@@ -666,6 +676,9 @@ class PlayerRepositoryImpl @Inject constructor(
         val trackUri = mediaItem.uri.takeIf { it.isNotBlank() } ?: return
         val queueId = serverQueue.queueId
         val now = System.currentTimeMillis()
+        generatedModesAwaitingRecheck.remove(queueId)?.let { mode ->
+            recheckGeneratedQueue(queueId, mode, trackUri, mediaItem.artists?.firstOrNull()?.name, mediaItem.name)
+        }
 
         val prev = queueTracking[queueId]
         if (prev != null && prev.track.uri != trackUri) {
@@ -1476,8 +1489,74 @@ class PlayerRepositoryImpl @Inject constructor(
         // to NORMAL on a sync group. Solo is unchanged (active queue id == own id).
         val queueId = effectiveQueueId(playerId) ?: playerId
         queueFilterModeByQueue[queueId] = mode
+        // Whatever the app put on this queue now, it is no longer a list it generated.
+        generatedQueueContent.remove(queueId)
         if (playerId == selectedPlayerId) {
             scheduleBlockedQueueCleanup(queueId, reason = "queue_filter_mode", force = true)
+        }
+    }
+
+    override fun prepareQueueFilterMode(
+        playerId: String,
+        mode: PlayerRepository.QueueFilterMode,
+        delivered: List<Track>
+    ): PlayerRepository.QueueFilterMode? {
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        if (delivered.isEmpty()) {
+            generatedQueueContent.remove(queueId)
+        } else {
+            generatedQueueContent[queueId] = GeneratedQueueContent.of(delivered)
+        }
+        return queueFilterModeByQueue.put(queueId, mode)
+    }
+
+    override fun commitQueueFilterMode(playerId: String) {
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        if (playerId == selectedPlayerId) {
+            scheduleBlockedQueueCleanup(queueId, reason = "queue_filter_mode", force = true)
+        }
+    }
+
+    override fun revertQueueFilterMode(playerId: String, previous: PlayerRepository.QueueFilterMode?) {
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        generatedQueueContent.remove(queueId)
+        if (previous == null) queueFilterModeByQueue.remove(queueId) else queueFilterModeByQueue[queueId] = previous
+    }
+
+    /**
+     * At a disconnect, sets aside the mode of every queue holding a list the app generated, and
+     * forgets the others as before.
+     *
+     * The mode used to be forgotten for every queue, so after a network handover the rest of a
+     * mix was recorded as UNKNOWN and its suppressed artists were no longer removed. Keeping it
+     * outright is not safe either: while the app was away another client may have put the
+     * listener's own music on the queue, and filtering that as a mix would remove tracks from
+     * it. So the mode is held back, with no effect, until [recheckGeneratedQueue] sees the
+     * queue again.
+     */
+    private fun setAsideGeneratedModes() {
+        moveGeneratedModesAside(queueFilterModeByQueue, generatedQueueContent.keys, generatedModesAwaitingRecheck)
+    }
+
+    /**
+     * The first sight of a queue after a reconnect: its mode comes back only if the current
+     * track is one the app sent, matched by uri or by recording, since the server may play
+     * another version of a requested track. Anything else means the queue was replaced.
+     */
+    private fun recheckGeneratedQueue(
+        queueId: String,
+        mode: PlayerRepository.QueueFilterMode,
+        trackUri: String,
+        leadArtist: String?,
+        trackName: String?
+    ) {
+        val content = generatedQueueContent[queueId]
+        if (content != null && content.holds(trackUri, trackIdentityKey(leadArtist, trackName))) {
+            queueFilterModeByQueue[queueId] = mode
+            Log.d(TAG, "Reconnect: $queueId still plays its generated list, keeping $mode")
+        } else {
+            generatedQueueContent.remove(queueId)
+            Log.d(TAG, "Reconnect: $queueId no longer plays its generated list, dropping $mode")
         }
     }
 
@@ -2192,6 +2271,14 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.d(TAG, "Queue replacement flagged for ${current.track.name}")
     }
 
+    override fun withdrawQueueReplacement(queueId: String) {
+        // Only the mark set for the track still playing; a later track change consumed it already.
+        val current = queueTracking[queueId] ?: return
+        if (queueReplacementByQueue.remove(queueId, current.track.uri)) {
+            Log.d(TAG, "Queue replacement withdrawn for ${current.track.name}")
+        }
+    }
+
     override suspend fun getGroupCapableProviders(): List<GroupProviderOption> {
         val result = wsClient.sendCommand(MaCommands.Providers.LIST) ?: return emptyList()
         return try {
@@ -2254,16 +2341,21 @@ class PlayerRepositoryImpl @Inject constructor(
      * harshest signal the engine has against a track the listener had not even
      * heard. On a real history 15% of all skips sat in that bucket.
      */
+    // Both marks are keyed by the player's ACTIVE queue id, as setQueueFilterMode is: play
+    // tracking is keyed by queue, and for a sync group member that is the group's queue. Keyed by
+    // the member's own id they missed, and a skip on a group was recorded as a full listen.
     private fun markManualTransition(playerId: String) {
-        val current = queueTracking[playerId] ?: return
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        val current = queueTracking[queueId] ?: return
         if (!smartListeningEnabledSnapshot) return
-        manualSkipByQueue[playerId] = current.track.uri
+        manualSkipByQueue[queueId] = current.track.uri
     }
 
     private fun maybeRecordManualSkip(playerId: String) {
-        val current = queueTracking[playerId] ?: return
+        val queueId = effectiveQueueId(playerId) ?: playerId
+        val current = queueTracking[queueId] ?: return
         if (!smartListeningEnabledSnapshot) return
-        manualSkipByQueue[playerId] = current.track.uri
+        manualSkipByQueue[queueId] = current.track.uri
         val listenedMs = System.currentTimeMillis() - current.startTime
         scope.launch {
             try {
@@ -2521,3 +2613,43 @@ internal fun shouldRecordPlay(
     wasManualSkip: Boolean,
     wasQueueReplacement: Boolean
 ): Boolean = listenedMs > PLAY_HISTORY_MIN_LISTENED_MS && !wasManualSkip && !wasQueueReplacement
+
+/**
+ * The tracks of a list the app generated for a queue, by uri and by recording identity
+ * ([trackIdentityKey]), for telling after a reconnect whether the queue still plays that list.
+ */
+internal class GeneratedQueueContent(private val uris: Set<String>, private val identityKeys: Set<String>) {
+
+    /** Whether the track with [uri] and [identityKey] is one of the list's tracks. */
+    fun holds(uri: String, identityKey: String): Boolean =
+        uri in uris || (identityKey.isNotBlank() && identityKey in identityKeys)
+
+    companion object {
+        fun of(tracks: List<Track>) = GeneratedQueueContent(
+            uris = tracks.mapNotNullTo(mutableSetOf()) { it.uri.takeIf(String::isNotBlank) },
+            identityKeys = tracks.mapNotNullTo(mutableSetOf()) { track ->
+                trackIdentityKey(track.artistNames.substringBefore(","), track.name).takeIf(String::isNotBlank)
+            }
+        )
+    }
+}
+
+/**
+ * Moves the generated modes in [active] (those of queues in [generatedQueues]) into [awaiting]
+ * and forgets every mode in [active].
+ *
+ * It runs on every Disconnected, Connecting and Error state, so a reconnect with retries runs it
+ * several times in a row. [awaiting] is therefore added to and never cleared here: the first run
+ * moves the modes, and a later run, which finds [active] already empty, must not wipe them. A
+ * mode set during the reconnect is newer and replaces the one set aside for its queue.
+ */
+internal fun moveGeneratedModesAside(
+    active: MutableMap<String, PlayerRepository.QueueFilterMode>,
+    generatedQueues: Set<String>,
+    awaiting: MutableMap<String, PlayerRepository.QueueFilterMode>,
+) {
+    for ((queueId, mode) in active) {
+        if (mode != PlayerRepository.QueueFilterMode.NORMAL && queueId in generatedQueues) awaiting[queueId] = mode
+    }
+    active.clear()
+}

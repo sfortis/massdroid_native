@@ -8,6 +8,7 @@ import net.asksakis.massdroidv2.domain.model.PlayerConfig
 import net.asksakis.massdroidv2.domain.model.QueueItem
 import net.asksakis.massdroidv2.domain.model.QueueItemsSnapshot
 import net.asksakis.massdroidv2.domain.model.QueueState
+import net.asksakis.massdroidv2.domain.model.Track
 
 data class PlayerDiscontinuityCommand(
     val playerId: String,
@@ -225,7 +226,32 @@ interface PlayerRepository {
     fun updateCurrentTrackFavorite(favorite: Boolean)
     fun updateCurrentTrackLyrics(plainLyrics: String?, lrcLyrics: String?)
     fun setQueueFilterMode(playerId: String, mode: QueueFilterMode)
+
+    /**
+     * Sets [mode] ahead of the `play_media` that delivers a generated list, so plays reported
+     * before its answer are already attributed to it. Unlike [setQueueFilterMode] it does not
+     * filter the queue, which still holds the listener's own tracks until the server takes the
+     * new list; call [commitQueueFilterMode] once it has, or [revertQueueFilterMode] with the
+     * returned previous mode if it refused.
+     *
+     * [delivered] are the tracks the list holds, when the app chose them. They let a reconnect
+     * keep the mode only while the queue still plays that list; without them (a server radio)
+     * the mode does not survive a reconnect.
+     */
+    fun prepareQueueFilterMode(playerId: String, mode: QueueFilterMode, delivered: List<Track> = emptyList()): QueueFilterMode?
+
+    /** Filters the queue under the mode [prepareQueueFilterMode] set, now that it holds the list. */
+    fun commitQueueFilterMode(playerId: String)
+
+    /** Puts back the mode a [prepareQueueFilterMode] replaced, after the server refused the list. */
+    fun revertQueueFilterMode(playerId: String, previous: QueueFilterMode?)
     fun notifyQueueReplacement(queueId: String)
+
+    /**
+     * Takes back a [notifyQueueReplacement] whose replace the server refused, so the track that
+     * keeps playing is recorded normally when it ends.
+     */
+    fun withdrawQueueReplacement(queueId: String)
 
     /** Returns player-provider instances that expose the CREATE_GROUP_PLAYER feature. */
     suspend fun getGroupCapableProviders(): List<GroupProviderOption>

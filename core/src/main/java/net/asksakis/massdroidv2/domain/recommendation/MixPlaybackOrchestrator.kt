@@ -706,13 +706,55 @@ class MixPlaybackOrchestrator @Inject constructor(
         logSource: String,
         clusterGenres: Set<String> = emptySet()
     ) {
-        playerRepository.setQueueFilterMode(queueId, PlayerRepository.QueueFilterMode.SMART_GENERATED)
-        val result = playMediaSalvagingBadItems(
+        val result = withGeneratedQueueMode(
             queueId,
-            tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }
-        )
+            PlayerRepository.QueueFilterMode.SMART_GENERATED,
+            delivered = tracks
+        ) {
+            playMediaSalvagingBadItems(
+                queueId,
+                tracks.mapNotNull { it.uri.takeIf(String::isNotBlank) }
+            )
+        }
         commitMixCooldowns(tracks, result, pickedGenre, clusterGenres)
         logQueueContents(queueId, logSource, awaitQueueItems = true)
+    }
+
+    /**
+     * Runs [deliver] with the queue's filter mode set to [mode], and makes the mode stick only
+     * if the server takes the list.
+     *
+     * The mode is set before the call, because the server announces the new current track
+     * before it answers and that play must already count as generated. It used to be set with
+     * [PlayerRepository.setQueueFilterMode], which also filters the queue at once: that ran on
+     * the listener's OWN queue, before the mix replaced it, and stayed applied when the server
+     * then refused the mix. Now the queue is filtered only after delivery, and a refusal (an
+     * error, or a result [accepted] rejects) puts the previous mode back. A timeout, a lost
+     * connection or a cancellation leaves the mode as set, because the list may have landed.
+     * [delivered] are the tracks of a list the app chose, which let the mode survive a reconnect.
+     */
+    private suspend fun <T> withGeneratedQueueMode(
+        queueId: String,
+        mode: PlayerRepository.QueueFilterMode,
+        delivered: List<Track> = emptyList(),
+        accepted: (T) -> Boolean = { true },
+        deliver: suspend () -> T
+    ): T {
+        val previous = playerRepository.prepareQueueFilterMode(queueId, mode, delivered)
+        val outcome = try {
+            deliver()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (!(e is MaApiException && e.mayHaveTakenEffect)) playerRepository.revertQueueFilterMode(queueId, previous)
+            throw e
+        }
+        if (accepted(outcome)) {
+            playerRepository.commitQueueFilterMode(queueId)
+        } else {
+            playerRepository.revertQueueFilterMode(queueId, previous)
+        }
+        return outcome
     }
 
     /**
@@ -1486,6 +1528,16 @@ class MixPlaybackOrchestrator @Inject constructor(
         val seedPool = rankedUris.take(GENRE_RADIO_ATTEMPT_POOL_SIZE)
         if (seedPool.isEmpty()) return false
 
+        return withGeneratedQueueMode(
+            queueId,
+            PlayerRepository.QueueFilterMode.RADIO_SMART,
+            accepted = { started -> started }
+        ) {
+            attemptGenreRadioBatches(queueId, genre, seedPool)
+        }
+    }
+
+    private suspend fun attemptGenreRadioBatches(queueId: String, genre: String, seedPool: List<String>): Boolean {
         for (batchSize in GENRE_RADIO_BATCH_SIZES) {
             val batches = seedPool.chunked(batchSize)
             for ((index, batch) in batches.withIndex()) {
@@ -1494,10 +1546,6 @@ class MixPlaybackOrchestrator @Inject constructor(
                         TAG,
                         "startGenreRadio attempt: genre='$genre', batchSize=${batch.size}, " +
                             "batch=${index + 1}/${batches.size}, seeds=${batch.joinToString()}"
-                    )
-                    playerRepository.setQueueFilterMode(
-                        queueId,
-                        PlayerRepository.QueueFilterMode.RADIO_SMART
                     )
                     musicRepository.playMedia(
                         queueId = queueId,

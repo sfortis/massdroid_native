@@ -455,36 +455,52 @@ class MusicRepositoryImpl @Inject constructor(
         // guards against a caller that did not.
         val sortBy = sortKey?.takeIf { supportsServerSideSort(it) }?.serverKey
 
-        val shouldNotifyReplacement = option == "replace"
-        val shouldNotifyPlayback = startsPlayback(option)
-        if (!awaitResponse) {
-            if (shouldNotifyReplacement) {
-                playerRepository.get().notifyQueueReplacement(queueId)
-            }
-            if (shouldNotifyPlayback) {
-                notifyPlaybackFor(queueId)
-            }
+        sendPlayMedia(queueId, option, awaitResponse) {
+            wsClient.sendCommand(
+                MaCommands.PlayerQueues.PLAY_MEDIA,
+                playMediaArgs(
+                    queueId = queueId,
+                    uris = listOf(uri),
+                    option = option,
+                    radioMode = radioMode,
+                    sortBy = sortBy,
+                    startItem = startItem
+                ),
+                awaitResponse = awaitResponse
+            )
         }
-        wsClient.sendCommand(
-            MaCommands.PlayerQueues.PLAY_MEDIA,
-            playMediaArgs(
-                queueId = queueId,
-                uris = listOf(uri),
-                option = option,
-                radioMode = radioMode,
-                sortBy = sortBy,
-                startItem = startItem
-            ),
-            awaitResponse = awaitResponse
-        )
-        if (awaitResponse) {
-            if (shouldNotifyReplacement) {
-                playerRepository.get().notifyQueueReplacement(queueId)
-            }
-            if (shouldNotifyPlayback) {
-                notifyPlaybackFor(queueId)
-            }
+    }
+
+    /**
+     * Sends a `play_media` with the bookkeeping that has to surround it.
+     *
+     * A replace is marked BEFORE the command goes out, even when the caller waits for the answer.
+     * The server announces the new current track with QUEUE_UPDATED before it answers the call
+     * (measured 2 ms apart on 2026-10-21). Marked after the answer, the mark landed on the mix's
+     * first track: the track the mix interrupted was recorded as a full play, and the mix's first
+     * track never was. The mark is taken back only when the server refused the call, because a
+     * timeout, a lost connection or a cancelled call may still have replaced the queue.
+     */
+    private suspend fun sendPlayMedia(
+        queueId: String,
+        option: String?,
+        awaitResponse: Boolean,
+        send: suspend () -> Unit
+    ) {
+        val replaces = option == OPTION_REPLACE
+        val startsPlayback = startsPlayback(option)
+        val players = playerRepository.get()
+        if (replaces) players.notifyQueueReplacement(queueId)
+        if (startsPlayback && !awaitResponse) notifyPlaybackFor(queueId)
+        try {
+            send()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (replaces && !(e is MaApiException && e.mayHaveTakenEffect)) players.withdrawQueueReplacement(queueId)
+            throw e
         }
+        if (startsPlayback && awaitResponse) notifyPlaybackFor(queueId)
     }
 
     /**
@@ -634,29 +650,13 @@ class MusicRepositoryImpl @Inject constructor(
         awaitResponse: Boolean,
         timeoutMs: Long?
     ) {
-        val shouldNotifyReplacement = option == "replace"
-        val shouldNotifyPlayback = startsPlayback(option)
-        if (!awaitResponse) {
-            if (shouldNotifyReplacement) {
-                playerRepository.get().notifyQueueReplacement(queueId)
-            }
-            if (shouldNotifyPlayback) {
-                notifyPlaybackFor(queueId)
-            }
-        }
-        wsClient.sendCommand(
-            MaCommands.PlayerQueues.PLAY_MEDIA,
-            playMediaArgs(queueId = queueId, uris = uris, option = option, radioMode = radioMode),
-            awaitResponse = awaitResponse,
-            timeoutMs = timeoutMs ?: 30_000
-        )
-        if (awaitResponse) {
-            if (shouldNotifyReplacement) {
-                playerRepository.get().notifyQueueReplacement(queueId)
-            }
-            if (shouldNotifyPlayback) {
-                notifyPlaybackFor(queueId)
-            }
+        sendPlayMedia(queueId, option, awaitResponse) {
+            wsClient.sendCommand(
+                MaCommands.PlayerQueues.PLAY_MEDIA,
+                playMediaArgs(queueId = queueId, uris = uris, option = option, radioMode = radioMode),
+                awaitResponse = awaitResponse,
+                timeoutMs = timeoutMs ?: 30_000
+            )
         }
     }
 

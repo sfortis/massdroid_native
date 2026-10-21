@@ -1143,6 +1143,12 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
      */
     val isConnectionLost: Boolean get() = code == CONNECTION_LOST_CODE
 
+    /**
+     * True when the command may have run although the call failed: no answer came in time, or
+     * the socket went away. False for a refusal, which says the command did not take effect.
+     */
+    val mayHaveTakenEffect: Boolean get() = isTimeout || isConnectionLost
+
     /** True when the server refused the command because the account is not an admin (MA 2.9.0+). */
     val isPermissionDenied: Boolean get() = code == INSUFFICIENT_PERMISSIONS_CODE
 
