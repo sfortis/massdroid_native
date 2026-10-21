@@ -453,15 +453,17 @@ class HomeViewModel @Inject constructor(
         Log.d(TAG, "breakSyncForPlayer: $playerId")
         viewModelScope.launch {
             try {
-                // Collect self plus any current childs so we clean both sides of
-                // the protocol sync regardless of whether this player is the
-                // leader or a synced member.
+                // A leader keeps playing and its members leave. Ungrouping the leader
+                // itself is the wrong command: MA hands the leadership and the queue to
+                // a remaining member (cmd_ungroup, "Transferring leadership"), so the
+                // member played on and the leader stopped. A member simply leaves.
                 val player = players.value.find { it.playerId == playerId }
-                val ids = buildSet {
-                    add(playerId)
-                    player?.groupChilds?.forEach { if (it != playerId) add(it) }
-                }.toList()
-                playerRepository.ungroupPlayers(ids)
+                val members = player?.groupChilds?.filter { it != playerId }.orEmpty()
+                if (members.isNotEmpty()) {
+                    playerRepository.setGroupMembers(playerId, removeIds = members)
+                } else {
+                    playerRepository.ungroupPlayer(playerId)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "breakSyncForPlayer failed: ${e.message}")
             }
