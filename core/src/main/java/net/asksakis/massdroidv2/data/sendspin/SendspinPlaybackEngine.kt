@@ -478,6 +478,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // is a no-op once already running.
         if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
         if (data.size <= HEADER_SIZE || data[0].toInt() != TYPE_PLAYER_AUDIO) return
+        if (outputFrozen && isSync) dropFramesPastDueWhileFrozen()
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
         // to be decoded/played. With MAX_ENCODED_BUFFER_BYTES well above the
@@ -1340,6 +1341,37 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         return true
     }
 
+    /**
+     * Keep a frozen grouped engine's encoded queue to audio that is not due yet.
+     *
+     * While frozen the producer stops draining the queue and the server keeps
+     * streaming at its own pace, so a call longer than about a minute filled the
+     * queue to [MAX_ENCODED_BUFFER_BYTES], after which the ceiling dropped every
+     * new frame. The unfreeze then found only stale audio, which the late-drop
+     * discards, and nothing for the live position until the server's look-ahead
+     * came due. Dropping from the head instead keeps the live position in the
+     * queue for as long as the call lasts. Runs on the receive thread while the
+     * producer is held by the frozen ring; a frame the producer takes meanwhile is
+     * stale too and is late-dropped downstream.
+     */
+    private fun dropFramesPastDueWhileFrozen() {
+        val sync = clockSynchronizer?.takeIf { it.isSynced() } ?: return
+        val now = nowUs()
+        var dropped = 0
+        while (true) {
+            val head = frameQueue.peek() ?: break
+            if (sync.serverToLocalUs(head.serverTimestampUs) >= now) break
+            val stale = frameQueue.poll() ?: break
+            frameQueueBytes.addAndGet(-stale.length.toLong())
+            dropped++
+        }
+        if (dropped > 0) frozenDroppedFrames += dropped
+    }
+
+    // Frames dropped by [dropFramesPastDueWhileFrozen] during the current freeze,
+    // logged when the freeze ends.
+    @Volatile private var frozenDroppedFrames = 0L
+
     private fun timingPlan(serverTimestampUs: Long): TimingPlan {
         // Output (HAL) latency is handled natively; this value is only used by
         // the DIRECT anchor (to start ~now + latency) and for logging.
@@ -1484,12 +1516,17 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
      */
     fun freezeOutput() {
         Log.d(TAG, "Freeze output (preserve buffer) buf=${bufferDurationMs()}ms state=$syncState")
+        frozenDroppedFrames = 0L
         outputFrozen = true
         nativeOutput.setFrozen(true)
     }
 
     fun unfreezeOutput() {
-        Log.d(TAG, "Unfreeze output (resume from preserved buffer) buf=${bufferDurationMs()}ms state=$syncState isSync=$isSync")
+        Log.d(
+            TAG,
+            "Unfreeze output (resume from preserved buffer) buf=${bufferDurationMs()}ms state=$syncState " +
+                "isSync=$isSync droppedPastDue=$frozenDroppedFrames",
+        )
         outputFrozen = false
         if (isSync) {
             // Grouped: the leader kept playing during the interruption, so the

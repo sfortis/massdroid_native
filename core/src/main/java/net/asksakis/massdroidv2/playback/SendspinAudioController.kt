@@ -113,6 +113,14 @@ class SendspinAudioController(
         // gain still restores at once, so this only delays the restore for an app
         // that never hands focus back.
         private const val DUCK_END_GRACE_MS = 1_500L
+        // How long a grouped transient focus loss waits before it decides whether a
+        // call caused it. Telecom requests the focus first and sets the call mode
+        // a few milliseconds later, so the mode still reads NORMAL inside the focus
+        // callback: measured 3 to 7 ms on the S25 on 2026-10-21, for an incoming
+        // call, an outgoing call and a Linphone call. The output is frozen silent
+        // for the whole window, so a longer wait only delays the pause of a loss
+        // that turns out not to be a call.
+        private const val CALL_MODE_SETTLE_MS = 500L
         // Usages that mean "another app is deliberately talking over us". Plain
         // media is NOT here and cannot be: our own output carries that usage, so
         // it would match permanently. Another app's media is caught by counting
@@ -1323,6 +1331,7 @@ class SendspinAudioController(
         reconnectReassertJob = null
         clearDuck()
         cancelHeldCallGain()
+        cancelCallModeCheck()
         routeLossConfirmJob?.let {
             it.cancel()
             routeLossConfirmJob = null
@@ -1526,6 +1535,9 @@ class SendspinAudioController(
                     AudioManager.AUDIOFOCUS_GAIN -> {
                         Log.i(TAG, "Audio focus gained, isStreaming=$isStreaming isReady=$isReady userIntent=${_userIntent.value}")
                         hasAudioFocus = true
+                        // A gain inside the check window ends the loss it was
+                        // judging; the freeze stays and the gain below lifts it.
+                        cancelCallModeCheck()
                         // Phone call still up: do not resume yet (mid-call focus
                         // blip). Keep the output frozen or paused and act on this
                         // gain once the call is over, see [holdFocusGainUntilCallEnds].
@@ -1541,8 +1553,8 @@ class SendspinAudioController(
                         Log.i(TAG, "Audio focus lost permanently")
                         hasAudioFocus = false
                         cancelHeldCallGain()
+                        cancelCallModeCheck()
                         clearDuck()
-                        unfreezeOutput("focus")
                         // Align intent with the permanent loss: another app
                         // has taken over, the user is no longer "trying to
                         // play". Without this, a later AUDIOFOCUS_GAIN would
@@ -1556,6 +1568,9 @@ class SendspinAudioController(
                             }
                         }
                         sendspinManager.pauseAudio()
+                        // After the pause, which empties the ring, so a solo output
+                        // does not fade the frozen audio back in first.
+                        unfreezeOutput("focus")
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                         hasAudioFocus = false
@@ -1574,35 +1589,39 @@ class SendspinAudioController(
                             return@setOnAudioFocusChangeListener
                         }
                         if (isStreaming) {
-                            if (isInActiveCall()) {
-                                // PHONE CALL: freeze (preserve the buffer) instead
-                                // of flushing. After a flush the server continues
-                                // from its look-ahead pointer and never resends the
-                                // current position, so the resume held only future
-                                // audio and the grouped snap waited out tens of
-                                // seconds of silence. Freezing keeps the buffer; on
-                                // regain solo resumes from the freeze point, grouped
-                                // skips forward to the live group position under the
-                                // mute. See unfreezeOutput.
-                                Log.i(TAG, "Audio focus lost transiently (active call): freezing")
-                                // The freeze supersedes any duck; see the
-                                // AUDIOFOCUS_LOSS branch for why this is tidiness.
-                                clearDuck()
-                                freezeOutput("focus")
-                            } else {
-                                // Another app asked us to STOP, not to turn down:
-                                // this code arrives from AUDIOFOCUS_GAIN_TRANSIENT,
-                                // while a notification or an alarm that only wants
-                                // to be heard over us asks for the MAY_DUCK variant
-                                // and lands in the branch below. Honour the
-                                // difference: pause here, duck there.
-                                Log.i(TAG, "Audio focus lost transiently (no call): pausing")
-                                pauseForTransientFocusLoss()
+                            val callModeSet = isInActiveCall()
+                            when (AudioFocusPolicy.interruptionHold(isGroupedForCallFreeze(), callModeSet)) {
+                                AudioFocusPolicy.InterruptionHold.PAUSE -> {
+                                    // Another app asked us to STOP, not to turn down:
+                                    // this code arrives from AUDIOFOCUS_GAIN_TRANSIENT,
+                                    // while a notification or an alarm that only wants
+                                    // to be heard over us asks for the MAY_DUCK variant
+                                    // and lands in the branch below. Honour the
+                                    // difference: pause here, duck there.
+                                    Log.i(TAG, "Audio focus lost transiently (solo, call=$callModeSet): pausing")
+                                    pauseForTransientFocusLoss()
+                                }
+                                AudioFocusPolicy.InterruptionHold.FREEZE -> {
+                                    Log.i(TAG, "Audio focus lost transiently (grouped, active call): freezing")
+                                    // The freeze supersedes any duck; see the
+                                    // AUDIOFOCUS_LOSS branch for why this is tidiness.
+                                    clearDuck()
+                                    freezeOutput("focus")
+                                }
+                                AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL -> {
+                                    Log.i(TAG, "Audio focus lost transiently (grouped): frozen, call check in ${CALL_MODE_SETTLE_MS}ms")
+                                    clearDuck()
+                                    freezeOutput("focus")
+                                    startCallModeCheck()
+                                }
                             }
                         }
                     }
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                         Log.i(TAG, "Audio focus: ducking (pre-duck vol=${sendspinManager.currentVolume})")
+                        // A duck replaces a pending call check: the loss it was
+                        // judging is over, so its freeze goes too.
+                        if (cancelCallModeCheck()) unfreezeOutput("focus")
                         duckUntilInterrupterEnds()
                     }
                 }
@@ -1726,6 +1745,47 @@ class SendspinAudioController(
         }
         heldCallGainListener = listener
         audioManager.addOnModeChangedListener(context.mainExecutor, listener)
+    }
+
+    // The pending check of whether a grouped transient focus loss was a call, or null.
+    // Main thread only, like the focus listener that starts it.
+    private var callModeCheckJob: Job? = null
+
+    /**
+     * A call freezes only a phone that is in a group and runs the SYNC engine, whose
+     * unfreeze skips forward to the live group position. Membership not observed yet
+     * counts as solo, which keeps the pause that solo playback has always used.
+     */
+    private fun isGroupedForCallFreeze(): Boolean =
+        lastObservedInGroup == true && sendspinManager.isSyncEngineActive
+
+    /**
+     * Decide whether the grouped loss that froze the output was a call, once the call
+     * mode has had [CALL_MODE_SETTLE_MS] to appear. A call keeps the freeze, so the
+     * group plays on without the phone; anything else pauses, as a solo loss does.
+     */
+    private fun startCallModeCheck() {
+        callModeCheckJob?.cancel()
+        callModeCheckJob = scope.launch(Dispatchers.Main.immediate) {
+            delay(CALL_MODE_SETTLE_MS)
+            callModeCheckJob = null
+            if (isInActiveCall()) {
+                Log.i(TAG, "Call mode set (mode=${audioManager.mode}): keeping the grouped freeze")
+            } else {
+                Log.i(TAG, "No call after ${CALL_MODE_SETTLE_MS}ms: pausing")
+                pauseForTransientFocusLoss()
+                // After the pause, which empties the ring, as in the permanent loss.
+                unfreezeOutput("focus")
+            }
+        }
+    }
+
+    /** @return true if a call check was pending; a newer focus change supersedes it. */
+    private fun cancelCallModeCheck(): Boolean {
+        val job = callModeCheckJob ?: return false
+        job.cancel()
+        callModeCheckJob = null
+        return true
     }
 
     /** Stop waiting for the end of a call: a newer focus change supersedes the held gain. */

@@ -1057,6 +1057,7 @@ class SendspinManager(
         return e.dacGroundTruthErrorMs() ?: (e.startupOffsetMs + e.smoothedSyncErrorMs).toFloat()
     }
     fun isSyncMuted(): Boolean = (engine as? SendspinPlaybackEngine)?.syncMuted ?: false
+    val isSyncEngineActive: Boolean get() = engine === syncEngine
     fun clockSampleCount(): Int = clockSynchronizer.currentSampleCount()
     fun clockErrorUs(): Long = clockSynchronizer.errorUs()
     fun clockRttUs(): Long = clockSynchronizer.lastRttUs()

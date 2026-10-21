@@ -335,4 +335,31 @@ class AudioFocusPolicyTest {
         )
         assertThat(cancels).isFalse()
     }
+
+    /**
+     * A solo phone pauses even for a call it recognises: a freeze would let the MA
+     * player run on through the call and bring the phone back to stale audio.
+     */
+    @Test
+    fun `a solo phone pauses for a call`() {
+        val hold = AudioFocusPolicy.interruptionHold(grouped = false, callModeSet = true)
+        assertThat(hold).isEqualTo(AudioFocusPolicy.InterruptionHold.PAUSE)
+    }
+
+    /** A grouped phone freezes alone for a call, so the pause does not stop the group. */
+    @Test
+    fun `a grouped phone freezes for a call`() {
+        val hold = AudioFocusPolicy.interruptionHold(grouped = true, callModeSet = true)
+        assertThat(hold).isEqualTo(AudioFocusPolicy.InterruptionHold.FREEZE)
+    }
+
+    /**
+     * Telecom requests the focus before it sets the call mode, so a grouped loss with
+     * the mode still normal must freeze and check again, not pause the group at once.
+     */
+    @Test
+    fun `a grouped loss before the call mode is set freezes and checks`() {
+        val hold = AudioFocusPolicy.interruptionHold(grouped = true, callModeSet = false)
+        assertThat(hold).isEqualTo(AudioFocusPolicy.InterruptionHold.FREEZE_AND_CHECK_FOR_CALL)
+    }
 }

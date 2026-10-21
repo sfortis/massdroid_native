@@ -196,6 +196,39 @@ object AudioFocusPolicy {
             TransientLoss.NOTHING_PLAYING
         }
 
+    /** How a transient (non-duck) loss holds playback that is really playing. */
+    enum class InterruptionHold {
+        /** Pause the MA player; the server resumes from the same position. */
+        PAUSE,
+
+        /** Freeze the phone alone, buffer kept, so the group plays on through a call. */
+        FREEZE,
+
+        /** Freeze at once, then pause unless the call mode appears within the settle window. */
+        FREEZE_AND_CHECK_FOR_CALL
+    }
+
+    /**
+     * Decide how a transient loss holds playback that is really playing.
+     *
+     * A solo phone always pauses, a call included. A freeze would leave the MA player
+     * running on the server for the whole call, and the phone would come back to
+     * stale audio while the server was minutes ahead; a pause resumes from the same
+     * position.
+     *
+     * A grouped phone freezes for a call, because a pause goes to the group and
+     * stops every speaker in it. Telecom requests the focus before it sets the call
+     * mode, so the mode usually still reads normal here (2026-10-21, every call on
+     * the S25). Then the freeze silences the output and the caller checks the mode
+     * again a moment later. Before this, the freeze branch was effectively never
+     * taken and a call paused the whole group.
+     */
+    fun interruptionHold(grouped: Boolean, callModeSet: Boolean): InterruptionHold = when {
+        !grouped -> InterruptionHold.PAUSE
+        callModeSet -> InterruptionHold.FREEZE
+        else -> InterruptionHold.FREEZE_AND_CHECK_FOR_CALL
+    }
+
     fun selectionCancelsOwedResume(newSelectedPlayerId: String?, localPlayerId: String?): Boolean =
         newSelectedPlayerId != null && localPlayerId != null && newSelectedPlayerId != localPlayerId
 }
