@@ -13,9 +13,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import net.asksakis.massdroidv2.data.sendspin.noise.NoisePairingCredentials
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 
@@ -110,10 +110,12 @@ class SendspinManager(
     val streamGeneration: StateFlow<Long> = _streamGeneration.asStateFlow()
 
     // Serializes the stream/start, stream/end-teardown, stop, and engine-swap
-    // lifecycle transitions so a grace-timer teardown cannot release the engine
-    // while a concurrent stream/start is configuring it. [streamEpoch] bumps on
-    // every such transition; a pending teardown captures it and no-ops if stale.
-    private val lifecycleMutex = Mutex()
+    // lifecycle transitions so nothing can release the engine while a concurrent
+    // stream/start is configuring it. [streamEpoch] bumps on every such transition;
+    // a pending teardown captures it and no-ops if stale. A plain monitor, not a
+    // coroutine Mutex, because stop() and setInSyncGroup() are not suspending and
+    // no section it guards suspends (the compiler rejects a suspension inside one).
+    private val lifecycleLock = Any()
     @Volatile private var streamEpoch = 0L
     private var idleTeardownJob: Job? = null
 
@@ -443,42 +445,21 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> group/update")
             }
 
-            is SendspinIncoming.StreamStart -> lifecycleMutex.withLock {
-                // A new stream cancels any pending idle teardown (this is the
-                // normal track-change stream/end -> stream/start). Bump the epoch
-                // so a teardown already past its delay() no-ops instead of racing
-                // the configure() below.
-                streamEpoch++
-                idleTeardownJob?.cancel()
-                idleTeardownJob = null
-                _audioResourcesActive.value = true
-                _streamActive.value = true
-                _streamGeneration.value += 1
-                val info = incoming.payload.player
-                val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
-                Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
-                hasActiveProtocolStream = true
-                lastStreamInfo = info
-                audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
-                // Local playback gain is now STREAM_MUSIC-driven via
-                // LocalSpeakerVolumeBridge, so the engine stays at its default
-                // 1.0 AudioTrack gain. Only the mute state needs to propagate.
-                val engineMuted = (engine as? SendspinPlaybackEngine)?.syncMuted ?: false
-                if (!engineMuted) {
-                    audio.setMuted(muted)
+            is SendspinIncoming.StreamStart -> {
+                val collector = currentCoroutineContext().job
+                synchronized(lifecycleLock) {
+                    // A stop() that ran while this message waited for the lock has
+                    // released the engine and cancelled this collector; configuring
+                    // now would leave a codec, a producer and an output running
+                    // behind a stopped manager.
+                    if (collector.isActive) onStreamStart(incoming.payload.player)
                 }
-                _streamCodec.value = info.codec.uppercase()
-                _streamFormat.value = StreamFormatSnapshot(
-                    codec = info.codec.uppercase(),
-                    sampleRate = info.sampleRate,
-                    bitDepth = info.bitDepth,
-                    channels = info.channels,
-                )
-                client.updateState(SendspinState.STREAMING)
             }
 
             is SendspinIncoming.StreamEnd -> {
-                val myEpoch = lifecycleMutex.withLock {
+                val collector = currentCoroutineContext().job
+                val myEpoch = synchronized(lifecycleLock) {
+                    if (!collector.isActive) return
                     Log.d("sendspindbg", ">>> stream/end proto_active=$hasActiveProtocolStream buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
                     hasActiveProtocolStream = false
                     _streamActive.value = false
@@ -496,11 +477,11 @@ class SendspinManager(
                 // swap during the grace makes this a no-op.
                 idleTeardownJob = scope.launch {
                     delay(IDLE_TEARDOWN_GRACE_MS)
-                    lifecycleMutex.withLock {
-                        if (streamEpoch != myEpoch || hasActiveProtocolStream) return@withLock
+                    synchronized(lifecycleLock) {
+                        if (streamEpoch != myEpoch || hasActiveProtocolStream) return@synchronized
                         if (_connectionState.value == SendspinState.DISCONNECTED ||
                             _connectionState.value == SendspinState.CONNECTING
-                        ) return@withLock
+                        ) return@synchronized
                         Log.d(TAG, "Sendspin idle ${IDLE_TEARDOWN_GRACE_MS}ms after stream/end: releasing audio resources (client stays connected)")
                         engine.release()
                         _audioResourcesActive.value = false
@@ -529,6 +510,40 @@ class SendspinManager(
                 Log.d("sendspindbg", ">>> unknown type: ${incoming.type}")
             }
         }
+    }
+
+    /** Runs under [lifecycleLock]. */
+    private fun onStreamStart(info: StreamStartPlayerInfo) {
+        // A new stream cancels any pending idle teardown (this is the
+        // normal track-change stream/end -> stream/start). Bump the epoch
+        // so a teardown already past its delay() no-ops instead of racing
+        // the configure() below.
+        streamEpoch++
+        idleTeardownJob?.cancel()
+        idleTeardownJob = null
+        _audioResourcesActive.value = true
+        _streamActive.value = true
+        _streamGeneration.value += 1
+        val startType = if (hasActiveProtocolStream) ProtocolStartType.CONTINUATION else ProtocolStartType.NEW_STREAM
+        Log.d("sendspindbg", ">>> stream/start $startType ${info.codec} ${info.sampleRate}Hz buf=${audio.bufferDurationMs()}ms sync=${audio.syncState}")
+        hasActiveProtocolStream = true
+        lastStreamInfo = info
+        audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
+        // Local playback gain is now STREAM_MUSIC-driven via
+        // LocalSpeakerVolumeBridge, so the engine stays at its default
+        // 1.0 AudioTrack gain. Only the mute state needs to propagate.
+        val engineMuted = (engine as? SendspinPlaybackEngine)?.syncMuted ?: false
+        if (!engineMuted) {
+            audio.setMuted(muted)
+        }
+        _streamCodec.value = info.codec.uppercase()
+        _streamFormat.value = StreamFormatSnapshot(
+            codec = info.codec.uppercase(),
+            sampleRate = info.sampleRate,
+            bitDepth = info.bitDepth,
+            channels = info.channels,
+        )
+        client.updateState(SendspinState.STREAMING)
     }
 
     private fun publishNoiseSecurity() {
@@ -784,7 +799,12 @@ class SendspinManager(
         if (enabled) setInSyncGroup(false)
     }
 
-    fun setInSyncGroup(grouped: Boolean) {
+    // Under [lifecycleLock]: a swap releases the outgoing engine, and a stream/start
+    // configuring that same engine on the message thread would otherwise leave its
+    // codec, producer and output running after the swap.
+    fun setInSyncGroup(grouped: Boolean) = synchronized(lifecycleLock) { swapEngineForGroup(grouped) }
+
+    private fun swapEngineForGroup(grouped: Boolean) {
         val effectiveGrouped = grouped && !forceSolo
         groupedForCodec = effectiveGrouped
         updatePreferredCodec()
@@ -1110,7 +1130,9 @@ class SendspinManager(
         SyncState.SYNC_ERROR_REBUFFERING -> true
     }
 
-    fun stop() {
+    fun stop() = synchronized(lifecycleLock) { stopLocked() }
+
+    private fun stopLocked() {
         // Invalidate any pending idle teardown (epoch bump makes a mid-delay
         // teardown no-op under the mutex; releaseInternal is idempotent anyway).
         idleTeardownJob?.cancel()

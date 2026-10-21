@@ -14,7 +14,12 @@ import android.util.Log
  * shallow buffer. See [SendspinOutputEngine] header for the full rationale.
  *
  * Threading: [write] is called only from the decode/playback thread (single
- * producer). [start]/[stop]/[flush]/[release] come from the control path.
+ * producer). [start]/[stop]/[flush]/[release] come from the control path. Every
+ * call that passes the native pointer holds this object's monitor, the same one
+ * [start] and [stop] hold while they create and delete the engine, so no call can
+ * reach an engine that is being deleted. None of the native calls blocks (write
+ * copies into the ring and returns) and the native side never calls back into the
+ * JVM, so the monitor is held only briefly and cannot deadlock with the callback.
  *
  * PCM contract: [write] takes interleaved little-endian int16 frames. `offset`
  * must be 2-byte aligned (the native side reinterprets the buffer as int16);
@@ -51,6 +56,12 @@ class SendspinNativeOutput {
     @Volatile private var startFailed = false
 
     val isStarted: Boolean get() = ptr != 0L
+
+    // The only way to pass [ptr] to native code outside start/stop; see the class doc.
+    private inline fun <T> withEngine(ifStopped: T, block: (Long) -> T): T = synchronized(this) {
+        val p = ptr
+        if (p == 0L) ifStopped else block(p)
+    }
 
     /**
      * Opens and starts the native Oboe output stream. [driftCorrection] enables
@@ -97,8 +108,7 @@ class SendspinNativeOutput {
 
     /** Drops all buffered audio + timeline markers (seek / track change). */
     fun flush() {
-        val p = ptr
-        if (p != 0L) nativeFlush(p)
+        withEngine(Unit) { p -> nativeFlush(p) }
     }
 
     /**
@@ -107,21 +117,18 @@ class SendspinNativeOutput {
      * Returns frames accepted.
      */
     fun write(pcm: ByteArray, offset: Int, length: Int, presentationLocalUs: Long): Int {
-        val p = ptr
-        if (p == 0L || length <= 0) return 0
-        return nativeWrite(p, pcm, offset, length, presentationLocalUs)
+        if (length <= 0) return 0
+        return withEngine(0) { p -> nativeWrite(p, pcm, offset, length, presentationLocalUs) }
     }
 
     /** DAC presentation lag in microseconds (0 until the first valid timestamp). */
     fun outputLatencyUs(): Long {
-        val p = ptr
-        return if (p == 0L) 0L else nativeOutputLatencyUs(p)
+        return withEngine(0L) { p -> nativeOutputLatencyUs(p) }
     }
 
     /** Frames buffered (decoded, not yet played) in the native ring. */
     fun bufferedFrames(): Long {
-        val p = ptr
-        return if (p == 0L) 0L else nativeBufferedFrames(p)
+        return withEngine(0L) { p -> nativeBufferedFrames(p) }
     }
 
     /**
@@ -129,14 +136,12 @@ class SendspinNativeOutput {
      * AudioManager.getDevices() to recover device type / product name.
      */
     fun deviceId(): Int {
-        val p = ptr
-        return if (p == 0L) 0 else nativeDeviceId(p)
+        return withEngine(0) { p -> nativeDeviceId(p) }
     }
 
     /** Smoothed timeline drift in microseconds (intended minus DAC presentation). */
     fun driftEmaUs(): Long {
-        val p = ptr
-        return if (p == 0L) 0L else nativeDriftEmaUs(p)
+        return withEngine(0L) { p -> nativeDriftEmaUs(p) }
     }
 
     /**
@@ -145,20 +150,17 @@ class SendspinNativeOutput {
      * not a measurement.
      */
     fun driftMeasured(): Boolean {
-        val p = ptr
-        return p != 0L && nativeDriftMeasured(p)
+        return withEngine(false) { p -> nativeDriftMeasured(p) }
     }
 
     /** Cumulative ring-underrun frames (audible dropouts); 0 = clean. */
     fun underrunFrames(): Long {
-        val p = ptr
-        return if (p == 0L) 0L else nativeUnderrunFrames(p)
+        return withEngine(0L) { p -> nativeUnderrunFrames(p) }
     }
 
     /** Last applied resampler rate (1.0 = locked passthrough; off-1.0 = correcting). */
     fun resampleRate(): Double {
-        val p = ptr
-        return if (p == 0L) 1.0 else nativeResampleRateMicros(p) / 1_000_000.0
+        return withEngine(1.0) { p -> nativeResampleRateMicros(p) / 1_000_000.0 }
     }
 
     // Cached so a non-default gain (e.g. a transient focus duck) survives the
@@ -168,8 +170,7 @@ class SendspinNativeOutput {
     fun setVolume(volume: Float) {
         val v = volume.coerceIn(0f, 1f)
         this.volume = v
-        val p = ptr
-        if (p != 0L) nativeSetVolume(p, v)
+        withEngine(Unit) { p -> nativeSetVolume(p, v) }
     }
 
     // Cached so it survives the native recreate on every (re)open (see start()).
@@ -183,8 +184,7 @@ class SendspinNativeOutput {
     fun setCompressorLevel(level: Int) {
         val bounded = level.coerceIn(0, 3)
         compressorLevel = bounded
-        val p = ptr
-        if (p != 0L) nativeSetCompressorLevel(p, bounded)
+        withEngine(Unit) { p -> nativeSetCompressorLevel(p, bounded) }
     }
 
     // Cached so it survives the native recreate on every (re)open (see start()).
@@ -196,8 +196,7 @@ class SendspinNativeOutput {
      */
     fun setDither(enabled: Boolean) {
         ditherEnabled = enabled
-        val p = ptr
-        if (p != 0L) nativeSetDither(p, enabled)
+        withEngine(Unit) { p -> nativeSetDither(p, enabled) }
     }
 
     /**
@@ -209,8 +208,7 @@ class SendspinNativeOutput {
      * deep buffer).
      */
     fun setFrozen(frozen: Boolean) {
-        val p = ptr
-        if (p != 0L) nativeSetFrozen(p, frozen)
+        withEngine(Unit) { p -> nativeSetFrozen(p, frozen) }
     }
 
     /**
@@ -220,13 +218,11 @@ class SendspinNativeOutput {
      * restarts it quickly for the next stream.
      */
     fun pauseStream() {
-        val p = ptr
-        if (p != 0L) nativePauseStream(p)
+        withEngine(Unit) { p -> nativePauseStream(p) }
     }
 
     fun resumeStream() {
-        val p = ptr
-        if (p != 0L) nativeResumeStream(p)
+        withEngine(Unit) { p -> nativeResumeStream(p) }
     }
 
     /**
@@ -236,8 +232,7 @@ class SendspinNativeOutput {
      */
     fun isDisconnected(): Boolean {
         if (startFailed) return true
-        val p = ptr
-        return p != 0L && nativeIsDisconnected(p)
+        return withEngine(false) { p -> nativeIsDisconnected(p) }
     }
 
     @Synchronized
