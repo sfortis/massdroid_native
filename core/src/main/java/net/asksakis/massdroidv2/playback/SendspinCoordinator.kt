@@ -306,12 +306,17 @@ class SendspinCoordinator(
         // so we skip handover handling for it. Subsequent toggles trigger the
         // WS + connection-pool reset path.
         var lastWifiSeen: Boolean? = null
+        // The default network itself, so a switch between two networks of the same kind (one
+        // Wi-Fi to another, a car hotspot to the home Wi-Fi) is a handover too.
+        var lastNetwork: Network? = null
+        var lastWasVpn = false
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 // Treat wired Ethernet as a local high-bandwidth network too (Shield/TV).
                 val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                     caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
                 if (wifi != wifiState.value) {
                     Log.d(TAG, "Network changed: ${if (wifi) "WiFi" else "Mobile"}")
                     if (wifi) onWifiConnected("wifi-connected")
@@ -321,10 +326,20 @@ class SendspinCoordinator(
                 // for ~30-60s until the ping interval times out, and Coil keeps
                 // pulling stale connections from the pool (visible as missing
                 // album art after the switch).
-                if (lastWifiSeen != null && lastWifiSeen != wifi) {
-                    Log.d(TAG, "Transport flipped (wifi=$lastWifiSeen → $wifi), nudging WS + pool")
+                // A new default network of the same kind leaves the same dead socket
+                // behind. A VPN coming up or going down also changes the default
+                // network while the path underneath stays alive, so it is left out.
+                val transportFlipped = lastWifiSeen != null && lastWifiSeen != wifi
+                val networkSwitched = lastNetwork != null && network != lastNetwork && !vpn && !lastWasVpn
+                if (transportFlipped || networkSwitched) {
+                    Log.d(
+                        TAG,
+                        "Network handover (wifi=$lastWifiSeen → $wifi, switched=$networkSwitched), nudging WS + pool"
+                    )
                     wsClient.handleTransportChange()
                 }
+                lastNetwork = network
+                lastWasVpn = vpn
                 lastWifiSeen = wifi
                 wifiState.value = wifi
                 sendspinManager.setCellularHint(!wifi)
