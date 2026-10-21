@@ -26,6 +26,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" tools:node="remove" />
 
     <!-- appCategory=audio classifies the app for the car launcher / media surfaces. -->
     <application android:appCategory="audio">
@@ -100,9 +101,25 @@
             android:enabled="false"
             tools:node="merge" />
 
-        <!-- Follow Me (room-detection proximity scanning) has no place in a car. -->
+        <!-- Follow Me (room-detection proximity scanning) has no place in a car. Its start
+             receiver goes too: on every boot and every update it started the app in both
+             car users, the headless system user included, only to log that Follow Me is off,
+             and that process brought up a second media session. The media center binds the
+             playback service by itself when it needs it. -->
         <service
             android:name=".service.FollowMeService"
+            tools:node="remove" />
+        <receiver
+            android:name=".service.FollowMeStartReceiver"
+            tools:node="remove" />
+
+        <!-- No home screen widgets in a car. Glance's package-replaced receiver also started
+             the app in both car users after every update, like the Follow Me receiver above. -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.glance.appwidget.MyPackageReplacedReceiver"
             tools:node="remove" />
 
         <!-- Streams real artwork bytes to the AAOS media center over content://
