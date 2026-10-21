@@ -67,7 +67,7 @@ import net.asksakis.massdroidv2.ui.components.SheetDefaults
 internal fun LyricsSheet(
     lyrics: LyricsProvider.LyricsContent,
     isLoading: Boolean,
-    elapsedTime: Double,
+    elapsedTime: () -> Double,
     title: String,
     artist: String,
     lyricsTimingOffsetMs: Int,
@@ -146,7 +146,7 @@ internal fun LyricsSheet(
                 lyrics is LyricsProvider.LyricsContent.Synced -> {
                     SyncedLyricsContent(
                         parsedLines = lyrics.parsedLines,
-                        elapsedTimeMs = (elapsedTime * 1000).toLong(),
+                        elapsedTimeMs = (elapsedTime() * 1000).toLong(),
                         lyricsTimingOffsetMs = lyricsTimingOffsetMs,
                         onSeekToPosition = onSeekToLyricsPosition,
                         modifier = Modifier.weight(1f)

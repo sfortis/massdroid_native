@@ -34,12 +34,14 @@ import net.asksakis.massdroidv2.ui.util.isLongFormDuration
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SeekBar(
-    elapsed: Double,
+    /** Read here, so the position ticker recomposes only the bar and not the screen. */
+    elapsedProvider: () -> Double,
     duration: Double,
     onSeek: (Double) -> Unit,
     enabled: Boolean = true,
     compact: Boolean = false
 ) {
+    val elapsed = elapsedProvider()
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     var seeking by remember { mutableStateOf(false) }

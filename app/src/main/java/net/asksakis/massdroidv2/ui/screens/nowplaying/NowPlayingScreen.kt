@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -105,10 +106,17 @@ fun NowPlayingScreen(
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
     val queueState by viewModel.queueState.collectAsStateWithLifecycle()
-    val liveElapsedTime by viewModel.elapsedTime.collectAsStateWithLifecycle()
-    val optimisticElapsed by viewModel.optimisticElapsed.collectAsStateWithLifecycle()
-    val elapsedTime = if (liveElapsedTime > 0.0 || optimisticElapsed == null) liveElapsedTime
-        else optimisticElapsed ?: 0.0
+    // The position is read only where it is shown (the seek bar and the lyrics), so the
+    // 500 ms ticker recomposes those and not the whole screen.
+    val liveElapsedTime = viewModel.elapsedTime.collectAsStateWithLifecycle()
+    val optimisticElapsed = viewModel.optimisticElapsed.collectAsStateWithLifecycle()
+    val elapsedTime: () -> Double = remember(liveElapsedTime, optimisticElapsed) {
+        {
+            val live = liveElapsedTime.value
+            val optimistic = optimisticElapsed.value
+            if (live > 0.0 || optimistic == null) live else optimistic
+        }
+    }
     val blockedArtistUris by viewModel.blockedArtistUris.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val isLoadingPlaylists by viewModel.isLoadingPlaylists.collectAsStateWithLifecycle()
@@ -136,7 +144,6 @@ fun NowPlayingScreen(
     val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
     val isLoadingLyrics by viewModel.isLoadingLyrics.collectAsStateWithLifecycle()
     val lyricsTimingOffsetMs by viewModel.lyricsTimingOffsetMs.collectAsStateWithLifecycle(initialValue = 0)
-    val sendspinStatus by viewModel.sendspinStatus.collectAsStateWithLifecycle()
     val isSendspinPlayer by viewModel.isSendspinPlayer.collectAsStateWithLifecycle()
     val cachedTrackDisplay by viewModel.cachedTrackDisplay.collectAsStateWithLifecycle()
     val adjacentArtwork by viewModel.adjacentArtwork.collectAsStateWithLifecycle()
@@ -258,7 +265,9 @@ fun NowPlayingScreen(
         settledArtwork = imageUrl
     }
     val dominantColor by extractDominantColor(settledArtwork, isDark)
-    val animatedColor by animateColorAsState(
+    // Kept as a State and read in the draw phase below, so the colour animation on a track
+    // change repaints the backdrop without recomposing the screen every frame.
+    val animatedColor = animateColorAsState(
         targetValue = dominantColor,
         // Slow enough to read as the background settling rather than switching.
         // A whole screen changing colour needs longer than a control does.
@@ -266,9 +275,6 @@ fun NowPlayingScreen(
         label = "bg_color"
     )
     val gradientAlpha = if (isDark) 0.35f else 0.25f
-    val gradient = Brush.verticalGradient(
-        colors = listOf(animatedColor.copy(alpha = gradientAlpha), surfaceColor)
-    )
     // Read from the settled cover, which is what the backdrop draws. Taking it from the
     // live url instead said there was artwork while the backdrop still had none, and the
     // screen sat on a bare scrim for the whole settle delay.
@@ -330,7 +336,18 @@ fun NowPlayingScreen(
             } else {
                 // No artwork to take the colour from, so fall back to the tint the
                 // screen has always had rather than leaving a flat surface.
-                Box(modifier = Modifier.fillMaxSize().background(gradient).grain(grainAlphaFor(isDark)))
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .drawBehind {
+                            drawRect(
+                                Brush.verticalGradient(
+                                    colors = listOf(animatedColor.value.copy(alpha = gradientAlpha), surfaceColor)
+                                )
+                            )
+                        }
+                        .grain(grainAlphaFor(isDark))
+                )
             }
             if (isLandscape) {
                 NowPlayingLandscape(
@@ -591,13 +608,10 @@ fun NowPlayingScreen(
         )
     }
 
-    val statusSnapshot = sendspinStatus
-    val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
-    if (showSendspinStatusSheet && statusSnapshot != null) {
-        SendspinStatusSheet(
-            status = statusSnapshot,
+    if (showSendspinStatusSheet) {
+        SendspinStatusSheetHost(
+            viewModel = viewModel,
             inputAudioFormat = audioFormat,
-            syncHistory = syncHistory,
             onDismiss = { showSendspinStatusSheet = false }
         )
     }
@@ -624,6 +638,28 @@ fun NowPlayingScreen(
     }
 }
 
+/**
+ * The Sendspin status sheet with its own collection of the status, which changes many
+ * times a second while the phone streams. Collected here, it recomposes only the open
+ * sheet; at the screen root it recomposed the whole player even with the sheet closed.
+ */
+@Composable
+private fun SendspinStatusSheetHost(
+    viewModel: NowPlayingViewModel,
+    inputAudioFormat: AudioFormatInfo?,
+    onDismiss: () -> Unit,
+) {
+    val status by viewModel.sendspinStatus.collectAsStateWithLifecycle()
+    val syncHistory by viewModel.sendspinSyncHistory.collectAsStateWithLifecycle()
+    val snapshot = status ?: return
+    SendspinStatusSheet(
+        status = snapshot,
+        inputAudioFormat = inputAudioFormat,
+        syncHistory = syncHistory,
+        onDismiss = onDismiss
+    )
+}
+
 @Composable
 private fun NowPlayingPortrait(
     paddingValues: PaddingValues,
@@ -637,7 +673,7 @@ private fun NowPlayingPortrait(
     isPlaying: Boolean,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
-    elapsedTime: Double,
+    elapsedTime: () -> Double,
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
@@ -710,7 +746,7 @@ private fun NowPlayingPortrait(
             Spacer(modifier = Modifier.height(28.dp))
 
             SeekBar(
-                elapsed = elapsedTime,
+                elapsedProvider = elapsedTime,
                 duration = duration,
                 onSeek = { if (controlsEnabled) viewModel.seek(it) },
                 enabled = controlsEnabled,
@@ -745,7 +781,7 @@ private fun NowPlayingLandscape(
     isPlaying: Boolean,
     currentTrack: net.asksakis.massdroidv2.domain.model.Track?,
     queueState: net.asksakis.massdroidv2.domain.model.QueueState?,
-    elapsedTime: Double,
+    elapsedTime: () -> Double,
     duration: Double,
     player: net.asksakis.massdroidv2.domain.model.Player?,
     controlsEnabled: Boolean,
@@ -891,7 +927,7 @@ private fun NowPlayingLandscape(
                 Spacer(modifier = Modifier.height(28.dp))
 
                 SeekBar(
-                    elapsed = elapsedTime,
+                    elapsedProvider = elapsedTime,
                     duration = duration,
                     onSeek = { if (controlsEnabled) viewModel.seek(it) },
                     enabled = controlsEnabled,
