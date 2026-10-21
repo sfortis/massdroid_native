@@ -931,7 +931,8 @@ class SeedTrackMixGenerator @Inject constructor(
         // Discovery tapers it to ZERO (pure discovery) — there is no floor. The
         // injected tracks carry a mid-pack score so they COMPETE with the
         // similars (no longer guaranteed/front-loaded), sampled per run so
-        // favourites rotate.
+        // favourites rotate. The ones that make the cut close the mix, so Music
+        // Assistant's Autoplay continues from them (see orderAutoplaySeedTail).
         val injectCount = seedTrackInjectCount(tuning.discovery, target)
         val injected = if (injectCount > 0) {
             lovedInjection(coherentGenres, coreFamilies, injectCount, mixSeed, recency, tuning.strictness)
@@ -1477,7 +1478,8 @@ class SeedTrackMixGenerator @Inject constructor(
                     uri = uri,
                     artistNames = seed.artistName
                 ),
-                score = OWN_INJECT_SCORE
+                score = OWN_INJECT_SCORE,
+                source = CandidateSource.OWN_LOVED
             )
         }
     }

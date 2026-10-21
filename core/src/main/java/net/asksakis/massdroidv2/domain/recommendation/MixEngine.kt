@@ -95,8 +95,19 @@ data class CandidateTrack(
      * the first track is what the listener judges the whole mix by - see
      * [MixEngine.buildFromCandidates].
      */
-    val verified: Boolean = true
+    val verified: Boolean = true,
+    /** Where the candidate came from; decides who may close the mix (see [orderAutoplaySeedTail]). */
+    val source: CandidateSource = CandidateSource.DISCOVERY
 )
+
+/** Origin of a [CandidateTrack]. */
+enum class CandidateSource {
+    /** Found through similarity from the mix's seeds. */
+    DISCOVERY,
+
+    /** One of the listener's own loved tracks, injected as a comfort anchor. */
+    OWN_LOVED
+}
 
 @Singleton
 class MixEngine @Inject constructor() {
@@ -302,7 +313,8 @@ class MixEngine @Inject constructor() {
                     artistUri = c.track.artistUri ?: c.track.uri,
                     verified = c.verified,
                     artistKey = key,
-                    score = c.score
+                    score = c.score,
+                    source = c.source
                 )
             }
             .sortedByDescending { it.score }
@@ -370,6 +382,7 @@ class MixEngine @Inject constructor() {
         // track is what "the first song is always something random" refers to.
         // Everything after it is untouched, so variety is unaffected.
         val opener = capped.firstOrNull { it.verified }?.artistKey
+        val minArtistGap = minOf(12, (usableArtists - 1).coerceAtLeast(0))
         val interleaved = interleaveByArtist(
             scoredTracks = capped,
             limit = target,
@@ -377,10 +390,40 @@ class MixEngine @Inject constructor() {
             artistPriority = if (opener == null) artistPriority
             else artistPriority + (opener to Int.MIN_VALUE),
             firstPassUniqueArtists = minOf(20, usableArtists),
-            minArtistGap = minOf(12, (usableArtists - 1).coerceAtLeast(0))
+            minArtistGap = minArtistGap
         )
         Log.d(TAG, "buildFromCandidates: ${interleaved.size}/${target} from ${candidates.size} candidates, $usableArtists artists, cap=$maxPerArtist")
-        return interleaved
+        return withTrustedTail(interleaved, capped, minArtistGap)
+    }
+
+    /**
+     * Closes the mix with the tracks Music Assistant should continue from: the listener's own
+     * loved tracks first, up to half the tail, then the best-scored candidates that fit the
+     * mix's family. An off-family candidate never seeds Autoplay. See [orderAutoplaySeedTail].
+     */
+    private fun withTrustedTail(mix: List<Track>, scored: List<ScoredTrack>, artistGap: Int): List<Track> {
+        val byUri = scored.associateBy { it.track.uri }
+        val entries = mix.mapNotNull { byUri[it.uri] }
+        // Every mix track comes from `scored`; if one ever did not, keep the order as built.
+        if (entries.size != mix.size) return mix
+        val ordered = orderAutoplaySeedTail(
+            mix = entries,
+            artistKeyOf = { it.artistKey },
+            isEligible = { it.source == CandidateSource.OWN_LOVED || it.verified },
+            isLoved = { it.source == CandidateSource.OWN_LOVED },
+            trustOrder = compareByDescending<ScoredTrack> { it.source == CandidateSource.OWN_LOVED }
+                .thenByDescending { it.score },
+            artistGap = artistGap
+        )
+        val tail = ordered.takeLast(MA_AUTOPLAY_SEED_WINDOW)
+        Log.d(
+            TAG,
+            "autoplay seed tail: ${tail.count { it.source == CandidateSource.OWN_LOVED }} loved, " +
+                "${tail.count { it.source != CandidateSource.OWN_LOVED && it.verified }} on-family, " +
+                "${tail.count { it.source != CandidateSource.OWN_LOVED && !it.verified }} other " +
+                "in the last ${tail.size}"
+        )
+        return ordered.map { it.track }
     }
 
     // --- SmartMix artist ordering ---
@@ -722,7 +765,8 @@ class MixEngine @Inject constructor() {
         // under library:// and deezer:// must share one bucket so the per-artist
         // cap and interleave gap can't be doubled by a cross-provider duplicate.
         val artistKey: String,
-        val score: Double
+        val score: Double,
+        val source: CandidateSource = CandidateSource.DISCOVERY
     )
 
     /** Normalized first-artist name, the cross-provider artist bucket key. */
