@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.union
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -21,13 +20,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
@@ -37,7 +34,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import android.content.res.Configuration
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -108,8 +116,14 @@ fun ExpandingPlayerSheet(
         scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) }
     }
 
-    // f = current fraction (0=collapsed, 1=expanded), driven by drag OR animation
-    val f = animatable.value.coerceIn(0f, 1f)
+    // The fraction (0 = collapsed, 1 = expanded), driven by drag OR animation. It is read
+    // only inside layout and draw lambdas, so a frame of the animation moves and repaints
+    // the sheet without recomposing it or Now Playing. Composition reads only these
+    // thresholds, which change about twice per animation.
+    val fraction: () -> Float = { animatable.value.coerceIn(0f, 1f) }
+    val showScrim by remember { derivedStateOf { fraction() > SCRIM_MIN_FRACTION } }
+    val showFull by remember { derivedStateOf { fraction() > FULL_MIN_FRACTION } }
+    val showMini by remember { derivedStateOf { fraction() < MINI_FADE_END } }
 
     // Horizontal insets (display cutout + side nav bar) so the collapsed mini
     // player and the expanded sheet don't slide under a side-mounted gesture bar
@@ -159,24 +173,17 @@ fun ExpandingPlayerSheet(
 
         val range = (cTop - eTop).coerceAtLeast(1f)
 
-        fun lerp(a: Float, b: Float) = a + (b - a) * f
-        val top = lerp(cTop, eTop)
-        val left = lerp(cLeft, eLeft)
-        val w = lerp(cWidth, eWidth)
-        val h = lerp(cHeight, eHeight)
+        fun lerp(a: Float, b: Float, f: Float) = a + (b - a) * f
         // Square at the top once expanded: a rounded corner against the top edge of the
-        // screen shows the black behind it rather than reading as a sheet.
-        val topR = lerp(16f, 0f)
-        val botR = lerp(16f, 0f)
-        val miniA = (1f - f / 0.4f).coerceIn(0f, 1f)
-        val fullA = ((f - 0.2f) / 0.8f).coerceIn(0f, 1f)
-        val scrimA = f * 0.5f
+        // screen shows the black behind it rather than reading as a sheet. The radius
+        // follows the height, so the shape needs no state of its own.
+        val sheetShape = remember(cHeight, eHeight) { SheetShape(cHeight, eHeight) }
         // Scrim
-        if (scrimA > 0.01f) {
+        if (showScrim) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = scrimA))
+                    .drawBehind { drawRect(Color.Black, alpha = fraction() * 0.5f) }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
@@ -187,9 +194,15 @@ fun ExpandingPlayerSheet(
         // Player surface
         Surface(
             modifier = Modifier
-                .offset(x = left.dp, y = top.dp)
-                .width(w.dp)
-                .height(h.dp)
+                .layout { measurable, _ ->
+                    val f = fraction()
+                    val widthPx = lerp(cWidth, eWidth, f).dp.roundToPx()
+                    val heightPx = lerp(cHeight, eHeight, f).dp.roundToPx()
+                    val placeable = measurable.measure(Constraints.fixed(widthPx, heightPx))
+                    layout(widthPx, heightPx) {
+                        placeable.place(lerp(cLeft, eLeft, f).dp.roundToPx(), lerp(cTop, eTop, f).dp.roundToPx())
+                    }
+                }
                 .draggable(
                     orientation = Orientation.Vertical,
                     state = rememberDraggableState { delta ->
@@ -198,6 +211,7 @@ fun ExpandingPlayerSheet(
                         scope.launch { animatable.snapTo(newF) }
                     },
                     onDragStopped = {
+                        val f = fraction()
                         val target = if (expanded) {
                             if (f > 0.8f) 1f else 0f // from expanded: small swipe down = close
                         } else {
@@ -215,18 +229,22 @@ fun ExpandingPlayerSheet(
                 // bar read as part of the list behind it. This one is set by its own
                 // colour and reaches upwards, which is the side the content is on.
                 .dropShadow(
-                    shape = RoundedCornerShape(topR.dp, topR.dp, botR.dp, botR.dp),
+                    shape = sheetShape,
                     color = SHEET_SHADOW_COLOR,
                     blurRadius = SHEET_SHADOW_BLUR
                 ),
-            shape = RoundedCornerShape(topR.dp, topR.dp, botR.dp, botR.dp),
+            shape = sheetShape,
             tonalElevation = 2.dp,
             color = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 // Full player (behind, always composed to avoid ViewModel recreation glitch)
-                if (expanded || f > 0.01f) {
-                    Box(modifier = Modifier.graphicsLayer { alpha = fullA }.fillMaxSize()) {
+                if (expanded || showFull) {
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer { alpha = ((fraction() - 0.2f) / 0.8f).coerceIn(0f, 1f) }
+                            .fillMaxSize()
+                    ) {
                         NowPlayingScreen(
                             isForeground = expanded,
                             // The sheet now reaches the status bar, so the player's own top
@@ -254,11 +272,11 @@ fun ExpandingPlayerSheet(
                 }
 
                 // Mini player (in front, stays at bottom during expand)
-                if (miniA > 0f) {
+                if (showMini) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .graphicsLayer { alpha = miniA }
+                            .graphicsLayer { alpha = (1f - fraction() / MINI_FADE_END).coerceIn(0f, 1f) }
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null
@@ -302,5 +320,27 @@ fun ExpandingPlayerSheet(
  * opposite ways on the same screen.
  */
 private val SHEET_SHADOW_BLUR = 14.dp
+
+// Fractions where parts of the sheet enter or leave the composition. The mini player
+// fades out over the first 40 % of the expansion.
+private const val SCRIM_MIN_FRACTION = 0.02f
+private const val FULL_MIN_FRACTION = 0.01f
+private const val MINI_FADE_END = 0.4f
+private val SHEET_CORNER_RADIUS = 16.dp
+
+/**
+ * The sheet's outline: rounded while collapsed, square once expanded, interpolated by the
+ * current height between [collapsedHeightDp] and [expandedHeightDp]. Reading the size
+ * instead of the animation keeps the shape free of state, and the outline is rebuilt
+ * whenever the size changes, which is every frame of the animation.
+ */
+private data class SheetShape(val collapsedHeightDp: Float, val expandedHeightDp: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val range = (expandedHeightDp - collapsedHeightDp).coerceAtLeast(1f)
+        val f = ((size.height / density.density - collapsedHeightDp) / range).coerceIn(0f, 1f)
+        val radiusPx = with(density) { SHEET_CORNER_RADIUS.toPx() } * (1f - f)
+        return Outline.Rounded(RoundRect(size.toRect(), CornerRadius(radiusPx)))
+    }
+}
 private val SHEET_SHADOW_COLOR = Color.Black.copy(alpha = 0.7f)
 
