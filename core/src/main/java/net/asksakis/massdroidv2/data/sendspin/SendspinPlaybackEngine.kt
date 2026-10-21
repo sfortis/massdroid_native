@@ -1449,10 +1449,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     private fun flushQueuesAndDecoder() {
-        // A flush discards the ring, so any pending freeze is moot; clear it so
-        // the native consumer is not left holding after the ring is reset.
-        outputFrozen = false
-        nativeOutput.setFrozen(false)
+        // A flush leaves the freeze alone. The freeze belongs to the controller (a
+        // call or a route loss) and ends only with its unfreeze; clearing it here let
+        // a stream/clear, pause or route change during a call play into the call.
+        // The native callback acks the flush before it checks the freeze, so a
+        // frozen output still resets its ring and holds the refill silent.
         frameQueue.clear()
         frameQueueBytes.set(0)
         lastEnqueuedTimestampUs = 0L
