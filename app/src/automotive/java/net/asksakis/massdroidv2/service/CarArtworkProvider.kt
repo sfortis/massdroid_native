@@ -38,7 +38,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * disk cache - and re-streams the decoded bytes, which the car CAN read across
  * the process boundary via the exported, grant-uri provider.
  *
- * URI shape: content://<applicationId>.artwork/img?url=<urlencoded-image-url>
+ * URI shape: content://<applicationId>.artwork/img?url=<urlencoded-image-url>&size=<px>&sig=<signature>,
+ * signed by [CarArtworkSigner]; unsigned or non-http(s) requests are refused.
  *
  * ## Why every fetch here is bounded (issue #37, the freeze)
  *
@@ -83,11 +84,8 @@ class CarArtworkProvider : ContentProvider() {
     private fun openAsset(uri: Uri): AssetFileDescriptor? {
         val bytes = try {
             when (uri.lastPathSegment) {
-                "img" -> uri.getQueryParameter("url")?.takeIf { it.isNotBlank() }?.let {
-                    val sizePx = uri.getQueryParameter("size")?.toIntOrNull()
-                        ?.coerceIn(MIN_ARTWORK_SIZE_PX, MAX_ARTWORK_SIZE_PX)
-                        ?: ARTWORK_SIZE_PX
-                    cachedPng(it, sizePx)
+                "img" -> signedImageRequest(uri)?.let { (url, sizePx) ->
+                    cachedPng(url, sizePx.coerceIn(MIN_ARTWORK_SIZE_PX, MAX_ARTWORK_SIZE_PX))
                 }
                 "res" -> uri.getQueryParameter("id")?.toIntOrNull()?.let { renderResource(it) }
                 else -> null
@@ -108,6 +106,25 @@ class CarArtworkProvider : ContentProvider() {
             }
         }
         return AssetFileDescriptor(pipe[0], 0, bytes.size.toLong())
+    }
+
+    /**
+     * The image address and size of an `img` URI, only when this app signed it (see
+     * [CarArtworkSigner]) and the address is http(s). Anything else is refused, because the
+     * provider is exported and would otherwise fetch whatever another app asks for.
+     */
+    private fun signedImageRequest(uri: Uri): Pair<String, Int>? {
+        val ctx = context ?: return null
+        val url = uri.getQueryParameter("url")?.takeIf { it.isNotBlank() } ?: return null
+        val sizePx = uri.getQueryParameter("size")?.toIntOrNull() ?: return null
+        val signature = uri.getQueryParameter("sig") ?: return null
+        val scheme = Uri.parse(url).scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        if (!CarArtworkSigner.verify(ctx, url, sizePx, signature)) {
+            Log.w(TAG, "refusing unsigned artwork request")
+            return null
+        }
+        return url to sizePx
     }
 
     /**
@@ -210,7 +227,6 @@ class CarArtworkProvider : ContentProvider() {
 
     private companion object {
         const val TAG = "CarArtwork"
-        const val ARTWORK_SIZE_PX = 512
         const val MIN_ARTWORK_SIZE_PX = 64
         const val MAX_ARTWORK_SIZE_PX = 1024
         const val ICON_SIZE_PX = 192
