@@ -107,6 +107,7 @@ class MaAuthRepositoryImpl @Inject constructor(
     override suspend fun signOut() {
         Log.d(TAG, "signOut(): wiping token, credentials, discover cache, and disconnecting")
         runCatching { wsClient.disconnect() }
+        wsClient.clearSavedCredentials()
         settingsRepository.setAuthToken("")
         settingsRepository.setUsername("")
         settingsRepository.setPassword("")
@@ -157,6 +158,7 @@ class MaAuthRepositoryImpl @Inject constructor(
                 // so the persisted auth state is unambiguous: OAuth-token only.
                 settingsRepository.setUsername("")
                 settingsRepository.setPassword("")
+                wsClient.clearSavedCredentials()
                 // The previous account's selected player almost certainly does
                 // not exist on the new server; drop it so we don't try to
                 // restore a phantom selection.

@@ -25,6 +25,16 @@ class TrustedServerCredentialsTest {
     }
 
     @Test
+    fun `a refused token on another server does not fall back to the saved password`() {
+        assertThat(passwordFallbackAllowedFor(trusted = "home", offered = "new")).isFalse()
+    }
+
+    @Test
+    fun `a refused token on the trusted server falls back to the saved password`() {
+        assertThat(passwordFallbackAllowedFor(trusted = "home", offered = "home")).isTrue()
+    }
+
+    @Test
     fun `the first connection after an update has no trusted server yet and is allowed`() {
         assertThat(credentialsAllowedFor(explicitSignIn = false, trusted = null, offered = "home")).isTrue()
     }

@@ -166,7 +166,7 @@ class MaWebSocketClient(
         private set
     private var serverUrl: String? = null
     private var pendingLogin: Pair<String, String>? = null
-    private var savedCredentials: Pair<String, String>? = null
+    @Volatile private var savedCredentials: Pair<String, String>? = null
     private var onTokenReceived: ((String) -> Unit)? = null
     @Volatile var userDisconnected = false
         private set
@@ -207,6 +207,15 @@ class MaWebSocketClient(
         if (username.isNotBlank() && password.isNotBlank()) {
             savedCredentials = username to password
         }
+    }
+
+    /**
+     * Forgets the password kept for the token fallback. Called on sign-out and on a
+     * sign-in that uses no password, so a failing token on the next server cannot
+     * fall back to the previous account's password.
+     */
+    fun clearSavedCredentials() {
+        savedCredentials = null
     }
 
     /**
@@ -832,7 +841,7 @@ class MaWebSocketClient(
                     } catch (e: Exception) {
                         Log.w(TAG, "Token auth failed: ${e.message}, trying saved credentials")
                         val creds = savedCredentials
-                        if (creds != null) {
+                        if (creds != null && passwordFallbackAllowedFor(trusted, offered)) {
                             loginWithCredentials(creds.first, creds.second)
                         } else {
                             throw e  // No fallback available
@@ -1170,6 +1179,14 @@ class MaWebSocketClient(
  */
 internal fun credentialsAllowedFor(explicitSignIn: Boolean, trusted: String?, offered: String?): Boolean =
     explicitSignIn || trusted == null || offered == null || offered == trusted
+
+/**
+ * Whether a refused token may fall back to the saved password. The password belongs to the
+ * [trusted] server, so even an explicit sign-in to another address does not send it there;
+ * with no trusted server yet (the first connection after an update) it may.
+ */
+internal fun passwordFallbackAllowedFor(trusted: String?, offered: String?): Boolean =
+    credentialsAllowedFor(explicitSignIn = false, trusted = trusted, offered = offered)
 
 internal const val DIFFERENT_SERVER_MESSAGE =
     "This address answered as a different Music Assistant server, so the app did not sign in. " +
