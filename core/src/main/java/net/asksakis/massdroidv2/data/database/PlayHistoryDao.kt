@@ -103,7 +103,24 @@ interface PlayHistoryDao {
         deleteBlockNotNamed(uri, name)
         replaceArtistIdentity(uri, name, mbid)
         deleteArtistGenres(uri)
+        // Music Assistant's answers about the previous artist, cached under the uri. Left in
+        // place, the new occupant would inherit its similar artists and its top tracks until
+        // the caches expire, and a list naming the uri as similar would fetch the new
+        // occupant's tracks for the previous artist's neighbour.
+        deleteMaSimilarArtists(uri)
+        deleteMaSimilarArtistsNaming(uri)
+        deleteArtistTopTracks(uri)
+        deleteArtistTrackCache(uri)
     }
+
+    @Query("DELETE FROM ma_similar_artists WHERE similar_uri = :uri")
+    suspend fun deleteMaSimilarArtistsNaming(uri: String)
+
+    @Query("DELETE FROM ma_artist_top_tracks WHERE artist_uri = :uri")
+    suspend fun deleteArtistTopTracks(uri: String)
+
+    @Query("DELETE FROM artist_track_cache WHERE artist_uri = :uri")
+    suspend fun deleteArtistTrackCache(uri: String)
 
     @Query(
         """
