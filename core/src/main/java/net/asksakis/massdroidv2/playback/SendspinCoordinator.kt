@@ -128,6 +128,7 @@ class SendspinCoordinator(
             sendspinManager.setForceSolo(true)
         }
         observePlayerId()
+        observeSendspinPlayerListed()
         observeEnabled()
         observeConnectionState()
         observeStreamLifecycle()
@@ -193,6 +194,30 @@ class SendspinCoordinator(
                     autoSelectSendspinForBt("sendspin_id_loaded")
                 }
             }
+        }
+    }
+
+    // The selection triggers (id loaded, WebSocket connected, BT callback) can all fire before
+    // the Sendspin player is registered on the server, which takes seconds over Noise and longer
+    // on a slow network. The repository then drops the selection because the server does not
+    // list the player yet, and nothing selected it again when it appeared, so the car had no
+    // player and browse playback found no queue (#37). Selecting once the player is listed
+    // closes that gap. The car always takes it, because it is the car's only player; the phone
+    // and the TV take it only on BT A2DP with nothing selected, so a user's choice is kept.
+    private fun observeSendspinPlayerListed() {
+        scope.launch {
+            combine(settingsRepository.sendspinClientId, playerRepository.players) { id, players ->
+                id?.takeIf { players.any { it.playerId == id } }
+            }
+                .distinctUntilChanged()
+                .collect { listed ->
+                    listed ?: return@collect
+                    val selected = playerRepository.selectedPlayer.value?.playerId
+                    if (selected == listed) return@collect
+                    if (!isAutomotive && (selected != null || !isBtA2dpActive())) return@collect
+                    Log.d(TAG, "Sendspin player listed, selecting it (was $selected)")
+                    playerRepository.selectPlayer(listed)
+                }
         }
     }
 
