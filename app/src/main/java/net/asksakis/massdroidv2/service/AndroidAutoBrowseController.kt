@@ -261,6 +261,9 @@ class AndroidAutoBrowseController(
                         session.notifySearchResultChanged(browser, query, totalCount, params)
                     } catch (e: Exception) {
                         Log.e(TAG, "onSearch($query) failed", e)
+                        // The host was told the search started; without a result count it keeps
+                        // waiting, so report an empty result.
+                        session.notifySearchResultChanged(browser, query, 0, params)
                     }
                 }
                 return Futures.immediateFuture(LibraryResult.ofVoid())
@@ -358,7 +361,9 @@ class AndroidAutoBrowseController(
             }
             else -> {
                 val uri = item.requestMetadata.mediaUri?.toString()
-                    ?: item.mediaId.takeIf { it.contains("/") }
+                    // A full uri; a structured "type|provider|id" whose id is a file path also
+                    // contains a slash, so the scheme separator is what tells them apart.
+                    ?: item.mediaId.takeIf { it.contains("://") }
                     ?: resolveMediaIdToUri(mediaId)
                 if (uri == null) {
                     Log.w(TAG, "onAddMediaItems: could not resolve mediaId=$mediaId")
@@ -405,7 +410,7 @@ class AndroidAutoBrowseController(
     // The AAOS media center renders root browsable children as TOP TABS and hard-caps
     // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). So the root
     // is exactly 4: Discover (the engine-driven landing feed, like the phone app),
-    // Library (nests the collection categories), Browse (server browse) and Smart Mixes
+    // Library (nests the collection categories), Browse (server browse) and Mixes
     // (Play Smart Mix + every genre radio in one tab). (Android Auto on the phone has no
     // such cap; it renders these as a flat list fine.)
     private fun buildRootCategories(): List<MediaItem> = listOf(
@@ -435,14 +440,14 @@ class AndroidAutoBrowseController(
         ),
         browseFolder(
             "smart_mixes",
-            "Smart Mixes",
+            "Mixes",
             MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS,
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_smart_mix,
             listItem = true
         ),
     )
 
-    // The "Smart Mixes" tab: the one-tap Smart Mix generator followed by a radio for
+    // The "Mixes" tab: the one-tap Smart Mix generator followed by a radio for
     // every genre a radio can start from. "smart_mix" -> ShortcutAction.SmartMix, "genre_radio|<g>" ->
     // ShortcutAction.GenreRadio (both via handleAddMediaItem).
     private suspend fun buildSmartMixesItems(): List<MediaItem> = buildList {
@@ -474,7 +479,7 @@ class AndroidAutoBrowseController(
                     section.tracks.map { it.toPlayableMediaItem(section.title) }
                 is DiscoverSection.PlaylistSection ->
                     section.playlists.map { it.toBrowsableMediaItem(section.title) }
-                // Genre radios have their own "Smart Mixes" tab in the car, so they are
+                // Genre radios have their own "Mixes" tab in the car, so they are
                 // not duplicated in Discover - which makes the album recommendations
                 // ("Albums You Might Like") the lead section.
                 is DiscoverSection.GenreRadioSection -> emptyList()
@@ -529,13 +534,12 @@ class AndroidAutoBrowseController(
         ),
     )
 
-    private suspend fun loadServerBrowse(path: String?): List<MediaItem> {
-        return runCatching { musicRepository.browse(path) }
-            .onFailure { Log.w(TAG, "Browse '${path ?: "/"}' failed: ${it.message}") }
-            .getOrDefault(emptyList())
+    // A failure is thrown on, not turned into an empty folder: onGetChildren answers it with an
+    // error the host retries, while an empty success is cached and the folder stays blank.
+    private suspend fun loadServerBrowse(path: String?): List<MediaItem> =
+        musicRepository.browse(path)
             .filter { it.name != ".." }
             .map { it.toBrowseMediaItem() }
-    }
 
     private fun BrowseItem.toBrowseMediaItem(): MediaItem {
         val mediaIdValue = if (isFolder) {
@@ -758,7 +762,7 @@ class AndroidAutoBrowseController(
         val parts = parentId.split("|")
         if (parts.size != 3) return emptyList()
         val (type, provider, itemId) = parts
-        return when (type) {
+        val items = when (type) {
             // Discography (provider catalogue), not getArtistAlbums: a library artist's
             // artist_albums(library) is ~empty on MA 2.9+, so the car would show no albums.
             "artist" -> musicRepository.getArtistDiscography(itemId, provider).map { it.toBrowsableMediaItem() }
@@ -777,6 +781,9 @@ class AndroidAutoBrowseController(
             }
             else -> emptyList()
         }
+        // The server returns the whole list, so the page the host asked for is cut here. Without
+        // it a host that pages got the full list again on every page.
+        return items.drop(page * pageSize).take(pageSize)
     }
 
     private fun Artist.toBrowsableMediaItem(groupTitle: String? = null): MediaItem = MediaItem.Builder()
