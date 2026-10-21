@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.service
 
+import android.annotation.SuppressLint
 import android.util.Log
 import kotlinx.coroutines.delay
 import net.asksakis.massdroidv2.data.proximity.AnchorType
@@ -59,6 +60,10 @@ class ProximityScanController(
         recoverScannerIfNeeded(highAccuracy = !lowPower, config = config)
     }
 
+    // The Bluetooth scan permission is checked one level up: ProximityController runs Follow Me
+    // only while hasFollowMePermissions() holds, and a permission revoked mid-run makes the
+    // scanner return FAILED, which backs off here.
+    @SuppressLint("MissingPermission")
     private fun ensurePersistentScan(lowPower: Boolean, config: ProximityConfig) {
         val now = System.currentTimeMillis()
         val wanted = ScanAnchors.from(config)

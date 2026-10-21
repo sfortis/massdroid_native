@@ -19,6 +19,7 @@ import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
 import net.asksakis.massdroidv2.ui.components.SettingsSwitchRow
 import net.asksakis.massdroidv2.ui.components.SettingsTone
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.security.KeyChain
 import androidx.compose.ui.autofill.ContentType
@@ -1263,6 +1264,9 @@ private fun hasBtConnectPermission(context: Context): Boolean =
         PackageManager.PERMISSION_GRANTED
 
 /** Paired BT audio devices as route keys ("bt:NAME"), matching the runtime route key. */
+// The permission is checked on the first line through hasBtConnectPermission, which lint does
+// not follow into.
+@SuppressLint("MissingPermission")
 private fun pairedBtAudioRouteKeys(context: Context): List<String> {
     if (!hasBtConnectPermission(context)) return emptyList()
     val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
