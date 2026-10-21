@@ -646,7 +646,10 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     protected open fun onRouteChangeBoundary() {
         startupWaitStartedMs = 0L
         resetSyncMetrics()
-        flushQueuesAndDecoder()
+        // Only the decoded audio carries the old route's latency; the encoded queue
+        // is still good and the server will not send it again. The relock starts
+        // from its head, about one ring depth (2.5 s) ahead of the dropped audio.
+        flushDecodedAudio()
         if (playbackStarted) {
             playbackStarted = false
             beginStartupMute()
@@ -1490,6 +1493,17 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         frameQueueBytes.set(0)
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
+        flushDecodedAudio()
+    }
+
+    /**
+     * Drop the decoded audio in flight, the native ring and the decoder, and keep
+     * the encoded queue behind it. For a boundary that invalidates only how the
+     * decoded audio was scheduled, such as a route change: the server never resends
+     * what it already sent, so dropping the queue too left the phone silent until
+     * the server's look-ahead (about 27 s) came due.
+     */
+    private fun flushDecodedAudio() {
         onFlush()
         nativeOutput.flush()
         // The marks and the codec's in-flight inputs are cleared together under
