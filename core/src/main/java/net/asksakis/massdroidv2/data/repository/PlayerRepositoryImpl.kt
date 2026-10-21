@@ -1578,11 +1578,19 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     private suspend fun refreshQueueForPlayer(playerId: String) {
+        // The selection this fetch is for. Every caller fetches for the current selection, and an
+        // answer that arrives after the user switched players belongs to the old one: written,
+        // it showed the old player's track, duration and position on the new one.
+        val selectionAtStart = selectedPlayerId
         try {
             val result = wsClient.sendCommand(
                 MaCommands.PlayerQueues.GET_ACTIVE_QUEUE,
                 ActiveQueueArgs(playerId = playerId)
             )
+            if (selectedPlayerId != selectionAtStart) {
+                Log.d(TAG, "Queue of $playerId arrived after the selection moved on; dropped")
+                return
+            }
             val serverQueue = result?.let { json.decodeFromJsonElement<ServerQueue>(it) }
             _queueState.value = serverQueue?.toDomain(imageResolver)
             if (serverQueue != null) {
@@ -1613,7 +1621,10 @@ class PlayerRepositoryImpl @Inject constructor(
     }
 
     private suspend fun refreshQueueForPlayerWithRetry(playerId: String) {
+        val selectionAtStart = selectedPlayerId
         repeat(RECONNECT_QUEUE_REFRESH_ATTEMPTS) { attempt ->
+            // A retry for a selection the user already left would only fetch the old queue again.
+            if (selectedPlayerId != selectionAtStart) return
             try {
                 refreshQueueForPlayer(playerId)
                 return
