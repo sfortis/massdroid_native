@@ -794,6 +794,9 @@ class MaWebSocketClient(
     }
 
     private fun authenticate() {
+        // The socket this sign-in belongs to. A newer connect() replaces it without failing the
+        // old socket's pending requests, so a late answer or timeout must not touch the state.
+        val gen = connectionGeneration
         scope.launch {
             try {
                 val login = pendingLogin
@@ -824,12 +827,28 @@ class MaWebSocketClient(
                     _connectionState.value = ConnectionState.Error("Missing server handshake")
                     return@launch
                 }
+                if (gen != connectionGeneration) return@launch
                 _connectionState.value = ConnectionState.Connected(info)
                 retriesEnabled = true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Auth failed: ${e.message}")
-                authToken = null
-                _connectionState.value = ConnectionState.Error("Authentication failed: ${e.message}")
+                if (gen != connectionGeneration) {
+                    Log.d(TAG, "Auth of a replaced socket ended: ${e.message}")
+                    return@launch
+                }
+                if (isTransientAuthFailure(e)) {
+                    // No answer is not a rejection. The token stays, so the app is not signed
+                    // out by a handover or a slow server; a retrying client drops this socket
+                    // and the normal reconnect signs in again.
+                    Log.w(TAG, "Auth interrupted: ${e.message}; keeping the token")
+                    _connectionState.value = ConnectionState.Error("No answer to sign-in: ${e.message}")
+                    if (retriesEnabled) webSocket?.close(1000, "auth interrupted")
+                } else {
+                    Log.e(TAG, "Auth failed: ${e.message}")
+                    authToken = null
+                    _connectionState.value = ConnectionState.Error("Authentication failed: ${e.message}")
+                }
             }
         }
     }
@@ -1118,6 +1137,13 @@ class MaWebSocketClient(
         }
     }
 }
+
+/**
+ * Whether a failed sign-in only lacked an answer (a timeout, or the socket went away) rather
+ * than being refused. Only a refusal may clear the saved token.
+ */
+internal fun isTransientAuthFailure(e: Throwable): Boolean =
+    e is MaApiException && e.mayHaveTakenEffect
 
 class MaApiException(message: String, val code: Int) : Exception(message) {
     /**
