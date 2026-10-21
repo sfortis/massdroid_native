@@ -928,6 +928,12 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         try {
             Log.d(TAG, "Reopen committing ($reason)")
             startNativeOutput()        // fresh stream on the now-settled route; clears disconnected_
+            // The fresh stream has its own latency and timestamp anchor, so a grouped
+            // engine relocks under the mute as for a route change. The controller only
+            // reports a change of route or of Bluetooth device, and a reopen on the
+            // same route (a call or a prompt preempting it) used to play on unmuted
+            // with stale sync state. DIRECT does nothing here, see its override.
+            onRouteChangeBoundary()
             refreshRoutedDevice()
             onRoutingChanged?.invoke()
         } finally {
