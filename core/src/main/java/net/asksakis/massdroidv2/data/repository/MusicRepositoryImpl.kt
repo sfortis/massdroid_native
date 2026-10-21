@@ -73,6 +73,14 @@ class MusicRepositoryImpl @Inject constructor(
         private const val SORT_BY_MIN_SCHEMA = 63
 
         /**
+         * The first schema with radio as `radio_playlist://` dynamic playlists (MA 2.10.0), where
+         * `radio_mode` became deprecated. The provider existed from the 2.10 betas, but the
+         * stable release is the line the app supports; a beta below it keeps `radio_mode`, which
+         * it still understands.
+         */
+        private const val RADIO_PLAYLIST_MIN_SCHEMA = 63
+
+        /**
          * How long a search waits before it gives up.
          *
          * Shorter than the 30 s default because someone is watching a spinner while it
@@ -385,6 +393,34 @@ class MusicRepositoryImpl @Inject constructor(
     override fun supportsServerSideSort(key: PlaylistSortKey): Boolean =
         key.serverKey == null || (wsClient.serverSchemaVersion() ?: 0) >= SORT_BY_MIN_SCHEMA
 
+    /**
+     * [uris] played as radio when [radioMode] asks for it, in the form this server expects.
+     *
+     * A server from schema [RADIO_PLAYLIST_MIN_SCHEMA] gets one `radio_playlist://` item per
+     * seed and no `radio_mode`; an older server gets the seeds with `radio_mode`, the only form
+     * it knows. Both play the same radio on a current server, which rewrites `radio_mode` the
+     * same way, but the explicit form keeps working once the deprecated flag is removed.
+     */
+    private fun playMediaArgs(
+        queueId: String,
+        uris: List<String>,
+        option: String?,
+        radioMode: Boolean,
+        sortBy: String? = null,
+        startItem: String? = null
+    ): PlayMediaArgs {
+        val asRadioPlaylists = radioMode &&
+            (wsClient.serverSchemaVersion() ?: 0) >= RADIO_PLAYLIST_MIN_SCHEMA
+        return PlayMediaArgs(
+            queueId = queueId,
+            mediaUris = if (asRadioPlaylists) uris.map(::radioPlaylistUri) else uris,
+            option = option,
+            radioMode = radioMode && !asRadioPlaylists,
+            sortBy = sortBy,
+            startItem = startItem
+        )
+    }
+
     override suspend fun playMedia(
         queueId: String,
         uri: String,
@@ -423,9 +459,9 @@ class MusicRepositoryImpl @Inject constructor(
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
-            PlayMediaArgs(
+            playMediaArgs(
                 queueId = queueId,
-                mediaUris = listOf(uri),
+                uris = listOf(uri),
                 option = option,
                 radioMode = radioMode,
                 sortBy = sortBy,
@@ -602,7 +638,7 @@ class MusicRepositoryImpl @Inject constructor(
         }
         wsClient.sendCommand(
             MaCommands.PlayerQueues.PLAY_MEDIA,
-            PlayMediaArgs(queueId = queueId, mediaUris = uris, option = option, radioMode = radioMode),
+            playMediaArgs(queueId = queueId, uris = uris, option = option, radioMode = radioMode),
             awaitResponse = awaitResponse,
             timeoutMs = timeoutMs ?: 30_000
         )

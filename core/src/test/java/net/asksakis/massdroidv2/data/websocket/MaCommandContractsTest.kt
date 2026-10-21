@@ -30,6 +30,22 @@ class MaCommandContractsTest {
     }
 
     @Test
+    fun `radioPlaylistUri names the seed's Endless Mix playlist the way MA does`() {
+        // The same string Music Assistant builds when it rewrites a radio_mode item.
+        assertThat(radioPlaylistUri("library://artist/59"))
+            .isEqualTo("radio_playlist://playlist/library://artist/59")
+        assertThat(radioPlaylistUri("spotify--abc://track/7"))
+            .isEqualTo("radio_playlist://playlist/spotify--abc://track/7")
+    }
+
+    @Test
+    fun `radioPlaylistUri leaves a radio playlist uri alone`() {
+        val uri = "radio_playlist://playlist/library://genre/12"
+
+        assertThat(radioPlaylistUri(uri)).isEqualTo(uri)
+    }
+
+    @Test
     fun `PlayMediaArgs emits radio_mode true and omits option when null`() {
         val json = PlayMediaArgs(queueId = "q2", mediaUris = listOf("u"), radioMode = true).toJson()
 

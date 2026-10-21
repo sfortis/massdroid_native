@@ -298,6 +298,19 @@ data class QueueItemsArgs(
     }
 }
 
+/**
+ * The radio of one seed as Music Assistant 2.10 and later names it: an "Endless Mix" dynamic
+ * playlist, `radio_playlist://playlist/<seed uri>`, for a track, artist, album, playlist or genre.
+ *
+ * It replaces `radio_mode`, which these servers still accept only by rewriting each item to this
+ * same URI (`queue_loader.py`), so sending it directly plays exactly the same radio. A URI that is
+ * already a radio playlist is returned unchanged, as the server does.
+ */
+fun radioPlaylistUri(seedUri: String): String =
+    if (seedUri.startsWith(RADIO_PLAYLIST_SCHEME)) seedUri else "${RADIO_PLAYLIST_SCHEME}playlist/$seedUri"
+
+private const val RADIO_PLAYLIST_SCHEME = "radio_playlist://"
+
 data class PlayMediaArgs(
     val queueId: String,
     val mediaUris: List<String>,
