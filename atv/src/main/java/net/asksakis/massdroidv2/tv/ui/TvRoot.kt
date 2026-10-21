@@ -200,8 +200,9 @@ fun TvRoot(
                     .align(Alignment.TopCenter)
                     .padding(top = 28.dp)
             )
-            // Offers a new release once the updater has found one.
-            TvUpdatePrompt()
+            // Offers a new release once the updater has found one. Only builds with the updater
+            // compose it, so R8 drops the download and install path from the play and fdroid builds.
+            if (net.asksakis.massdroidv2.tv.BuildConfig.ENABLE_UPDATE_CHECK) TvUpdatePrompt()
             }
         }
         !initialized -> TvStartupScreen()

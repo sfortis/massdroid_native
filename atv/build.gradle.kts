@@ -55,7 +55,13 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
-            isMinifyEnabled = false
+            // R8 drops the unused code (most of material-icons-extended, and the self-updater in
+            // the play and fdroid flavors) and stays reproducible for F-Droid, as the phone app is.
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             // Unsigned when no keystore is configured, as in the phone app: F-Droid builds the
             // fdroid flavor without our key, after deleting the signingConfigs block above.
             signingConfig = signingConfigs.findByName("release")?.takeIf { it.storeFile != null }
