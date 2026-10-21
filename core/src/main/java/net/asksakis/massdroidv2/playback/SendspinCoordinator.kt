@@ -321,20 +321,19 @@ class SendspinCoordinator(
                     Log.d(TAG, "Network changed: ${if (wifi) "WiFi" else "Mobile"}")
                     if (wifi) onWifiConnected("wifi-connected")
                 }
-                // Force fast WS reconnect + OkHttp pool eviction on transport
-                // flip. Without this, the dead WiFi socket keeps the WS alive
-                // for ~30-60s until the ping interval times out, and Coil keeps
-                // pulling stale connections from the pool (visible as missing
-                // album art after the switch).
-                // A new default network of the same kind leaves the same dead socket
-                // behind. A VPN coming up or going down also changes the default
-                // network while the path underneath stays alive, so it is left out.
+                // On a handover, evict the OkHttp connection pool, so Coil and new requests
+                // do not reuse idle connections bound to the old network (visible as missing
+                // album art after the switch). This does not close the open WebSockets: they
+                // recover through their ping timeout and the client's own network callback.
+                // A new default network of the same kind is a handover too. A VPN coming up
+                // or going down also changes the default network while the path underneath
+                // stays alive, so it is left out.
                 val transportFlipped = lastWifiSeen != null && lastWifiSeen != wifi
                 val networkSwitched = lastNetwork != null && network != lastNetwork && !vpn && !lastWasVpn
                 if (transportFlipped || networkSwitched) {
                     Log.d(
                         TAG,
-                        "Network handover (wifi=$lastWifiSeen → $wifi, switched=$networkSwitched), nudging WS + pool"
+                        "Network handover (wifi=$lastWifiSeen → $wifi, switched=$networkSwitched), evicting the connection pool"
                     )
                     wsClient.handleTransportChange()
                 }
