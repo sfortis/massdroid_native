@@ -134,6 +134,9 @@ class MixEngine @Inject constructor() {
         tracksByArtist: Map<String, List<Track>>,
         excludedArtistUris: Set<String>,
         excludedTrackUris: Set<String> = emptySet(),
+        // Rejected recordings by identity (see trackIdentityKey), for the copy of a disliked
+        // track that lives under another uri; the uri set alone let it back in.
+        excludedTrackKeys: Set<String> = emptySet(),
         favoriteArtistUris: Set<String>,
         favoriteAlbumUris: Set<String>,
         artistBaseScore: (String) -> Double,
@@ -179,6 +182,11 @@ class MixEngine @Inject constructor() {
                 .asSequence()
                 .filter { it.uri.isNotBlank() && trackDedupeKey(it) !in seenTrackKeys }
                 .filterNot { it.uri in excludedTrackUris }
+                .filterNot { track ->
+                    excludedTrackKeys.isNotEmpty() &&
+                        trackIdentityKey(track.artistNames.substringBefore(","), track.name)
+                            .takeIf { it.isNotBlank() } in excludedTrackKeys
+                }
                 .filterNot { track ->
                     val trackArtistKeys = buildSet {
                         addAll(track.artistUris)

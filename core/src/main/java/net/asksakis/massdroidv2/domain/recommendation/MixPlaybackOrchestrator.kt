@@ -1088,6 +1088,7 @@ class MixPlaybackOrchestrator @Inject constructor(
                 tracksByArtist = tracksByArtist,
                 excludedArtistUris = excludedArtistUris,
                 excludedTrackUris = mixExcludedTrackUris,
+                excludedTrackKeys = excludedTrackKeys,
                 favoriteArtistUris = favoriteArtistUris,
                 favoriteAlbumUris = favoriteAlbumUris,
                 artistBaseScore = { uri ->
@@ -1245,6 +1246,7 @@ class MixPlaybackOrchestrator @Inject constructor(
             tracksByArtist = tracksByArtist,
             excludedArtistUris = excludedArtistUris,
             excludedTrackUris = excludedTrackUrisForMix,
+            excludedTrackKeys = excludedTrackKeys,
             favoriteArtistUris = genreFavorites.toSet(),
             favoriteAlbumUris = favoriteAlbumUris,
             artistBaseScore = { uri ->

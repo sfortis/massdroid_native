@@ -609,10 +609,13 @@ interface PlayHistoryDao {
      * second uri, so a uri-only rejection let the other copy back into mixes. Music
      * Assistant may also resolve a requested track to a different version by itself.
      *
-     * Returns the lead artist only, which is what [trackIdentityKey] uses.
+     * Returns every credited artist, joined by [SUPPRESSED_ARTIST_SEPARATOR]. The table keeps
+     * no artist order, so the lead artist that [trackIdentityKey] uses on the mix side cannot be
+     * told apart here: taking one name (it used to be the alphabetically first) let "Zed feat.
+     * Alma" back into a mix whenever Zed was the lead and Alma sorted first.
      */
     @Query("""
-        SELECT t.uri AS uri, t.name AS trackName, MIN(a.name) AS artistName,
+        SELECT t.uri AS uri, t.name AS trackName, GROUP_CONCAT(a.name, char(31)) AS artistNames,
                t.score AS score, t.score_updated_at AS scoreUpdatedAt, t.disliked_at AS dislikedAt
         FROM tracks t
         LEFT JOIN track_artists ta ON ta.track_uri = t.uri
@@ -1245,10 +1248,14 @@ interface PlayHistoryDao {
  * A track that may be suppressed: its score state for the decision, and what is
  * needed to recognise the same recording elsewhere.
  */
+/** Separates the artist names in [SuppressedTrackRow.artistNames]; the ASCII unit separator, char(31). */
+const val SUPPRESSED_ARTIST_SEPARATOR = '\u001F'
+
 data class SuppressedTrackRow(
     val uri: String,
     val trackName: String,
-    val artistName: String?,
+    /** Every credited artist, joined by [SUPPRESSED_ARTIST_SEPARATOR]; null for a track with none. */
+    val artistNames: String?,
     val score: Double,
     val scoreUpdatedAt: Long,
     val dislikedAt: Long?

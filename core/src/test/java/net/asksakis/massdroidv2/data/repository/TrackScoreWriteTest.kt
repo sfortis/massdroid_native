@@ -9,6 +9,7 @@ import io.mockk.slot
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
+import net.asksakis.massdroidv2.data.database.SUPPRESSED_ARTIST_SEPARATOR
 import net.asksakis.massdroidv2.data.database.SuppressedTrackRow
 import net.asksakis.massdroidv2.data.database.TrackScoreRow
 import net.asksakis.massdroidv2.data.database.TransactionRunner
@@ -113,16 +114,33 @@ class TrackScoreWriteTest {
             .containsExactly("library://track/fresh", "library://track/untitled")
     }
 
+    @Test
+    fun `a disliked track with two artists is matched whichever of them leads`() = runTest {
+        // The database keeps no artist order, while a mix candidate is keyed by its lead
+        // artist. Keying only the alphabetically first name let "Zed feat. Alma" back in.
+        val now = System.currentTimeMillis()
+        coEvery { dao.getSuppressionCandidates(any()) } returns listOf(
+            row(
+                "library://track/duet", "Duet", score = 0.0, updatedAt = now, dislikedAt = now,
+                artists = "Alma${SUPPRESSED_ARTIST_SEPARATOR}Zed"
+            ),
+        )
+
+        assertThat(repo.getSuppressedTrackKeys())
+            .containsExactly(trackIdentityKey("Alma", "Duet"), trackIdentityKey("Zed", "Duet"))
+    }
+
     private fun row(
         uri: String,
         name: String,
         score: Double,
         updatedAt: Long,
         dislikedAt: Long? = null,
+        artists: String = "Some Artist",
     ) = SuppressedTrackRow(
         uri = uri,
         trackName = name,
-        artistName = "Some Artist",
+        artistNames = artists,
         score = score,
         scoreUpdatedAt = updatedAt,
         dislikedAt = dislikedAt,

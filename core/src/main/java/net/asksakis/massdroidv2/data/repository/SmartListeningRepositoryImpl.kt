@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.ArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.SmartFeedbackEntity
+import net.asksakis.massdroidv2.data.database.SUPPRESSED_ARTIST_SEPARATOR
 import net.asksakis.massdroidv2.data.database.SuppressedTrackRow
 import net.asksakis.massdroidv2.data.database.PlayOrigin
 import net.asksakis.massdroidv2.data.database.TrackArtistEntity
@@ -335,9 +336,14 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override suspend fun getSuppressedTrackUris(): Set<String> =
         suppressedTracks().mapTo(mutableSetOf()) { it.uri }
 
+    // One key per credited artist: the mix side keys a candidate by its lead artist, which the
+    // database cannot tell apart from the others, so each of them has to be able to match.
     override suspend fun getSuppressedTrackKeys(): Set<String> =
-        suppressedTracks().mapNotNullTo(mutableSetOf()) { row ->
-            trackIdentityKey(row.artistName, row.trackName).takeIf { it.isNotBlank() }
+        suppressedTracks().flatMapTo(mutableSetOf()) { row ->
+            row.artistNames.orEmpty()
+                .split(SUPPRESSED_ARTIST_SEPARATOR)
+                .map { trackIdentityKey(it, row.trackName) }
+                .filter { it.isNotBlank() }
         }
 
     /**
