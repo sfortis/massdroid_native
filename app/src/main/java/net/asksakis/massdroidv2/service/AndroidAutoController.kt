@@ -407,13 +407,17 @@ class AndroidAutoController(
      */
     private fun observeAaState() {
         scope.launch {
+            // The whole current track is compared, not only its uri: buildAaState reads its
+            // title, artwork, favorite flag and chapters, and a change to any of them on the
+            // same queue item (a Favorite tap, metadata arriving later) must reach the session.
             val structuralQueue = playerRepository.queueState.distinctUntilChanged { a, b ->
                 a?.queueId == b?.queueId &&
                     a?.shuffleEnabled == b?.shuffleEnabled &&
                     a?.repeatMode == b?.repeatMode &&
                     a?.currentIndex == b?.currentIndex &&
                     a?.currentItem?.queueItemId == b?.currentItem?.queueItemId &&
-                    a?.currentItem?.track?.uri == b?.currentItem?.track?.uri
+                    a?.currentItem?.imageUrl == b?.currentItem?.imageUrl &&
+                    a?.currentItem?.track == b?.currentItem?.track
             }
             combine(
                 playerRepository.selectedPlayer,
@@ -568,7 +572,8 @@ class AndroidAutoController(
         playerRepository.updateCurrentTrackFavorite(newFavorite)
         scope.launch(Dispatchers.IO) {
             try {
-                musicRepository.setFavorite(track.uri, MediaType.TRACK, track.itemId, newFavorite)
+                // The item's own type: the current item can be an audiobook, not a track.
+                musicRepository.setFavorite(track.uri, track.mediaType, track.itemId, newFavorite)
             } catch (e: Exception) {
                 Log.w(TAG, "AA favorite toggle failed: ${e.message}")
                 if (playerRepository.queueState.value?.currentItem?.track?.uri == track.uri) {

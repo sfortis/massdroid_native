@@ -56,8 +56,11 @@ internal class CarMixStarter(
         val accepted = if (isAutomotive) {
             // The headless car keeps its route through the Sendspin coordinator, which turns
             // Sendspin on and starts the mix on the car's own player through the launcher.
+            // That route does not report whether the launcher took the mix, and the launcher
+            // runs one mix at a time, so a mix still owned means this press is ignored and
+            // the building mix keeps its ownership (and its failure message).
             shortcutDispatcher.dispatch(action)
-            true
+            previous == null
         } else {
             when (mix) {
                 MixLauncher.Mix.SmartMix -> mixLauncher.startSmartMix(queueId)
