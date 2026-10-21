@@ -2,6 +2,8 @@ MassDroid TV is the Android TV edition of MassDroid, a native client for Music A
 
 You need your own Music Assistant server to use this app.
 
+This edition is made for Android TV and Google TV and launches only from the TV home screen, so on a phone it installs without an app icon. On phones and tablets, use the MassDroid app instead.
+
 Features:
 
 * Discover home: recently played, top picks, Smart Mix and Genre Radio, built from your own listening history.
