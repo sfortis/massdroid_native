@@ -17,6 +17,7 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionCommands
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
@@ -90,8 +91,13 @@ class AndroidAutoBrowseController(
                 controller: MediaSession.ControllerInfo
             ): MediaSession.ConnectionResult {
                 if (!PackageValidator.isKnownCaller(context, controller)) {
-                    Log.w(TAG, "onConnect: unknown caller ${controller.packageName} (uid=${controller.uid})")
+                    Log.w(TAG, "onConnect: unknown caller ${controller.packageName} (uid=${controller.uid}): transport only")
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailableSessionCommands(SessionCommands.EMPTY)
+                        .setAvailablePlayerCommands(TRANSPORT_COMMANDS)
+                        .build()
                 }
+                Log.d(TAG, "onConnect: ${controller.packageName} (trusted=${controller.isTrusted})")
                 val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                     .buildUpon()
                     .add(AndroidAutoMediaCommands.ToggleFavorite)
@@ -866,5 +872,23 @@ class AndroidAutoBrowseController(
 
         /** mediaId prefix of a track row in a dynamic playlist: `dyntrack|<feed uri>|<track uri>`. */
         private const val DYNAMIC_TRACK_PREFIX = "dyntrack|"
+
+        /**
+         * What an unknown caller may do: play, pause, skip and seek, and read what is
+         * playing now. No timeline (the queue), no media item changes and no library.
+         */
+        private val TRANSPORT_COMMANDS: Player.Commands = Player.Commands.Builder()
+            .addAll(
+                Player.COMMAND_PLAY_PAUSE,
+                Player.COMMAND_STOP,
+                Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
+                Player.COMMAND_GET_METADATA,
+            )
+            .build()
     }
 }

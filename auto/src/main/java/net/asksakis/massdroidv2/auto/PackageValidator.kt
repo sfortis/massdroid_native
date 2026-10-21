@@ -2,17 +2,25 @@ package net.asksakis.massdroidv2.auto
 
 import android.content.Context
 import android.os.Process
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 
 /**
- * Allow-list of callers permitted to bind the MediaLibraryService.
+ * Decides which callers of the MediaLibraryService get the full command set.
  *
- * Includes Android Auto host, Google Assistant, AAOS reference media template, and the system.
- * Any other caller is rejected to prevent untrusted apps from enumerating the user's library.
+ * A caller is known when it is this app, one of the hosts below (Android Auto, Google
+ * Assistant, the AAOS media center and the system), or a controller Media3 reports as
+ * trusted. Media3 trusts the system, holders of MEDIA_CONTENT_CONTROL and apps the user
+ * enabled as a notification listener, the platform's own rule for who may control media
+ * sessions. That covers controllers such as AAIdrive and the Galaxy Watch plugin without
+ * naming them, because they need notification access to work at all. The session gives an
+ * unknown caller transport controls only, so it can neither read the library nor start
+ * playback of an item.
  *
- * Signature pinning (Why: package names alone can be spoofed by sideloaded apps with the same id)
- * is intentionally deferred to a follow-up. Auto-host signatures are stable across releases and
- * can be verified against a trusted SHA-256 fingerprint list (see UAMP allowed_media_browser_callers.xml).
+ * A package name alone can be taken by a sideloaded app while the real one is not
+ * installed. Pinning the hosts' signing certificates (see UAMP
+ * allowed_media_browser_callers.xml) is deferred to a follow-up.
  */
 object PackageValidator {
 
@@ -27,8 +35,11 @@ object PackageValidator {
         "android",
     )
 
+    // ControllerInfo.isTrusted is marked unstable in Media3; it carries the answer of
+    // androidx.media's MediaSessionManager.isTrustedForMediaControl for the caller.
+    @OptIn(UnstableApi::class)
     fun isKnownCaller(@Suppress("UNUSED_PARAMETER") context: Context, controller: MediaSession.ControllerInfo): Boolean {
         if (controller.uid == Process.myUid()) return true
-        return controller.packageName in ALLOWED_PACKAGES
+        return controller.packageName in ALLOWED_PACKAGES || controller.isTrusted
     }
 }
