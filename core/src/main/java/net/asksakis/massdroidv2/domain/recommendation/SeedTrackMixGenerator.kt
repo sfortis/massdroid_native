@@ -1278,12 +1278,13 @@ class SeedTrackMixGenerator @Inject constructor(
                                 throw e
                             } catch (e: Exception) {
                                 Log.w(TAG, "similar_tracks failed for ${seed.trackName}: ${e.message}")
-                                emptyList()
+                                null
                             }
-                        }
+                        } ?: return@launch
                         // Stored even when empty: that IS the answer, and caching it is
                         // what stops a provider without `similar_tracks` being asked
-                        // again on every build.
+                        // again on every build. A failed call is no answer and is not
+                        // stored, or one timeout would hide the seed for the empty TTL.
                         playHistoryRepository.cacheSimilarTracks(seed.trackUri, tracks)
                         if (tracks.isNotEmpty()) landed += index to tracks
                     }
