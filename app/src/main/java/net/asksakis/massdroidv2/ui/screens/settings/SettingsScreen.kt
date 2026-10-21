@@ -49,6 +49,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Dns
@@ -139,6 +140,7 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncProbeOutcome
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 import net.asksakis.massdroidv2.ui.permissions.AppPermissions
+import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.model.QueueConfigOption
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
@@ -486,8 +488,16 @@ private fun AboutScreen(viewModel: SettingsViewModel, modifier: Modifier = Modif
     val updateUiState by viewModel.updateUiState.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
     SettingsScreenColumn(modifier = modifier) {
         AboutHero()
+        SettingsRow(
+            title = "Privacy policy",
+            icon = Icons.Default.PrivacyTip,
+            supporting = "What the app sends, and to whom",
+            onClick = { launchCustomTab(context, AppLinks.PRIVACY_POLICY_URL) }
+        )
+        SettingsSectionDivider()
         // The in-app updater is github-flavor only; F-Droid handles updates itself.
         if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) {
             // No row for beta updates: the setting is honoured by the checker, but the
@@ -549,17 +559,23 @@ private fun AboutHero() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        MdButton(
-            onClick = { launchCustomTab(context, SUPPORT_URL) },
-            colors = ButtonDefaults.buttonColors(
-                containerColor = SUPPORT_ORANGE,
-                contentColor = SUPPORT_ON_ORANGE
-            )
-        ) {
-            Icon(Icons.Filled.Coffee, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Buy me a coffee")
-        }
+        // Google Play's payments policy does not allow a link to outside tips.
+        if (!net.asksakis.massdroidv2.BuildConfig.IS_PLAY_STORE) SupportButton(context)
+    }
+}
+
+@Composable
+private fun SupportButton(context: android.content.Context) {
+    MdButton(
+        onClick = { launchCustomTab(context, SUPPORT_URL) },
+        colors = ButtonDefaults.buttonColors(
+            containerColor = SUPPORT_ORANGE,
+            contentColor = SUPPORT_ON_ORANGE
+        )
+    ) {
+        Icon(Icons.Filled.Coffee, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Buy me a coffee")
     }
 }
 

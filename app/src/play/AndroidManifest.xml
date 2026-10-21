@@ -14,4 +14,11 @@
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:node="remove" />
 
+    <!-- Play allows a direct battery-optimization exemption request only for a short list of
+         app types, and media playback is not one of them. The Diagnostics row opens the
+         system's battery-optimization list instead, which needs no permission. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:node="remove" />
+
 </manifest>

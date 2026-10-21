@@ -86,14 +86,17 @@ android {
     productFlavors {
         create("github") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
         }
         create("fdroid") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
         }
         create("play") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
         }
     }

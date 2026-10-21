@@ -160,21 +160,27 @@ android {
     productFlavors {
         create("github") {
             dimension = "distribution"
+            // IS_PLAY_STORE is true only for the Google Play builds (play, automotive): they get
+            // no donation link and no direct battery-optimization exemption request.
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "true")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
         }
         create("fdroid") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
         }
         create("play") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
         }
         create("automotive") {
             dimension = "distribution"
+            buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "true")
         }

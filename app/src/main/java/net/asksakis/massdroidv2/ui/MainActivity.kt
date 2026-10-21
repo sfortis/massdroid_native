@@ -231,7 +231,9 @@ class MainActivity : ComponentActivity() {
                 MassDroidTheme(darkTheme = darkTheme) {
                     MassDroidApp(requestedRoute = requestedRoute, onRouteConsumed = { requestedRoute.value = null })
                     DevBuildBadge()
-                    UpdatePrompt(appUpdateChecker)
+                    // Only builds with the self-updater compose it, so R8 can drop the download and
+                    // install path from the Play and F-Droid builds.
+                    if (net.asksakis.massdroidv2.BuildConfig.ENABLE_UPDATE_CHECK) UpdatePrompt(appUpdateChecker)
                     WhatsNewPrompt(settingsRepository, whatsNewRepository)
                     // Top-level transient OSD for remote-player volume changes.
                     // The system already overlays its own bar for STREAM_MUSIC

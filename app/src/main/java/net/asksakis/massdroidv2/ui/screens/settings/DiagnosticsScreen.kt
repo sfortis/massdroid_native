@@ -175,12 +175,17 @@ private fun BatteryOptimizationItem() {
     }
     val openSystemScreen = {
         runCatching {
-            context.startActivity(
+            // Google Play allows the direct exemption request only for a few app types, so the
+            // Play build opens the system list, where the user picks the app.
+            val intent = if (net.asksakis.massdroidv2.BuildConfig.IS_PLAY_STORE) {
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            } else {
                 Intent(
                     Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                     android.net.Uri.parse("package:${context.packageName}")
                 )
-            )
+            }
+            context.startActivity(intent)
         }
         Unit
     }

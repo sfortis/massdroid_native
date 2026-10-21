@@ -30,6 +30,7 @@ import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 
 @Composable
@@ -192,6 +193,12 @@ private fun UpdatesSection(version: String, canCheck: Boolean, status: UpdateChe
     Text(
         "MassDroid TV $version",
         style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    // As text: a TV usually has no browser to open it in.
+    Text(
+        "Privacy policy: ${AppLinks.PRIVACY_POLICY_URL.removePrefix("https://")}",
+        style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
     if (!canCheck) return

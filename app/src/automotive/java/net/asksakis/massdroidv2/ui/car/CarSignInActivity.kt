@@ -58,6 +58,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
@@ -395,5 +396,13 @@ private fun CarPlayerSettings(
             }
             Switch(checked = dither, onCheckedChange = onDither)
         }
+
+        Spacer(Modifier.height(24.dp))
+        // As text: a car usually has no browser to open it in.
+        Text(
+            "Privacy policy: ${AppLinks.PRIVACY_POLICY_URL.removePrefix("https://")}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
