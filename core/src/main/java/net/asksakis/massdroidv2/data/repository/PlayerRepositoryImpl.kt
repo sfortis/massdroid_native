@@ -375,7 +375,10 @@ class PlayerRepositoryImpl @Inject constructor(
                                 val appeared = withTimeoutOrNull(PLAYER_RESTORE_WAIT_MS) {
                                     players.first { list -> list.any { it.playerId == id } }
                                 }
-                                if (appeared != null) {
+                                // Only while the selection is still the saved player: a player
+                                // the user picked during the wait, or during refreshPlayers()
+                                // above before this job existed, must keep the selection.
+                                if (appeared != null && selectedPlayerId == id) {
                                     // Always through selectPlayer: refreshPlayers() has usually
                                     // filled _selectedPlayer by now, but the queue has not been
                                     // fetched, and skipping here left the position unanchored
@@ -384,7 +387,7 @@ class PlayerRepositoryImpl @Inject constructor(
                                     // work only when a queue snapshot is already present.
                                     selectPlayer(id)
                                     Log.d(TAG, "Restored saved player: $id")
-                                } else {
+                                } else if (appeared == null) {
                                     Log.d(TAG, "Restored player $id not present within ${PLAYER_RESTORE_WAIT_MS}ms")
                                 }
                             }
@@ -1419,6 +1422,15 @@ class PlayerRepositoryImpl @Inject constructor(
         if (lockedPlayerId != null && playerId != lockedPlayerId) {
             Log.d(TAG, "Selection locked to $lockedPlayerId; ignored selectPlayer($playerId)")
             return false
+        }
+        // Choosing another player ends a pending restore of the saved one. Left pending, the saved
+        // player's later arrival (the restore wait, PLAYER_ADDED or PLAYER_UPDATED) took the
+        // selection back from the player the user had just picked.
+        val pending = pendingRestoredPlayerId
+        if (pending != null && pending != effectivePlayerId) {
+            Log.d(TAG, "Selecting $effectivePlayerId drops the pending restore of $pending")
+            pendingRestoredPlayerId = null
+            restoreSelectionJob?.cancel()
         }
         val player = _players.value.find { it.playerId == effectivePlayerId }
         // refreshPlayers() can populate _selectedPlayer.value during a
