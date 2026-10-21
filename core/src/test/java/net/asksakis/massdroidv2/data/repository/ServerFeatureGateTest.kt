@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -22,7 +23,8 @@ import org.junit.Test
  *
  * Users run many Music Assistant versions, so each newer form is sent only to a server whose
  * schema has it, and an older server keeps the form it understands. Radio became a
- * `radio_playlist://` item per seed in schema 63 (MA 2.10.0).
+ * `radio_playlist://` item per seed in schema 63 (MA 2.10.0); a per-user dislike is certain
+ * from schema 85 (MA 2.11.0b4).
  */
 class ServerFeatureGateTest {
 
@@ -78,5 +80,46 @@ class ServerFeatureGateTest {
         val args = sent.single().second!!
         assertThat(args["media"]!!.jsonArray.single().jsonPrimitive.content).isEqualTo("deezer://track/5")
         assertThat(args.containsKey("radio_mode")).isFalse()
+    }
+
+    @Test
+    fun `a server below schema 85 is not asked to record a dislike`() = runTest {
+        val recorded = repository(80).dislikeOnServer("deezer://track/5")
+
+        assertThat(recorded).isFalse()
+        assertThat(sent).isEmpty()
+    }
+
+    @Test
+    fun `a dislike is sent as favorite false on the item`() = runTest {
+        val recorded = repository(85).dislikeOnServer("deezer://track/5")
+
+        assertThat(recorded).isTrue()
+        val (command, args) = sent.single()
+        assertThat(command).isEqualTo("music/favorites/set_item")
+        assertThat(args!!["item"]!!.jsonPrimitive.content).isEqualTo("deezer://track/5")
+        assertThat(args["favorite"]!!.jsonPrimitive.content).isEqualTo("false")
+    }
+
+    @Test
+    fun `undo restores a like on a track that was a favorite, and clears otherwise`() = runTest {
+        val repo = repository(91)
+
+        repo.undoServerDislike("deezer://track/5", wasFavorite = true)
+        repo.undoServerDislike("deezer://track/6", wasFavorite = false)
+
+        assertThat(sent.map { it.second!!["favorite"] }).containsExactly(
+            kotlinx.serialization.json.JsonPrimitive(true),
+            JsonNull,
+        ).inOrder()
+    }
+
+    @Test
+    fun `undo sends nothing to a server that could not have recorded the dislike`() = runTest {
+        val repo = repository(65)
+
+        repo.undoServerDislike("deezer://track/5", wasFavorite = true)
+
+        assertThat(sent).isEmpty()
     }
 }

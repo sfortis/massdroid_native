@@ -61,6 +61,7 @@ object MaCommands {
         const val RECOMMENDATION_ITEMS = "music/recommendations/items"
         const val FAVORITES_ADD = "music/favorites/add_item"
         const val FAVORITES_REMOVE = "music/favorites/remove_item"
+        const val FAVORITES_SET_ITEM = "music/favorites/set_item"
         const val LIBRARY_ADD_ITEM = "music/library/add_item"
         const val LIBRARY_REMOVE_ITEM = "music/library/remove_item"
         const val BROWSE = "music/browse"
@@ -466,6 +467,18 @@ data class RefreshItemArgs(
 data class FavoriteAddArgs(val item: String) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("item", item)
+    }
+}
+
+/**
+ * The calling user's like, dislike or no opinion on [item] (a URI), for
+ * `music/favorites/set_item`: `true` likes, `false` dislikes and `null` clears.
+ * The `favorite` key is always sent, because a missing one is not the same as `null`.
+ */
+data class SetItemFavoriteArgs(val item: String, val favorite: Boolean?) : MaCommandArgs {
+    override fun toJson(): JsonObject = buildJsonObject {
+        put("item", item)
+        put("favorite", favorite)
     }
 }
 

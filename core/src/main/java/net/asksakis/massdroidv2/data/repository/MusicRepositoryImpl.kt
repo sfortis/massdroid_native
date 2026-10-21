@@ -81,6 +81,14 @@ class MusicRepositoryImpl @Inject constructor(
         private const val RADIO_PLAYLIST_MIN_SCHEMA = 63
 
         /**
+         * The first schema certain to have `music/favorites/set_item`, with a dislike (MA
+         * 2.11.0b4). The command reached the development line at schema 83, while the
+         * 2.11.0b3 tag reports 80, so a lower number does not tell a server that has it from a
+         * nightly that does not. Stable 2.11 is well above this.
+         */
+        private const val SET_ITEM_FAVORITE_MIN_SCHEMA = 85
+
+        /**
          * How long a search waits before it gives up.
          *
          * Shorter than the 30 s default because someone is watching a spinner while it
@@ -982,6 +990,20 @@ class MusicRepositoryImpl @Inject constructor(
                 FavoriteRemoveArgs(mediaType = mediaType.apiValue, libraryItemId = libraryItemId)
             )
         }
+    }
+
+    override suspend fun dislikeOnServer(uri: String): Boolean {
+        if ((wsClient.serverSchemaVersion() ?: 0) < SET_ITEM_FAVORITE_MIN_SCHEMA) return false
+        sendFavoriteCommandWithRetry(MaCommands.Music.FAVORITES_SET_ITEM, SetItemFavoriteArgs(uri, favorite = false))
+        return true
+    }
+
+    override suspend fun undoServerDislike(uri: String, wasFavorite: Boolean) {
+        if ((wsClient.serverSchemaVersion() ?: 0) < SET_ITEM_FAVORITE_MIN_SCHEMA) return
+        sendFavoriteCommandWithRetry(
+            MaCommands.Music.FAVORITES_SET_ITEM,
+            SetItemFavoriteArgs(uri, favorite = if (wasFavorite) true else null)
+        )
     }
 
     private suspend fun sendFavoriteCommandWithRetry(command: String, args: MaCommandArgs) {

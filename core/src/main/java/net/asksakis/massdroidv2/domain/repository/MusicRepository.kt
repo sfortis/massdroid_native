@@ -141,6 +141,16 @@ interface MusicRepository {
     suspend fun requestLibrarySync(force: Boolean = false): Boolean
     suspend fun refreshItemByUri(uri: String): Boolean
     suspend fun setFavorite(uri: String, mediaType: MediaType, itemId: String, favorite: Boolean)
+
+    /**
+     * Records the listener's dislike of [uri] on the server, which keeps it per user, leaves the
+     * item out of Autoplay and radio, and passes it on to the item's providers as each of them
+     * defines it. Returns false, sending nothing, on a server too old to record a dislike.
+     */
+    suspend fun dislikeOnServer(uri: String): Boolean
+
+    /** Takes back a [dislikeOnServer]: a like again when [wasFavorite], otherwise no opinion. */
+    suspend fun undoServerDislike(uri: String, wasFavorite: Boolean)
     suspend fun removeFromLibrary(mediaType: MediaType, uri: String, itemId: String)
     suspend fun addToLibrary(uri: String)
     suspend fun setAutoplayEnabled(queueId: String, enabled: Boolean)
