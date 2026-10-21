@@ -408,12 +408,13 @@ class AndroidAutoBrowseController(
     }
 
     // The AAOS media center renders root browsable children as TOP TABS and hard-caps
-    // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). So the root
-    // is exactly 4: Discover (the engine-driven landing feed, like the phone app),
-    // Library (nests the collection categories), Browse (server browse) and Mixes
-    // (Play Smart Mix + every genre radio in one tab). (Android Auto on the phone has no
-    // such cap; it renders these as a flat list fine.)
-    private fun buildRootCategories(): List<MediaItem> = listOf(
+    // them at ~4 (no scroll, no "More" overflow - extra roots just vanish). Android Auto
+    // gets four: Discover (the engine-driven landing feed, like the phone app), Library
+    // (nests the collection categories), Browse (server browse) and Mixes (Play Smart Mix +
+    // every genre radio in one tab). The car gets three, with Browse moved into Library:
+    // the tabs have a fixed width, and on a 1024dp wide screen the fourth one ran under
+    // the search icon whatever its title.
+    private fun buildRootCategories(): List<MediaItem> = listOfNotNull(
         // Discover children render as cover-art TILES (grid content style), so each
         // feed section becomes a horizontally-scrollable row of tiles grouped under
         // its title - the phone-app carousel look (the host lays the grid out).
@@ -431,13 +432,7 @@ class AndroidAutoBrowseController(
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_library,
             listItem = true
         ),
-        browseFolder(
-            "browse",
-            "Browse",
-            MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
-            net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
-            listItem = true
-        ),
+        browseRootFolder().takeUnless { net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
         browseFolder(
             "smart_mixes",
             "Mixes",
@@ -487,9 +482,18 @@ class AndroidAutoBrowseController(
         }
     }
 
+    // The server's Browse tree: a root tab in Android Auto, the last Library row in the car.
+    private fun browseRootFolder(): MediaItem = browseFolder(
+        "browse",
+        "Browse",
+        MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+        net.asksakis.massdroidv2.auto.R.drawable.ic_tab_browse,
+        listItem = true
+    )
+
     // The "Library" tab's children: the collection categories as a list (Albums and
     // Artists keep their grid for their own children via gridChildren).
-    private fun buildLibraryCategories(): List<MediaItem> = listOf(
+    private fun buildLibraryCategories(): List<MediaItem> = listOfNotNull(
         browseFolder(
             "playlists",
             "Playlists",
@@ -532,6 +536,7 @@ class AndroidAutoBrowseController(
             net.asksakis.massdroidv2.auto.R.drawable.ic_tab_audiobooks,
             listItem = true
         ),
+        browseRootFolder().takeIf { net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE },
     )
 
     // A failure is thrown on, not turned into an empty folder: onGetChildren answers it with an
