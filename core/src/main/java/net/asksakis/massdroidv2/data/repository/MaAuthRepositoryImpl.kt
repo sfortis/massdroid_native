@@ -12,11 +12,11 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.OAuthCallback
 import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
@@ -35,6 +35,9 @@ class MaAuthRepositoryImpl @Inject constructor(
 
     companion object {
         private const val TAG = "MaAuthRepo"
+        // The return URL is this prefix plus "/<nonce>". MA accepts any return URL that
+        // starts with "musicassistant://" and appends the token as ?code=, so the nonce
+        // comes back in the path, where a server that only concatenates cannot break it.
         const val OAUTH_RETURN_URL = "musicassistant://auth/callback"
     }
 
@@ -52,11 +55,12 @@ class MaAuthRepositoryImpl @Inject constructor(
 
     /** Pending OAuth target URL; needed when the callback resolves. */
     @Volatile private var pendingServerUrl: String? = null
-    /** Timestamp of the most recent startHomeAssistantOAuth(); zero when idle. */
+    /** Nonce of the sign-in in progress; a callback without it is not ours. */
+    @Volatile private var pendingNonce: String? = null
 
     init {
         scope.launch {
-            callbackBus.tokens.collect { code -> finishOAuth(code) }
+            callbackBus.callbacks.collect { callback -> onOAuthCallback(callback) }
         }
     }
 
@@ -81,16 +85,18 @@ class MaAuthRepositoryImpl @Inject constructor(
                 _oauthErrors.tryEmit("Home Assistant sign-in is not available on this server.")
                 return null
             }
+        val nonce = newOAuthNonce()
         val authUrl = probe.fetchAuthorizationUrl(
             serverUrl = serverUrl,
             providerId = provider.providerId,
-            returnUrl = OAUTH_RETURN_URL
+            returnUrl = "$OAUTH_RETURN_URL/$nonce"
         )
         if (authUrl.isNullOrBlank()) {
             _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
             return null
         }
         pendingServerUrl = serverUrl
+        pendingNonce = nonce
         oauthStartedAtMs = System.currentTimeMillis()
         _oauthInProgress.value = true
         return authUrl
@@ -100,6 +106,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         if (_oauthInProgress.value) {
             _oauthInProgress.value = false
             pendingServerUrl = null
+            pendingNonce = null
             oauthStartedAtMs = 0L
         }
     }
@@ -140,19 +147,37 @@ class MaAuthRepositoryImpl @Inject constructor(
                 Log.d(TAG, "OAuth canceled by user (returned to app without callback)")
                 _oauthInProgress.value = false
                 pendingServerUrl = null
+                pendingNonce = null
                 oauthStartedAtMs = 0L
                 _oauthErrors.tryEmit("Sign-in canceled.")
             }
         }
     }
 
-    private fun finishOAuth(token: String) {
+    /**
+     * Accept a deep link only for the sign-in this app started. Any app or web page can
+     * open a musicassistant://auth link, and accepting one with no sign-in in progress
+     * wiped the saved token and credentials and signed in with whatever code it carried.
+     * A callback that arrives after the process was killed during the browser step is
+     * refused the same way, because its nonce died with the process; the user signs in
+     * again.
+     */
+    private fun onOAuthCallback(callback: OAuthCallback) {
+        val url = pendingServerUrl
+        if (!_oauthInProgress.value || url == null ||
+            !oauthCallbackMatches(expected = pendingNonce, received = callback.state)
+        ) {
+            Log.w(TAG, "OAuth callback ignored: no matching sign-in in progress")
+            if (!_oauthInProgress.value) _oauthErrors.tryEmit("Sign-in expired. Please try again.")
+            return
+        }
+        pendingNonce = null
+        finishOAuth(url, callback.code)
+    }
+
+    private fun finishOAuth(url: String, token: String) {
         scope.launch {
             try {
-                // Fall back to the persisted server URL if we lost in-memory
-                // state (e.g. activity recreation while the browser tab was open).
-                val url = pendingServerUrl
-                    ?: settingsRepository.serverUrl.first { it.isNotBlank() }
                 settingsRepository.setAuthToken(token)
                 // Clear any built-in credentials saved from a previous attempt
                 // so the persisted auth state is unambiguous: OAuth-token only.
@@ -181,4 +206,17 @@ class MaAuthRepositoryImpl @Inject constructor(
             }
         }
     }
+}
+
+private const val OAUTH_NONCE_BYTES = 16
+
+private fun newOAuthNonce(): String {
+    val bytes = ByteArray(OAUTH_NONCE_BYTES).also { java.security.SecureRandom().nextBytes(it) }
+    return bytes.joinToString("") { "%02x".format(it) }
+}
+
+/** Whether a callback's nonce is the one the sign-in in progress sent; compared in constant time. */
+internal fun oauthCallbackMatches(expected: String?, received: String?): Boolean {
+    if (expected.isNullOrEmpty() || received.isNullOrEmpty()) return false
+    return java.security.MessageDigest.isEqual(expected.toByteArray(), received.toByteArray())
 }
