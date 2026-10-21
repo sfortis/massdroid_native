@@ -66,16 +66,13 @@
              the full phone UI. ACTION_APPLICATION_PREFERENCES makes the AAOS media center
              render a settings (gear) icon that opens it; the signed-out SessionError
              resolution intent targets it too.
-             distractionOptimized=true: this app is sideloaded only (never Play-published,
-             where the flag is restricted to Car App Library activities), so the player
-             settings stay reachable while driving. Controls are large/low-distraction. -->
+             Not distractionOptimized: sign-in and settings are parked-only in Google's AAOS
+             media guidance, and the app ships on Google Play, where that flag is reserved
+             for Car App Library activities. While driving the system blocks this screen. -->
         <activity
             android:name=".ui.car.CarSignInActivity"
             android:exported="true"
             android:theme="@style/Theme.MassDroidV2.Dark">
-            <meta-data
-                android:name="distractionOptimized"
-                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
             </intent-filter>

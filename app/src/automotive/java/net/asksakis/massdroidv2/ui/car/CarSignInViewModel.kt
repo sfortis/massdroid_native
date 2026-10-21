@@ -205,17 +205,18 @@ class CarSignInViewModel @Inject constructor(
 
     data class Prefill(val url: String, val username: String)
 
-    fun login(rawUrl: String, username: String, password: String) {
+    /** Starts a sign-in; false when the input was rejected and nothing was sent. */
+    fun login(rawUrl: String, username: String, password: String): Boolean {
         val url = rawUrl.trim().trimEnd('/')
         val user = username.trim()
         val pass = password.trim()
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             _error.value = "Add http:// or https:// to the URL"
-            return
+            return false
         }
         if (user.isBlank() || pass.isBlank()) {
             _error.value = "Enter username and password"
-            return
+            return false
         }
         _error.value = null
         viewModelScope.launch {
@@ -227,6 +228,7 @@ class CarSignInViewModel @Inject constructor(
         wsClient.connectWithLogin(url, user, pass) { token ->
             viewModelScope.launch { settingsRepository.setAuthToken(token) }
         }
+        return true
     }
 
     /**
@@ -258,6 +260,12 @@ class CarSignInViewModel @Inject constructor(
             try {
                 val privateKey = KeyChain.getPrivateKey(context, alias)
                 val certChain = KeyChain.getCertificateChain(context, alias)
+                // KeyChain can take a while; a certificate removed or replaced meanwhile must
+                // not be applied over the newer choice.
+                if (settingsRepository.clientCertAlias.first() != alias) {
+                    Log.d(TAG, "Certificate $alias no longer selected, not applying it")
+                    return@withContext
+                }
                 if (privateKey != null && certChain != null) {
                     wsClient.configureMtls(privateKey, certChain)
                     Log.d(TAG, "mTLS loaded: $alias")

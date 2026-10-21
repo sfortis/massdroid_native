@@ -67,9 +67,9 @@ import kotlin.math.roundToInt
  * Car (AAOS) sign-in / server-config + MassDroid-player audio settings screen.
  * Reached from the media center's settings (gear, ACTION_APPLICATION_PREFERENCES)
  * and from the signed-out SessionError resolution intent. NOT a launcher activity,
- * so the car never exposes the full phone UI. Declared distractionOptimized in the
- * automotive manifest (sideload-only app) so the player settings stay reachable
- * while driving; controls are large and low-distraction.
+ * so the car never exposes the full phone UI. It is parked-only: the automotive
+ * manifest does not declare it distractionOptimized, so the system blocks it while
+ * driving, as Google's AAOS media guidance requires for sign-in and settings.
  */
 @AndroidEntryPoint
 class CarSignInActivity : ComponentActivity() {
@@ -203,8 +203,9 @@ private fun CarSignInScreen(
                     Spacer(Modifier.height(20.dp))
                     Button(
                         onClick = {
-                            attempted = true
-                            viewModel.login(url, username, password)
+                            // Only a sign-in that was actually sent may close the screen on
+                            // Connected; a rejected input while already connected keeps it open.
+                            if (viewModel.login(url, username, password)) attempted = true
                         },
                         enabled = !connecting,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
