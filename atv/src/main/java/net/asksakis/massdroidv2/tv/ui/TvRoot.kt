@@ -5,15 +5,24 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,6 +35,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -45,6 +60,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
@@ -54,6 +70,8 @@ private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse")
 /**
  * Top-level TV destination switch:
  *  - Connected            -> navigable home / now-playing graph
+ *  - connected before, now dropping -> the same graph, kept with its back stack and
+ *    focus, under a "Reconnecting" notice
  *  - saved server, not yet -> "connecting" (auto-retry, no forced re-login)
  *  - no saved server       -> onboarding/login
  */
@@ -66,9 +84,11 @@ fun TvRoot(
     val hasSavedServer by viewModel.hasSavedServer.collectAsStateWithLifecycle()
     val changeServer by viewModel.changeServerRequested.collectAsStateWithLifecycle()
     val initialized by viewModel.initialized.collectAsStateWithLifecycle()
+    val sessionEstablished by viewModel.sessionEstablished.collectAsStateWithLifecycle()
+    val connected = connection is ConnectionState.Connected
 
     when {
-        connection is ConnectionState.Connected -> {
+        connected || (sessionEstablished && hasSavedServer && !changeServer) -> {
             val nav = rememberNavController()
             val backStackEntry by nav.currentBackStackEntryAsState()
             val route = backStackEntry?.destination?.route
@@ -177,8 +197,9 @@ fun TvRoot(
             }
             // The mini player bar over the bottom of the browsing screens. It fades with the
             // same timing as the screens, so it leaves and returns together with them.
+            // While the connection is down the reconnect notice takes the bar's place.
             AnimatedVisibility(
-                visible = miniPlayerVisible,
+                visible = miniPlayerVisible && connected,
                 enter = fadeIn(tween(NAV_FADE_MS)),
                 exit = fadeOut(tween(NAV_FADE_MS)),
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -203,6 +224,14 @@ fun TvRoot(
             // Offers a new release once the updater has found one. Only builds with the updater
             // compose it, so R8 drops the download and install path from the play and fdroid builds.
             if (net.asksakis.massdroidv2.tv.BuildConfig.ENABLE_UPDATE_CHECK) TvUpdatePrompt()
+            if (!connected) {
+                TvReconnectingNotice(
+                    server = viewModel.serverLabel(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 16.dp)
+                )
+            }
             }
         }
         !initialized -> TvStartupScreen()
@@ -214,6 +243,69 @@ fun TvRoot(
 }
 
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+
+/**
+ * Says the connection dropped while the screens stay as they were. It sits where the mini
+ * player bar does, in the same bar, because that is where the eye goes when the bar's
+ * content disappears; a small grey line at the top went unnoticed on a real TV. Not
+ * focusable, so the D-pad keeps working on the screen underneath, and the user can still
+ * go to Change server from Settings.
+ */
+@Composable
+private fun TvReconnectingNotice(server: String, modifier: Modifier = Modifier) {
+    val colors = androidx.tv.material3.MaterialTheme.colorScheme
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = RECONNECT_BAR_MIN_HEIGHT)
+            .background(colors.surfaceVariant, RoundedCornerShape(16.dp))
+            .padding(horizontal = 24.dp, vertical = 12.dp)
+    ) {
+        ReconnectSpinner(color = colors.onSurface, modifier = Modifier.size(28.dp))
+        Spacer(Modifier.width(20.dp))
+        androidx.tv.material3.Text(
+            text = if (server.isBlank()) "Reconnecting to Music Assistant…" else "Reconnecting to $server…",
+            style = androidx.tv.material3.MaterialTheme.typography.titleMedium,
+            color = colors.onSurface
+        )
+    }
+}
+
+/**
+ * An open arc turning at a fixed ~20 fps: the angle is stepped with delay + snapTo and read
+ * only in graphicsLayer, so the spinner never recomposes.
+ */
+@Composable
+private fun ReconnectSpinner(color: Color, modifier: Modifier = Modifier) {
+    val angle = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(SPINNER_FRAME_MS)
+            angle.snapTo((angle.value + SPINNER_STEP_DEGREES) % FULL_TURN_DEGREES)
+        }
+    }
+    Canvas(modifier = modifier.graphicsLayer { rotationZ = angle.value }) {
+        val stroke = size.minDimension * SPINNER_STROKE_FRACTION
+        drawArc(
+            color = color,
+            startAngle = 0f,
+            sweepAngle = SPINNER_SWEEP_DEGREES,
+            useCenter = false,
+            topLeft = Offset(stroke / 2, stroke / 2),
+            size = Size(size.width - stroke, size.height - stroke),
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
+    }
+}
+
+/** The mini player bar's height: 44 dp artwork inside two 6 dp paddings on each side. */
+private val RECONNECT_BAR_MIN_HEIGHT = 68.dp
+private const val SPINNER_FRAME_MS = 50L
+private const val SPINNER_STEP_DEGREES = 18f
+private const val SPINNER_SWEEP_DEGREES = 270f
+private const val SPINNER_STROKE_FRACTION = 0.12f
+private const val FULL_TURN_DEGREES = 360f
 
 /** The screen crossfade, the same as Navigation's default, shared with the mini player bar. */
 private const val NAV_FADE_MS = 700
