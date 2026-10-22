@@ -7,7 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <!-- No neverForLocation: Follow Me works out which room the phone is in from the scan
+         results, which is a location, so the flag would misstate the use (Play's permission
+         policy) and lets the system filter beacons out of the results. Follow Me already
+         asks for fine location, and nothing else scans. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Both, because from Android 12 the user chooses between precise and approximate
          and a request naming only the fine one does not stand on its own. -->
