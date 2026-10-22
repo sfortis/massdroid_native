@@ -224,6 +224,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     // so a reopen mid-freeze (phone call) must re-apply it or the preserved
     // buffer would play out into the still-preempted route and be lost.
     @Volatile private var outputFrozen = false
+    /** Whether [freezeOutput] holds the output now; a release or a rebuild clears it. */
+    val isOutputFrozen: Boolean get() = outputFrozen
     // Set on any local discontinuity (next/previous AND seek): the server keeps
     // sending the OLD position's frames until it processes the command, and
     // those in-flight frames would otherwise be accepted and briefly play the

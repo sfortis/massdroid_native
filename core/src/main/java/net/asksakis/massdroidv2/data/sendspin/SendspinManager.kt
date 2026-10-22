@@ -191,6 +191,9 @@ class SendspinManager(
     // one, which then played at a tenth of its level the next time it was swapped back in.
     @Volatile private var ducked = false
     @Volatile private var hasActiveProtocolStream = false
+    // The controller's freeze (a call, a lost route), kept here because an engine swap or a
+    // rebuilding configure resets the engine's own flag.
+    @Volatile private var outputFrozen = false
     // Last stream/start format, kept so an engine swap (DIRECT<->SYNC) that lands
     // while a stream is already active can re-configure the incoming engine. The
     // server does not re-send stream/start for the still-running stream, so
@@ -285,12 +288,23 @@ class SendspinManager(
         // Observe client state changes
         stateJob?.cancel()
         stateJob = scope.launch {
+            var socketLostMidStream = false
             client.state.collect { state ->
                 _connectionState.value = state
                 // A dropped socket ends the stream without a stream/end message.
                 if (state == SendspinState.DISCONNECTED || state == SendspinState.ERROR) {
                     _streamActive.value = false
                     _linkSecurity.value = null
+                }
+                when (state) {
+                    // A refresh goes from STREAMING straight to CONNECTING, so that counts too.
+                    SendspinState.DISCONNECTED, SendspinState.ERROR, SendspinState.CONNECTING ->
+                        if (hasActiveProtocolStream) socketLostMidStream = true
+                    SendspinState.SYNCING -> if (socketLostMidStream) {
+                        socketLostMidStream = false
+                        endStreamUnlessResumed()
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -512,6 +526,35 @@ class SendspinManager(
         }
     }
 
+    /**
+     * The socket came back after dropping in the middle of a stream, which ends no stream on
+     * its own. The engine kept playing from its buffer through the drop, which is what lets a
+     * short Wi-Fi gap go unheard. If the server does not start a stream on the new connection
+     * within [IDLE_TEARDOWN_GRACE_MS] (it re-asserted a pause, or the queue ended meanwhile),
+     * end the stream here the way a stream/end would. Until then the engine, its output, the
+     * wake lock and the Wi-Fi lock stayed up indefinitely, playing silence.
+     */
+    private fun endStreamUnlessResumed() {
+        val myEpoch = synchronized(lifecycleLock) {
+            idleTeardownJob?.cancel()
+            ++streamEpoch
+        }
+        idleTeardownJob = scope.launch {
+            delay(IDLE_TEARDOWN_GRACE_MS)
+            synchronized(lifecycleLock) {
+                // onStreamStart bumps the epoch, and so do a swap and a stop.
+                if (streamEpoch != myEpoch || !hasActiveProtocolStream) return@synchronized
+                Log.d(TAG, "Sendspin reconnected and no stream resumed in ${IDLE_TEARDOWN_GRACE_MS}ms: ending it locally")
+                hasActiveProtocolStream = false
+                _streamActive.value = false
+                lastStreamInfo = null
+                audio.onStreamEnd()
+                engine.release()
+                _audioResourcesActive.value = false
+            }
+        }
+    }
+
     /** Runs under [lifecycleLock]. */
     private fun onStreamStart(info: StreamStartPlayerInfo) {
         // A new stream cancels any pending idle teardown (this is the
@@ -529,13 +572,13 @@ class SendspinManager(
         hasActiveProtocolStream = true
         lastStreamInfo = info
         audio.configure(info.codec, info.sampleRate, info.channels, info.bitDepth, info.codecHeader, startType)
-        // Local playback gain is now STREAM_MUSIC-driven via
-        // LocalSpeakerVolumeBridge, so the engine stays at its default
-        // 1.0 AudioTrack gain. Only the mute state needs to propagate.
-        val engineMuted = (engine as? SendspinPlaybackEngine)?.syncMuted ?: false
-        if (!engineMuted) {
-            audio.setMuted(muted)
-        }
+        // Local playback gain is STREAM_MUSIC-driven via LocalSpeakerVolumeBridge, so the
+        // engine stays at gain 1.0 and only the mute state propagates. Always: the engine
+        // combines it with its own startup mute, and skipping it while that was on (it always
+        // is right after configure) left the engine on a stale mute from an earlier session.
+        audio.setMuted(muted)
+        // A rebuild resets the engine's freeze; a call or a lost route still holds it.
+        reapplyFreeze(engine)
         _streamCodec.value = info.codec.uppercase()
         _streamFormat.value = StreamFormatSnapshot(
             codec = info.codec.uppercase(),
@@ -695,11 +738,18 @@ class SendspinManager(
      * See [SendspinPlaybackEngine.freezeOutput]/[unfreezeOutput].
      */
     fun freezeOutput() {
+        outputFrozen = true
         (engine as? SendspinPlaybackEngine)?.freezeOutput()
     }
 
     fun unfreezeOutput() {
+        outputFrozen = false
         (engine as? SendspinPlaybackEngine)?.unfreezeOutput()
+    }
+
+    private fun reapplyFreeze(target: SendspinAudioEngine) {
+        val playback = target as? SendspinPlaybackEngine ?: return
+        if (outputFrozen && !playback.isOutputFrozen) playback.freezeOutput()
     }
 
     /** Stop/restart the Oboe output for a clean acoustic-calibration chirp path. */
@@ -875,9 +925,12 @@ class SendspinManager(
                 active.codec, active.sampleRate, active.channels, active.bitDepth,
                 active.codecHeader, ProtocolStartType.CONTINUATION,
             )
-            val engineMuted = (target as? SendspinPlaybackEngine)?.syncMuted ?: false
-            if (!engineMuted) target.setMuted(muted)
         }
+        // The incoming engine has its own mute and freeze state, possibly from an earlier
+        // group session: give it this session's. A freeze is the controller's (a call, a lost
+        // route) and outlives the swap, or the new engine plays into the call.
+        target.setMuted(muted)
+        reapplyFreeze(target)
         Log.d(TAG, "Engine swap done: clock samples=${clockSynchronizer.currentSampleCount()} error=${clockSynchronizer.errorUs()}us")
     }
 

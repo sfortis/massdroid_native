@@ -1365,6 +1365,9 @@ class SendspinAudioController(
     }
 
     fun stop() {
+        // Registered again by start(). Left in place, a Bluetooth sink dropping while Sendspin
+        // was off still ran the route-loss hold and sent MA a pause for this phone's player.
+        try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) } catch (_: Exception) {}
         playerRepository.registerLocalPlaybackGate(null)
         sendspinManager.setOutputAllowed { true }
         for (job in collectorJobs) job.cancel(CancellationException("Sendspin stop"))
@@ -1401,12 +1404,12 @@ class SendspinAudioController(
         clearAllFreezes()
         isReady = false
         isStreaming = false
+        sendspinPlayerId = null
         notifyStateChanged()
         Log.d(TAG, "Sendspin controller stopped")
     }
 
     fun destroy() {
-        try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) } catch (_: Exception) {}
         stop()
         scope.cancel()
     }
