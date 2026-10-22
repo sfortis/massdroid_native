@@ -49,6 +49,7 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
     val chapters by viewModel.chapters.collectAsStateWithLifecycle()
     val currentChapter by viewModel.currentChapterIndex.collectAsStateWithLifecycle()
+    val load by viewModel.load.collectAsStateWithLifecycle()
     val showChapters = isAudiobook && chapters.isNotEmpty()
 
     // The playing row takes the cursor, scrolled into view, once the list first has rows: the
@@ -96,6 +97,9 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
                         }
                     }
                 }
+                load == TvLoad.LOADING -> TvContentMessage("Loading…", EDGE)
+                load == TvLoad.FAILED ->
+                    TvLoadFailed("Couldn't load the queue.", EDGE, onRetry = viewModel::retry)
                 items.isEmpty() -> {
                     Text(
                         "Queue is empty",

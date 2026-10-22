@@ -328,14 +328,16 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
      * Where the timing model expects this phone's speaker to play, relative to
      * the server timestamp. The native output aligns a frame's presentation
      * time against now + the reported latency, and the model takes the frame to
-     * be heard after that latency plus [unreportedLatencyUs], so the expected lag
-     * is the planned offset plus that same term.
+     * be heard after that latency plus [unreportedLatencyUs] plus the acoustic
+     * correction (the latency the calibration measured beyond getTimestamp), so
+     * the expected lag is the planned offset plus those same terms.
      */
     fun syncProbeModel(): SyncProbeModel {
         val serverNowUs = clockSynchronizer?.localToServerUs(nowUs()) ?: 0L
         val plan = timingPlan(serverNowUs)
         return SyncProbeModel(
-            expectedLagUs = plan.presentationUs - plan.localOutputUs + unreportedLatencyUs(plan.outputLatencyUs),
+            expectedLagUs = plan.presentationUs - plan.localOutputUs +
+                unreportedLatencyUs(plan.outputLatencyUs) + plan.staticDelayUs,
             headroomUs = plan.headroomUs,
             syncDelayUs = syncDelayMs * 1000L,
             acousticCorrectionUs = plan.staticDelayUs,
@@ -984,6 +986,9 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         try {
             Log.d(TAG, "Reopen committing ($reason)")
             startNativeOutput()        // fresh stream on the now-settled route; clears disconnected_
+            // The fresh stream starts running. While idle-stopped it must stay stopped,
+            // or stopOutputForIdle (which sees the flag already set) never stops it.
+            if (outputPausedForIdle) nativeOutput.pauseStream()
             // The fresh stream has its own latency and timestamp anchor, so a grouped
             // engine relocks under the mute as for a route change. The controller only
             // reports a change of route or of Bluetooth device, and a reopen on the
@@ -1702,7 +1707,9 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     fun resumeOutputAfterCalibration() {
-        Log.d(TAG, "Resume output after calibration isSync=$isSync")
+        Log.d(TAG, "Resume output after calibration isSync=$isSync idle=$outputPausedForIdle")
+        // An output stopped for idle before the chirp stays stopped; ensureOutputRunning restarts it.
+        if (outputPausedForIdle) return
         nativeOutput.resumeStream()
         if (isSync) {
             beginStartupMute()

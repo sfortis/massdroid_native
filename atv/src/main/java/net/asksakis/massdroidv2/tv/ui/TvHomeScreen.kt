@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -149,34 +150,38 @@ fun TvHomeScreen(
                 focusModifierFor = focusModifierFor
             )
             sections.forEach { section ->
-                when (section) {
-                    is DiscoverSection.AlbumSection -> ContentShelf(
-                        section.title,
-                        section.albums.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
-                        onClick = { viewModel.playMedia(it.uri) },
-                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
-                    )
-                    is DiscoverSection.ArtistSection -> ContentShelf(
-                        section.title,
-                        section.artists.map { MediaCardData(it.uri, it.imageUrl, it.name, null, it.itemId, it.provider) },
-                        onClick = { onOpenArtist(it.itemId, it.provider) },
-                        circular = true,
-                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
-                    )
-                    is DiscoverSection.PlaylistSection -> ContentShelf(
-                        section.title,
-                        section.playlists.map { MediaCardData(it.uri, it.imageUrl, it.name, null) },
-                        onClick = { viewModel.playMedia(it.uri) },
-                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
-                    )
-                    is DiscoverSection.TrackSection -> ContentShelf(
-                        section.title,
-                        section.tracks.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
-                        onClick = { viewModel.playMedia(it.uri) },
-                        focusModifierFor = sectionFocus(section.title, focusModifierFor)
-                    )
-                    // Drawn above, together with Smart Mix.
-                    is DiscoverSection.GenreRadioSection -> Unit
+                // Keyed by title, so each shelf keeps its own saved scroll position (and with it
+                // the card that takes focus after Back) when the feed adds or drops a shelf above.
+                key(section.shelfKey) {
+                    when (section) {
+                        is DiscoverSection.AlbumSection -> ContentShelf(
+                            section.title,
+                            section.albums.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
+                            onClick = { viewModel.playMedia(it.uri) },
+                            focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                        )
+                        is DiscoverSection.ArtistSection -> ContentShelf(
+                            section.title,
+                            section.artists.map { MediaCardData(it.uri, it.imageUrl, it.name, null, it.itemId, it.provider) },
+                            onClick = { onOpenArtist(it.itemId, it.provider) },
+                            circular = true,
+                            focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                        )
+                        is DiscoverSection.PlaylistSection -> ContentShelf(
+                            section.title,
+                            section.playlists.map { MediaCardData(it.uri, it.imageUrl, it.name, null) },
+                            onClick = { viewModel.playMedia(it.uri) },
+                            focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                        )
+                        is DiscoverSection.TrackSection -> ContentShelf(
+                            section.title,
+                            section.tracks.map { MediaCardData(it.uri, it.imageUrl, it.name, it.artistNames) },
+                            onClick = { viewModel.playMedia(it.uri) },
+                            focusModifierFor = sectionFocus(section.title, focusModifierFor)
+                        )
+                        // Drawn above, together with Smart Mix.
+                        is DiscoverSection.GenreRadioSection -> Unit
+                    }
                 }
             }
             if (sections.isEmpty() && isLoading) {
@@ -190,6 +195,16 @@ fun TvHomeScreen(
         }
     }
 }
+
+/** Identity of a shelf across feed updates; the title is what the user sees it by. */
+private val DiscoverSection.shelfKey: String
+    get() = when (this) {
+        is DiscoverSection.AlbumSection -> title
+        is DiscoverSection.ArtistSection -> title
+        is DiscoverSection.PlaylistSection -> title
+        is DiscoverSection.TrackSection -> title
+        is DiscoverSection.GenreRadioSection -> title
+    }
 
 // The same item can be in two shelves (a favourite album that is also recommended), so the
 // key that brings focus back after Back names the shelf as well.

@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,10 +60,13 @@ fun TvOnboardingScreen(viewModel: TvOnboardingViewModel = hiltViewModel()) {
     val error by viewModel.error.collectAsStateWithLifecycle()
     val attempting by viewModel.attempting.collectAsStateWithLifecycle()
 
-    var url by remember { mutableStateOf("https://") }
-    var username by remember { mutableStateOf("") }
+    // Saveable, so a configuration change the activity does not handle (a keyboard plugged in,
+    // an HDMI density change) keeps the form. The password stays out of the saved state, as on
+    // the phone's sign-in form.
+    var url by rememberSaveable { mutableStateOf("https://") }
+    var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
+    var showPassword by rememberSaveable { mutableStateOf(false) }
 
     val statusMessage = error
         ?: (connection as? ConnectionState.Error)?.message

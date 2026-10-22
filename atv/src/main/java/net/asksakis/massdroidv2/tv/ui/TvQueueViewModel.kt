@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.tv.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -41,6 +42,23 @@ class TvQueueViewModel @Inject constructor(
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    private val fetchFailed = MutableStateFlow(false)
+
+    /**
+     * Whether [items] holds the selected queue yet. Until the snapshot for this queue arrives
+     * the list is empty, and the screen used to say "Queue is empty" while it loaded. A failed
+     * fetch keeps the old snapshot, so without [fetchFailed] the screen would load forever.
+     */
+    val load: StateFlow<TvLoad> =
+        combine(playerRepository.queueItems, playerRepository.queueState, fetchFailed) { snapshot, queue, failed ->
+            val queueId = queue?.queueId
+            when {
+                queueId == null || snapshot?.queueId == queueId -> TvLoad.READY
+                failed -> TvLoad.FAILED
+                else -> TvLoad.LOADING
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TvLoad.LOADING)
+
     /** queueItemId of the currently playing item, for highlighting. */
     val currentItemId: StateFlow<String?> = playerRepository.queueState
         .map { it?.currentItem?.queueItemId }
@@ -73,8 +91,22 @@ class TvQueueViewModel @Inject constructor(
                 .map { it?.queueId }
                 .distinctUntilChanged()
                 .filterNotNull()
-                .collect { queueId -> runCatching { playerRepository.refreshQueueItems(queueId) } }
+                .collect { queueId -> fetch(queueId) }
         }
+    }
+
+    fun retry() {
+        val queueId = playerRepository.queueState.value?.queueId ?: return
+        viewModelScope.launch { fetch(queueId) }
+    }
+
+    private suspend fun fetch(queueId: String) {
+        fetchFailed.value = false
+        runCatching { playerRepository.refreshQueueItems(queueId) }
+        // refreshQueueItems reports nothing; a fetch that failed left no snapshot for this queue.
+        // A queue that changed meanwhile has its own fetch coming, so it is not marked failed.
+        fetchFailed.value = playerRepository.queueState.value?.queueId == queueId &&
+            playerRepository.queueItems.value?.queueId != queueId
     }
 
     fun playIndex(index: Int) {
