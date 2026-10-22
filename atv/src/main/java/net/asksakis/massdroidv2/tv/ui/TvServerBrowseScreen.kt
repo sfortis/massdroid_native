@@ -20,16 +20,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.Icon
 import androidx.tv.material3.LocalContentColor
@@ -42,8 +46,9 @@ import net.asksakis.massdroidv2.domain.model.BrowseItem as ServerBrowseItem
 @Composable
 fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
     val title by viewModel.title.collectAsStateWithLifecycle()
-    val entries by viewModel.entries.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
     val canGoBack by viewModel.canGoBack.collectAsStateWithLifecycle()
+    val entries = (state as? TvServerBrowseViewModel.FolderState.Loaded)?.entries.orEmpty()
 
     // Back pops one folder; at the root it is disabled so the system Back exits.
     BackHandler(enabled = canGoBack) { viewModel.back() }
@@ -51,7 +56,7 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
     // Drilling into a folder replaces the whole list; the shared grid-focus helper keeps
     // the cursor on a content item so it never escapes to the mini player bar.
     val gridState = rememberLazyGridState()
-    val entryKeys = remember(entries) { entries.map { it.uri } }
+    val entryKeys = remember(entries) { entries.map { it.browseKey } }
     val gridFocus = rememberGridItemFocus(entryKeys, gridState)
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -62,26 +67,57 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
                 modifier = Modifier.padding(horizontal = SERVER_EDGE)
             )
             Spacer(Modifier.height(16.dp))
-            if (entries.isEmpty()) {
-                Text(
-                    "Nothing here",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = LocalContentColor.current.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(horizontal = SERVER_EDGE)
-                )
-            } else {
-                LazyVerticalGrid(
-                    state = gridState,
-                    columns = GridCells.Fixed(SERVER_GRID_COLUMNS),
-                    contentPadding = PaddingValues(horizontal = SERVER_EDGE, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    items(entries, key = { it.uri }) { entry ->
-                        BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.uri)) { viewModel.open(entry) }
+            when (state) {
+                TvServerBrowseViewModel.FolderState.Loading -> FolderMessage("Loading…")
+                TvServerBrowseViewModel.FolderState.Failed -> FolderLoadFailed(onRetry = viewModel::retry)
+                is TvServerBrowseViewModel.FolderState.Loaded -> if (entries.isEmpty()) {
+                    FolderMessage("Nothing here")
+                } else {
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Fixed(SERVER_GRID_COLUMNS),
+                        contentPadding = PaddingValues(horizontal = SERVER_EDGE, vertical = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        items(entries, key = { it.browseKey }) { entry ->
+                            BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.browseKey)) {
+                                viewModel.open(entry)
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FolderMessage(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyLarge,
+        color = LocalContentColor.current.copy(alpha = 0.7f),
+        modifier = Modifier.padding(horizontal = SERVER_EDGE)
+    )
+}
+
+/** The folder did not load. Retry takes the cursor, since there is nothing else to focus. */
+@Composable
+private fun FolderLoadFailed(onRetry: () -> Unit) {
+    val retryFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { retryFocus.requestFocus() } }
+    Column {
+        FolderMessage("Couldn't load this folder.")
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = onRetry,
+            modifier = Modifier
+                .padding(horizontal = SERVER_EDGE)
+                .focusRequester(retryFocus)
+                .pointerClick(onClick = onRetry)
+        ) {
+            Text("Retry")
         }
     }
 }
