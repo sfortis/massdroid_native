@@ -323,8 +323,9 @@ class SendspinCoordinator(
                 }
                 // On a handover, evict the OkHttp connection pool, so Coil and new requests
                 // do not reuse idle connections bound to the old network (visible as missing
-                // album art after the switch). This does not close the open WebSockets: they
-                // recover through their ping timeout and the client's own network callback.
+                // album art after the switch). The open MA WebSocket is then asked to answer
+                // within a few seconds and is closed only if it does not, which also restarts
+                // Sendspin; one that survived the switch keeps playing.
                 // A new default network of the same kind is a handover too. A VPN coming up
                 // or going down also changes the default network while the path underneath
                 // stays alive, so it is left out.

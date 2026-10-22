@@ -75,6 +75,11 @@ class MaWebSocketClient(
          * indefinite "Connecting...".
          */
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
+        /**
+         * How long a socket may take to answer after a network switch. A live one answers
+         * `info` in well under a second even on mobile data; a half-open one never does.
+         */
+        private const val HANDOVER_PROBE_TIMEOUT_MS = 5_000L
         // music_assistant_models InsufficientPermissions (admin-gated command, MA 2.9.0+).
         private const val ERROR_INSUFFICIENT_PERMISSIONS = MaApiException.INSUFFICIENT_PERMISSIONS_CODE
 
@@ -92,6 +97,7 @@ class MaWebSocketClient(
     private var okHttpClient: OkHttpClient = baseOkHttpClient
     @Volatile private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var handoverProbeJob: Job? = null
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -497,17 +503,53 @@ class MaWebSocketClient(
      * bound to the previous transport's dead local IP, visible as missing cover
      * art after a network change.
      *
-     * Deliberately does NOT cancel the live MA WebSocket. SendspinAudioController
-     * force-restarts Sendspin on every MA reconnect (see Collector 6) to recover
-     * from server reboots, which cuts audio playback. We rely on OkHttp's
-     * pingInterval to detect actually-dead sockets while letting connections
-     * that survive transport migration keep streaming seamlessly. evictAll()
-     * does not affect active WebSocket streams — only idle pool entries are
-     * closed.
+     * evictAll() does not touch the open MA WebSocket, and it is not closed blindly
+     * either: SendspinAudioController restarts Sendspin on every MA reconnect (see
+     * Collector 6), which cuts the audio, and a socket that survived the switch should
+     * keep streaming. It is asked a question instead ([probeAfterHandover]), and closed
+     * only when no answer comes.
      */
     fun handleTransportChange() {
         Log.d(TAG, "Transport change: evicting connection pool")
         okHttpClient.connectionPool.evictAll()
+        probeAfterHandover()
+    }
+
+    /**
+     * A socket left half open by a network switch carries nothing in either direction, and
+     * OkHttp's ping notices only after 30 to 60 s, while MA and the Sendspin stream sit dead
+     * (2026-07-25: a ping timeout 30 s after a handover, with the network up the whole time).
+     * One small command with a short deadline tells the two cases apart within
+     * [HANDOVER_PROBE_TIMEOUT_MS]. No answer closes the socket, and the usual failure path
+     * reconnects, which restarts Sendspin as well. One probe at a time, since a single switch
+     * fires a burst of network callbacks.
+     */
+    private fun probeAfterHandover() {
+        if (_connectionState.value !is ConnectionState.Connected) return
+        if (handoverProbeJob?.isActive == true) return
+        val socket = webSocket ?: return
+        handoverProbeJob = scope.launch {
+            val error = try {
+                sendCommand(
+                    MaCommands.Server.INFO,
+                    timeoutMs = HANDOVER_PROBE_TIMEOUT_MS,
+                    retryAfterTimeout = false,
+                )
+                null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e
+            }
+            if (isAnswerFromServer(error)) {
+                Log.d(TAG, "Handover: the connection answered, keeping it")
+                return@launch
+            }
+            // A reconnect that already replaced the socket needs nothing more.
+            if (webSocket !== socket) return@launch
+            Log.w(TAG, "Handover: no answer within ${HANDOVER_PROBE_TIMEOUT_MS}ms (${error?.message}), dropping the connection")
+            socket.cancel()
+        }
     }
 
     /**
@@ -1249,4 +1291,14 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
          */
         const val CONNECTION_LOST_CODE = -3
     }
+}
+
+/**
+ * Whether a liveness probe reached the server: an answer, or a refusal, which is an answer
+ * too. Only a timeout or a lost socket says the connection is gone.
+ */
+internal fun isAnswerFromServer(error: Throwable?): Boolean = when (error) {
+    null -> true
+    is MaApiException -> !error.mayHaveTakenEffect
+    else -> false
 }

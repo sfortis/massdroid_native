@@ -14,6 +14,11 @@ object MaCommands {
         const val AUTH = "auth"
     }
 
+    object Server {
+        /** The server's own description; small, so it also serves as a liveness check. */
+        const val INFO = "info"
+    }
+
     object Music {
         const val ARTISTS_LIBRARY_ITEMS = "music/artists/library_items"
         const val ALBUMS_LIBRARY_ITEMS = "music/albums/library_items"
