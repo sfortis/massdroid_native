@@ -1,8 +1,10 @@
 package net.asksakis.massdroidv2.data.repository
 
 import android.content.Context
+import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -12,6 +14,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
@@ -26,7 +29,77 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * The listener's settings. Android backup and device transfer copy this file (see
+ * `res/xml/backup_rules.xml`), so a restored phone keeps its server and preferences.
+ */
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
+/**
+ * What must stay on this device: the MA credentials, and values that belong to this phone
+ * alone (its Sendspin identity and pairing state, its clock offset, its output calibration).
+ * Backup leaves this file out, so a restore never hands a working password to another device
+ * nor makes a second phone show up as the first one's player. The keys used to live in
+ * [dataStore]; [MoveDeviceKeysMigration] moves them on first access.
+ */
+private val Context.deviceDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "device",
+    produceMigrations = { context -> listOf(MoveDeviceKeysMigration(context.dataStore)) },
+)
+
+private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
+private val KEY_TRUSTED_SERVER_ID = stringPreferencesKey("trusted_server_id")
+private val KEY_CLIENT_CERT_ALIAS = stringPreferencesKey("client_cert_alias")
+private val KEY_USERNAME = stringPreferencesKey("username")
+private val KEY_PASSWORD = stringPreferencesKey("password")
+private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
+private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
+private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
+private val KEY_SENDSPIN_UNPAIRED_SERVERS = stringSetPreferencesKey("sendspin_unpaired_servers")
+private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
+private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
+private val KEY_LEGACY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
+private val KEY_LEGACY_ACOUSTIC_PHONE_BASELINE_US = stringPreferencesKey("acoustic_phone_baseline_us")
+private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
+private val KEY_OUTPUT_FINE_TUNE_MS = stringPreferencesKey("output_fine_tune_ms")
+private val KEY_LEGACY_SYNC_DELAY_RESET = booleanPreferencesKey("legacy_sync_delay_reset")
+
+internal val DEVICE_KEYS: List<Preferences.Key<*>> = listOf(
+    KEY_AUTH_TOKEN, KEY_TRUSTED_SERVER_ID, KEY_CLIENT_CERT_ALIAS, KEY_USERNAME, KEY_PASSWORD,
+    KEY_SENDSPIN_CLIENT_ID, KEY_SENDSPIN_LEGACY_CLIENT_ID, KEY_SENDSPIN_MIGRATED_SERVERS,
+    KEY_SENDSPIN_UNPAIRED_SERVERS, KEY_SENDSPIN_SYNC_DELAY_MS, KEY_SENDSPIN_CLOCK_OFFSET_US,
+    KEY_LEGACY_ACOUSTIC_MIC_PATH_US, KEY_LEGACY_ACOUSTIC_PHONE_BASELINE_US,
+    KEY_ACOUSTIC_ROUTE_CALIBRATIONS, KEY_OUTPUT_FINE_TUNE_MS, KEY_LEGACY_SYNC_DELAY_RESET,
+)
+private val KEY_DEVICE_KEYS_MOVED = booleanPreferencesKey("device_keys_moved")
+
+/**
+ * Moves [DEVICE_KEYS] from the settings file into the device file once, then deletes them from
+ * the settings file. Runs before the device file's first read, so no reader sees it half done.
+ */
+internal class MoveDeviceKeysMigration(
+    private val settings: DataStore<Preferences>,
+) : DataMigration<Preferences> {
+    override suspend fun shouldMigrate(currentData: Preferences): Boolean =
+        currentData[KEY_DEVICE_KEYS_MOVED] != true
+
+    override suspend fun migrate(currentData: Preferences): Preferences {
+        val stored = settings.data.first()
+        val moved = currentData.toMutablePreferences()
+        for (key in DEVICE_KEYS) copyKey(stored, moved, key)
+        moved[KEY_DEVICE_KEYS_MOVED] = true
+        return moved.toPreferences()
+    }
+
+    override suspend fun cleanUp() {
+        settings.edit { prefs -> DEVICE_KEYS.forEach { prefs.remove(it) } }
+    }
+
+    private fun <T> copyKey(from: Preferences, to: MutablePreferences, key: Preferences.Key<T>) {
+        val value = from[key] ?: return
+        if (to[key] == null) to[key] = value
+    }
+}
 
 @Singleton
 class SettingsRepositoryImpl @Inject constructor(
@@ -35,12 +108,7 @@ class SettingsRepositoryImpl @Inject constructor(
 
     companion object {
         private val KEY_SERVER_URL = stringPreferencesKey("server_url")
-        private val KEY_AUTH_TOKEN = stringPreferencesKey("auth_token")
         private val KEY_SELECTED_PLAYER = stringPreferencesKey("selected_player_id")
-        private val KEY_TRUSTED_SERVER_ID = stringPreferencesKey("trusted_server_id")
-        private val KEY_CLIENT_CERT_ALIAS = stringPreferencesKey("client_cert_alias")
-        private val KEY_USERNAME = stringPreferencesKey("username")
-        private val KEY_PASSWORD = stringPreferencesKey("password")
         private val KEY_SENDSPIN_ENABLED = booleanPreferencesKey("sendspin_enabled")
         private val KEY_BLOCKED_ALIAS_PROVIDERS = stringPreferencesKey("blocked_artist_alias_providers")
         private val KEY_SMART_LISTENING_ENABLED = booleanPreferencesKey("smart_listening_enabled")
@@ -57,10 +125,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private const val DEFAULT_SMART_MIX_LENGTH = 0.5f
         private const val DEFAULT_SMART_MIX_STRICTNESS = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
-        private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
-        private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
-        private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
-        private val KEY_SENDSPIN_UNPAIRED_SERVERS = stringSetPreferencesKey("sendspin_unpaired_servers")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -70,8 +134,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_PLAYLIST_SORT_DESC = booleanPreferencesKey("playlist_sort_desc")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_SENDSPIN_AUDIO_FORMAT = stringPreferencesKey("sendspin_audio_format")
-        private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
-        private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
         private val KEY_SENDSPIN_SYNC_SYSTEM_VOLUME = stringPreferencesKey("sendspin_sync_system_volume")
         private val KEY_SENDSPIN_COMPRESSOR_LEVEL = stringPreferencesKey("sendspin_compressor_level")
         private val KEY_SENDSPIN_DITHER = stringPreferencesKey("sendspin_dither")
@@ -79,11 +141,6 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_CAR_AUDIO_BT_DEVICES = stringPreferencesKey("car_audio_bt_devices")
         private val KEY_PINNED_PLAYLISTS = stringPreferencesKey("pinned_playlists")
         private val KEY_SENDSPIN_LAST_VOLUME = stringPreferencesKey("sendspin_last_volume")
-        private val KEY_LEGACY_ACOUSTIC_MIC_PATH_US = stringPreferencesKey("acoustic_mic_path_us")
-        private val KEY_LEGACY_ACOUSTIC_PHONE_BASELINE_US = stringPreferencesKey("acoustic_phone_baseline_us")
-        private val KEY_ACOUSTIC_ROUTE_CALIBRATIONS = stringPreferencesKey("acoustic_route_calibrations")
-        private val KEY_OUTPUT_FINE_TUNE_MS = stringPreferencesKey("output_fine_tune_ms")
-        private val KEY_LEGACY_SYNC_DELAY_RESET = booleanPreferencesKey("legacy_sync_delay_reset")
         private val KEY_RECENT_SEED_CLUSTERS = stringPreferencesKey("recent_seed_cluster_genres")
         private val KEY_RECENT_MIX_TRACKS = stringPreferencesKey("recent_mix_track_uris")
         private val KEY_RECENT_MIX_ARTISTS = stringPreferencesKey("recent_mix_artist_keys")
@@ -99,11 +156,14 @@ class SettingsRepositoryImpl @Inject constructor(
     private val safeData = context.dataStore.data
         .catch { emit(emptyPreferences()) }
 
+    private val deviceData = context.deviceDataStore.data
+        .catch { emit(emptyPreferences()) }
+
     override val serverUrl: Flow<String> = safeData.map { prefs ->
         prefs[KEY_SERVER_URL] ?: ""
     }
 
-    override val authToken: Flow<String> = safeData.map { prefs ->
+    override val authToken: Flow<String> = deviceData.map { prefs ->
         prefs[KEY_AUTH_TOKEN] ?: ""
     }
 
@@ -111,12 +171,12 @@ class SettingsRepositoryImpl @Inject constructor(
         prefs[KEY_SELECTED_PLAYER]
     }
 
-    override val trustedServerId: Flow<String?> = safeData.map { prefs ->
+    override val trustedServerId: Flow<String?> = deviceData.map { prefs ->
         prefs[KEY_TRUSTED_SERVER_ID]
     }
 
     override suspend fun setTrustedServerId(serverId: String?) {
-        context.dataStore.edit {
+        context.deviceDataStore.edit {
             if (serverId != null) it[KEY_TRUSTED_SERVER_ID] = serverId
             else it.remove(KEY_TRUSTED_SERVER_ID)
         }
@@ -127,7 +187,7 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setAuthToken(token: String) {
-        context.dataStore.edit { it[KEY_AUTH_TOKEN] = token }
+        context.deviceDataStore.edit { it[KEY_AUTH_TOKEN] = token }
     }
 
     override suspend fun setSelectedPlayerId(playerId: String?) {
@@ -137,31 +197,31 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
-    override val clientCertAlias: Flow<String?> = safeData.map { prefs ->
+    override val clientCertAlias: Flow<String?> = deviceData.map { prefs ->
         prefs[KEY_CLIENT_CERT_ALIAS]
     }
 
     override suspend fun setClientCertAlias(alias: String?) {
-        context.dataStore.edit {
+        context.deviceDataStore.edit {
             if (alias != null) it[KEY_CLIENT_CERT_ALIAS] = alias
             else it.remove(KEY_CLIENT_CERT_ALIAS)
         }
     }
 
-    override val username: Flow<String> = safeData.map { prefs ->
+    override val username: Flow<String> = deviceData.map { prefs ->
         prefs[KEY_USERNAME] ?: ""
     }
 
     override suspend fun setUsername(username: String) {
-        context.dataStore.edit { it[KEY_USERNAME] = username }
+        context.deviceDataStore.edit { it[KEY_USERNAME] = username }
     }
 
-    override val password: Flow<String> = safeData.map { prefs ->
+    override val password: Flow<String> = deviceData.map { prefs ->
         prefs[KEY_PASSWORD] ?: ""
     }
 
     override suspend fun setPassword(password: String) {
-        context.dataStore.edit { it[KEY_PASSWORD] = password }
+        context.deviceDataStore.edit { it[KEY_PASSWORD] = password }
     }
 
     override val sendspinEnabled: Flow<Boolean> = safeData.map { prefs ->
@@ -293,44 +353,44 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_INCLUDE_BETA_UPDATES] = enabled }
     }
 
-    override val sendspinClientId: Flow<String?> = safeData.map { prefs ->
+    override val sendspinClientId: Flow<String?> = deviceData.map { prefs ->
         prefs[KEY_SENDSPIN_CLIENT_ID]
     }
 
     override suspend fun setSendspinClientId(clientId: String) {
-        context.dataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_CLIENT_ID] = clientId }
     }
 
-    override val sendspinLegacyClientId: Flow<String?> = safeData.map { prefs ->
+    override val sendspinLegacyClientId: Flow<String?> = deviceData.map { prefs ->
         prefs[KEY_SENDSPIN_LEGACY_CLIENT_ID]
     }
 
     override suspend fun setSendspinLegacyClientId(playerId: String) {
-        context.dataStore.edit { it[KEY_SENDSPIN_LEGACY_CLIENT_ID] = playerId }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_LEGACY_CLIENT_ID] = playerId }
     }
 
-    override val sendspinMigratedServers: Flow<Set<String>> = safeData.map { prefs ->
+    override val sendspinMigratedServers: Flow<Set<String>> = deviceData.map { prefs ->
         prefs[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty()
     }
 
     override suspend fun addSendspinMigratedServer(serverId: String) {
-        context.dataStore.edit { it[KEY_SENDSPIN_MIGRATED_SERVERS] = it[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty() + serverId }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_MIGRATED_SERVERS] = it[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty() + serverId }
     }
 
-    override val sendspinUnpairedServers: Flow<Set<String>> = safeData.map { prefs ->
+    override val sendspinUnpairedServers: Flow<Set<String>> = deviceData.map { prefs ->
         prefs[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty()
     }
 
     override suspend fun addSendspinUnpairedServer(serverId: String) {
-        context.dataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() + serverId }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() + serverId }
     }
 
     override suspend fun removeSendspinUnpairedServer(serverId: String) {
-        context.dataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() - serverId }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_UNPAIRED_SERVERS] = it[KEY_SENDSPIN_UNPAIRED_SERVERS].orEmpty() - serverId }
     }
 
     override suspend fun clearSendspinUnpairedServers() {
-        context.dataStore.edit { it.remove(KEY_SENDSPIN_UNPAIRED_SERVERS) }
+        context.deviceDataStore.edit { it.remove(KEY_SENDSPIN_UNPAIRED_SERVERS) }
     }
 
     override val libraryDisplayModes: Flow<Map<LibraryTabKey, LibraryDisplayMode>> = safeData.map { prefs ->
@@ -407,12 +467,12 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_AUDIO_FORMAT] = format }
     }
 
-    override val sendspinClockOffsetUs: Flow<Long> = safeData.map { prefs ->
+    override val sendspinClockOffsetUs: Flow<Long> = deviceData.map { prefs ->
         prefs[KEY_SENDSPIN_CLOCK_OFFSET_US]?.toLongOrNull() ?: 0L
     }
 
     override suspend fun setSendspinClockOffsetUs(offsetUs: Long) {
-        context.dataStore.edit { it[KEY_SENDSPIN_CLOCK_OFFSET_US] = offsetUs.toString() }
+        context.deviceDataStore.edit { it[KEY_SENDSPIN_CLOCK_OFFSET_US] = offsetUs.toString() }
     }
 
     override val sendspinSyncSystemVolume: Flow<Boolean> = safeData.map { prefs ->
@@ -571,7 +631,7 @@ class SettingsRepositoryImpl @Inject constructor(
         context.dataStore.edit { it[KEY_SENDSPIN_LAST_VOLUME] = volume.coerceIn(0, 100).toString() }
     }
 
-    override val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>> = safeData.map { prefs ->
+    override val acousticRouteCalibrations: Flow<Map<String, AcousticRouteCalibration>> = deviceData.map { prefs ->
         decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS])
     }
 
@@ -596,7 +656,7 @@ class SettingsRepositoryImpl @Inject constructor(
         Json.encodeToString(calibrationSerializer, map)
 
     override suspend fun setAcousticRouteCalibration(routeKey: String, calibration: AcousticRouteCalibration) {
-        context.dataStore.edit { prefs ->
+        context.deviceDataStore.edit { prefs ->
             val current = decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]).toMutableMap()
             current[routeKey] = calibration
             prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
@@ -607,14 +667,14 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     override suspend fun removeAcousticRouteCalibration(routeKey: String) {
-        context.dataStore.edit { prefs ->
+        context.deviceDataStore.edit { prefs ->
             val current = decodeCalibrations(prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS]).toMutableMap()
             current.remove(routeKey)
             prefs[KEY_ACOUSTIC_ROUTE_CALIBRATIONS] = encodeCalibrations(current)
         }
     }
 
-    override val outputFineTuneMs: Flow<Map<String, Int>> = safeData.map { prefs ->
+    override val outputFineTuneMs: Flow<Map<String, Int>> = deviceData.map { prefs ->
         decodeFineTunes(prefs[KEY_OUTPUT_FINE_TUNE_MS])
     }
 
@@ -632,7 +692,7 @@ class SettingsRepositoryImpl @Inject constructor(
     override suspend fun setOutputFineTuneMs(routeKey: String, ms: Int) {
         val max = SettingsRepository.OUTPUT_FINE_TUNE_MAX_MS
         val clamped = ms.coerceIn(-max, max)
-        context.dataStore.edit { prefs ->
+        context.deviceDataStore.edit { prefs ->
             val current = decodeFineTunes(prefs[KEY_OUTPUT_FINE_TUNE_MS]).toMutableMap()
             if (clamped == 0) current.remove(routeKey) else current[routeKey] = clamped
             prefs[KEY_OUTPUT_FINE_TUNE_MS] = Json.encodeToString(fineTuneSerializer, current)
@@ -641,7 +701,7 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun resetLegacySyncDelayOnce(): Int? {
         var previous: Int? = null
-        context.dataStore.edit { prefs ->
+        context.deviceDataStore.edit { prefs ->
             if (prefs[KEY_LEGACY_SYNC_DELAY_RESET] == true) return@edit
             previous = prefs[KEY_SENDSPIN_SYNC_DELAY_MS]?.toIntOrNull() ?: 0
             prefs.remove(KEY_SENDSPIN_SYNC_DELAY_MS)

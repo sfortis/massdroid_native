@@ -51,8 +51,10 @@ recognize each room; and a rotating diagnostic log.
 
 The sign-in details and the player key are sent only to your own Music Assistant server, to sign
 in and to register the device as a player. The diagnostic log leaves the device only when you
-share it yourself from Settings. Android's own backup can copy the app's data to your Google
-account or to a new device, depending on your device's backup settings. Nothing else is sent
+share it yourself from Settings. Android's own backup can copy the app's settings and its
+listening history to your Google account or to a new device, depending on your device's backup
+settings. Your Music Assistant password and access token, and the identity this device uses as a
+speaker, are never included, so a restored device asks you to sign in again. Nothing else is sent
 anywhere. Uninstalling the app or clearing its data removes it from the device.
 
 ## Permissions

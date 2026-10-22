@@ -25,6 +25,8 @@
     <application
         android:name=".TvApp"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/full_backup_content"
+        android:dataExtractionRules="@xml/backup_rules"
         android:banner="@drawable/banner"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
