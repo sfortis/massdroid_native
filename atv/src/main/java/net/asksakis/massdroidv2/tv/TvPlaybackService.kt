@@ -53,6 +53,7 @@ class TvPlaybackService : Service() {
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var shortcutDispatcher: ShortcutActionDispatcher
+    @Inject lateinit var savedCredentialsConnector: net.asksakis.massdroidv2.data.websocket.SavedCredentialsConnector
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -111,6 +112,11 @@ class TvPlaybackService : Service() {
             onStreamStarted = { mainHandler.post { streamLive = true } },
         )
         coordinator.start()
+        // The screens open the connection, so when the system restarts this sticky service
+        // in a new process with no activity, nothing else does, and the Shield stayed off the
+        // server as a speaker until someone opened the app. Saved credentials retry on their
+        // own, so a server or network that is not up yet is covered too.
+        scope.launch { savedCredentialsConnector.connectIfNeeded() }
         defaultPlayerIcon()
     }
 
