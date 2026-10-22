@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,7 +35,11 @@ import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 
 @Composable
-fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
+fun TvSettingsScreen(
+    serverLabel: String,
+    onChangeServer: () -> Unit,
+    viewModel: TvSettingsViewModel = hiltViewModel(),
+) {
     val outputDelay by viewModel.outputDelay.collectAsStateWithLifecycle()
     val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
     val playerName by viewModel.playerName.collectAsStateWithLifecycle()
@@ -51,6 +56,9 @@ fun TvSettingsScreen(viewModel: TvSettingsViewModel = hiltViewModel()) {
                 .padding(horizontal = 64.dp, vertical = 56.dp)
         ) {
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
+
+            Spacer(Modifier.height(36.dp))
+            ServerSection(serverLabel = serverLabel, onChangeServer = onChangeServer)
 
             Spacer(Modifier.height(36.dp))
             PlayerNameSection(
@@ -222,5 +230,31 @@ private fun UpdatesSection(version: String, canCheck: Boolean, status: UpdateChe
                 MaterialTheme.colorScheme.onSurfaceVariant
             }
         )
+    }
+}
+
+/**
+ * The server this TV uses and the way to another one. Until this existed, a server that moved
+ * left the TV under the reconnect bar for good: "Change server" lived only on the connecting
+ * screen, which an established session never shows. First on the screen, so it takes the cursor.
+ */
+@Composable
+private fun ServerSection(serverLabel: String, onChangeServer: () -> Unit) {
+    val changeServerFocus = rememberInitialFocus()
+    Text("Server", style = MaterialTheme.typography.titleMedium)
+    if (serverLabel.isNotBlank()) {
+        Spacer(Modifier.height(4.dp))
+        Text(
+            serverLabel,
+            style = MaterialTheme.typography.bodyMedium,
+            color = androidx.tv.material3.LocalContentColor.current.copy(alpha = 0.7f)
+        )
+    }
+    Spacer(Modifier.height(12.dp))
+    Button(
+        onClick = onChangeServer,
+        modifier = Modifier.focusRequester(changeServerFocus).pointerClick(onClick = onChangeServer)
+    ) {
+        Text("Change server")
     }
 }

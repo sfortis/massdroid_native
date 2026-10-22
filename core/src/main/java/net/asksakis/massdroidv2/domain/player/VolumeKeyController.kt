@@ -222,8 +222,7 @@ class VolumeKeyController internal constructor(
         }
     }
 
-    private fun isGroupPlayer(player: Player): Boolean =
-        player.groupChilds.any { it != player.playerId }
+    private fun isGroupPlayer(player: Player): Boolean = leadsVolumeGroup(player)
 
     /** A level chosen but not yet sent, with everything needed to send it. */
     private data class PendingVolume(val playerId: String, val level: Int, val isGroup: Boolean)

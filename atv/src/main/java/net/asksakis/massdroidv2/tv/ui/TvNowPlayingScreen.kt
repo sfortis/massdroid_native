@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import net.asksakis.massdroidv2.domain.player.shownVolume
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -156,7 +157,7 @@ fun TvNowPlayingScreen(
                     ) {
                         TransportIcon(Icons.Filled.VolumeDown, "Volume down") { viewModel.volumeDown() }
                         Text(
-                            "${player?.volumeLevel ?: 0}%",
+                            "${player?.let(::shownVolume) ?: 0}%",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

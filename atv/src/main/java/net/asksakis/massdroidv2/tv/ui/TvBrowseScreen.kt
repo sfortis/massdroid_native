@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -57,6 +58,7 @@ fun TvBrowseScreen(
 ) {
     val category by viewModel.category.collectAsStateWithLifecycle()
     val items by viewModel.items.collectAsStateWithLifecycle()
+    val load by viewModel.load.collectAsStateWithLifecycle()
     val sortOption by viewModel.sortOption.collectAsStateWithLifecycle()
     val sortDescending by viewModel.sortDescending.collectAsStateWithLifecycle()
     var showSortDialog by remember { mutableStateOf(false) }
@@ -68,6 +70,10 @@ fun TvBrowseScreen(
     // autoFocusOnLoad = false: the category chips sit above the grid, so entering the
     // screen must not yank focus into the grid; the grid never loses focus on its own.
     val itemKeys = remember(items) { items.map { it.uri } }
+    // The selected category takes the cursor on the first entry. A return from an artist has
+    // a saved card, which the grid focus helper restores instead.
+    var entered by rememberSaveable { mutableStateOf(false) }
+    val chipFocus = rememberInitialFocus(enabled = !entered) { entered = true }
     val gridFocus = rememberGridItemFocus(itemKeys, gridState, autoFocusOnLoad = false)
 
     LaunchedEffect(gridState, items.size) {
@@ -96,24 +102,38 @@ fun TvBrowseScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 BrowseCategory.entries.forEach { cat ->
-                    CategoryChip(cat.label, cat == category) { viewModel.selectCategory(cat) }
+                    CategoryChip(
+                        cat.label,
+                        selected = cat == category,
+                        modifier = if (cat == category) Modifier.focusRequester(chipFocus) else Modifier,
+                    ) { viewModel.selectCategory(cat) }
                 }
                 // Provider folder tree (RadioBrowser, ORF, Filesystem…) — the MA-UI
                 // "Browse". Not a flat category, so it opens its own drill-down screen.
                 CategoryChip("Folders", selected = false, onClick = onOpenFolders)
             }
             Spacer(Modifier.height(16.dp))
-            LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Fixed(BROWSE_GRID_COLUMNS),
-                contentPadding = PaddingValues(horizontal = BROWSE_EDGE, vertical = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                items(items, key = { it.uri }) { item ->
-                    BrowseCard(item, modifier = gridFocus.modifierFor(item.uri)) {
-                        if (item.isArtist) onOpenArtist(item.itemId, item.provider)
-                        else viewModel.play(item.uri)
+            if (items.isEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                when (load) {
+                    TvLoad.LOADING -> TvContentMessage("Loading…", BROWSE_EDGE)
+                    TvLoad.FAILED ->
+                        TvLoadFailed("Couldn't load ${category.label.lowercase()}.", BROWSE_EDGE, onRetry = viewModel::retry)
+                    TvLoad.READY -> TvContentMessage("Nothing here", BROWSE_EDGE)
+                }
+            } else {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(BROWSE_GRID_COLUMNS),
+                    contentPadding = PaddingValues(horizontal = BROWSE_EDGE, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    items(items, key = { it.uri }) { item ->
+                        BrowseCard(item, modifier = gridFocus.modifierFor(item.uri)) {
+                            if (item.isArtist) onOpenArtist(item.itemId, item.provider)
+                            else viewModel.play(item.uri)
+                        }
                     }
                 }
             }
@@ -228,7 +248,12 @@ private const val BROWSE_GRID_COLUMNS = 6
 private const val BROWSE_LOAD_MORE_THRESHOLD = 12
 
 @Composable
-private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun CategoryChip(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val colors = if (selected) {
         ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.primary,
@@ -241,7 +266,7 @@ private fun CategoryChip(label: String, selected: Boolean, onClick: () -> Unit) 
         onClick = onClick,
         colors = colors,
         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
-        modifier = Modifier.pointerClick(onClick = onClick)
+        modifier = modifier.pointerClick(onClick = onClick)
     ) {
         Text(
             label,

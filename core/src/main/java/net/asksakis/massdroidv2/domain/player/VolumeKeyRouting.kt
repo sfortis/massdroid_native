@@ -37,13 +37,20 @@ fun volumeKeyTarget(player: Player?, sendspinClientId: String?): VolumeKeyTarget
     if (sendspinClientId != null && player.playerId == sendspinClientId) {
         return VolumeKeyTarget.LocalStream
     }
-    val isGroup = player.groupChilds.any { it != player.playerId }
+    val isGroup = leadsVolumeGroup(player)
     val localIsGroupMember = sendspinClientId != null &&
         isGroup &&
         player.groupChilds.any { it == sendspinClientId }
     if (localIsGroupMember) return VolumeKeyTarget.LocalStream
     return VolumeKeyTarget.RemotePlayer(player.playerId, isGroup)
 }
+
+/** Whether a volume change for [player] is a group change: it leads other members. */
+fun leadsVolumeGroup(player: Player): Boolean = player.groupChilds.any { it != player.playerId }
+
+/** The level a volume control shows for [player]: the group's while it leads a group. */
+fun shownVolume(player: Player): Int =
+    if (leadsVolumeGroup(player)) player.groupVolume ?: player.volumeLevel else player.volumeLevel
 
 /**
  * The level to send a remote player, from its current basis.

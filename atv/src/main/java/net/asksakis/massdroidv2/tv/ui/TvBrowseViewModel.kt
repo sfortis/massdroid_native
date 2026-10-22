@@ -130,9 +130,31 @@ class TvBrowseViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * Where the current category's list stands, for a screen that has nothing to show yet: a
+     * failed first page used to leave the grid blank with no message, and nothing fetched it
+     * again until the category was switched.
+     */
+    val load: StateFlow<TvLoad> = _category
+        .flatMapLatest { cat ->
+            val pager = pagerFor(cat)
+            combine(pager.loading, pager.loadingMore, pager.failed) { loading, more, failed ->
+                when {
+                    failed -> TvLoad.FAILED
+                    loading || more -> TvLoad.LOADING
+                    else -> TvLoad.READY
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TvLoad.LOADING)
+
     init {
-        artistsPager.loadMore()
+        // A reload, not a loadMore: only a reload marks the first page as loading.
+        artistsPager.reloadIfEmpty()
     }
+
+    /** Load the current category again, after a failure. */
+    fun retry() = pagerFor(_category.value).reload()
 
     fun selectCategory(cat: BrowseCategory) {
         _category.value = cat

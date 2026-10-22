@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,7 +41,12 @@ fun TvConnectingScreen(server: String, onChangeServer: () -> Unit) {
                 )
             }
             Spacer(Modifier.height(32.dp))
-            Button(onClick = onChangeServer, modifier = Modifier.pointerClick(onClick = onChangeServer)) {
+            // The only control here, so it takes the cursor; without it OK did nothing.
+            val changeServerFocus = rememberInitialFocus()
+            Button(
+                onClick = onChangeServer,
+                modifier = Modifier.focusRequester(changeServerFocus).pointerClick(onClick = onChangeServer)
+            ) {
                 Text("Change server")
             }
         }

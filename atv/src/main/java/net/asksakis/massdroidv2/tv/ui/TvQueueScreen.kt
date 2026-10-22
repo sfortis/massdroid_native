@@ -1,5 +1,10 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +49,24 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
     val isAudiobook by viewModel.isAudiobook.collectAsStateWithLifecycle()
     val chapters by viewModel.chapters.collectAsStateWithLifecycle()
     val currentChapter by viewModel.currentChapterIndex.collectAsStateWithLifecycle()
+    val showChapters = isAudiobook && chapters.isNotEmpty()
+
+    // The playing row takes the cursor, scrolled into view, once the list first has rows: the
+    // queue used to open at the top with nothing focused, and item 180 of a radio queue was
+    // 180 presses away.
+    val listState = rememberLazyListState()
+    val rowFocus = remember { FocusRequester() }
+    val focusIndex = if (showChapters) {
+        currentChapter.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
+    } else {
+        items.indexOfFirst { it.queueItemId == currentId }.coerceAtLeast(0)
+    }
+    val hasRows = if (showChapters) chapters.isNotEmpty() else items.isNotEmpty()
+    LaunchedEffect(hasRows, showChapters) {
+        if (!hasRows) return@LaunchedEffect
+        listState.scrollToItem(focusIndex)
+        rowFocus.requestFocusWhenAttached()
+    }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(top = 40.dp, bottom = 40.dp)) {
@@ -54,9 +77,10 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
             )
             Spacer(Modifier.height(20.dp))
             when {
-                isAudiobook && chapters.isNotEmpty() -> {
+                showChapters -> {
                     // An audiobook is one queue item; show its chapters and seek on tap.
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(horizontal = EDGE, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -66,6 +90,7 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
                                 name = ch.displayName(idx),
                                 startSec = ch.start,
                                 isCurrent = idx == currentChapter,
+                                modifier = if (idx == focusIndex) Modifier.focusRequester(rowFocus) else Modifier,
                                 onClick = { viewModel.seekToChapter(ch) }
                             )
                         }
@@ -81,6 +106,7 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
                 }
                 else -> {
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(horizontal = EDGE, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -91,6 +117,7 @@ fun TvQueueScreen(viewModel: TvQueueViewModel = hiltViewModel()) {
                                     ?: item.track?.albumName.orEmpty(),
                                 imageUrl = item.imageUrl,
                                 isCurrent = item.queueItemId == currentId,
+                                modifier = if (index == focusIndex) Modifier.focusRequester(rowFocus) else Modifier,
                                 onClick = { viewModel.playIndex(index) }
                             )
                         }
@@ -107,9 +134,10 @@ private fun ChapterRow(
     name: String,
     startSec: Double,
     isCurrent: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -155,9 +183,10 @@ private fun QueueRow(
     subtitle: String,
     imageUrl: String?,
     isCurrent: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth().pointerClick(onClick = onClick)) {
         // Colors inherit the Surface's focus-aware content color (inverts on
         // focus) so the row stays readable focused or not. "Current" is shown by
         // a bold title + equalizer glyph, not a hardcoded bright color.

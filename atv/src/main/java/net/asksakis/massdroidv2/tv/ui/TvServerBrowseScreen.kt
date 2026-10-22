@@ -20,22 +20,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.Icon
 import androidx.tv.material3.LocalContentColor
@@ -92,10 +88,11 @@ private fun FolderContent(
     val gridFocus = rememberGridItemFocus(entryKeys, gridState)
 
     when (state) {
-        TvServerBrowseViewModel.FolderState.Loading -> FolderMessage("Loading…")
-        TvServerBrowseViewModel.FolderState.Failed -> FolderLoadFailed(onRetry = onRetry)
+        TvServerBrowseViewModel.FolderState.Loading -> TvContentMessage("Loading…", SERVER_EDGE)
+        TvServerBrowseViewModel.FolderState.Failed ->
+            TvLoadFailed("Couldn't load this folder.", SERVER_EDGE, onRetry = onRetry)
         is TvServerBrowseViewModel.FolderState.Loaded -> if (entries.isEmpty()) {
-            FolderMessage("Nothing here")
+            TvContentMessage("Nothing here", SERVER_EDGE)
         } else {
             LazyVerticalGrid(
                 state = gridState,
@@ -108,36 +105,6 @@ private fun FolderContent(
                     BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.browseKey)) { onOpen(entry) }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun FolderMessage(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodyLarge,
-        color = LocalContentColor.current.copy(alpha = 0.7f),
-        modifier = Modifier.padding(horizontal = SERVER_EDGE)
-    )
-}
-
-/** The folder did not load. Retry takes the cursor, since there is nothing else to focus. */
-@Composable
-private fun FolderLoadFailed(onRetry: () -> Unit) {
-    val retryFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { retryFocus.requestFocus() } }
-    Column {
-        FolderMessage("Couldn't load this folder.")
-        Spacer(Modifier.height(20.dp))
-        Button(
-            onClick = onRetry,
-            modifier = Modifier
-                .padding(horizontal = SERVER_EDGE)
-                .focusRequester(retryFocus)
-                .pointerClick(onClick = onRetry)
-        ) {
-            Text("Retry")
         }
     }
 }

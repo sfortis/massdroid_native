@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import net.asksakis.massdroidv2.domain.player.shownVolume
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -51,21 +52,24 @@ fun TvVolumeOsd(
     val player by viewModel.selectedPlayer.collectAsStateWithLifecycle()
 
     var visible by remember { mutableStateOf(false) }
-    var shownVolume by remember { mutableIntStateOf(0) }
+    var osdLevel by remember { mutableIntStateOf(0) }
     var lastPlayerId by remember { mutableStateOf<String?>(null) }
     var lastVolume by remember { mutableStateOf<Int?>(null) }
 
-    LaunchedEffect(player?.playerId, player?.volumeLevel) {
+    // The group's level while the player leads a group, the same one the buttons move.
+    val level = player?.let(::shownVolume)
+    LaunchedEffect(player?.playerId, level) {
         val current = player ?: return@LaunchedEffect
+        val currentLevel = level ?: return@LaunchedEffect
         // A player switch (or first observation) seeds the baseline silently.
         if (current.playerId != lastPlayerId || lastVolume == null) {
             lastPlayerId = current.playerId
-            lastVolume = current.volumeLevel
+            lastVolume = currentLevel
             return@LaunchedEffect
         }
-        if (current.volumeLevel == lastVolume) return@LaunchedEffect
-        lastVolume = current.volumeLevel
-        shownVolume = current.volumeLevel
+        if (currentLevel == lastVolume) return@LaunchedEffect
+        lastVolume = currentLevel
+        osdLevel = currentLevel
         visible = true
         delay(OSD_VISIBLE_MS)
         visible = false
@@ -97,13 +101,13 @@ fun TvVolumeOsd(
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(shownVolume / 100f)
+                            .fillMaxWidth(osdLevel / 100f)
                             .fillMaxHeight()
                             .background(MaterialTheme.colorScheme.primary)
                     )
                 }
                 Spacer(Modifier.width(10.dp))
-                Text("$shownVolume", style = MaterialTheme.typography.titleSmall)
+                Text("$osdLevel", style = MaterialTheme.typography.titleSmall)
             }
         }
     }

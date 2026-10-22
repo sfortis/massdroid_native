@@ -35,6 +35,7 @@ import net.asksakis.massdroidv2.domain.model.Album
 fun TvArtistScreen(viewModel: TvArtistViewModel = hiltViewModel()) {
     val name by viewModel.name.collectAsStateWithLifecycle()
     val albums by viewModel.albums.collectAsStateWithLifecycle()
+    val load by viewModel.load.collectAsStateWithLifecycle()
 
     // The albums load async after navigation; the shared grid-focus helper focuses the
     // first card on load so focus never escapes to the mini player bar, and
@@ -52,12 +53,12 @@ fun TvArtistScreen(viewModel: TvArtistViewModel = hiltViewModel()) {
             )
             Spacer(Modifier.height(20.dp))
             if (albums.isEmpty()) {
-                Text(
-                    "No albums",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = LocalContentColor.current.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(horizontal = ARTIST_EDGE)
-                )
+                when (load) {
+                    TvLoad.LOADING -> TvContentMessage("Loading…", ARTIST_EDGE)
+                    TvLoad.FAILED ->
+                        TvLoadFailed("Couldn't load the albums.", ARTIST_EDGE, onRetry = viewModel::retry)
+                    TvLoad.READY -> TvContentMessage("No albums", ARTIST_EDGE)
+                }
             } else {
                 LazyVerticalGrid(
                     state = gridState,

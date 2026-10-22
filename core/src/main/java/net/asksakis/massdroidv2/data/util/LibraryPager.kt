@@ -55,6 +55,10 @@ class LibraryPager<T>(
     private val _loadingMore = MutableStateFlow(false)
     val loadingMore: StateFlow<Boolean> = _loadingMore.asStateFlow()
 
+    /** True when the last load failed, until the next one starts; lets a screen offer a retry. */
+    private val _failed = MutableStateFlow(false)
+    val failed: StateFlow<Boolean> = _failed.asStateFlow()
+
     private var job: Job? = null
     private var offset = 0
     private var endReached = false
@@ -79,6 +83,7 @@ class LibraryPager<T>(
         // before the assignment would fail the ownership check in finally, leaking the flag).
         val newJob = scope.launch(start = CoroutineStart.LAZY) {
             _loading.value = true
+            _failed.value = false
             try {
                 val complete = completeFirstPage?.invoke()
                 val raw = complete ?: fetch(pageSize, 0)
@@ -93,6 +98,7 @@ class LibraryPager<T>(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                _failed.value = true
                 Log.w(TAG, "reload failed: ${e.message}")
             } finally {
                 // Only the job currently owning the slot clears the flag; a cancelled load must
@@ -108,6 +114,7 @@ class LibraryPager<T>(
         if (endReached || job?.isActive == true) return
         job = scope.launch(start = CoroutineStart.LAZY) {
             _loadingMore.value = true
+            _failed.value = false
             try {
                 val raw = fetch(pageSize, offset)
                 offset += raw.size
@@ -123,6 +130,7 @@ class LibraryPager<T>(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                _failed.value = true
                 Log.w(TAG, "loadMore failed: ${e.message}")
             } finally {
                 // Same ownership rule as startReload: a cancelled load must not wipe the
@@ -150,6 +158,7 @@ class LibraryPager<T>(
             // decline to clear _loading now that it no longer owns the slot.
             _loading.value = false
             _loadingMore.value = true
+            _failed.value = false
             try {
                 var pages = 0
                 while (!endReached && pages < maxPages) {
@@ -171,6 +180,7 @@ class LibraryPager<T>(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                _failed.value = true
                 Log.w(TAG, "loadAll failed: ${e.message}")
             } finally {
                 if (job === coroutineContext[Job]) _loadingMore.value = false

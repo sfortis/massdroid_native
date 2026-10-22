@@ -193,7 +193,12 @@ fun TvRoot(
                 ) {
                     MiniPlayerSpace(miniPlayerHeight) { TvArtistScreen() }
                 }
-                composable("settings") { TvSettingsScreen() }
+                composable("settings") {
+                    TvSettingsScreen(
+                        serverLabel = viewModel.serverLabel(),
+                        onChangeServer = { viewModel.changeServer() },
+                    )
+                }
             }
             }
             // The mini player bar over the bottom of the browsing screens. It fades with the

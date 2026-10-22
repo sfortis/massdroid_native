@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import net.asksakis.massdroidv2.domain.player.leadsVolumeGroup
+import net.asksakis.massdroidv2.domain.player.remoteVolumeStep
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -46,11 +48,15 @@ class TvMiniPlayerViewModel @Inject constructor(
     fun volumeUp() = changeVolume(VOLUME_STEP)
     fun volumeDown() = changeVolume(-VOLUME_STEP)
 
+    // A group leader takes the group's volume, as on the phone; its own level moved only itself.
     private fun changeVolume(delta: Int) {
         val player = selectedPlayer.value ?: return
+        val isGroup = leadsVolumeGroup(player)
+        val level = remoteVolumeStep(player, isGroup, delta)
         viewModelScope.launch {
             runCatching {
-                playerRepository.setVolume(player.playerId, (player.volumeLevel + delta).coerceIn(0, 100))
+                if (isGroup) playerRepository.setGroupVolume(player.playerId, level)
+                else playerRepository.setVolume(player.playerId, level)
             }
         }
     }

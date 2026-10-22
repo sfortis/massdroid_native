@@ -34,14 +34,33 @@ class TvArtistViewModel @Inject constructor(
     private val _albums = MutableStateFlow<List<Album>>(emptyList())
     val albums: StateFlow<List<Album>> = _albums.asStateFlow()
 
+    // Without it the screen said "No albums" while a large discography was still loading,
+    // and for good when the load failed.
+    private val _load = MutableStateFlow(TvLoad.LOADING)
+    val load: StateFlow<TvLoad> = _load.asStateFlow()
+
     init {
         viewModelScope.launch {
             runCatching { musicRepository.getArtist(itemId, provider) }.getOrNull()
                 ?.let { _name.value = it.name }
+        }
+        loadAlbums()
+    }
+
+    /** Load the albums again, after a failure. */
+    fun retry() = loadAlbums()
+
+    private fun loadAlbums() {
+        _load.value = TvLoad.LOADING
+        viewModelScope.launch {
             // Discography (provider catalogue): a library artist's artist_albums(library) is
             // ~empty on MA 2.9+, so the TV artist screen would otherwise show no albums.
             runCatching { musicRepository.getArtistDiscography(itemId, provider) }
-                .onSuccess { list -> _albums.value = list.sortedBy { it.name.lowercase() } }
+                .onSuccess { list ->
+                    _albums.value = list.sortedBy { it.name.lowercase() }
+                    _load.value = TvLoad.READY
+                }
+                .onFailure { _load.value = TvLoad.FAILED }
         }
     }
 

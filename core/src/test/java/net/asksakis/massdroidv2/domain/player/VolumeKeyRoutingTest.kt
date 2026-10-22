@@ -128,4 +128,19 @@ class VolumeKeyRoutingTest {
         assertThat(volumeKeyAction(isDown = false, downTime = 1000, lastCountedDownTime = 0))
             .isEqualTo(VolumeKeyAction.STEP)
     }
+
+    @Test
+    fun `a group leader shows the group's level`() {
+        // The TV showed the leader's own level here, and its buttons moved only the leader.
+        val leader = player("leader", volume = 30, groupVolume = 55, childs = listOf("leader", "kitchen"))
+        assertThat(leadsVolumeGroup(leader)).isTrue()
+        assertThat(shownVolume(leader)).isEqualTo(55)
+    }
+
+    @Test
+    fun `a single player shows its own level`() {
+        val solo = player("solo", volume = 30, groupVolume = 55, childs = listOf("solo"))
+        assertThat(leadsVolumeGroup(solo)).isFalse()
+        assertThat(shownVolume(solo)).isEqualTo(30)
+    }
 }
