@@ -223,6 +223,11 @@ class PlayerRepositoryImpl @Inject constructor(
     // fields) and avoid a stale clamp bound on a tick.
     @Volatile private var trackDuration = 0.0
     private var positionTickJob: Job? = null
+    // Start and stop run from the event collector on IO and from queue refreshes on Main. Without
+    // a lock two starts could each launch a job while only one was kept, and the lost one went
+    // on publishing the position for the rest of the session, even after a disconnect. Declared
+    // before the init blocks, which start collectors that can reach the ticker at once.
+    private val tickerLock = Any()
     // In-flight saved-player restore await (see the Connected branch). Held so a
     // reconnect flap cancels the previous wait instead of stacking stale ones
     // that could re-select an out-of-date player.
@@ -521,6 +526,8 @@ class PlayerRepositoryImpl @Inject constructor(
                         } else {
                             _selectedPlayer.value = player
                             val wasPlaying = isPlaying
+                            // Read before isPlaying changes: the position advances only while playing.
+                            val shownPosition = interpolatedPosition()
                             isPlaying = player.state == PlaybackState.PLAYING
                             if (isPlaying && !wasPlaying) {
                                 // Re-anchor to now so the ticker resumes from the
@@ -531,6 +538,11 @@ class PlayerRepositoryImpl @Inject constructor(
                                 positionBaseTimestamp = System.currentTimeMillis()
                                 startPositionTicker()
                             } else if (!isPlaying && wasPlaying) {
+                                // Freeze where the bar stood. The base is the last server
+                                // update, which MA 2.9+ sends rarely, so a resume from it moved
+                                // the bar back by however long had passed since that update.
+                                positionBaseTime = shownPosition
+                                positionBaseTimestamp = System.currentTimeMillis()
                                 stopPositionTicker()
                             }
                         }
@@ -577,7 +589,10 @@ class PlayerRepositoryImpl @Inject constructor(
                         favoriteOverride = null
                         favoriteOverrideUri = null
                         stopPositionTicker()
-                        scope.launch { settingsRepository.setSelectedPlayerId(null) }
+                        // Kept as the saved choice and restored when it comes back, like a
+                        // player that went unavailable. MA removes and adds players again when a
+                        // provider reloads; clearing the saved choice here lost it for good.
+                        pendingRestoredPlayerId = id
                     }
                     scheduleAuthoritativePlayerResync()
                 }
@@ -1309,7 +1324,7 @@ class PlayerRepositoryImpl @Inject constructor(
         return false
     }
 
-    private fun startPositionTicker() {
+    private fun startPositionTicker() = synchronized(tickerLock) {
         positionTickJob?.cancel()
         if (!isPlaying) {
             Log.d("PosDbg", "ticker skip start (not playing)")
@@ -1328,7 +1343,7 @@ class PlayerRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun stopPositionTicker() {
+    private fun stopPositionTicker() = synchronized(tickerLock) {
         if (positionTickJob != null) Log.d("PosDbg", "ticker stop")
         positionTickJob?.cancel()
         positionTickJob = null

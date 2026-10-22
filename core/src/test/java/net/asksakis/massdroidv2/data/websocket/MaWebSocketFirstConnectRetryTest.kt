@@ -50,6 +50,18 @@ class MaWebSocketFirstConnectRetryTest {
         assertThat(client.isReconnecting.value).isFalse()
     }
 
+    @Test
+    fun `a sign-in after an earlier session is not retried either`() = runBlocking {
+        // What a session that once authenticated leaves behind.
+        client.retriesEnabled = true
+
+        client.connect(refusedUrl, "token", ConnectOrigin.SIGN_IN)
+
+        withTimeout(WAIT_MS) { client.connectionState.first { it is ConnectionState.Error } }
+        delay(SETTLE_MS)
+        assertThat(client.isReconnecting.value).isFalse()
+    }
+
     private companion object {
         const val WAIT_MS = 5_000L
         const val SETTLE_MS = 300L

@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.repository
 
 import com.google.common.truth.Truth.assertThat
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.delay
@@ -25,7 +26,8 @@ import org.junit.Test
 
 /**
  * A saved player that has not appeared yet is restored when it does, unless the user picked
- * another player in the meantime: that choice must stand.
+ * another player in the meantime: that choice must stand. The same holds for a selected player
+ * that MA removes and adds again, as it does when a provider reloads.
  */
 class PendingRestoreSelectionTest {
 
@@ -41,6 +43,7 @@ class PendingRestoreSelectionTest {
             every { smartListeningEnabled } returns MutableStateFlow(false)
             every { selectedPlayerId } returns flowOf(savedPlayerId)
         }
+        lastSettings = settings
         val smartListening = mockk<SmartListeningRepository>(relaxed = true) {
             every { blockedArtistUris } returns MutableStateFlow(emptySet())
         }
@@ -59,6 +62,10 @@ class PendingRestoreSelectionTest {
             queueItemsCoordinator = mockk(relaxed = true),
         )
     }
+
+    private lateinit var lastSettings: SettingsRepository
+
+    private fun playerRemoved(id: String) = ServerEvent(event = "player_removed", objectId = id, data = null)
 
     private fun playerAdded(id: String) = ServerEvent(
         event = "player_added",
@@ -91,6 +98,24 @@ class PendingRestoreSelectionTest {
 
             assertThat(repo.selectedPlayer.value?.playerId).isEqualTo("chosen")
         }
+
+    @Test
+    fun `a selected player that is removed and added again is selected again`() = runBlocking {
+        val repo = repository(savedPlayerId = "saved")
+        connection.value = ConnectionState.Connected(ServerInfo("server", "2.10.7", 65, "http://ma"))
+        delay(200)
+        events.emit(playerAdded("saved"))
+        withTimeout(5_000) { while (repo.selectedPlayer.value?.playerId != "saved") delay(10) }
+
+        events.emit(playerRemoved("saved"))
+        withTimeout(5_000) { while (repo.selectedPlayer.value != null) delay(10) }
+        events.emit(playerAdded("saved"))
+        withTimeout(5_000) { while (repo.selectedPlayer.value?.playerId != "saved") delay(10) }
+
+        assertThat(repo.selectedPlayer.value?.playerId).isEqualTo("saved")
+        // The saved choice was never cleared, so a restart restores it too.
+        coVerify(exactly = 0) { lastSettings.setSelectedPlayerId(null) }
+    }
 
     @Test
     fun `the saved player is still restored when nobody picked another`() = runBlocking {

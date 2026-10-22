@@ -108,7 +108,8 @@ class MaWebSocketClient(
      * has authenticated, or when the credentials are saved ones ([ConnectOrigin.SAVED_CREDENTIALS]):
      * those worked before, so a failure is far more likely the network than the address.
      */
-    @Volatile private var retriesEnabled = false
+    @VisibleForTesting
+    @Volatile internal var retriesEnabled = false
 
     /**
      * Whether the current connection was started by the user signing in (credentials, OAuth or
@@ -296,7 +297,9 @@ class MaWebSocketClient(
     }
 
     fun connect(url: String, token: String, origin: ConnectOrigin) {
-        if (origin == ConnectOrigin.SAVED_CREDENTIALS) retriesEnabled = true
+        // Set both ways: a successful session turns retries on, and a sign-in to a mistyped
+        // address afterwards kept retrying it instead of showing one error.
+        retriesEnabled = origin == ConnectOrigin.SAVED_CREDENTIALS
         explicitSignIn = origin == ConnectOrigin.SIGN_IN
         // A pending retry suppresses this call, EXCEPT an idle-phase sleep: that one
         // is up to IDLE_RETRY_MS away, and a caller asking to connect now (the user
