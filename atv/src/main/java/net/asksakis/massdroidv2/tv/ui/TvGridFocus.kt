@@ -48,13 +48,14 @@ private const val GRID_FOCUS_RETRY_MS = 60L
  */
 class GridItemFocus internal constructor(
     private val lastKey: MutableState<String?>,
-    private val target: String?,
-    private val requester: FocusRequester,
+    private val requesters: HashMap<String, FocusRequester>,
 ) {
     fun modifierFor(key: String): Modifier =
         Modifier
             .onFocusChanged { if (it.isFocused) lastKey.value = key }
-            .then(if (key == target) Modifier.focusRequester(requester) else Modifier)
+            .focusRequester(requesterFor(key))
+
+    internal fun requesterFor(key: String): FocusRequester = requesters.getOrPut(key) { FocusRequester() }
 }
 
 @Composable
@@ -63,28 +64,37 @@ fun rememberGridItemFocus(
     gridState: LazyGridState,
     autoFocusOnLoad: Boolean = true,
 ): GridItemFocus {
+    // Written on every D-pad step and read only when focus is restored, never during
+    // composition: a read here recomposed the whole screen on each step and scanned the
+    // list for the key.
     val lastKey = rememberSaveable { mutableStateOf<String?>(null) }
-    val requester = remember { FocusRequester() }
-    // Restore target: the remembered key if still present, else the first item. Never
-    // null while the list is non-empty, so focus always has a content target.
-    val target = lastKey.value?.takeIf { it in itemKeys } ?: itemKeys.firstOrNull()
+    val gridFocus = remember { GridItemFocus(lastKey, HashMap()) }
+    val keyIndex = remember(itemKeys) {
+        HashMap<String, Int>(itemKeys.size).apply { itemKeys.forEachIndexed { i, k -> put(k, i) } }
+    }
 
     val scope = rememberCoroutineScope()
     val currentKeys = rememberUpdatedState(itemKeys)
+    val currentIndex = rememberUpdatedState(keyIndex)
+
+    // Restore target: the remembered key if still present, else the first item. Never
+    // null while the list is non-empty, so focus always has a content target.
+    fun restoreTarget(): String? =
+        lastKey.value?.takeIf { it in currentIndex.value } ?: currentKeys.value.firstOrNull()
 
     // Scroll the remembered target back into the lazy window, THEN focus it. Scrolling
     // first is what fixes "returns to the first item after 2-3 pages": a card that fell
     // out of the composed window can't be focused directly.
     suspend fun focusTarget() {
-        val keys = currentKeys.value
-        val t = lastKey.value?.takeIf { it in keys } ?: keys.firstOrNull() ?: return
-        val idx = keys.indexOf(t)
-        // Scroll the target into view ONLY if it isn't already on screen. When it's already
-        // visible (the usual mini-player-exit case — the grid didn't move while we were on
-        // the bar), scrollToItem would yank it to the top and lose the exact scroll
-        // position the user expects. Only a target that scrolled out needs a scroll.
+        val t = restoreTarget() ?: return
+        val idx = currentIndex.value[t] ?: -1
+        // Scroll the target into view ONLY if it isn't already on screen. In the usual
+        // mini player exit the grid did not move while we were on the bar, and scrollToItem
+        // would yank the card to the top and lose the scroll position the user expects.
+        // Only a target that scrolled out needs a scroll.
         val visible = gridState.layoutInfo.visibleItemsInfo.any { it.index == idx }
         if (idx >= 0 && !visible) runCatching { gridState.scrollToItem(idx) }
+        val requester = gridFocus.requesterFor(t)
         repeat(GRID_FOCUS_TRIES) {
             if (runCatching { requester.requestFocus() }.isSuccess) return
             delay(GRID_FOCUS_RETRY_MS)
@@ -94,8 +104,7 @@ fun rememberGridItemFocus(
     val focusMemory = LocalTvFocusMemory.current
     DisposableEffect(focusMemory) {
         val hook: () -> Boolean = {
-            val keys = currentKeys.value
-            val hasTarget = (lastKey.value?.takeIf { it in keys } ?: keys.firstOrNull()) != null
+            val hasTarget = restoreTarget() != null
             // Claim the restore (so the host skips its scroll-to-top spatial fallback) and
             // do the scroll+focus asynchronously, since the hook itself is synchronous.
             if (hasTarget) scope.launch { focusTarget() }
@@ -109,17 +118,13 @@ fun rememberGridItemFocus(
         }
     }
 
-    // Re-focus when the visible content CHANGES (load / drill-down / back-stack return) —
-    // keyed on the first item, so intra-list navigation and pagination never re-focus.
+    // Re-focus when the visible content CHANGES (a load, a drill-down, a back-stack return).
+    // It is keyed on the first item, so intra-list navigation and pagination never re-focus.
     if (autoFocusOnLoad) {
         LaunchedEffect(itemKeys.firstOrNull()) {
-            if (target != null) focusTarget()
+            if (itemKeys.isNotEmpty()) focusTarget()
         }
     }
 
-    // Fresh instance each recomposition so modifierFor closes over the CURRENT target. A
-    // remembered instance with a plain `target` field is not a Compose snapshot read, so the
-    // grid items would not recompose when target changes and the focusRequester would stay
-    // stuck on a stale item (requestFocus then no-ops -> the cursor can't return).
-    return GridItemFocus(lastKey, target, requester)
+    return gridFocus
 }
