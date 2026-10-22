@@ -47,7 +47,8 @@ you sign in with a username and password, both of them, so it can sign in again 
 that identifies this device as a Music Assistant player; your settings; your play history and the
 preference scores it uses for recommendations; cached genres, biographies and artwork; when Follow
 Me is on, the names and identifiers of the Wi-Fi networks and Bluetooth devices it uses to
-recognize each room; and a rotating diagnostic log.
+recognize each room; and, when you turn on "Keep a log" in Settings, a diagnostic log of the
+last day, which turning the setting off deletes.
 
 The sign-in details and the player key are sent only to your own Music Assistant server, to sign
 in and to register the device as a player. The diagnostic log leaves the device only when you

@@ -79,6 +79,11 @@ interface SettingsRepository : TrustedServerStore {
     /** Smart Mix strictness 0f..1f: higher = seed only from your more-loved tracks (by score). */
     val smartMixStrictness: Flow<Float>
     val includeBetaUpdates: Flow<Boolean>
+    /**
+     * Whether the app keeps its own log on the device (the file "Share logs" sends). Null until
+     * the user chooses; the app then applies its build's default, on in debug builds only.
+     */
+    val persistentLogEnabled: Flow<Boolean?>
     val sendspinClientId: Flow<String?>
     /**
      * The player id this phone used before it switched to its Sendspin Noise identity, null when
@@ -229,6 +234,7 @@ interface SettingsRepository : TrustedServerStore {
     /** Restore all Smart Mix tuning knobs (variety, discovery, length) to defaults. */
     suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
+    suspend fun setPersistentLogEnabled(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
     suspend fun setSendspinLegacyClientId(playerId: String)
     suspend fun addSendspinMigratedServer(serverId: String)

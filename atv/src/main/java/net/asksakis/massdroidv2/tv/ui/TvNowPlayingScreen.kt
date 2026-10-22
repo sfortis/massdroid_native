@@ -68,7 +68,10 @@ fun TvNowPlayingScreen(
     settingsViewModel: TvSettingsViewModel = hiltViewModel()
 ) {
     val player by viewModel.player.collectAsStateWithLifecycle()
-    val elapsed by viewModel.elapsed.collectAsStateWithLifecycle()
+    // The position is read only by the seek bar, so the 500 ms ticker recomposes that and not
+    // the whole screen, as on the phone's Now Playing.
+    val elapsedState = viewModel.elapsed.collectAsStateWithLifecycle()
+    val elapsed: () -> Double = remember(elapsedState) { { elapsedState.value } }
     val queue by viewModel.queueState.collectAsStateWithLifecycle()
     val outputDelay by settingsViewModel.outputDelay.collectAsStateWithLifecycle()
     var showOptions by remember { mutableStateOf(false) }
@@ -246,13 +249,14 @@ private fun TransportIcon(
 
 @Composable
 private fun SeekBar(
-    elapsed: Double,
+    elapsed: () -> Double,
     duration: Double,
     enabled: Boolean,
     onSeekBy: (Double) -> Unit
 ) {
     var focused by remember { mutableStateOf(false) }
-    val fraction = if (duration > 0.0) (elapsed / duration).coerceIn(0.0, 1.0).toFloat() else 0f
+    val position = elapsed()
+    val fraction = if (duration > 0.0) (position / duration).coerceIn(0.0, 1.0).toFloat() else 0f
     Column {
         Box(
             modifier = Modifier
@@ -279,7 +283,7 @@ private fun SeekBar(
         }
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatTime(elapsed), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(formatTime(position), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(formatTime(duration), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

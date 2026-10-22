@@ -7,12 +7,15 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.PlayHistoryRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
+import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -64,13 +67,18 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
-        // Start the persistent logcat-to-file writer first so we capture
-        // everything that follows. We try in release too because the user
-        // needs the Share logs button to work when reporting field issues;
-        // on Android 11+ Runtime.exec("logcat") often returns nothing
-        // without READ_LOGS, but the writer fails gracefully and the share
-        // button surfaces a "no logs available" message in that case.
-        net.asksakis.massdroidv2.util.PersistentLogcatWriter.start(this)
+        // The persistent logcat-to-file writer follows the "Keep a log" setting in
+        // Diagnostics, off by default in release builds: the log holds the server
+        // address and what was played. Starting it once the setting is read loses
+        // nothing, because logcat first writes out what its buffer already holds.
+        // On Android 11+ logcat often returns nothing without READ_LOGS; the writer
+        // fails gracefully and Share logs says so.
+        appScope.launch {
+            settingsRepository.persistentLogEnabled
+                .map { it ?: BuildConfig.DEBUG }
+                .distinctUntilChanged()
+                .collect { PersistentLogcatWriter.setEnabled(this@MassDroidApp, it) }
+        }
         // Load saved mTLS certificate and credentials at startup
         appScope.launch {
             val alias = settingsRepository.clientCertAlias.first()

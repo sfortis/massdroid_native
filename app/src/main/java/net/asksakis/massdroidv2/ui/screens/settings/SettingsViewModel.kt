@@ -201,6 +201,11 @@ class SettingsViewModel @Inject constructor(
     val includeBetaUpdates = settingsRepository.includeBetaUpdates
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    // Unset means the build's default, which MassDroidApp applies the same way.
+    val persistentLogEnabled = settingsRepository.persistentLogEnabled
+        .map { it ?: net.asksakis.massdroidv2.BuildConfig.DEBUG }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), net.asksakis.massdroidv2.BuildConfig.DEBUG)
+
     private val _loginError = MutableStateFlow<String?>(null)
     val loginError: StateFlow<String?> = _loginError.asStateFlow()
     private val _recommendationBusy = MutableStateFlow(false)
@@ -319,6 +324,10 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setIncludeBetaUpdates(enabled)
         }
+    }
+
+    fun setPersistentLogEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setPersistentLogEnabled(enabled) }
     }
 
     fun dismissUpdateDialog() {

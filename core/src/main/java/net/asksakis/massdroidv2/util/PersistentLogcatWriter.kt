@@ -29,9 +29,10 @@ import java.util.zip.ZipOutputStream
  * Pull them manually with:
  *   adb pull /sdcard/Android/data/<package>/files/logs/ ./logs/
  *
- * Lifecycle: started once from MassDroidApp.onCreate(). The forked process
- * dies with the app process (no separate stop path needed; if the app is
- * killed, the child terminates too).
+ * Lifecycle: MassDroidApp follows the user's "Keep a log" setting through
+ * [setEnabled], which is off by default in release builds because the log
+ * holds the server address and what was played. The forked process dies with
+ * the app process; turning the setting off stops it and deletes the files.
  */
 object PersistentLogcatWriter {
     private const val TAG = "PersistentLog"
@@ -48,8 +49,23 @@ object PersistentLogcatWriter {
 
     @Volatile private var process: Process? = null
 
+    /** Start or stop the writer to match the setting. Turning it off also deletes the log. */
     @Synchronized
-    fun start(context: Context) {
+    fun setEnabled(context: Context, enabled: Boolean) {
+        if (enabled) start(context) else stop(context)
+    }
+
+    private fun stop(context: Context) {
+        process?.destroy()
+        process = null
+        val logsDir = File(context.getExternalFilesDir(null), "logs")
+        val deleted = logsDir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("app.log") }
+            ?.count { it.delete() } ?: 0
+        if (deleted > 0) Log.d(TAG, "Persistent log off: deleted $deleted log files")
+    }
+
+    private fun start(context: Context) {
         if (process != null) return
         val logsDir = File(context.getExternalFilesDir(null), "logs")
         if (!logsDir.exists() && !logsDir.mkdirs()) {

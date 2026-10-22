@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import net.asksakis.massdroidv2.ui.components.SettingsConfirmDialog
 import net.asksakis.massdroidv2.ui.components.SettingsRow
 import net.asksakis.massdroidv2.ui.components.SettingsSectionDivider
 import net.asksakis.massdroidv2.ui.components.SettingsSectionHeader
+import net.asksakis.massdroidv2.ui.components.SettingsSwitchRow
 import net.asksakis.massdroidv2.ui.components.SettingsTone
 import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 
@@ -50,11 +52,23 @@ import net.asksakis.massdroidv2.util.PersistentLogcatWriter
 fun DiagnosticsScreen(viewModel: SettingsViewModel, modifier: Modifier = Modifier) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val serverVersion = (connectionState as? ConnectionState.Connected)?.serverInfo?.serverVersion
+    val keepLog by viewModel.persistentLogEnabled.collectAsStateWithLifecycle()
 
     SettingsScreenColumn(modifier = modifier) {
         SettingsSectionHeader("Bug reports")
         VersionsItem(serverVersion = serverVersion)
-        ShareLogsItem(serverVersion = serverVersion)
+        SettingsSwitchRow(
+            title = "Keep a log",
+            icon = Icons.Default.Description,
+            checked = keepLog,
+            onCheckedChange = viewModel::setPersistentLogEnabled,
+            supporting = if (keepLog) {
+                "The last day stays on this phone for Share logs. Turning it off deletes it."
+            } else {
+                "Turn on before reproducing a problem, so Share logs has something to send"
+            }
+        )
+        ShareLogsItem(serverVersion = serverVersion, enabled = keepLog)
         SettingsSectionDivider()
         SettingsSectionHeader("Battery")
         BatteryOptimizationItem()
@@ -93,7 +107,7 @@ private fun copyToClipboard(context: Context, text: String) {
 }
 
 @Composable
-private fun ShareLogsItem(serverVersion: String?) {
+private fun ShareLogsItem(serverVersion: String?, enabled: Boolean) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
@@ -148,7 +162,7 @@ private fun ShareLogsItem(serverVersion: String?) {
         icon = Icons.Default.Share,
         supporting = status ?: "A zip of the last day",
         onClick = { confirming = true },
-        enabled = !building,
+        enabled = enabled && !building,
         tone = if (status != null) SettingsTone.ERROR else SettingsTone.NORMAL
     )
 }
