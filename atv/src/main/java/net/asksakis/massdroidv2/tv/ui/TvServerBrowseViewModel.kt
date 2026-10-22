@@ -37,8 +37,15 @@ class TvServerBrowseViewModel @Inject constructor(
         data object Failed : FolderState
     }
 
-    private val _state = MutableStateFlow<FolderState>(FolderState.Loading)
-    val state: StateFlow<FolderState> = _state.asStateFlow()
+    /**
+     * The folder on screen. [id] names its place in the stack and travels in the same value
+     * as its content, so the screen never pairs one folder's entries with another's saved
+     * focus and scroll position.
+     */
+    data class Folder(val id: String, val state: FolderState)
+
+    private val _folder = MutableStateFlow(Folder(folderId(), FolderState.Loading))
+    val folder: StateFlow<Folder> = _folder.asStateFlow()
 
     private val _title = MutableStateFlow("Browse")
     val title: StateFlow<String> = _title.asStateFlow()
@@ -59,17 +66,21 @@ class TvServerBrowseViewModel @Inject constructor(
         _title.value = crumb.title
         _canGoBack.value = stack.size > 1
         loadJob?.cancel()
-        _state.value = FolderState.Loading
+        val id = folderId()
+        _folder.value = Folder(id, FolderState.Loading)
         loadJob = viewModelScope.launch {
-            _state.value = try {
+            val state = try {
                 FolderState.Loaded(browseEntries(musicRepository.browse(crumb.path)))
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 FolderState.Failed
             }
+            _folder.value = Folder(id, state)
         }
     }
+
+    private fun folderId(): String = "${stack.size}:${stack.last().path.orEmpty()}"
 
     /** Load the current folder again, after a failure. */
     fun retry() = load()

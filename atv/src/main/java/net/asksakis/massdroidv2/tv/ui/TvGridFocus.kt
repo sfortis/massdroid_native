@@ -124,6 +124,13 @@ fun rememberGridItemFocus(
         LaunchedEffect(itemKeys.firstOrNull()) {
             if (itemKeys.isNotEmpty()) focusTarget()
         }
+    } else {
+        // A screen that does not focus on load still puts the cursor back on its card when
+        // the user returns to it from a screen above. Only a return brings a saved key with
+        // it; on a first entry there is none, and focus stays where the screen puts it.
+        LaunchedEffect(Unit) {
+            if (lastKey.value?.let { it in keyIndex } == true) focusTarget()
+        }
     }
 
     return gridFocus

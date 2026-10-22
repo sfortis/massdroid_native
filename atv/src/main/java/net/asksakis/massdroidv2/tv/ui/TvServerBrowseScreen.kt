@@ -22,7 +22,9 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -46,18 +48,14 @@ import net.asksakis.massdroidv2.domain.model.BrowseItem as ServerBrowseItem
 @Composable
 fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
     val title by viewModel.title.collectAsStateWithLifecycle()
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val folder by viewModel.folder.collectAsStateWithLifecycle()
     val canGoBack by viewModel.canGoBack.collectAsStateWithLifecycle()
-    val entries = (state as? TvServerBrowseViewModel.FolderState.Loaded)?.entries.orEmpty()
+    // Each folder keeps its own focused card and scroll position, so Back lands on the
+    // folder the user came out of instead of the first entry.
+    val folderStates = rememberSaveableStateHolder()
 
     // Back pops one folder; at the root it is disabled so the system Back exits.
     BackHandler(enabled = canGoBack) { viewModel.back() }
-
-    // Drilling into a folder replaces the whole list; the shared grid-focus helper keeps
-    // the cursor on a content item so it never escapes to the mini player bar.
-    val gridState = rememberLazyGridState()
-    val entryKeys = remember(entries) { entries.map { it.browseKey } }
-    val gridFocus = rememberGridItemFocus(entryKeys, gridState)
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().padding(top = 40.dp, bottom = 24.dp)) {
@@ -67,25 +65,47 @@ fun TvServerBrowseScreen(viewModel: TvServerBrowseViewModel = hiltViewModel()) {
                 modifier = Modifier.padding(horizontal = SERVER_EDGE)
             )
             Spacer(Modifier.height(16.dp))
-            when (state) {
-                TvServerBrowseViewModel.FolderState.Loading -> FolderMessage("Loading…")
-                TvServerBrowseViewModel.FolderState.Failed -> FolderLoadFailed(onRetry = viewModel::retry)
-                is TvServerBrowseViewModel.FolderState.Loaded -> if (entries.isEmpty()) {
-                    FolderMessage("Nothing here")
-                } else {
-                    LazyVerticalGrid(
-                        state = gridState,
-                        columns = GridCells.Fixed(SERVER_GRID_COLUMNS),
-                        contentPadding = PaddingValues(horizontal = SERVER_EDGE, vertical = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
-                    ) {
-                        items(entries, key = { it.browseKey }) { entry ->
-                            BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.browseKey)) {
-                                viewModel.open(entry)
-                            }
-                        }
-                    }
+            folderStates.SaveableStateProvider(folder.id) {
+                // The provider reuses its layout nodes when the key changes, and a reused node
+                // kept the previous folder's focus: it then reported the card now drawn in its
+                // place as focused, overwriting the card saved for this folder. A key of its own
+                // gives each folder new nodes.
+                key(folder.id) {
+                    FolderContent(folder.state, onOpen = viewModel::open, onRetry = viewModel::retry)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderContent(
+    state: TvServerBrowseViewModel.FolderState,
+    onOpen: (ServerBrowseItem) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val entries = (state as? TvServerBrowseViewModel.FolderState.Loaded)?.entries.orEmpty()
+    // Drilling into a folder replaces the whole list; the shared grid-focus helper keeps
+    // the cursor on a content item so it never escapes to the mini player bar.
+    val gridState = rememberLazyGridState()
+    val entryKeys = remember(entries) { entries.map { it.browseKey } }
+    val gridFocus = rememberGridItemFocus(entryKeys, gridState)
+
+    when (state) {
+        TvServerBrowseViewModel.FolderState.Loading -> FolderMessage("Loading…")
+        TvServerBrowseViewModel.FolderState.Failed -> FolderLoadFailed(onRetry = onRetry)
+        is TvServerBrowseViewModel.FolderState.Loaded -> if (entries.isEmpty()) {
+            FolderMessage("Nothing here")
+        } else {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Fixed(SERVER_GRID_COLUMNS),
+                contentPadding = PaddingValues(horizontal = SERVER_EDGE, vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                items(entries, key = { it.browseKey }) { entry ->
+                    BrowseTreeCard(entry, modifier = gridFocus.modifierFor(entry.browseKey)) { onOpen(entry) }
                 }
             }
         }
