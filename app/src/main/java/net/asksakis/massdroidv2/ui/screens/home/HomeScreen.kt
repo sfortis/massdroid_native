@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.home
 
+import net.asksakis.massdroidv2.ui.components.LaunchedWhileVisible
 import net.asksakis.massdroidv2.ui.components.MiniPlayerGeometry
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalConfiguration
@@ -459,10 +460,6 @@ private fun SmartMixFab(
     modifier: Modifier = Modifier
 ) {
     val sparkleScale = remember { Animatable(1f) }
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    val isResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(
-        androidx.lifecycle.Lifecycle.State.RESUMED
-    )
 
     // Keep the message visible in the FAB for a bit, then collapse back to "Smart Mix"
     // by asking the ViewModel to clear it. Calling onMessageShown BEFORE the delay would
@@ -475,8 +472,8 @@ private fun SmartMixFab(
     }
     val displayMessage = message?.takeIf { it.isNotBlank() }
 
-    LaunchedEffect(isBusy, isResumed, displayMessage) {
-        if (!isBusy && isResumed && displayMessage == null) {
+    LaunchedWhileVisible(isBusy, displayMessage) {
+        if (!isBusy && displayMessage == null) {
             val framesPerPulse = 24          // 24 * 50ms = 1.2s per pulse
             val pi = Math.PI.toFloat()
             while (true) {
@@ -599,7 +596,7 @@ private fun ConnectionStatusIcon(connectionState: ConnectionState) {
 
     // Red blink while unreachable.
     val pulse = remember { Animatable(1f) }
-    LaunchedEffect(down) {
+    LaunchedWhileVisible(down) {
         if (down) {
             val frames = 20              // 20 * 50ms = 1s per cycle, ~20fps
             val pi = Math.PI.toFloat()

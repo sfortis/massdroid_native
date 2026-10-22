@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -27,7 +26,7 @@ fun EqualizerBars(
 ) {
     val elapsedMs = remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(Unit) {
+    LaunchedWhileVisible {
         while (true) {
             delay(50)
             elapsedMs.longValue += 50L

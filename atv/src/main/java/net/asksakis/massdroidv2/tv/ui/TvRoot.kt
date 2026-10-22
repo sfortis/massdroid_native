@@ -60,6 +60,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
@@ -279,10 +280,15 @@ private fun TvReconnectingNotice(server: String, modifier: Modifier = Modifier) 
 @Composable
 private fun ReconnectSpinner(color: Color, modifier: Modifier = Modifier) {
     val angle = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(SPINNER_FRAME_MS)
-            angle.snapTo((angle.value + SPINNER_STEP_DEGREES) % FULL_TURN_DEGREES)
+    // Only while the screen is on: the loop steps with delay, not the frame clock, so
+    // nothing else would stop it while the TV sleeps with the connection down.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                delay(SPINNER_FRAME_MS)
+                angle.snapTo((angle.value + SPINNER_STEP_DEGREES) % FULL_TURN_DEGREES)
+            }
         }
     }
     Canvas(modifier = modifier.graphicsLayer { rotationZ = angle.value }) {

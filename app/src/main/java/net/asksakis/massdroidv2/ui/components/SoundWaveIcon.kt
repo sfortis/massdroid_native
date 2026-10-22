@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -25,7 +24,7 @@ fun SoundWaveIcon(
 ) {
     val phase = remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(isPlaying) {
+    LaunchedWhileVisible(isPlaying) {
         if (isPlaying) {
             val cycleMs = 500           // 120 BPM
             val stepMs = 50L            // ~20fps (was 20ms/50fps)
