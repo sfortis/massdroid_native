@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -568,6 +569,10 @@ class SendspinAudioController(
     private var lastObservedInGroup: Boolean? = null
     private var groupObserverStartedAtMs = 0L
     private var lastGroupJoinRelockAtMs = 0L
+    private var groupJoinRelockJob: Job? = null
+    // Whether this phone led the group it was last seen in; only then does it keep
+    // playing its own queue when the group breaks up.
+    private var ledLastGroup = false
     // One-shot timer that commits the deferred initial solo verdict. The players
     // flow is distinctUntilChanged, so once it has emitted "solo" it will NOT
     // re-emit when streaming starts — without this the deferred verdict would
@@ -600,26 +605,59 @@ class SendspinAudioController(
         }
     }
 
-    private fun requestGroupJoinRelock(player: net.asksakis.massdroidv2.domain.model.Player) {
+    private fun requestGroupRelock(player: net.asksakis.massdroidv2.domain.model.Player, reason: String) {
         if (!isStreaming || player.state != PlaybackState.PLAYING) return
 
         val now = System.currentTimeMillis()
         if (now - lastGroupJoinRelockAtMs < GROUP_JOIN_RELOCK_COOLDOWN_MS) return
         lastGroupJoinRelockAtMs = now
 
-        val targetPlayerId = player.activeGroup ?: player.playerId
-        val mediaElapsed = player.currentMedia?.elapsedTime
-        val positionSec = when {
-            currentPositionMs > 0L -> currentPositionMs / 1000.0
-            mediaElapsed != null -> mediaElapsed
-            else -> playerRepository.elapsedTime.value
-        }.coerceAtLeast(0.0)
-
-        Log.d(TAG, "Group join relock: seek($targetPlayerId, ${"%.3f".format(positionSec)}s) streaming=$isStreaming")
-        if (targetPlayerId != player.playerId) {
-            sendspinManager.expectDiscontinuity("group-join")
+        val immediatePosition = relockSeekPosition(player)
+        groupJoinRelockJob?.cancel()
+        groupJoinRelockJob = scope.launch {
+            // At a track change MA's queue position can sit past the end of the old track,
+            // and a seek there stalled MA. Wait for a position inside the track instead,
+            // which usually comes with the queue's move to the next one.
+            val positionSec = immediatePosition ?: run {
+                Log.d(TAG, "Group $reason relock: no position inside the track yet, waiting")
+                withTimeoutOrNull(GroupJoinRelockPolicy.VALID_POSITION_WAIT_MS) {
+                    combine(playerRepository.players, playerRepository.elapsedTime) { players, _ ->
+                        players.firstOrNull { it.playerId == player.playerId }
+                    }
+                        .mapNotNull { latest -> latest?.let(::relockSeekPosition) }
+                        .first()
+                }
+            }
+            if (positionSec == null) {
+                Log.w(TAG, "Group $reason relock skipped: no position inside the track within ${GroupJoinRelockPolicy.VALID_POSITION_WAIT_MS}ms")
+                return@launch
+            }
+            if (!isStreaming) return@launch
+            val targetPlayerId = player.activeGroup ?: player.playerId
+            Log.d(TAG, "Group $reason relock: seek($targetPlayerId, ${"%.3f".format(positionSec)}s) streaming=$isStreaming")
+            if (targetPlayerId != player.playerId) {
+                sendspinManager.expectDiscontinuity("group-$reason")
+            }
+            playerRepository.seek(targetPlayerId, positionSec)
         }
-        scope.launch { playerRepository.seek(targetPlayerId, positionSec) }
+    }
+
+    /** The relock position from the freshest source, or null when it falls outside the track. */
+    private fun relockSeekPosition(player: net.asksakis.massdroidv2.domain.model.Player): Double? {
+        val media = player.currentMedia
+        // The queue ticker moves with time. The other two are snapshots from the last
+        // position event, so a join some time after it sent the group back by that long
+        // (2026-10-22: a seek to 514 s on a join at 531 s).
+        val tickerSec = playerRepository.elapsedTime.value
+            .takeIf { playerRepository.selectedPlayer.value?.playerId == player.playerId && it > 0.0 }
+        val positionSec = when {
+            tickerSec != null -> tickerSec
+            currentPositionMs > 0L -> currentPositionMs / 1000.0
+            media != null -> media.elapsedTime
+            else -> playerRepository.elapsedTime.value
+        }
+        val durationSec = if (currentDurationMs > 0L) currentDurationMs / 1000.0 else media?.duration ?: 0.0
+        return GroupJoinRelockPolicy.seekPosition(positionSec, durationSec)
     }
 
     fun start() {
@@ -845,7 +883,7 @@ class SendspinAudioController(
             // for minutes. Until this runs the clock sync keeps going, which a sleeping phone corrupts.
             combine(playerRepository.players, plannedPlayerId) { list, ssId -> list to ssId }
                 .map { (list, ssId) ->
-                    if (ssId == null) return@map Pair<net.asksakis.massdroidv2.domain.model.Player?, Boolean>(null, false)
+                    if (ssId == null) return@map Triple<net.asksakis.massdroidv2.domain.model.Player?, Boolean, Boolean>(null, false, false)
                     val self = list.find { it.playerId == ssId }
                     // Match the eager pre-connect check exactly. MA's group_childs
                     // includes the parent ITSELF, and activeGroup is unreliable (can be
@@ -856,10 +894,12 @@ class SendspinAudioController(
                     // The true test is "are there OTHER members besides me".
                     val selfInGroup = self?.groupChilds?.any { it != ssId } == true
                     val childOfOther = list.any { it.playerId != ssId && ssId in it.groupChilds }
-                    Pair(self, selfInGroup || childOfOther)
+                    // The third value says this phone leads the group: its own queue plays on
+                    // when the members leave, which a member's queue does not.
+                    Triple(self, selfInGroup || childOfOther, selfInGroup)
                 }
                 .distinctUntilChanged()
-                .collect { (player, inGroup) ->
+                .collect { (player, inGroup, leadsGroup) ->
                     // Don't decide group state until player data is available
                     if (player == null) return@collect
                     Log.d(TAG, "Group check: inGroup=$inGroup player=${player.displayName}")
@@ -876,9 +916,17 @@ class SendspinAudioController(
                         // elapsed via the timer) supersedes the deferral.
                         deferredSoloJob?.cancel()
                         val joinedGroup = previousGroupState == false && inGroup
+                        val leftOwnGroup = previousGroupState == true && !inGroup && ledLastGroup
                         lastObservedInGroup = inGroup
+                        if (inGroup) ledLastGroup = leadsGroup
                         sendspinManager.setInSyncGroup(inGroup)
-                        if (joinedGroup) requestGroupJoinRelock(player)
+                        // Both swap the engine, and the new one starts empty while the server
+                        // counts what it already sent as buffered and never sends it again: a
+                        // seek makes it start over with a full burst. Without it a phone back
+                        // to solo after Break sync played on about 100 ms of cushion and
+                        // underran on every small network delay (2026-10-22).
+                        if (joinedGroup) requestGroupRelock(player, "join")
+                        if (leftOwnGroup) requestGroupRelock(player, "leave")
                     }
                     // Playing-state used to be reconciled from player.state
                     // here with a 400ms transient-pause debouncer. After the
@@ -1321,6 +1369,8 @@ class SendspinAudioController(
         sendspinManager.setOutputAllowed { true }
         for (job in collectorJobs) job.cancel(CancellationException("Sendspin stop"))
         collectorJobs.clear()
+        groupJoinRelockJob?.cancel()
+        groupJoinRelockJob = null
         // The next start plans again, possibly for another server.
         plannedPlayerId.value = null
         autoRecoveryJob?.cancel()
