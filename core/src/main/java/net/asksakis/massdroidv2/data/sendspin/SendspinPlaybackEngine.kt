@@ -72,6 +72,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // native ring and leave everything else encoded in frameQueue. Must
         // stay below the native RING_SECONDS so write() never has to drop.
         private const val RING_TARGET_MS = 2_500L
+        /** How long a codec switch waits for the old decoder to hand back its last frames. */
+        private const val CODEC_SWITCH_DRAIN_TIMEOUT_MS = 200L
         // After playback has been IDLE this long, stop the real-time Oboe output
         // callback (requestStop, stream stays open) and let the producer thread
         // exit, so a connected-but-not-playing app draws no audio-HAL / CPU power.
@@ -266,6 +268,28 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     private var codecRebuildsInWindow = 0
     @Volatile private var lastEnqueuedTimestampUs = 0L
     @Volatile private var estimatedFrameDurationUs = 20_000L
+
+    /**
+     * A codec change the server announced inside a running stream, for the frames of
+     * [generation] onward. The producer carries it out at the first such frame; until then
+     * the older generations still in the queue decode and play with the old decoder.
+     * [expectedResumeUs] is where the new format should start if the timeline continues,
+     * null when a flush left nothing to continue. See [FormatSwitchPolicy].
+     */
+    private data class FormatChange(
+        val generation: Long,
+        val codecName: String,
+        val bitDepth: Int,
+        val codecHeader: String?,
+        val expectedResumeUs: Long?,
+    )
+    // Changes not carried out yet, oldest first. Written by configure and the producer,
+    // so every read-modify-write holds [formatLock].
+    @Volatile private var formatChanges: List<FormatChange> = emptyList()
+    private val formatLock = Any()
+    // The oldest generation whose frames may still play: older than [configureGeneration]
+    // only while a format change carries the frames queued before it.
+    @Volatile private var oldestLiveGeneration = 0L
     @Volatile protected var startupWaitStartedMs = 0L
     @Volatile private var routedDeviceType = -1
     @Volatile private var routedProductName: String? = null
@@ -379,11 +403,13 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         codecHeader: String?,
         startType: ProtocolStartType,
     ) {
+        // With a change pending, the stream is already in the newest announced format.
+        val latestChange = formatChanges.lastOrNull()
         val sameFormat = configured &&
-            codecName == activeCodec &&
+            codecName == (latestChange?.codecName ?: activeCodec) &&
             sampleRate == activeSampleRate &&
             channels == activeChannels &&
-            bitDepth == activeBitDepth
+            bitDepth == (latestChange?.bitDepth ?: activeBitDepth)
 
         configureGeneration++
         cancelIdleStop()
@@ -412,6 +438,34 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             // actually starts flowing (lifted in writeChunk after the cushion).
             beginStartupMute()
             transitionSyncState(if (startType == ProtocolStartType.NEW_STREAM) SyncState.IDLE else SyncState.SYNC_ERROR_REBUFFERING)
+            ensurePlaybackThread()
+            return
+        }
+
+        val keepsBuffer = FormatSwitchPolicy.keepsBuffer(
+            continuation = startType == ProtocolStartType.CONTINUATION,
+            configured = configured,
+            receivedAny = lastEnqueuedTimestampUs > 0L,
+            sameOutputShape = sampleRate == activeSampleRate && channels == activeChannels,
+        )
+        if (keepsBuffer) {
+            // The server resumes the new format where the audio it already sent ends and
+            // never sends that audio again: keep the queue and the ring, and let the
+            // producer change the decoder at the first new frame. No flush, no mute.
+            Log.d(
+                TAG,
+                "configure ${startType.name} switch codec ${latestChange?.codecName ?: activeCodec} -> $codecName in place, " +
+                    "keeping buf=${bufferDurationMs()}ms ring=${ringBufferedMs()}ms"
+            )
+            val change = FormatChange(
+                generation = configureGeneration,
+                codecName = codecName,
+                bitDepth = bitDepth,
+                codecHeader = codecHeader,
+                expectedResumeUs = lastEnqueuedTimestampUs + estimatedFrameDurationUs,
+            )
+            synchronized(formatLock) { formatChanges = formatChanges + change }
+            ensureOutputRunning()
             ensurePlaybackThread()
             return
         }
@@ -1071,7 +1125,13 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
                 frameQueueBytes.addAndGet(-polled.length.toLong())
                 frame = polled
             }
-            if (frame.generation != configureGeneration) continue
+            if (!acceptsGeneration(frame.generation)) continue
+            val change = formatChanges.lastOrNull { it.generation <= frame.generation }
+            if (change != null && !completeCodecSwitch(change, frame, generation)) {
+                // A new timeline after all: hold the frame for after the startup cushion.
+                pendingFrame = frame
+                continue
+            }
 
             if (activeCodec == "pcm") {
                 // writeChunk owns the 24->16 conversion; do not convert here too.
@@ -1259,7 +1319,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             // Feed OUTSIDE the codec lock. pcmScratch is safe to reuse next
             // iteration: writeChunk is synchronous (a JNI memcpy into the ring),
             // so the next decode only runs after it returns.
-            if (ready && chunkGen == configureGeneration && generation == playbackGeneration) {
+            if (ready && acceptsGeneration(chunkGen) && generation == playbackGeneration) {
                 writeChunk(chunkTs, pcmScratch, 0, chunkLen, chunkGen, generation)
                 wroteAny = true
             }
@@ -1283,7 +1343,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         generation: Long,
     ) {
         if (length <= 0 || generation != playbackGeneration || paused) return
-        if (chunkGeneration != configureGeneration) return
+        if (!acceptsGeneration(chunkGeneration)) return
         val plan = timingPlan(serverTimestampUs)
         if (isSync && playbackStarted && isLateOnArrival(plan, length)) return
 
@@ -1499,7 +1559,70 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         frameQueueBytes.set(0)
         lastEnqueuedTimestampUs = 0L
         estimatedFrameDurationUs = 20_000L
+        // Nothing older is left to carry. A change not carried out yet still sets the
+        // format of the frames that follow, so the newest one stays, for them.
+        synchronized(formatLock) {
+            oldestLiveGeneration = configureGeneration
+            formatChanges = formatChanges.lastOrNull()
+                ?.let { listOf(it.copy(generation = configureGeneration, expectedResumeUs = null)) }
+                .orEmpty()
+        }
         flushDecodedAudio()
+    }
+
+    /** Frames and chunks of the current stream, and those a pending format change still carries. */
+    private fun acceptsGeneration(generation: Long): Boolean =
+        generation in oldestLiveGeneration..configureGeneration
+
+    /**
+     * Carries out [change] on the producer thread, at the first frame of its format: decode
+     * what the old decoder still holds, then replace it. The native ring is left alone, so
+     * the audio already decoded plays on without a gap. Returns false when the new format
+     * does not continue the old timeline, after dropping the decoded audio the way a
+     * rebuild did.
+     */
+    private fun completeCodecSwitch(change: FormatChange, firstFrame: EncodedFrame, generation: Long): Boolean {
+        val drainDeadlineMs = System.currentTimeMillis() + CODEC_SWITCH_DRAIN_TIMEOUT_MS
+        while (synchronized(codecLock) { decoderMarks.isNotEmpty() } &&
+            System.currentTimeMillis() < drainDeadlineMs
+        ) {
+            if (!drainDecoder(generation)) sleepMs(2)
+        }
+        val previousCodec = activeCodec
+        synchronized(codecLock) {
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            codec = null
+            decoderMarks.clear()
+            activeCodec = change.codecName
+            activeBitDepth = change.bitDepth
+            activeCodecHeader = change.codecHeader
+            codec = try {
+                createCodec(change.codecName, activeSampleRate, activeChannels, change.bitDepth, change.codecHeader)
+            } catch (e: Exception) {
+                // The producer rebuilds a failed decoder with the active fields set above.
+                Log.e(TAG, "Decoder for ${change.codecName} failed to start: ${e.message}")
+                codecFailed = true
+                null
+            }
+        }
+        synchronized(formatLock) {
+            formatChanges = formatChanges.filter { it.generation > firstFrame.generation }
+            oldestLiveGeneration = firstFrame.generation
+        }
+        val firstFrameUs = firstFrame.serverTimestampUs
+        val expectedUs = change.expectedResumeUs ?: return true
+        val gapMs = (firstFrameUs - expectedUs) / 1000L
+        if (FormatSwitchPolicy.continuesTimeline(expectedUs, firstFrameUs)) {
+            Log.d(TAG, "Codec switch $previousCodec -> $activeCodec without a flush: ring=${ringBufferedMs()}ms resumeGap=${gapMs}ms")
+            return true
+        }
+        Log.w(TAG, "Codec switch $previousCodec -> $activeCodec starts ${gapMs}ms off the old timeline, flushing")
+        flushDecodedAudio()
+        playbackStarted = false
+        beginStartupMute()
+        transitionSyncState(SyncState.SYNC_ERROR_REBUFFERING)
+        return false
     }
 
     /**
@@ -1604,6 +1727,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     }
 
     private fun releaseInternal() {
+        synchronized(formatLock) { formatChanges = emptyList() }
         cancelIdleStop()
         outputPausedForIdle = false
         reopenSettleRunnable?.let { mainHandler.removeCallbacks(it) }
