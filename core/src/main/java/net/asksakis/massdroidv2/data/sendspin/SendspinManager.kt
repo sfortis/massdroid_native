@@ -319,14 +319,16 @@ class SendspinManager(
             client.messages.collect { message ->
                 when (message) {
                     is SendspinMessage.Text -> handleIncoming(message.incoming)
-                    is SendspinMessage.Binary -> {
+                    is SendspinMessage.Audio -> {
                         binaryCount++
                         val gen = audio.currentConfigureGeneration()
                         if (binaryCount <= 3 || binaryCount % 1000 == 0) {
-                            Log.d(TAG, "Binary message #$binaryCount: ${message.data.size} bytes")
+                            Log.d(TAG, "Audio message #$binaryCount: ${message.chunk.data.size} bytes")
                         }
-                        audio.onBinaryMessage(message.data, gen)
+                        audio.onAudioChunk(message.chunk, gen)
                     }
+                    // No other binary role is active (no artwork, no visualizer).
+                    is SendspinMessage.Binary -> Unit
                 }
             }
         }

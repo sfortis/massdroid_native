@@ -59,7 +59,7 @@ interface SendspinAudioEngine {
     fun currentConfigureGeneration(): Long
 
     // Frame input
-    fun onBinaryMessage(data: ByteArray, generation: Long)
+    fun onAudioChunk(chunk: SendspinAudioChunk, generation: Long)
 
     // Playback control
     fun setPaused(paused: Boolean)

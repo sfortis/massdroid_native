@@ -42,7 +42,12 @@ enum class SendspinState {
 
 sealed class SendspinMessage {
     data class Text(val incoming: SendspinIncoming) : SendspinMessage()
-    data class Binary(val data: ByteArray) : SendspinMessage()
+
+    /** A player audio chunk, its header read for the connection's wire. */
+    class Audio(val chunk: SendspinAudioChunk) : SendspinMessage()
+
+    /** Any other binary role message, with its leading type byte. */
+    class Binary(val data: ByteArray) : SendspinMessage()
 }
 
 /** Builds the Noise session for one connection attempt. */
@@ -412,7 +417,7 @@ class SendspinClient(
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             if (gen != connectionGeneration) return
             if (noise == null) {
-                deliverBinary(bytes.toByteArray())
+                deliverBinary(gen, bytes.toByteArray(), SendspinWire.LEGACY)
                 return
             }
             // T4 before the decrypt, for the same reason as on the text path.
@@ -426,7 +431,8 @@ class SendspinClient(
             when (received) {
                 null -> Unit
                 is NoiseClientSession.Received.Text -> deliverText(received.text, rxUs, noise)
-                is NoiseClientSession.Received.Binary -> deliverBinary(received.data)
+                is NoiseClientSession.Received.Binary ->
+                    deliverBinary(gen, received.data, noise.wire ?: SendspinWire.LEGACY)
                 is NoiseClientSession.Received.Rehandshake -> {
                     Log.d(TAG, "Noise re-handshake onto a ${received.psk.category} PSK")
                     emitText(SendspinIncoming.NoiseRehandshake)
@@ -512,8 +518,14 @@ class SendspinClient(
         _textMessages.tryEmit(incoming)
     }
 
-    private fun deliverBinary(data: ByteArray) {
-        if (!_messages.tryEmit(SendspinMessage.Binary(data))) {
+    private fun deliverBinary(gen: Int, data: ByteArray, wire: SendspinWire) {
+        val message = try {
+            SendspinAudioChunk.parse(data, wire)?.let(SendspinMessage::Audio) ?: SendspinMessage.Binary(data)
+        } catch (e: SendspinAudioChunk.MalformedException) {
+            abortConnection(gen, e.message ?: "malformed audio message")
+            return
+        }
+        if (!_messages.tryEmit(message)) {
             val dropped = droppedBinaryFrames.incrementAndGet()
             if (dropped <= 5 || dropped % 100 == 0) {
                 Log.w(TAG, "Dropping binary audio frame(s): dropped=$dropped")

@@ -60,8 +60,6 @@ enum class SyncState {
 abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     companion object {
         private const val TAG = "AudioStream"
-        private const val HEADER_SIZE = 9
-        private const val TYPE_PLAYER_AUDIO = 4
         // Hard memory ceiling for the encoded frame queue. The server streams
         // ahead up to the requested buffer_capacity (~4 MB ~= 30 s of FLAC), so
         // this must stay well above it; it is only a runaway backstop.
@@ -422,7 +420,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         startupWaitStartedMs = 0L
         // A stream/start means the server is actively streaming again. Resume
         // can arrive as stream/start (not setPaused(false)), so we must clear
-        // the paused flag here or onBinaryMessage keeps dropping every frame and
+        // the paused flag here or onAudioChunk keeps dropping every frame and
         // the playback loop stays asleep -> stuck IDLE after pause/play.
         //
         // Unless the output is not allowed to make a sound. Clearing this
@@ -527,7 +525,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         return true
     }
 
-    override fun onBinaryMessage(data: ByteArray, generation: Long) {
+    override fun onAudioChunk(chunk: SendspinAudioChunk, generation: Long) {
         if (!configured || paused || generation != configureGeneration) return
         if (awaitingFreshStream && !freshStreamGateExpired()) return
         // Fresh frames on a still-active stream after a power-save idle stop must
@@ -535,7 +533,6 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         // climbs to the ceiling) and playback never resumes. ensureOutputRunning
         // is a no-op once already running.
         if (outputPausedForIdle) mainHandler.post { ensureOutputRunning() }
-        if (data.size <= HEADER_SIZE || data[0].toInt() != TYPE_PLAYER_AUDIO) return
         if (outputFrozen && isSync) dropFramesPastDueWhileFrozen()
         // Overflow backstop: if we are genuinely over the memory ceiling, drop
         // THIS incoming (newest) frame. Never poll() the head — that is about
@@ -546,15 +543,15 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             return
         }
 
-        val serverTimestampUs = parseTimestampUs(data)
-        val payloadLength = data.size - HEADER_SIZE
+        val serverTimestampUs = chunk.timestampUs
+        val payloadLength = chunk.payloadLength
         receivedFrameCount++
         val previousTail = lastEnqueuedTimestampUs
         if (previousTail > 0L) {
             val spacing = serverTimestampUs - previousTail
             if (spacing in 5_000L..500_000L) estimatedFrameDurationUs = spacing
         }
-        frameQueue.offer(EncodedFrame(serverTimestampUs, data, HEADER_SIZE, payloadLength, generation))
+        frameQueue.offer(EncodedFrame(serverTimestampUs, chunk.data, chunk.payloadOffset, payloadLength, generation))
         frameQueueBytes.addAndGet(payloadLength.toLong())
         lastEnqueuedTimestampUs = serverTimestampUs
         val localUs = clockSynchronizer?.serverToLocalUs(serverTimestampUs)
@@ -1892,12 +1889,6 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             src += 3
         }
         return out
-    }
-
-    private fun parseTimestampUs(data: ByteArray): Long {
-        var ts = 0L
-        for (i in 1..8) ts = (ts shl 8) or (data[i].toLong() and 0xffL)
-        return ts
     }
 
     protected fun nowUs(): Long = System.nanoTime() / 1000L
