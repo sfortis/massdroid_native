@@ -57,6 +57,19 @@ data class ServerActivatePayload(
 @Serializable
 data class ClientPairFinalizePayload(@SerialName("long_term_psk") val longTermPsk: String)
 
+/**
+ * `client/pair-init` on the rc1 wire, sent right before `client/pair-finalize`. [pairingIndex]
+ * counts the pairing `server/activate` messages since the last Noise handshake, this one included.
+ */
+@Serializable
+data class ClientPairInitPayload(@SerialName("pairing_index") val pairingIndex: Int)
+
+@Serializable
+data class SendspinClientPairInit(
+    val type: String = "client/pair-init",
+    val payload: ClientPairInitPayload,
+)
+
 @Serializable
 data class SendspinClientPairFinalize(
     val type: String = "client/pair-finalize",

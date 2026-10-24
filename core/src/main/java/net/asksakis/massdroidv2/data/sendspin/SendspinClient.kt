@@ -496,10 +496,12 @@ class SendspinClient(
     private fun deliverText(text: String, rxUs: Long, noise: NoiseClientSession?) {
         val parsed = SendspinIncoming.parse(text, json)
         // Ended here on the reader thread rather than in the manager, so the
-        // exchange is closed before any later frame is read. During pairing it
-        // stays open: the server then waits for client/pair-finalize.
+        // exchange is closed before any later frame is read. On the legacy wire
+        // it stays open during pairing, because the server then reads the next
+        // frame as client/pair-finalize. On rc1 any server/activate ends it,
+        // because pairing runs beside the other traffic.
         if (noise != null && parsed is SendspinIncoming.ServerActivate &&
-            ACTIVITY_PAIRING !in parsed.payload.activities
+            (noise.wire == SendspinWire.RC1 || ACTIVITY_PAIRING !in parsed.payload.activities)
         ) {
             noise.endExchange()
         }
@@ -645,6 +647,11 @@ class SendspinClient(
     /** `client/hello` on the Noise transport, the answer to `server/hello`. */
     fun sendNoiseHello(payload: NoiseClientHelloPayload) {
         sendText(json.encodeToString(SendspinNoiseClientHello(payload = payload)), force = true)
+    }
+
+    /** `client/pair-init`, which precedes `client/pair-finalize` on the rc1 wire. */
+    fun sendPairInit(pairingIndex: Int) {
+        sendText(json.encodeToString(SendspinClientPairInit(payload = ClientPairInitPayload(pairingIndex))), force = true)
     }
 
     fun sendPairFinalize(longTermPsk: ByteArray) {

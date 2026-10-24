@@ -57,6 +57,8 @@ internal class SendspinNoiseFlow(
     private var resyncPending = false
     // The PSK category last reported through onLinkEvent on this connection.
     private var reportedCategory: PskCategory? = null
+    // Pairing server/activate messages since the last Noise handshake: rc1's pairing_index.
+    private var pairingActivations = 0
 
     /** Whether the server's last `server/activate` gave this connection a player role. */
     val playerRoleActive: Boolean get() = NoiseActivationStep.hasPlayerRole(activeRoles)
@@ -95,6 +97,7 @@ internal class SendspinNoiseFlow(
         playerActive = false
         resyncPending = false
         reportedCategory = null
+        pairingActivations = 0
     }
 
     fun onServerHello() {
@@ -105,9 +108,12 @@ internal class SendspinNoiseFlow(
 
     fun onRehandshake() {
         resyncPending = true
-        // The server drops every role before it re-handshakes and names them again in the next
-        // server/activate, so from here the roles are the ones that activate gives.
-        activeRoles = emptyList()
+        pairingActivations = 0
+        // On the legacy wire the server drops every role before it re-handshakes and names them
+        // again in the next server/activate, so from here the roles are the ones that activate
+        // gives. On rc1 the roles persist across the re-handshake, and the next activate may omit
+        // them to keep them.
+        if (client.wire == SendspinWire.LEGACY) activeRoles = emptyList()
         synchronized(holdLock) {
             if (pairingHold == PairingHold.PAIRING_EXPECTED) pairingHold = PairingHold.AWAIT_ACTIVATE
         }
@@ -146,6 +152,7 @@ internal class SendspinNoiseFlow(
     fun onActivate(payload: ServerActivatePayload) {
         val psk = client.noisePsk() ?: return
         val wire = client.wire
+        if (ACTIVITY_PAIRING in payload.activities) pairingActivations++
         activeRoles = NoiseActivationStep.effectiveRoles(payload, psk.category, activeRoles, wire)
         val step = NoiseActivationStep.decide(
             payload = payload,
@@ -171,7 +178,7 @@ internal class SendspinNoiseFlow(
             }
         }
         when (step) {
-            NoiseActivationStep.FinalizePairing -> finalizePairing()
+            NoiseActivationStep.FinalizePairing -> finalizePairing(wire)
             is NoiseActivationStep.AbortPairing -> {
                 pairing.abandon()
                 client.sendPairAbort(step.reason)
@@ -218,7 +225,12 @@ internal class SendspinNoiseFlow(
         }
     }
 
-    private fun finalizePairing() {
+    /**
+     * Sends the new long-term PSK. On rc1 `client/pair-init` comes first, with the count of
+     * pairing activations since the handshake; the server discards a lower index and treats a
+     * higher one as a protocol error (spec `pairing.md`, Pairing PSK Flow).
+     */
+    private fun finalizePairing(wire: SendspinWire) {
         val serverId = client.noiseServerId() ?: return
         val psk = try {
             pairing.beginFinalize(serverId)
@@ -227,6 +239,7 @@ internal class SendspinNoiseFlow(
             Log.e(TAG, "Cannot save the new pairing, not finalizing", e)
             return
         }
+        if (wire == SendspinWire.RC1) client.sendPairInit(pairingActivations)
         client.sendPairFinalize(psk)
     }
 

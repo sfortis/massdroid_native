@@ -30,6 +30,8 @@ class NoisePairingHoldTest {
     private val client = mockk<SendspinClient>(relaxed = true).also {
         every { it.noisePsk() } answers { ResolvedPsk("psk", ByteArray(32), pskCategory, SERVER_ID) }
         every { it.noiseServerId() } returns SERVER_ID
+        // The hold was built for the legacy wire's quiesce; rc1 keeps it until the live pairing test.
+        every { it.wire } returns SendspinWire.LEGACY
     }
 
     private lateinit var flow: SendspinNoiseFlow
