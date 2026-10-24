@@ -25,7 +25,8 @@ import javax.inject.Singleton
  *  4. the artist's Wikipedia summary ([ArtistBioResolver]).
  *
  * Small releases that exist only on a streaming provider usually have none of these, and
- * the answer is then null.
+ * the answer is then null. A Music Assistant description that carries a phone number or an
+ * email address is skipped ([PromotionalText]): it is an artist's contact line, not an about.
  */
 @Singleton
 class AboutTextResolver @Inject constructor(
@@ -41,8 +42,7 @@ class AboutTextResolver @Inject constructor(
             if (id != null && provider != null) musicRepository.getAlbum(id, provider) else null
         }
         val albumName = album?.name ?: track.albumName
-        album?.description?.trim()?.takeIf { it.isNotEmpty() }
-            ?.let { return AboutText.Shown(it, AboutSubject.ALBUM, albumName) }
+        album?.description.usable()?.let { return AboutText.Shown(it, AboutSubject.ALBUM, albumName) }
 
         val artist = lookup("artist") {
             val id = track.artistItemId
@@ -59,8 +59,7 @@ class AboutTextResolver @Inject constructor(
                 albumInfoResolver.resolve(artistName, albumName, album?.albumType, album?.year ?: track.year)
             }?.let { return AboutText.Shown(it, AboutSubject.ALBUM, albumName) }
         }
-        artist?.description?.trim()?.takeIf { it.isNotEmpty() }
-            ?.let { return AboutText.Shown(it, AboutSubject.ARTIST, artistName) }
+        artist?.description.usable()?.let { return AboutText.Shown(it, AboutSubject.ARTIST, artistName) }
         return lookup("artist bio") { artistBioResolver.resolve(artistName, artist?.mbid) }
             ?.let { AboutText.Shown(it, AboutSubject.ARTIST, artistName) }
     }
@@ -78,6 +77,9 @@ class AboutTextResolver @Inject constructor(
             emit(AboutText.Loading)
             emit(track?.let { forTrack(it) } ?: AboutText.Absent)
         }
+
+    private fun String?.usable(): String? =
+        this?.trim()?.takeIf { it.isNotEmpty() && !PromotionalText.hasContactDetails(it) }
 
     /** Runs one step of the chain; a failed step is skipped rather than ending the chain. */
     private suspend fun <T> lookup(step: String, block: suspend () -> T?): T? = try {
