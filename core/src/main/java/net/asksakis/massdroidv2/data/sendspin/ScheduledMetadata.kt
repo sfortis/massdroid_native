@@ -30,7 +30,15 @@ internal class ScheduledMetadata(
         }
         pending = scope.launch {
             delay(delayMs)
-            publish(metadata)
+            // A job past its delay can no longer be cancelled, so it checks under the lock that
+            // nothing newer replaced or cancelled it in the meantime.
+            val self = coroutineContext[Job]
+            synchronized(this@ScheduledMetadata) {
+                if (pending === self) {
+                    pending = null
+                    publish(metadata)
+                }
+            }
         }
     }
 

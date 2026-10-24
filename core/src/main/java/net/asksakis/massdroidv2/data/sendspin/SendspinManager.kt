@@ -865,6 +865,12 @@ class SendspinManager(
     }
 
     fun requestFormat(codec: String, sampleRate: Int = 48000, bitDepth: Int = 16, channels: Int = 2) {
+        // rc1 removed stream/request-format; the codec goes out as the format of client/state. The
+        // check is here as well as in the coordinator, whose own check precedes a suspending call.
+        if (client.wire == SendspinWire.RC1) {
+            Log.d(TAG, "Format change to $codec not requested: the rc1 wire carries it in client/state")
+            return
+        }
         Log.d(TAG, "Requesting format change: $codec ${sampleRate}Hz/${bitDepth}bit ${channels}ch")
         announcedCodec = codec
         client.sendRequestFormat(codec, sampleRate, bitDepth, channels)
@@ -1056,22 +1062,24 @@ class SendspinManager(
     val wire: SendspinWire get() = client.wire
 
     /**
-     * Recomputes the wanted codec. Returns whether the change has to reach the server through the
-     * next `client/state`: on the rc1 wire the wanted codec is the state's `format`, so it goes
-     * out at once instead of as `stream/request-format`, which rc1 removed.
-     */
-    /**
-     * How long until a metadata update is due, from its server `timestamp`. Without a converged
-     * clock, or for a time implausibly far ahead, it applies at once: a title shown a little early
-     * is better than one held back by a bad clock mapping.
+     * How long until a metadata update is due, from its server `timestamp`. It applies at once
+     * unless the time sync is running and converged, and for a time implausibly far ahead: a
+     * title shown a little early is better than one held back by a bad clock mapping. In solo
+     * mode the time sync is stopped, and the monotonic clock stops while the phone sleeps, so a
+     * mapping left from before would hold every update back by the time slept.
      */
     private fun metadataDelayMs(metadata: ServerMetadataPayload): Long {
         val timestampUs = metadata.timestamp ?: return 0L
-        if (!clockSynced) return 0L
+        if (!clockSynced || timeSyncJob?.isActive != true) return 0L
         val delayMs = (clockSynchronizer.serverToLocalUs(timestampUs) - System.nanoTime() / 1000L) / 1000L
         return if (delayMs > MAX_METADATA_SCHEDULE_MS) 0L else delayMs
     }
 
+    /**
+     * Recomputes the wanted codec. Returns whether the change has to reach the server through the
+     * next `client/state`: on the rc1 wire the wanted codec is the state's `format`, so it goes
+     * out at once instead of as `stream/request-format`, which rc1 removed.
+     */
     private fun updatePreferredCodec(): Boolean {
         val wanted = preferredSendspinCodec(groupedForCodec, isCellularTransport)
         val changed = wanted != _preferredCodec.value
