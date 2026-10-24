@@ -107,8 +107,8 @@ class SendspinNoiseConnector @Inject constructor(
      * Acts on connection events until cancelled; runs for as long as Sendspin does.
      *
      * On Noise it pairs an unpaired connection and keeps retrying while that connection waits,
-     * unless the server unpaired the phone during the current MA session, in which case it waits
-     * for [pairAgain]. MA unpairs an app player only when the user's access is revoked, and a new
+     * unless the server unpaired the phone during the current MA session, in which case the
+     * connection is closed until [pairAgain] opens a new one. MA unpairs an app player only when the user's access is revoked, and a new
      * MA login means the access was granted again, so the hold ends with the session. Once the phone
      * is registered with a server, on Noise or on the legacy transport, that server gets the
      * legacy player's settings.
@@ -154,7 +154,9 @@ class SendspinNoiseConnector @Inject constructor(
                         unpairedKey(serverId)?.let { settingsRepository.removeSendspinUnpairedServer(it) }
                         _pairingHeld.value = null
                         pairing?.cancel()
-                        pairing = launch { pairWhileUnpaired(serverId) }
+                        // The held connection is parked. The new one comes up unpaired, and its
+                        // Unpaired event starts the pairing now that the server is not held.
+                        sendspinManager.refresh()
                     }
                     false
                 }

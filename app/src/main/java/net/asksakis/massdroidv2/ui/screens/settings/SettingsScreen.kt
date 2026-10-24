@@ -1308,7 +1308,12 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
             SendspinState.CONNECTING -> "Connecting"
             // The manager exposes the state only, not why it failed.
             SendspinState.ERROR -> "Couldn't connect to the server"
-            SendspinState.DISCONNECTED -> if (sendspinEnabled) "Stopped" else "Disabled"
+            // A held pairing parks the connection, so it reads as stopped without this case.
+            SendspinState.DISCONNECTED -> when {
+                !sendspinEnabled -> "Disabled"
+                pairingHeld != null -> "Unpaired by Music Assistant"
+                else -> "Stopped"
+            }
         },
         tone = if (sendspinState == SendspinState.ERROR) SettingsTone.ERROR else SettingsTone.NORMAL,
         // The badge says how the connection is protected; the line says whether it streams.
@@ -1316,7 +1321,8 @@ private fun SendspinSection(viewModel: SettingsViewModel) {
         // called encrypted here.
         badge = linkSecurity?.let { SettingsBadge(it.badgeLabel()) }
     )
-    if (sendspinEnabled && unpaired && pairingHeld != null) {
+    // No link-security check: while the pairing is held the connection is parked, so there is none.
+    if (sendspinEnabled && pairingHeld != null) {
         SettingsRow(
             title = "Pair again",
             icon = Icons.Default.VerifiedUser,

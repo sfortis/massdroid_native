@@ -242,8 +242,16 @@ class SendspinManager(
     /** A pairing attempt ended; if that ends the hold, the state held back goes out now. */
     fun onNoisePairingAttemptEnded(epoch: Int) = sendHeldState(noiseFlow.onPairingAttemptEnded(epoch))
 
-    /** The supervisor will not pair this connection; the state held back goes out now. */
-    fun onNoisePairingHeldBack() = sendHeldState(noiseFlow.onPairingHeldBack())
+    /**
+     * The supervisor will not pair this connection, so it is parked until [refresh]. Left open with
+     * no player role, it would keep a player in MA that accepts play commands and plays nothing.
+     * The goodbye is `user_request` because aiosendspin drops the client at once for that reason;
+     * after `unpaired` it keeps the client, and MA the player, for another 180 s.
+     */
+    fun onNoisePairingHeldBack() {
+        noiseFlow.onPairingHeldBack()
+        client.park(GOODBYE_REASON_USER_REQUEST)
+    }
 
     private fun sendHeldState(holdEnded: Boolean) {
         if (holdEnded && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
@@ -642,7 +650,8 @@ class SendspinManager(
         val formats = helloSupportedFormats(_preferredCodec.value)
         announcedCodec = formats.first().codec
         val wire = client.wire
-        Log.d(TAG, "Sending Noise hello wire=$wire formats=${formats.joinToString { it.codec }} trust=$trustLevel")
+        val trustNote = if (wire == SendspinWire.LEGACY) " trust=$trustLevel" else ""
+        Log.d(TAG, "Sending Noise hello wire=$wire formats=${formats.joinToString { it.codec }}$trustNote")
         when (wire) {
             SendspinWire.LEGACY -> client.sendNoiseHello(
                 NoiseClientHelloPayload(

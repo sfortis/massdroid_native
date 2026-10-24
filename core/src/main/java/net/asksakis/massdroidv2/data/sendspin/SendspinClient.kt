@@ -217,12 +217,30 @@ class SendspinClient(
 
     @Synchronized
     fun stop() {
+        halt(GOODBYE_REASON_USER_REQUEST)
+        credentialsProvider = null
+        noiseSessionFactory = null
+    }
+
+    /**
+     * Says goodbye with [goodbyeReason] and closes the connection without reconnecting, but keeps
+     * the credentials provider and the Noise session factory, so [refresh] opens it again. Used
+     * while the phone waits for the user to pair it again: an open connection with no player role
+     * leaves MA showing a player that accepts commands and plays nothing.
+     */
+    @Synchronized
+    fun park(goodbyeReason: String) {
+        Log.d(TAG, "Parking the connection ($goodbyeReason) until refresh")
+        halt(goodbyeReason)
+    }
+
+    private fun halt(goodbyeReason: String) {
         shouldRun = false
         cancelReconnect()
         val ws = webSocket
         if (ws != null) {
             try {
-                sendGoodbye()
+                sendGoodbye(goodbyeReason)
             } catch (_: Throwable) {
                 // ignored: socket may already be in failed state
             }
@@ -236,8 +254,6 @@ class SendspinClient(
         _state.value = SendspinState.DISCONNECTED
         attempt.set(0)
         providerFailures.set(0)
-        credentialsProvider = null
-        noiseSessionFactory = null
     }
 
     /**
@@ -650,7 +666,7 @@ class SendspinClient(
         sendText(json.encodeToString(req))
     }
 
-    fun sendGoodbye(reason: String = "user_request") {
+    fun sendGoodbye(reason: String = GOODBYE_REASON_USER_REQUEST) {
         val goodbye = SendspinGoodbye(payload = GoodbyePayload(reason = reason))
         sendText(json.encodeToString(goodbye), force = true)
     }
