@@ -1,10 +1,6 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying.components
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,11 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -30,24 +23,17 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -55,6 +41,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
+import net.asksakis.massdroidv2.ui.shared.SyncedLyricLine
+import net.asksakis.massdroidv2.ui.shared.SyncedLyrics
+import net.asksakis.massdroidv2.ui.shared.SyncedLyricsStyle
 
 /**
  * Bottom-sheet host for lyrics. Renders four mutually-exclusive states:
@@ -144,12 +133,30 @@ internal fun LyricsSheet(
                     }
                 }
                 lyrics is LyricsProvider.LyricsContent.Synced -> {
-                    SyncedLyricsContent(
-                        parsedLines = lyrics.parsedLines,
+                    val haptic = LocalHapticFeedback.current
+                    val syncedLines = remember(lyrics.parsedLines) {
+                        lyrics.parsedLines.map { SyncedLyricLine(it.timeMs, it.text) }
+                    }
+                    // The drawing is shared with the TV player (:ui-shared); the phone keeps
+                    // tap to seek, with a tick of haptic feedback.
+                    SyncedLyrics(
+                        parsedLines = syncedLines,
                         elapsedTimeMs = (elapsedTime() * 1000).toLong(),
-                        lyricsTimingOffsetMs = lyricsTimingOffsetMs,
-                        onSeekToPosition = onSeekToLyricsPosition,
-                        modifier = Modifier.weight(1f)
+                        timingOffsetMs = lyricsTimingOffsetMs,
+                        style = SyncedLyricsStyle(
+                            currentLine = MaterialTheme.typography.headlineSmall,
+                            otherLine = MaterialTheme.typography.titleMedium,
+                            textColor = MaterialTheme.colorScheme.onSurface,
+                            mutedNoteColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            noteIcon = Icons.Default.MusicNote
+                        ),
+                        onLineClick = { seconds ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSeekToLyricsPosition(seconds)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 16.dp)
                     )
                     LyricsTimingAdjuster(
                         offsetMs = lyricsTimingOffsetMs,
@@ -194,182 +201,6 @@ private fun PlainLyricsContent(text: String) {
                 lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.4,
                 modifier = Modifier.fillMaxWidth()
             )
-        }
-    }
-}
-
-@Composable
-private fun SyncedLyricsContent(
-    parsedLines: List<LyricsProvider.LrcLine>,
-    elapsedTimeMs: Long,
-    lyricsTimingOffsetMs: Int,
-    onSeekToPosition: (Double) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    data class DisplayLine(
-        val timeMs: Long,
-        val text: String,
-        val isBreak: Boolean,
-        val breakEndMs: Long? = null
-    )
-
-    val introBreakLeadMs = 5_000L
-    val musicalBreakThresholdMs = 5_000L
-    val noteCount = 7
-    val highlightLeadMs = 500L
-    val lines = remember(parsedLines) {
-        val breakMarkers = parsedLines
-            .filter { it.timeMs > 0L && it.text.isBlank() }
-            .map { it.timeMs }
-            .toSet()
-        val contentLines = parsedLines.filter { it.text.isNotBlank() }
-        buildList {
-            if (contentLines.isNotEmpty()) {
-                val firstTime = contentLines.first().timeMs
-                if (firstTime >= introBreakLeadMs) {
-                    add(
-                        DisplayLine(
-                            timeMs = firstTime - introBreakLeadMs,
-                            text = "",
-                            isBreak = true,
-                            breakEndMs = firstTime
-                        )
-                    )
-                }
-            }
-
-            contentLines.forEachIndexed { index, line ->
-                add(
-                    DisplayLine(
-                        timeMs = line.timeMs,
-                        text = line.text,
-                        isBreak = false
-                    )
-                )
-
-                val nextLine = contentLines.getOrNull(index + 1) ?: return@forEachIndexed
-                val markerTime = breakMarkers.firstOrNull { it > line.timeMs && it < nextLine.timeMs }
-                if (markerTime != null && nextLine.timeMs - markerTime >= musicalBreakThresholdMs) {
-                    add(
-                        DisplayLine(
-                            timeMs = markerTime,
-                            text = "",
-                            isBreak = true,
-                            breakEndMs = nextLine.timeMs
-                        )
-                    )
-                }
-            }
-        }
-    }
-    var currentIndex by remember { mutableIntStateOf(-1) }
-    val density = LocalDensity.current
-    val haptic = LocalHapticFeedback.current
-    val listState = rememberLazyListState()
-    var containerHeight by remember { mutableFloatStateOf(0f) }
-    val topPaddingDp = remember(containerHeight, density) {
-        with(density) { (containerHeight * 0.16f).toDp() }
-    }
-    val bottomPaddingDp = remember(containerHeight, density) {
-        with(density) { (containerHeight * 0.38f).toDp() }
-    }
-
-    LaunchedEffect(elapsedTimeMs, lines, lyricsTimingOffsetMs) {
-        if (lines.isEmpty()) return@LaunchedEffect
-        val effectiveElapsedMs = elapsedTimeMs + highlightLeadMs + lyricsTimingOffsetMs
-        val idx = lines.indexOfLast { it.timeMs <= effectiveElapsedMs }
-        val newIdx = if (idx < 0) -1 else idx
-        if (newIdx != currentIndex) {
-            currentIndex = newIdx
-            if (newIdx >= 0) {
-                val anchorPx = containerHeight * 0.35f
-                val targetVisibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == newIdx }
-                if (targetVisibleItem != null) {
-                    val targetDelta = (targetVisibleItem.offset + targetVisibleItem.size / 2f) - anchorPx
-                    listState.animateScrollBy(
-                        value = targetDelta,
-                        animationSpec = tween(
-                            durationMillis = 520,
-                            easing = FastOutSlowInEasing
-                        )
-                    )
-                } else {
-                    listState.animateScrollToItem(index = newIdx)
-                }
-            }
-        }
-    }
-
-    LazyColumn(
-        state = listState,
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .onGloballyPositioned { containerHeight = it.size.height.toFloat() }
-            .clipToBounds(),
-        contentPadding = PaddingValues(
-            top = topPaddingDp,
-            bottom = bottomPaddingDp
-        ),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        itemsIndexed(lines) { index, line ->
-            val distance = if (currentIndex >= 0) kotlin.math.abs(index - currentIndex) else index
-            val targetAlpha = when {
-                index == currentIndex -> 1f
-                distance <= 1 -> 0.62f
-                distance <= 2 -> 0.40f
-                distance <= 3 -> 0.24f
-                else -> 0.14f
-            }
-            val alpha by animateFloatAsState(
-                targetValue = targetAlpha,
-                animationSpec = tween(500),
-                label = "alpha$index"
-            )
-            if (line.isBreak) {
-                val durationMs = ((line.breakEndMs ?: line.timeMs) - highlightLeadMs - line.timeMs).coerceAtLeast(1L)
-                val elapsedInBreakMs = (elapsedTimeMs + lyricsTimingOffsetMs - line.timeMs).coerceAtLeast(0L)
-                val noteProgress = (elapsedInBreakMs.toFloat() / durationMs.toFloat()) * noteCount
-                val filledNotes = noteProgress.toInt().coerceIn(0, noteCount)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        repeat(noteCount) { noteIndex ->
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = if (index == currentIndex && noteIndex < filledNotes) {
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha.coerceAtLeast(0.22f))
-                                },
-                                modifier = Modifier.size(if (index == currentIndex) 18.dp else 16.dp)
-                            )
-                        }
-                    }
-                }
-            } else {
-                Text(
-                    text = line.text,
-                    style = if (index == currentIndex) MaterialTheme.typography.headlineSmall
-                        else MaterialTheme.typography.titleMedium,
-                    fontWeight = if (index == currentIndex) FontWeight.Bold else null,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onSeekToPosition(line.timeMs / 1000.0)
-                        }
-                        .padding(vertical = 6.dp)
-                )
-            }
         }
     }
 }

@@ -14,7 +14,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.Track
 
@@ -87,33 +86,44 @@ internal fun TrackInfoSection(
             )
         }
     } else {
-        Text(
-            text = artist,
-            style = artistStyle,
-            color = if (artistClickable) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = (if (artistClickable) {
-                Modifier.clickable {
-                    onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
-                }
-            } else Modifier).fillMaxWidth()
-        )
-        if (album.isNotBlank()) {
-            Spacer(modifier = Modifier.height(if (compact) 2.dp else 4.dp))
+        // Portrait: artist and album on one line, the artist first, rolling when the two do not
+        // fit. A single's album is usually named after the track, so it is left out when it
+        // would only repeat the title above.
+        val showAlbum = album.isNotBlank() && !album.trim().equals(title.trim(), ignoreCase = true)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
-                text = album,
-                style = albumStyle,
-                color = if (albumClickable) MaterialTheme.colorScheme.primary
+                text = artist,
+                style = artistStyle,
+                color = if (artistClickable) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = if (albumClickable) Modifier.clickable {
-                    onNavigateToAlbum(currentTrack.albumItemId!!, currentTrack.albumProvider!!, album)
+                modifier = if (artistClickable) Modifier.clickable {
+                    onNavigateToArtist(currentTrack.artistItemId!!, currentTrack.artistProvider!!, artist)
                 } else Modifier
             )
+            if (showAlbum) {
+                Text(
+                    text = " \u00b7 ",
+                    style = artistStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = album,
+                    style = artistStyle,
+                    color = if (albumClickable) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = if (albumClickable) Modifier.clickable {
+                        onNavigateToAlbum(currentTrack.albumItemId!!, currentTrack.albumProvider!!, album)
+                    } else Modifier
+                )
+            }
         }
     }
 }

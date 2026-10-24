@@ -77,7 +77,8 @@ internal fun SwipeableAlbumArt(
     canSwipePrevious: Boolean = true,
     canSwipeNext: Boolean = true,
     onHaptic: () -> Unit = {},
-    fillMaxWidth: Boolean = true
+    fillMaxWidth: Boolean = true,
+    modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -159,7 +160,7 @@ internal fun SwipeableAlbumArt(
     }
 
     Box(
-        modifier = outerModifier
+        modifier = modifier.then(outerModifier)
             // The shadow is not here. This surface does not move, so a swipe slid the
             // cover out from under its own shadow. It is on the cover itself now, and
             // the room it needs inside this clip is what ARTWORK_FRACTION leaves over.
@@ -523,6 +524,16 @@ private val SURFACE_MAX_COMPACT = 300.dp
  * the travel the covers either side need.
  */
 private const val ARTWORK_FRACTION = 0.77f
+
+/**
+ * The empty band under the cover inside a surface [surfaceHeightPx] tall, so content below
+ * the surface can start just under the cover instead of under the whole surface.
+ */
+internal fun artworkBottomInsetPx(surfaceHeightPx: Int): Int =
+    ((1f - ARTWORK_FRACTION) / 2f * surfaceHeightPx).toInt()
+
+/** The edge of the square cover inside a surface [surfaceHeightPx] tall. */
+internal fun artworkEdgePx(surfaceHeightPx: Int): Int = (ARTWORK_FRACTION * surfaceHeightPx).toInt()
 
 /**
  * The surface's shape in landscape, where the height is what there is least of.

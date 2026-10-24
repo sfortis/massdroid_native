@@ -308,6 +308,7 @@ dependencies {
 
     // Modules
     implementation(project(":core"))
+    implementation(project(":ui-shared"))
     implementation(project(":auto"))
     // AAOS glue is only linked into the automotive flavor.
     "automotiveImplementation"(project(":automotive"))

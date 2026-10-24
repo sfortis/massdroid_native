@@ -163,6 +163,7 @@ androidComponents {
 dependencies {
     // Shared non-UI logic (data, domain, sendspin engine + coordination, native)
     implementation(project(":core"))
+    implementation(project(":ui-shared"))
 
     // Compose (TV)
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")

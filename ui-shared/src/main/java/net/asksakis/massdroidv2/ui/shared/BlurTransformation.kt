@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.util
+package net.asksakis.massdroidv2.ui.shared
 
 import android.graphics.Bitmap
 import androidx.core.graphics.createBitmap

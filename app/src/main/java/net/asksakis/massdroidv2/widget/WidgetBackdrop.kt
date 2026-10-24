@@ -11,7 +11,7 @@ import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
 import coil.imageLoader
 import coil.request.ImageRequest
-import net.asksakis.massdroidv2.ui.util.BlurTransformation
+import net.asksakis.massdroidv2.ui.shared.BlurTransformation
 import kotlin.math.max
 
 /**

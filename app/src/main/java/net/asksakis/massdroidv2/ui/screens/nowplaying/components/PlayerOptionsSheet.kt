@@ -1,5 +1,7 @@
 package net.asksakis.massdroidv2.ui.screens.nowplaying.components
 
+import androidx.compose.material3.Switch
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
@@ -55,6 +57,9 @@ internal fun PlayerOptionsSheet(
      * to write, which a track without one and a phone without a chip both mean.
      */
     onWriteNfcTag: (() -> Unit)?,
+    /** The few words about the album or the artist under the cover in portrait. */
+    showAboutText: Boolean,
+    onShowAboutTextChange: (Boolean) -> Unit,
     onClick: () -> Unit
 ) {
     val sheetState = SheetDefaults.sheetState()
@@ -209,6 +214,27 @@ internal fun PlayerOptionsSheet(
                     onSleepTimer()
                     onDismiss()
                 }
+            )
+            // The sheet stays open: the switch shows the change, and the text under the cover
+            // opens or closes behind it.
+            ListItem(
+                colors = SheetDefaults.listItemColors(),
+                headlineContent = { Text("Album Info") },
+                supportingContent = {
+                    Text(
+                        "A few words about the album or the artist under the cover",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                trailingContent = { Switch(checked = showAboutText, onCheckedChange = null) },
+                modifier = Modifier.clickable { onShowAboutTextChange(!showAboutText) }
             )
             ListItem(
                 colors = SheetDefaults.listItemColors(),

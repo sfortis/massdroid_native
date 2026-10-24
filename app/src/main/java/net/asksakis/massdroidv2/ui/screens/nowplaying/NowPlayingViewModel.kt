@@ -25,6 +25,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
+import net.asksakis.massdroidv2.domain.feedback.DislikeUndo
+import net.asksakis.massdroidv2.domain.info.AboutText
+import net.asksakis.massdroidv2.domain.info.AboutTextResolver
+import net.asksakis.massdroidv2.domain.feedback.TrackDisliker
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.playback.SleepTimerBridge
 import net.asksakis.massdroidv2.data.sendspin.SyncState
@@ -179,6 +183,8 @@ class NowPlayingViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val smartListeningRepository: SmartListeningRepository,
+    private val trackDisliker: TrackDisliker,
+    aboutTextResolver: AboutTextResolver,
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val wsClient: MaWebSocketClient,
     private val lyricsProvider: LyricsProvider,
@@ -302,6 +308,22 @@ class NowPlayingViewModel @Inject constructor(
 
     private val _error = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val error: SharedFlow<String> = _error.asSharedFlow()
+
+    /**
+     * A few words about the playing album, or its artist, shown under the cover in portrait.
+     * The same lookup and cache as the TV player ([AboutTextResolver.follow]).
+     */
+    val about: StateFlow<AboutText> = aboutTextResolver
+        .follow(playerRepository.queueState.map { it?.currentItem?.track })
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AboutText.Loading)
+
+    /** Whether the about text shows under the cover; a switch in the player options. */
+    val showAboutText: StateFlow<Boolean> = settingsRepository.showAboutText
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setShowAboutText(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setShowAboutText(enabled) }
+    }
 
     /** Emitted after a dislike so the screen can offer to take it back. */
     private val _dislikeUndo = MutableSharedFlow<DislikeUndo>(extraBufferCapacity = 1)
@@ -1109,65 +1131,25 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     /**
-     * Reject the playing track outright and move on.
-     *
-     * The only negative signal the engine does not have to infer. Every other
-     * one is read out of behaviour, and a skip in particular is ambiguous:
-     * it can mean "not this song", "not right now", or nothing at all. The
-     * track is buried, its artist is only brushed, and the whole thing is
-     * undoable because it is one tap next to the heart.
+     * Reject the playing track outright and move on. The recording and the undo are shared
+     * with the TV player ([TrackDisliker]); this only reports the outcome.
      */
     fun dislikeCurrentTrack() {
         val track = queueState.value?.currentItem?.track ?: return
         val player = selectedPlayer.value
         viewModelScope.launch {
-            try {
-                val artists = trackArtists(track.artistItemId, track.artistUri, track.artistNames)
-                // Null when Smart Listening is off; the server dislike below does not depend on it.
-                val receipt = smartListeningRepository.recordDislike(track, artists)
-                val serverDislike = try {
-                    dislikeOnServer(track)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // The local dislike stands on its own; only report the failure when nothing
-                    // was recorded at all, and then as the failure it is.
-                    Log.w(TAG, "server dislike failed: ${e.message}")
-                    if (receipt == null) {
-                        _error.tryEmit(e.failureMessage("Couldn't save that"))
-                        return@launch
-                    }
-                    null
-                }
-                if (receipt == null && serverDislike == null) {
-                    _error.tryEmit("Smart Listening is off")
-                    return@launch
-                }
-                _dislikeUndo.tryEmit(DislikeUndo(receipt, serverDislike, track.name))
-                // Skipping past it is the point, but the skip must not be filed
-                // as a second negative signal on top of the dislike.
-                player?.let { playerRepository.skipWithoutSignal(it.playerId) }
-            } catch (e: Exception) {
-                Log.w(TAG, "dislikeCurrentTrack failed: ${e.message}")
-                _error.tryEmit(e.failureMessage("Couldn't save that"))
+            when (val outcome = trackDisliker.dislike(track, player?.playerId)) {
+                is TrackDisliker.Outcome.Recorded -> _dislikeUndo.tryEmit(outcome.undo)
+                TrackDisliker.Outcome.NothingToRecord -> _error.tryEmit("Smart Listening is off")
+                is TrackDisliker.Outcome.Failed -> _error.tryEmit(outcome.cause.failureMessage("Couldn't save that"))
             }
         }
-    }
-
-    /**
-     * The same dislike on the Music Assistant server, which keeps it per user and passes it on
-     * to the track's providers. Null when the server cannot record one; throws when it refused.
-     */
-    private suspend fun dislikeOnServer(track: Track): ServerDislike? {
-        if (track.uri.isBlank()) return null
-        return if (musicRepository.dislikeOnServer(track.uri)) ServerDislike(track.uri, track.favorite) else null
     }
 
     fun undoDislike(undo: DislikeUndo) {
         viewModelScope.launch {
             try {
-                undo.receipt?.let { smartListeningRepository.undoDislike(it) }
-                undo.serverDislike?.let { musicRepository.undoServerDislike(it.uri, it.wasFavorite) }
+                trackDisliker.undo(undo)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1576,17 +1558,3 @@ class NowPlayingViewModel @Inject constructor(
         )
     }
 }
-
-/**
- * A dislike that can still be taken back, with the track name to name it by. Each side is null
- * when it was not recorded: [receipt] with Smart Listening off, [serverDislike] on a server that
- * cannot record one. At least one of the two is present.
- */
-data class DislikeUndo(
-    val receipt: net.asksakis.massdroidv2.domain.repository.DislikeReceipt?,
-    val serverDislike: ServerDislike?,
-    val trackName: String,
-)
-
-/** A dislike recorded on the server, with what to restore: a like when [wasFavorite]. */
-data class ServerDislike(val uri: String, val wasFavorite: Boolean)

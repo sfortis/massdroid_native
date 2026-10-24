@@ -1,4 +1,4 @@
-package net.asksakis.massdroidv2.ui.components
+package net.asksakis.massdroidv2.ui.shared
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
