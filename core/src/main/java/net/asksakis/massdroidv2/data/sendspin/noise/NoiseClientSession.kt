@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import net.asksakis.massdroidv2.data.sendspin.SendspinWire
 
 /**
  * The client side of one Sendspin Noise connection: the cleartext init exchange, the KKpsk2
@@ -59,6 +60,13 @@ class NoiseClientSession(
 
     /** The PSK of the current handshake. A re-handshake replaces it. */
     @Volatile var psk: ResolvedPsk? = null
+        private set
+
+    /**
+     * The wire the server speaks, known once handshake message 1 has been read. A re-handshake
+     * must keep it.
+     */
+    @Volatile var wire: SendspinWire? = null
         private set
 
     val isEstablished: Boolean get() = transport != null
@@ -153,7 +161,7 @@ class NoiseClientSession(
     }
 
     private fun completeHandshake(text: String): String {
-        val (resolved, result) = respond(checkNotNull(handshake), text)
+        val (resolved, result) = respond(checkNotNull(handshake), text) { wire = it }
         handshake = null
         handshakeHash = result.handshakeHash
         psk = resolved
@@ -173,7 +181,9 @@ class NoiseClientSession(
             prologue = handshakeHash,
             ephemeral = ephemerals(),
         )
-        val (resolved, result) = respond(next, text)
+        val (resolved, result) = respond(next, text) { declared ->
+            if (declared != wire) throw NoiseProtocolException("re-handshake on the $declared wire of a $wire connection")
+        }
         val sent = synchronized(gateLock) {
             exchangeOpen = true
             current.sendTextThenSwap(handshakeText(result.message), result.transport, sink)
@@ -184,22 +194,23 @@ class NoiseClientSession(
         return Received.Rehandshake(resolved)
     }
 
-    private fun respond(
+    /** Reads message 1, reports the wire it declares to [onWire], and answers with message 2. */
+    private inline fun respond(
         handshake: NoiseResponderHandshake,
         text: String,
+        onWire: (SendspinWire) -> Unit,
     ): Pair<ResolvedPsk, NoiseResponderHandshake.Result> {
         val message1 = protocolGuard("noise/handshake") {
             val data = parseMessage(text, HANDSHAKE_TYPE)["data"]?.jsonPrimitive?.contentOrNull
                 ?: throw NoiseProtocolException("noise/handshake without data")
             SendspinNoise.b64urlDecode(data)
         }
-        val payload = handshake.readMessage1(message1)
-        val pskId = protocolGuard("message 1 payload") {
-            Json.parseToJsonElement(String(payload, Charsets.UTF_8)).jsonObject["psk_id"]
-                ?.jsonPrimitive?.contentOrNull
-                ?: throw NoiseProtocolException("message 1 payload without psk_id")
+        val plaintext = handshake.readMessage1(message1)
+        val payload = protocolGuard("message 1 payload") {
+            Message1Payload.parse(String(plaintext, Charsets.UTF_8))
         }
-        val resolved = resolvePsk(pskId)
+        onWire(payload.wire)
+        val resolved = resolvePsk(payload.pskId)
         return resolved to handshake.writeMessage2(resolved.psk, MESSAGE_2_PAYLOAD)
     }
 
@@ -246,6 +257,32 @@ class NoiseClientSession(
     }
 
     private enum class Step { AWAIT_SERVER_INIT, AWAIT_MESSAGE_1, ESTABLISHED }
+
+    /**
+     * The plaintext of handshake message 1. [category] is null on the legacy wire, which has no
+     * such field, and that absence is what tells the two wires apart.
+     */
+    internal class Message1Payload(val pskId: String, val category: PskCategory?) {
+        val wire: SendspinWire get() = if (category == null) SendspinWire.LEGACY else SendspinWire.RC1
+
+        companion object {
+            /**
+             * @throws NoiseProtocolException without a `psk_id`, or with a `psk_category` the spec
+             *     does not define, which the spec treats as a failed handshake.
+             * @throws IllegalArgumentException when the text is not a JSON object.
+             */
+            fun parse(text: String): Message1Payload {
+                val obj = Json.parseToJsonElement(text).jsonObject
+                val pskId = obj["psk_id"]?.jsonPrimitive?.contentOrNull
+                    ?: throw NoiseProtocolException("message 1 payload without psk_id")
+                val category = obj["psk_category"]?.let { element ->
+                    val code = element.jsonPrimitive.contentOrNull
+                    code?.let(PskCategory::fromCode) ?: throw NoiseProtocolException("unknown psk_category $code")
+                }
+                return Message1Payload(pskId, category)
+            }
+        }
+    }
 
     companion object {
         const val CLIENT_INIT_TYPE = "client/init"

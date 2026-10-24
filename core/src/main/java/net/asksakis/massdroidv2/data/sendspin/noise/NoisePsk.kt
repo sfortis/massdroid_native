@@ -1,15 +1,24 @@
 package net.asksakis.massdroidv2.data.sendspin.noise
 
-/** The kind of PSK that admitted a connection. The server decides from it what the client may do. */
-enum class PskCategory {
+/**
+ * The kind of PSK that admitted a connection. The server decides from it what the client may do.
+ *
+ * [code] is the identifier the category travels under in handshake message 1 on the rc1 wire.
+ */
+enum class PskCategory(val code: String) {
     /** The published sentinel PSK: the connection is encrypted but authenticates nothing. */
-    SENTINEL,
+    SENTINEL("sn"),
 
     /** A PSK the client handed to the server for one pairing attempt. */
-    PAIRING,
+    PAIRING("pr"),
 
     /** The PSK of a completed pairing, bound to one server. */
-    LONG_TERM,
+    LONG_TERM("lt");
+
+    companion object {
+        /** The category with [code], or null for a code the spec does not define. */
+        fun fromCode(code: String): PskCategory? = entries.firstOrNull { it.code == code }
+    }
 }
 
 class ResolvedPsk(

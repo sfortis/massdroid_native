@@ -126,6 +126,12 @@ class SendspinClient(
      * handshake would break it the same way.
      */
     @Volatile private var link: Link? = null
+
+    /**
+     * The wire of the current connection. The plaintext transport is always [SendspinWire.LEGACY];
+     * on Noise it is known once handshake message 1 has been read.
+     */
+    val wire: SendspinWire get() = link?.noise?.wire ?: SendspinWire.LEGACY
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var reconnectJob: Job? = null
 
@@ -470,7 +476,7 @@ class SendspinClient(
                 if (noise.isEstablished) {
                     // Message 2 is queued, so encrypted frames may follow it.
                     link = Link(webSocket, noise)
-                    Log.d(TAG, "Noise session up: server=${noise.serverId}, psk=${noise.psk?.category}")
+                    Log.i(TAG, "Noise session up: server=${noise.serverId}, psk=${noise.psk?.category}, wire=${noise.wire}")
                     emitText(SendspinIncoming.NoiseSessionUp)
                 }
             } catch (e: NoiseProtocolException) {
