@@ -61,6 +61,9 @@ class SendspinManager(
         // real stop (player deselect / group leave, no stream/start follows) lets
         // it fire. Kept conservative so track gaps never churn the output.
         private const val IDLE_TEARDOWN_GRACE_MS = 15_000L
+        // A scheduled metadata update lies at most the send-ahead in the future, a few seconds.
+        // Anything later is a clock error, and the update is applied at once instead.
+        private const val MAX_METADATA_SCHEDULE_MS = 30_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -184,6 +187,7 @@ class SendspinManager(
     val syncHistory: StateFlow<List<SyncSample>> = _syncHistory.asStateFlow()
     private val _serverMetadata = MutableStateFlow<ServerMetadataPayload?>(null)
     val serverMetadata: StateFlow<ServerMetadataPayload?> = _serverMetadata.asStateFlow()
+    private val scheduledMetadata = ScheduledMetadata(scope) { _serverMetadata.value = it }
 
     var currentVolume = 100
         private set
@@ -391,6 +395,7 @@ class SendspinManager(
                 // before its server/activate has named a player role.
                 endPlayerSession()
                 noiseFlow.reset()
+                scheduledMetadata.cancel()
                 publishNoiseSecurity()
             }
             SendspinIncoming.NoiseRehandshake -> {
@@ -518,7 +523,14 @@ class SendspinManager(
 
             is SendspinIncoming.ServerState -> {
                 Log.d("sendspindbg", ">>> server/state metadata=${incoming.payload.metadata != null}")
-                _serverMetadata.value = incoming.payload.metadata
+                when (client.wire) {
+                    SendspinWire.LEGACY -> _serverMetadata.value = incoming.payload.metadata
+                    // On rc1 an omitted metadata object leaves the role's state unchanged, and
+                    // a future timestamp schedules the update.
+                    SendspinWire.RC1 -> incoming.payload.metadata?.let {
+                        scheduledMetadata.offer(it, metadataDelayMs(it))
+                    }
+                }
             }
 
             is SendspinIncoming.ServerCommand -> {
@@ -1048,6 +1060,18 @@ class SendspinManager(
      * next `client/state`: on the rc1 wire the wanted codec is the state's `format`, so it goes
      * out at once instead of as `stream/request-format`, which rc1 removed.
      */
+    /**
+     * How long until a metadata update is due, from its server `timestamp`. Without a converged
+     * clock, or for a time implausibly far ahead, it applies at once: a title shown a little early
+     * is better than one held back by a bad clock mapping.
+     */
+    private fun metadataDelayMs(metadata: ServerMetadataPayload): Long {
+        val timestampUs = metadata.timestamp ?: return 0L
+        if (!clockSynced) return 0L
+        val delayMs = (clockSynchronizer.serverToLocalUs(timestampUs) - System.nanoTime() / 1000L) / 1000L
+        return if (delayMs > MAX_METADATA_SCHEDULE_MS) 0L else delayMs
+    }
+
     private fun updatePreferredCodec(): Boolean {
         val wanted = preferredSendspinCodec(groupedForCodec, isCellularTransport)
         val changed = wanted != _preferredCodec.value
@@ -1269,6 +1293,7 @@ class SendspinManager(
         _streamCodec.value = null
         _streamFormat.value = null
         _syncState.value = finalSyncState
+        scheduledMetadata.cancel()
         _serverMetadata.value = null
         Log.d(TAG, "Sendspin stopped")
     }
