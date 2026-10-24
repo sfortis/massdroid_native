@@ -1,0 +1,76 @@
+{
+  "aiosendspin": "10.2.1",
+  "hello": {
+    "payload": {
+      "name": "MassDroid",
+      "supported_roles": [
+        "player@v1",
+        "metadata@v1"
+      ],
+      "device_info": {
+        "product_name": "Mobile Application",
+        "manufacturer": "asksakis.net",
+        "software_version": "2.40.0"
+      },
+      "player@v1_support": {
+        "supported_formats": [
+          {
+            "codec": "flac",
+            "channels": 2,
+            "sample_rate": 48000,
+            "bit_depth": 16
+          },
+          {
+            "codec": "opus",
+            "channels": 2,
+            "sample_rate": 48000,
+            "bit_depth": 16
+          },
+          {
+            "codec": "pcm",
+            "channels": 2,
+            "sample_rate": 48000,
+            "bit_depth": 16
+          }
+        ],
+        "buffer_capacity": 4000000
+      },
+      "supported_pair_methods": {
+        "pairing_psk": {}
+      },
+      "unpaired_access": {
+        "enabled": true
+      }
+    },
+    "type": "client/hello"
+  },
+  "state": {
+    "payload": {
+      "available": true,
+      "player": {
+        "volume": 40,
+        "muted": false,
+        "output_delay_ms": 0,
+        "required_lead_time_ms": 250,
+        "min_buffer_ms": 1000,
+        "supported_commands": [
+          "volume",
+          "mute"
+        ],
+        "format": {
+          "codec": "opus",
+          "channels": 2,
+          "sample_rate": 48000,
+          "bit_depth": 16
+        }
+      }
+    },
+    "type": "client/state"
+  },
+  "state_without_player": {
+    "payload": {
+      "available": true
+    },
+    "type": "client/state"
+  }
+}

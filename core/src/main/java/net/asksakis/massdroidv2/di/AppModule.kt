@@ -143,7 +143,10 @@ object AppModule {
         directEngine: net.asksakis.massdroidv2.data.sendspin.SendspinDirectEngine,
         sessionEventBus: net.asksakis.massdroidv2.data.websocket.SessionEventBus,
         noisePairing: NoisePairingCredentials,
-    ): SendspinManager = SendspinManager(client, syncEngine, directEngine, sessionEventBus, noisePairing)
+        @ApplicationContext ctx: Context,
+    ): SendspinManager = SendspinManager(
+        client, syncEngine, directEngine, sessionEventBus, noisePairing, appVersion = appVersionName(ctx)
+    )
 
     @Provides
     @Singleton

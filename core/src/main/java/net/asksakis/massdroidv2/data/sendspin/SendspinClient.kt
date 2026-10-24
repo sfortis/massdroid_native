@@ -605,11 +605,12 @@ class SendspinClient(
         return "$base/sendspin"
     }
 
-    fun sendHello(clientId: String, clientName: String, supportedFormats: List<AudioFormatSpec>) {
+    fun sendHello(clientId: String, clientName: String, supportedFormats: List<AudioFormatSpec>, deviceInfo: DeviceInfo) {
         val hello = SendspinClientHello(
             payload = ClientHelloPayload(
                 clientId = clientId,
                 name = clientName,
+                deviceInfo = deviceInfo,
                 playerV1Support = PlayerV1Support(supportedFormats = supportedFormats),
             )
         )
@@ -621,6 +622,16 @@ class SendspinClient(
             payload = ClientStatePayload(available = available, player = player)
         )
         sendText(json.encodeToString(state))
+    }
+
+    /** `client/state` on the rc1 wire; without a player role the player object is left out. */
+    fun sendRc1ClientState(available: Boolean, player: Rc1PlayerState?) {
+        val text = if (player != null) {
+            json.encodeToString(SendspinRc1ClientState(payload = Rc1ClientStatePayload(available, player)))
+        } else {
+            json.encodeToString(SendspinRc1AvailabilityState(payload = Rc1AvailabilityPayload(available)))
+        }
+        sendText(text)
     }
 
     fun sendTimeRequest(clientTimeUs: Long) {
@@ -647,6 +658,11 @@ class SendspinClient(
     /** `client/hello` on the Noise transport, the answer to `server/hello`. */
     fun sendNoiseHello(payload: NoiseClientHelloPayload) {
         sendText(json.encodeToString(SendspinNoiseClientHello(payload = payload)), force = true)
+    }
+
+    /** `client/hello` on the rc1 wire, the answer to `server/hello`. */
+    fun sendRc1Hello(payload: Rc1ClientHelloPayload) {
+        sendText(json.encodeToString(SendspinRc1ClientHello(payload = payload)), force = true)
     }
 
     /** `client/pair-init`, which precedes `client/pair-finalize` on the rc1 wire. */

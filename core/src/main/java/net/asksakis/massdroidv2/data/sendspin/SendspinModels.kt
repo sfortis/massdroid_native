@@ -129,10 +129,20 @@ data class PlayerV1Support(
     // Sized for ~30 s of FLAC (Deezer 44.1k/16 ≈ 110 KB/s -> ~36 s; 96k/24 -> ~13 s)
     // so a cellular/5G throughput dip is ridden out of the buffer instead of
     // underrunning. MAX_ENCODED_BUFFER_BYTES (engine) stays above this as backstop.
-    @SerialName("buffer_capacity") val bufferCapacity: Int = 4_000_000,
-    @SerialName("supported_commands") val supportedCommands: List<String> = listOf("volume", "mute")
+    @SerialName("buffer_capacity") val bufferCapacity: Int = SENDSPIN_BUFFER_CAPACITY_BYTES,
+    @SerialName("supported_commands") val supportedCommands: List<String> = SENDSPIN_PLAYER_COMMANDS
 )
 
+/** The bytes of compressed audio the server may stream ahead; see [PlayerV1Support.bufferCapacity]. */
+const val SENDSPIN_BUFFER_CAPACITY_BYTES = 4_000_000
+
+/** The commands the player answers. `set_output_delay` is not offered (owner decision, 2026-10-24). */
+val SENDSPIN_PLAYER_COMMANDS: List<String> = listOf("volume", "mute")
+
+/**
+ * `device_info` of the hello. MA recognises an app player by [productName] "Mobile Application",
+ * so it must stay. [softwareVersion] is the app's own version, which then shows in MA's log.
+ */
 @Serializable
 data class DeviceInfo(
     @SerialName("product_name") val productName: String = "Mobile Application",

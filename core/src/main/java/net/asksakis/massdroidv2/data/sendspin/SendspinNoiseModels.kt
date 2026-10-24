@@ -40,6 +40,86 @@ data class SendspinNoiseClientHello(
     val payload: NoiseClientHelloPayload,
 )
 
+/**
+ * The pairing methods offered in an rc1 `client/hello`, keyed by method identifier. Only
+ * `pairing_psk`, with no `locations` hint, which is the method MA's web player route uses.
+ */
+@Serializable
+data class Rc1PairMethods(@SerialName("pairing_psk") val pairingPsk: Rc1PairingPskMethod = Rc1PairingPskMethod)
+
+/** The `pairing_psk` descriptor: an empty object, since the app gives no `locations` hint. */
+@Serializable
+data object Rc1PairingPskMethod
+
+/** `player@v1_support` on the rc1 wire: the commands moved to `client/state`. */
+@Serializable
+data class Rc1PlayerV1Support(
+    @SerialName("supported_formats") val supportedFormats: List<AudioFormatSpec>,
+    @SerialName("buffer_capacity") val bufferCapacity: Int = SENDSPIN_BUFFER_CAPACITY_BYTES,
+)
+
+/**
+ * `client/hello` on the rc1 wire (Sendspin 1.0.0-rc1, aiosendspin 10). Compared with
+ * [NoiseClientHelloPayload] it has no `trust_level`, which the server now reads from the PSK
+ * category it matched, the pairing methods are an object keyed by method, and the player
+ * support carries no `supported_commands`. Those three keys are what tell aiosendspin 10 that a
+ * client speaks the rc1 wire.
+ */
+@Serializable
+data class Rc1ClientHelloPayload(
+    val name: String,
+    @SerialName("supported_roles") val supportedRoles: List<String> = listOf("player@v1", "metadata@v1"),
+    @SerialName("device_info") val deviceInfo: DeviceInfo,
+    @SerialName("player@v1_support") val playerV1Support: Rc1PlayerV1Support,
+    @SerialName("supported_pair_methods") val supportedPairMethods: Rc1PairMethods = Rc1PairMethods(),
+    @SerialName("unpaired_access") val unpairedAccess: UnpairedAccess = UnpairedAccess(enabled = true),
+)
+
+@Serializable
+data class SendspinRc1ClientHello(
+    val type: String = "client/hello",
+    val payload: Rc1ClientHelloPayload,
+)
+
+/**
+ * The player object of an rc1 `client/state`. Every field is required in every state: the
+ * renamed `output_delay_ms`, the timing fields, `supported_commands` (moved here from the hello)
+ * with the `volume` and `muted` they promise, and `format`, the format the player prefers. A
+ * player object without `format` would clear the preference on the server.
+ */
+@Serializable
+data class Rc1PlayerState(
+    val volume: Int,
+    val muted: Boolean,
+    @SerialName("output_delay_ms") val outputDelayMs: Int,
+    @SerialName("required_lead_time_ms") val requiredLeadTimeMs: Int = SENDSPIN_REQUIRED_LEAD_TIME_MS,
+    @SerialName("min_buffer_ms") val minBufferMs: Int,
+    @SerialName("supported_commands") val supportedCommands: List<String> = SENDSPIN_PLAYER_COMMANDS,
+    val format: AudioFormatSpec,
+)
+
+@Serializable
+data class Rc1ClientStatePayload(val available: Boolean, val player: Rc1PlayerState)
+
+@Serializable
+data class SendspinRc1ClientState(
+    val type: String = "client/state",
+    val payload: Rc1ClientStatePayload,
+)
+
+/**
+ * An rc1 `client/state` while the server has no player role active. The player object is left
+ * out rather than sent as `null`, which aiosendspin 10 records as a wrong type.
+ */
+@Serializable
+data class Rc1AvailabilityPayload(val available: Boolean)
+
+@Serializable
+data class SendspinRc1AvailabilityState(
+    val type: String = "client/state",
+    val payload: Rc1AvailabilityPayload,
+)
+
 @Serializable
 data class ActivatePairing(val method: String)
 

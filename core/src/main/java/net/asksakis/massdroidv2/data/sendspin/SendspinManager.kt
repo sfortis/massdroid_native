@@ -25,7 +25,11 @@ class SendspinManager(
     private val directEngine: SendspinDirectEngine,
     sessionEventBus: SessionEventBus,
     noisePairing: NoisePairingCredentials,
+    /** The app's version name, reported as `device_info.software_version`. */
+    appVersion: String,
 ) {
+    private val deviceInfo = DeviceInfo(softwareVersion = appVersion.ifEmpty { "unknown" })
+
     // Active engine. Solo (DIRECT) by default; swapped to the grouped engine on
     // a group join and back on leave. The two are fully separate instances so
     // neither carries the other's timeline state across a group boundary
@@ -363,7 +367,7 @@ class SendspinManager(
                 announcedCodec = formats.first().codec
                 Log.d(TAG, "Auth OK, sending hello formats=${formats.joinToString { it.codec }}")
                 client.updateState(SendspinState.HANDSHAKING)
-                client.sendHello(clientId, clientName, formats)
+                client.sendHello(clientId, clientName, formats, deviceInfo)
             }
 
             is SendspinIncoming.AuthError -> {
@@ -618,17 +622,32 @@ class SendspinManager(
         client.updateState(SendspinState.HANDSHAKING)
     }
 
+    /**
+     * Answers `server/hello` in the shape of the connection's wire. The rc1 hello is what makes
+     * aiosendspin 10 speak the rc1 wire to the phone; [trustLevel] exists only on the legacy one.
+     */
     private fun sendNoiseHello(trustLevel: String) {
         val formats = helloSupportedFormats(_preferredCodec.value)
         announcedCodec = formats.first().codec
-        Log.d(TAG, "Sending Noise hello formats=${formats.joinToString { it.codec }} trust=$trustLevel")
-        client.sendNoiseHello(
-            NoiseClientHelloPayload(
-                name = clientName,
-                playerV1Support = PlayerV1Support(supportedFormats = formats),
-                trustLevel = trustLevel,
+        val wire = client.wire
+        Log.d(TAG, "Sending Noise hello wire=$wire formats=${formats.joinToString { it.codec }} trust=$trustLevel")
+        when (wire) {
+            SendspinWire.LEGACY -> client.sendNoiseHello(
+                NoiseClientHelloPayload(
+                    name = clientName,
+                    deviceInfo = deviceInfo,
+                    playerV1Support = PlayerV1Support(supportedFormats = formats),
+                    trustLevel = trustLevel,
+                )
             )
-        )
+            SendspinWire.RC1 -> client.sendRc1Hello(
+                Rc1ClientHelloPayload(
+                    name = clientName,
+                    deviceInfo = deviceInfo,
+                    playerV1Support = Rc1PlayerV1Support(supportedFormats = formats),
+                )
+            )
+        }
     }
 
     private fun handleCommand(payload: ServerCommandPayload) {
@@ -1044,20 +1063,39 @@ class SendspinManager(
         }
         // On Noise the player object goes out only while the server has the player role active.
         val reportPlayer = !noiseMode || noiseFlow.playerRoleActive
-        client.sendClientState(
-            available = currentAvailability(),
-            player = if (reportPlayer) {
-                PlayerStateInfo(
-                    volume = currentVolume,
-                    muted = muted,
-                    staticDelayMs = specStaticDelayMs,
-                    requiredLeadTimeMs = SENDSPIN_REQUIRED_LEAD_TIME_MS,
-                    minBufferMs = sendspinMinBufferMs(isCellularTransport)
-                )
-            } else {
-                null
-            }
-        )
+        val minBufferMs = sendspinMinBufferMs(isCellularTransport)
+        when (client.wire) {
+            SendspinWire.LEGACY -> client.sendClientState(
+                available = currentAvailability(),
+                player = if (reportPlayer) {
+                    PlayerStateInfo(
+                        volume = currentVolume,
+                        muted = muted,
+                        staticDelayMs = specStaticDelayMs,
+                        requiredLeadTimeMs = SENDSPIN_REQUIRED_LEAD_TIME_MS,
+                        minBufferMs = minBufferMs,
+                    )
+                } else {
+                    null
+                }
+            )
+            // The format is the codec the phone wants now, which the server applies unless an
+            // explicit format is set in MA (owner decision, 2026-10-24).
+            SendspinWire.RC1 -> client.sendRc1ClientState(
+                available = currentAvailability(),
+                player = if (reportPlayer) {
+                    Rc1PlayerState(
+                        volume = currentVolume,
+                        muted = muted,
+                        outputDelayMs = specStaticDelayMs,
+                        minBufferMs = minBufferMs,
+                        format = helloSupportedFormats(_preferredCodec.value).first(),
+                    )
+                } else {
+                    null
+                }
+            )
+        }
     }
 
     fun expectDiscontinuity(reason: String) {
