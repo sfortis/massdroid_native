@@ -74,6 +74,11 @@ internal class SendspinNoiseFlow(
      * of an active player role. So nothing is sent from the first unpaired activate until the
      * activate that follows the pairing's re-handshake, or until the supervisor says no pairing
      * follows.
+     *
+     * Legacy wire only. aiosendspin 10 does not quiesce an rc1 client before pairing, and it flags
+     * a role whose first `client/state` misses a 5 s deadline. With the hold on rc1, MA waited out
+     * that deadline before it registered the player and paired it, and logged the phone as
+     * non-compliant (2026-10-24, MA 2.10.8).
      */
     val stateHeldForPairing: Boolean get() = pairingHold != PairingHold.NONE
 
@@ -102,7 +107,8 @@ internal class SendspinNoiseFlow(
 
     fun onServerHello() {
         val trust = if (client.noisePsk()?.category == PskCategory.LONG_TERM) TRUST_LEVEL_USER else TRUST_LEVEL_NONE
-        Log.d(TAG, "server/hello, answering with trust_level=$trust")
+        val trustNote = if (client.wire == SendspinWire.LEGACY) " with trust_level=$trust" else ""
+        Log.d(TAG, "server/hello, answering on the ${client.wire} wire$trustNote")
         player.sendHello(trust)
     }
 
@@ -124,7 +130,9 @@ internal class SendspinNoiseFlow(
      * the attempt belongs to, for [onPairingAttemptEnded]. Safe to call off the collector.
      */
     fun onPairingRequested(): Int = synchronized(holdLock) {
-        if (pairingHold == PairingHold.NONE) pairingHold = PairingHold.PAIRING_EXPECTED
+        if (pairingHold == PairingHold.NONE && client.wire == SendspinWire.LEGACY) {
+            pairingHold = PairingHold.PAIRING_EXPECTED
+        }
         connectionEpoch
     }
 
@@ -169,7 +177,7 @@ internal class SendspinNoiseFlow(
         if (!pairingStep) {
             val firstUnpaired = psk.category == PskCategory.SENTINEL && reportedCategory != PskCategory.SENTINEL
             // Without a server id reportLink reports nothing, and nothing would end the hold.
-            if (firstUnpaired && client.noiseServerId() != null) {
+            if (firstUnpaired && client.noiseServerId() != null && wire == SendspinWire.LEGACY) {
                 // Unpaired: a pairing follows unless the supervisor holds it back, which it then
                 // reports through onPairingHeldBack.
                 synchronized(holdLock) { pairingHold = PairingHold.PAIRING_EXPECTED }

@@ -24,14 +24,15 @@ class NoisePairingHoldTest {
     private val roles = listOf("player@v1", "metadata@v1")
     private var pskCategory = PskCategory.SENTINEL
     private var linkEventsDelivered = true
+    private var wire = SendspinWire.LEGACY
     private val linkEvents = mutableListOf<NoiseLinkEvent>()
     private val heldWhen = mutableListOf<Pair<String, Boolean>>()
 
     private val client = mockk<SendspinClient>(relaxed = true).also {
         every { it.noisePsk() } answers { ResolvedPsk("psk", ByteArray(32), pskCategory, SERVER_ID) }
         every { it.noiseServerId() } returns SERVER_ID
-        // The hold was built for the legacy wire's quiesce; rc1 keeps it until the live pairing test.
-        every { it.wire } returns SendspinWire.LEGACY
+        // The hold exists for the legacy wire's quiesce; the rc1 tests set the wire themselves.
+        every { it.wire } answers { wire }
     }
 
     private lateinit var flow: SendspinNoiseFlow
@@ -60,6 +61,18 @@ class NoisePairingHoldTest {
         assertThat(heldWhen).containsExactly("start" to true)
         assertThat(linkEvents).containsExactly(NoiseLinkEvent.Unpaired(SERVER_ID))
         assertThat(flow.stateHeldForPairing).isTrue()
+    }
+
+    @Test
+    fun `on the rc1 wire an unpaired connection sends its state at once`() {
+        wire = SendspinWire.RC1
+
+        activate()
+        flow.onPairingRequested()
+
+        assertThat(heldWhen).containsExactly("start" to false)
+        assertThat(linkEvents).containsExactly(NoiseLinkEvent.Unpaired(SERVER_ID))
+        assertThat(flow.stateHeldForPairing).isFalse()
     }
 
     @Test
