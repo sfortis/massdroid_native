@@ -333,3 +333,21 @@ data class MaArtistTopTracksEntity(
     @ColumnInfo(name = "tracks_json") val tracksJson: String,
     @ColumnInfo(name = "fetched_at") val fetchedAt: Long
 )
+
+/**
+ * A few words about an album, found by way of MusicBrainz and Wikipedia when Music
+ * Assistant has no description of its own (most provider albums). [text] is empty when
+ * nothing was found, so a miss is remembered too and not looked up on every play.
+ *
+ * Keyed on the artist and album names rather than on a uri: the answer describes the
+ * release, which is the same under every provider, and a `library://` id can be reused.
+ * Standalone, with no foreign keys, like the other caches of external answers. Rows
+ * older than 30 days are swept on write.
+ */
+@Entity(tableName = "album_info")
+data class AlbumInfoEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "album_key") val albumKey: String,
+    val text: String,
+    @ColumnInfo(name = "fetched_at") val fetchedAt: Long
+)

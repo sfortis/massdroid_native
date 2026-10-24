@@ -84,6 +84,9 @@ interface SettingsRepository : TrustedServerStore {
      * the user chooses; the app then applies its build's default, on in debug builds only.
      */
     val persistentLogEnabled: Flow<Boolean?>
+
+    /** Whether Now Playing shows a few words about the album or the artist under the cover. On by default. */
+    val showAboutText: Flow<Boolean>
     val sendspinClientId: Flow<String?>
     /**
      * The player id this phone used before it switched to its Sendspin Noise identity, null when
@@ -235,6 +238,7 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun resetSmartMixTuning()
     suspend fun setIncludeBetaUpdates(enabled: Boolean)
     suspend fun setPersistentLogEnabled(enabled: Boolean)
+    suspend fun setShowAboutText(enabled: Boolean)
     suspend fun setSendspinClientId(clientId: String)
     suspend fun setSendspinLegacyClientId(playerId: String)
     suspend fun addSendspinMigratedServer(serverId: String)

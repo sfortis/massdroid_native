@@ -516,12 +516,31 @@ object AppModule {
     }
 
     /**
+     * Schema 23: `album_info`, the cache of album descriptions found through MusicBrainz and
+     * Wikipedia (`AlbumInfoResolver`). A new table only; nothing existing changes.
+     */
+    private val MIGRATION_22_23 = object : Migration(22, 23) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `album_info` (
+                    `album_key` TEXT NOT NULL,
+                    `text` TEXT NOT NULL,
+                    `fetched_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`album_key`)
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
+    /**
      * Everything the Music-Assistant-native Smart Mix engine needs, as ONE step.
      *
      * v10 is what the last release before v2.32.0 shipped, so v10 -> v17 is the path
      * every user coming from a release takes, followed by [MIGRATION_17_18],
-     * [MIGRATION_18_19], [MIGRATION_19_20], `GenreSpellingMigration.MIGRATION_20_21` and
-     * [MIGRATION_21_22]. Stepping through v11 to v16 instead
+     * [MIGRATION_18_19], [MIGRATION_19_20], `GenreSpellingMigration.MIGRATION_20_21`,
+     * [MIGRATION_21_22] and [MIGRATION_22_23]. Stepping through v11 to v16 instead
      * would only make that upgrade do pointless work, since one of those steps
      * empties a table the previous one had just created.
      *
@@ -592,7 +611,7 @@ object AppModule {
         MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_17, MIGRATION_11_12,
         MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
         MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
-        GenreSpellingMigration.MIGRATION_20_21, MIGRATION_21_22
+        GenreSpellingMigration.MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23
     )
 
     /**

@@ -126,6 +126,7 @@ class SettingsRepositoryImpl @Inject constructor(
         private const val DEFAULT_SMART_MIX_STRICTNESS = 0.5f
         private val KEY_INCLUDE_BETA_UPDATES = booleanPreferencesKey("include_beta_updates")
         private val KEY_PERSISTENT_LOG_ENABLED = booleanPreferencesKey("persistent_log_enabled")
+        private val KEY_SHOW_ABOUT_TEXT = booleanPreferencesKey("show_about_text")
         private val KEY_LIBRARY_DISPLAY_MODES = stringPreferencesKey("library_display_modes")
         private val KEY_LIBRARY_SORT_OPTIONS = stringPreferencesKey("library_sort_options")
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
@@ -352,6 +353,14 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setIncludeBetaUpdates(enabled: Boolean) {
         context.dataStore.edit { it[KEY_INCLUDE_BETA_UPDATES] = enabled }
+    }
+
+    override val showAboutText: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_SHOW_ABOUT_TEXT] ?: true
+    }
+
+    override suspend fun setShowAboutText(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_SHOW_ABOUT_TEXT] = enabled }
     }
 
     override val persistentLogEnabled: Flow<Boolean?> = safeData.map { prefs ->

@@ -352,6 +352,17 @@ interface PlayHistoryDao {
     @Query("DELETE FROM ma_artist_top_tracks WHERE fetched_at < :olderThan")
     suspend fun deleteExpiredArtistTopTracks(olderThan: Long)
 
+    // ---- Album info cache (MusicBrainz + Wikipedia) ----
+
+    @Query("SELECT * FROM album_info WHERE album_key = :albumKey LIMIT 1")
+    suspend fun getAlbumInfo(albumKey: String): AlbumInfoEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAlbumInfo(info: AlbumInfoEntity)
+
+    @Query("DELETE FROM album_info WHERE fetched_at < :olderThan")
+    suspend fun deleteExpiredAlbumInfo(olderThan: Long)
+
     // ---- MA similar-tracks cache ----
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -1224,7 +1235,7 @@ interface PlayHistoryDao {
      * [clearBlockedArtists].
      *
      * The external caches (`musicbrainz_artist_tags`, `ma_similar_artists`,
-     * `artist_track_cache`, `ma_artist_top_tracks`, `ma_similar_track_cache`) are also untouched: they hold
+     * `artist_track_cache`, `ma_artist_top_tracks`, `ma_similar_track_cache`, `album_info`) are also untouched: they hold
      * no preference of any kind, only answers from servers that would otherwise have
      * to be fetched again over days.
      */

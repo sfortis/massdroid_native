@@ -8,9 +8,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.net.URLEncoder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,10 +33,10 @@ import javax.inject.Singleton
 @Singleton
 class ArtistBioResolver @Inject constructor(
     private val dao: PlayHistoryDao,
-    private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val rateLimiter: MusicBrainzRateLimiter,
     private val genreResolver: MusicBrainzGenreResolver,
+    private val wikipedia: WikipediaSummaries,
 ) {
 
     /**
@@ -96,57 +93,17 @@ class ArtistBioResolver @Inject constructor(
      */
     private suspend fun describe(mbid: String): String? {
         val artist = mbGet("$MB_BASE/artist/$mbid?inc=url-rels&fmt=json")?.jsonObject ?: return null
-        var wikidataId: String? = null
-        var wikipediaTitle: String? = null
-        for (relation in artist["relations"]?.jsonArray.orEmpty()) {
-            val url = relation.jsonObject["url"]?.jsonObject?.get("resource")
-                ?.jsonPrimitive?.content ?: continue
-            when {
-                url.contains("wikidata.org/wiki/") -> wikidataId = url.substringAfterLast('/')
-                url.contains("wikipedia.org/wiki/") -> wikipediaTitle = url.substringAfterLast('/')
-            }
-        }
-        val title = wikipediaTitle ?: wikidataId?.let { enwikiTitleFor(it) }
-        title?.let { wikipediaSummary(it) }?.let { return it }
+        val summary = wikipedia.summaryFor(artist["relations"]?.jsonArray, MIN_MEANINGFUL_BIO)
+        if (summary is WikipediaSummaries.Summary.Text) return summary.text
         // No article. The disambiguation is not held to the prose threshold: it
         // is meant to be short, and rejecting it for that would defeat the point.
         return artist["disambiguation"]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotEmpty() }
     }
 
-    private suspend fun enwikiTitleFor(wikidataId: String): String? {
-        val body = httpGet(
-            "$WIKIDATA_BASE?action=wbgetentities&ids=$wikidataId&props=sitelinks&format=json"
-        ) ?: return null
-        return runCatching {
-            json.parseToJsonElement(body).jsonObject["entities"]?.jsonObject
-                ?.get(wikidataId)?.jsonObject?.get("sitelinks")?.jsonObject
-                ?.get("enwiki")?.jsonObject?.get("title")?.jsonPrimitive?.content
-        }.getOrNull()
-    }
-
-    private suspend fun wikipediaSummary(title: String): String? {
-        val encoded = URLEncoder.encode(title.replace(' ', '_'), "UTF-8").replace("+", "%20")
-        val body = httpGet("$WIKIPEDIA_BASE/$encoded") ?: return null
-        return runCatching {
-            json.parseToJsonElement(body).jsonObject["extract"]?.jsonPrimitive?.content
-                ?.trim()?.takeIf { it.length >= MIN_MEANINGFUL_BIO }
-        }.getOrNull()
-    }
-
     /** MusicBrainz calls go through the shared 1 req/s gate; Wikipedia has none. */
     private suspend fun mbGet(url: String) = run {
         rateLimiter.acquire()
-        httpGet(url)?.let { body -> runCatching { json.parseToJsonElement(body) }.getOrNull() }
-    }
-
-    private fun httpGet(url: String): String? = try {
-        val request = Request.Builder().url(url).header("User-Agent", USER_AGENT).build()
-        okHttpClient.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "GET failed: ${e.message}")
-        null
+        wikipedia.get(url)?.let { body -> runCatching { json.parseToJsonElement(body) }.getOrNull() }
     }
 
     private fun cacheKey(artistName: String, mbid: String?): String =
@@ -155,9 +112,6 @@ class ArtistBioResolver @Inject constructor(
     private companion object {
         const val TAG = "ArtistBio"
         const val MB_BASE = "https://musicbrainz.org/ws/2"
-        const val WIKIDATA_BASE = "https://www.wikidata.org/w/api.php"
-        const val WIKIPEDIA_BASE = "https://en.wikipedia.org/api/rest_v1/page/summary"
-        const val USER_AGENT = "MassDroid/2.x ( https://github.com/sfortis/massdroid_native )"
         // Wikipedia summaries are stable prose; a miss is retried sooner in case
         // an article appears.
         const val CACHE_MS = 90L * 24 * 60 * 60 * 1000

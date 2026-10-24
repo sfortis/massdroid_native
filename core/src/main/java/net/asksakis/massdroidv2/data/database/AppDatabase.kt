@@ -19,7 +19,8 @@ import androidx.room.RoomDatabase
         MaArtistTopTracksEntity::class,
         MaSimilarArtistEntity::class,
         MaSimilarTrackCacheEntity::class,
-        MusicBrainzArtistTagsEntity::class
+        MusicBrainzArtistTagsEntity::class,
+        AlbumInfoEntity::class
     ],
     version = AppDatabase.SCHEMA_VERSION,
     exportSchema = false
@@ -34,6 +35,6 @@ abstract class AppDatabase : RoomDatabase() {
          * itself: inside onDestructiveMigration the file still carries the OLD
          * version, so reporting `db.version` there said "v1 -> v1".
          */
-        const val SCHEMA_VERSION = 22
+        const val SCHEMA_VERSION = 23
     }
 }
