@@ -161,7 +161,7 @@ class NoiseClientSession(
     }
 
     private fun completeHandshake(text: String): String {
-        val (resolved, result) = respond(checkNotNull(handshake), text) { wire = it }
+        val (resolved, result) = respond(checkNotNull(handshake), text, initialHandshake = true) { wire = it }
         handshake = null
         handshakeHash = result.handshakeHash
         psk = resolved
@@ -181,7 +181,7 @@ class NoiseClientSession(
             prologue = handshakeHash,
             ephemeral = ephemerals(),
         )
-        val (resolved, result) = respond(next, text) { declared ->
+        val (resolved, result) = respond(next, text, initialHandshake = false) { declared ->
             if (declared != wire) throw NoiseProtocolException("re-handshake on the $declared wire of a $wire connection")
         }
         val sent = synchronized(gateLock) {
@@ -198,6 +198,7 @@ class NoiseClientSession(
     private inline fun respond(
         handshake: NoiseResponderHandshake,
         text: String,
+        initialHandshake: Boolean,
         onWire: (SendspinWire) -> Unit,
     ): Pair<ResolvedPsk, NoiseResponderHandshake.Result> {
         val message1 = protocolGuard("noise/handshake") {
@@ -210,19 +211,42 @@ class NoiseClientSession(
             Message1Payload.parse(String(plaintext, Charsets.UTF_8))
         }
         onWire(payload.wire)
-        val resolved = resolvePsk(payload.pskId)
+        val resolved = resolvePsk(payload, initialHandshake)
         return resolved to handshake.writeMessage2(resolved.psk, MESSAGE_2_PAYLOAD)
     }
 
-    private fun resolvePsk(pskId: String): ResolvedPsk {
-        val resolved = if (pskId == SENTINEL_PSK_ID) {
-            ResolvedPsk(pskId, SendspinNoise.SENTINEL_PSK, PskCategory.SENTINEL, serverId = null)
-        } else {
-            pskResolver.resolve(pskId) ?: throw NoiseProtocolException("no PSK matches psk_id $pskId")
-        }
-        // A stored PSK is bound to the server it was paired with; any other server must not use it.
+    /**
+     * Finds the PSK message 1 names.
+     *
+     * On the legacy wire any PSK the client holds under that id is used, and a miss fails the
+     * handshake, as aiosendspin 9.1.1's client does.
+     *
+     * On the rc1 wire a PSK counts only under the category the server declared it as; held under
+     * another category, or bound to another server, it is a miss (spec `connection.md`). A miss in
+     * the initial handshake is answered under the Sentinel PSK, which the server accepts by
+     * replaying message 1 under it ("Sentinel Fallback"). The phone then comes up unpaired and
+     * pairs again, instead of failing every handshake until someone unpairs it in Music
+     * Assistant. A miss in a re-handshake still fails, because the old keys stay valid there.
+     */
+    private fun resolvePsk(payload: Message1Payload, initialHandshake: Boolean): ResolvedPsk {
+        val declared = payload.category
+            ?: return findPsk(payload.pskId, missIsFatal = true)
+                ?: throw NoiseProtocolException("no PSK matches psk_id ${payload.pskId}")
+        findPsk(payload.pskId, missIsFatal = false)?.takeIf { it.category == declared }?.let { return it }
+        if (initialHandshake) return SENTINEL
+        throw NoiseProtocolException("no ${declared.code} PSK matches psk_id ${payload.pskId} in a re-handshake")
+    }
+
+    /**
+     * The PSK held under [pskId], or null when none is. A stored PSK is bound to the server it was
+     * paired with; for any other server it is a fatal error when [missIsFatal], and a miss
+     * otherwise.
+     */
+    private fun findPsk(pskId: String, missIsFatal: Boolean): ResolvedPsk? {
+        val resolved = if (pskId == SENTINEL_PSK_ID) SENTINEL else pskResolver.resolve(pskId) ?: return null
         if (resolved.serverId != null && resolved.serverId != serverId) {
-            throw NoiseProtocolException("PSK $pskId is bound to another server")
+            if (missIsFatal) throw NoiseProtocolException("PSK $pskId is bound to another server")
+            return null
         }
         return resolved
     }
@@ -290,6 +314,7 @@ class NoiseClientSession(
         const val HANDSHAKE_TYPE = "noise/handshake"
 
         private val SENTINEL_PSK_ID = SendspinNoise.pskId(SendspinNoise.SENTINEL_PSK)
+        private val SENTINEL = ResolvedPsk(SENTINEL_PSK_ID, SendspinNoise.SENTINEL_PSK, PskCategory.SENTINEL, serverId = null)
         private val MESSAGE_2_PAYLOAD = "{}".toByteArray(Charsets.UTF_8)
 
         internal fun handshakeText(message: ByteArray): String = buildJsonObject {
