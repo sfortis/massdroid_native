@@ -55,6 +55,11 @@ data class Track(
      * whenever a track credits more than one.
      */
     val primaryArtistSortName: String = "",
+    /**
+     * The displayed name of the FIRST artist alone, which Music Assistant 2.10.7 and later
+     * sort by. [artistNames] joins every artist and cannot stand in for it.
+     */
+    val primaryArtistName: String = "",
     /** The album's sort name, resolved the same way as [sortName]. */
     val albumSortName: String = "",
     /**

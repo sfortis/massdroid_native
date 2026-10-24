@@ -72,12 +72,21 @@ interface MusicRepository {
      * Tracks of a playlist. [forceRefresh] makes the server re-read them from the
      * provider instead of its cache, which is what a playlist the provider generates
      * needs before it will show anything new.
+     *
+     * With [sortKey], on a server whose rules are [PlaylistSortRules.SERVER_LISTING], the
+     * server sorts the tracks in that order and returns all of them. Everywhere else the
+     * tracks come in the playlist's own order, and the caller orders them with
+     * [net.asksakis.massdroidv2.domain.model.sortedForListing] under [playlistSortRules].
      */
     suspend fun getPlaylistTracks(
         itemId: String,
         provider: String,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        sortKey: PlaylistSortKey? = null
     ): List<Track>
+
+    /** How the connected server orders a playlist it plays sorted. */
+    fun playlistSortRules(): PlaylistSortRules
 
     suspend fun search(query: String, mediaTypes: List<MediaType>? = null, limit: Int = 25): SearchResult
     suspend fun getQueueItems(queueId: String, limit: Int = 100, offset: Int = 0): List<QueueItem>

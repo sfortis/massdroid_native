@@ -73,6 +73,13 @@ class MusicRepositoryImpl @Inject constructor(
         private const val SORT_BY_MIN_SCHEMA = 63
 
         /**
+         * The `limit` that asks a Music Assistant 2.11 listing for every item. Without it
+         * `playlist_tracks` returns the first 500, and a sorted listing that stops there
+         * would hide the tracks the queue goes on to play.
+         */
+        private const val WHOLE_LISTING = 0
+
+        /**
          * The first schema with radio as `radio_playlist://` dynamic playlists (MA 2.10.0), where
          * `radio_mode` became deprecated. The provider existed from the 2.10 betas, but the
          * stable release is the line the app supports; a beta below it keeps `radio_mode`, which
@@ -341,14 +348,28 @@ class MusicRepositoryImpl @Inject constructor(
     override suspend fun getPlaylistTracks(
         itemId: String,
         provider: String,
-        forceRefresh: Boolean
+        forceRefresh: Boolean,
+        sortKey: PlaylistSortKey?
     ): List<Track> {
+        // Only a server that plays a playlist in its listing's order is asked for the order.
+        // An older one would drop the unknown arguments, and the caller sorts its answer.
+        val listingSort = sortKey?.takeIf { playlistSortRules() == PlaylistSortRules.SERVER_LISTING }
         val result = wsClient.sendCommand(
             MaCommands.Music.PLAYLIST_TRACKS,
-            PlaylistTracksArgs(itemId = itemId, provider = provider, forceRefresh = forceRefresh)
+            PlaylistTracksArgs(
+                itemId = itemId,
+                provider = provider,
+                forceRefresh = forceRefresh,
+                sortField = listingSort?.sortField,
+                sortDirection = listingSort?.sortDirection,
+                limit = listingSort?.let { WHOLE_LISTING }
+            )
         )
         return parseMediaItems(result).mapNotNull { it.toTrack() }
     }
+
+    override fun playlistSortRules(): PlaylistSortRules =
+        playlistSortRulesFor(wsClient.serverSchemaVersion(), wsClient.serverVersion())
 
     override suspend fun search(query: String, mediaTypes: List<MediaType>?, limit: Int): SearchResult {
         val result = wsClient.sendCommand(
@@ -414,17 +435,22 @@ class MusicRepositoryImpl @Inject constructor(
         uris: List<String>,
         option: String?,
         radioMode: Boolean,
-        sortBy: String? = null,
+        sortKey: PlaylistSortKey? = null,
         startItem: String? = null
     ): PlayMediaArgs {
         val asRadioPlaylists = radioMode &&
             (wsClient.serverSchemaVersion() ?: 0) >= RADIO_PLAYLIST_MIN_SCHEMA
+        // A 2.11 server has deprecated `sort_by` for the listing sort, which it plays the
+        // container in exactly. Both name the same order.
+        val byListing = sortKey != null && playlistSortRules() == PlaylistSortRules.SERVER_LISTING
         return PlayMediaArgs(
             queueId = queueId,
             mediaUris = if (asRadioPlaylists) uris.map(::radioPlaylistUri) else uris,
             option = option,
             radioMode = radioMode && !asRadioPlaylists,
-            sortBy = sortBy,
+            sortBy = sortKey?.serverKey?.takeUnless { byListing },
+            sortField = sortKey?.sortField?.takeIf { byListing },
+            sortDirection = sortKey?.sortDirection?.takeIf { byListing },
             startItem = startItem
         )
     }
@@ -452,8 +478,8 @@ class MusicRepositoryImpl @Inject constructor(
         }
         // Dropped rather than sent to a server that would silently ignore it. The caller asks
         // supportsServerSideSort first and sends a track list in that case, so this only
-        // guards against a caller that did not.
-        val sortBy = sortKey?.takeIf { supportsServerSideSort(it) }?.serverKey
+        // guards against a caller that did not. The playlist's own order sends nothing.
+        val serverSort = sortKey?.takeIf { supportsServerSideSort(it) && it.serverKey != null }
 
         sendPlayMedia(queueId, option, awaitResponse) {
             wsClient.sendCommand(
@@ -463,7 +489,7 @@ class MusicRepositoryImpl @Inject constructor(
                     uris = listOf(uri),
                     option = option,
                     radioMode = radioMode,
-                    sortBy = sortBy,
+                    sortKey = serverSort,
                     startItem = startItem
                 ),
                 awaitResponse = awaitResponse
@@ -600,7 +626,7 @@ class MusicRepositoryImpl @Inject constructor(
                 // chosen from it. That is issue #67.
                 if (isRebuiltOnPlay(uri)) return BlockedPlan.PlayWhole
                 val tracks = try {
-                    getPlaylistTracks(itemId, provider)
+                    getPlaylistTracks(itemId, provider, sortKey = sortKey)
                 } catch (_: Exception) {
                     return BlockedPlan.PlayWhole
                 }
@@ -610,7 +636,7 @@ class MusicRepositoryImpl @Inject constructor(
                 // naming one as the start item finds nothing and returns an EMPTY queue
                 // (`get_playlist_tracks` in media_resolver.py returns [] when the start item
                 // is not found), which would be worse than the blocked track it avoids.
-                startPlanFor(sortKey?.let { tracks.sortedForListing(it) } ?: tracks, repo)
+                startPlanFor(sortKey?.let { tracks.sortedForListing(it, playlistSortRules()) } ?: tracks, repo)
             }
             else -> BlockedPlan.PlayWhole
         }
@@ -1246,6 +1272,7 @@ class MusicRepositoryImpl @Inject constructor(
             primaryArtistSortName = artists?.firstOrNull()
                 ?.let { it.sort_name.orEmpty().ifBlank { it.name } }
                 .orEmpty(),
+            primaryArtistName = artists?.firstOrNull()?.name.orEmpty(),
             albumSortName = album?.let { it.sort_name.orEmpty().ifBlank { it.name } }.orEmpty()
         )
     }

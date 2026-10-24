@@ -218,16 +218,27 @@ data class ItemRefArgs(
  * Music Assistant serves playlist tracks from a cache, and for a playlist the provider
  * generates (Smart Playlist, Endless Mix) that cache can be a day old. `force_refresh`
  * is how its own web UI refreshes a listing, so it is what pull-to-refresh sends.
+ *
+ * [sortField], [sortDirection] and [limit] exist from Music Assistant 2.11 (schema 95), where
+ * the server sorts and pages the listing itself. Each is left out when null, so an older
+ * server receives the same command as before.
  */
 data class PlaylistTracksArgs(
     val itemId: String,
     val provider: String,
-    val forceRefresh: Boolean = false
+    val forceRefresh: Boolean = false,
+    val sortField: String? = null,
+    val sortDirection: String? = null,
+    /** The most tracks to return. 0 returns them all; the 2.11 server returns 500 without it. */
+    val limit: Int? = null
 ) : MaCommandArgs {
     override fun toJson(): JsonObject = buildJsonObject {
         put("item_id", itemId)
         put("provider_instance_id_or_domain", provider)
         if (forceRefresh) put("force_refresh", true)
+        sortField?.let { put("sort_field", it) }
+        sortDirection?.let { put("sort_direction", it) }
+        limit?.let { put("limit", it) }
     }
 }
 
@@ -334,8 +345,16 @@ data class PlayMediaArgs(
      */
     val sortBy: String? = null,
     /**
+     * The listing sort a container should play in, from Music Assistant 2.11 (schema 95).
+     * There `sort_by` is deprecated, and the server plays the container exactly as its
+     * listing sorts it for this field. Sent instead of [sortBy], never with it.
+     */
+    val sortField: String? = null,
+    /** The direction of [sortField], "asc" or "desc". */
+    val sortDirection: String? = null,
+    /**
      * The track a container should begin at, by URI. The server drops whatever precedes it,
-     * after applying [sortBy].
+     * after applying the sort.
      *
      * Used to keep a blocked artist at the head of a playlist from being heard, without
      * expanding the playlist into a track list. Like [sortBy], it means nothing for a list of
@@ -349,6 +368,8 @@ data class PlayMediaArgs(
         option?.let { put("option", it) }
         if (radioMode) put("radio_mode", true)
         sortBy?.let { put("sort_by", it) }
+        sortField?.let { put("sort_field", it) }
+        sortDirection?.let { put("sort_direction", it) }
         startItem?.let { put("start_item", it) }
     }
 }

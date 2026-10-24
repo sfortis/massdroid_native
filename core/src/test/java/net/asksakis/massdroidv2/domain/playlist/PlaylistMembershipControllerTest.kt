@@ -90,7 +90,7 @@ class PlaylistMembershipControllerTest {
         testScheduler.advanceUntilIdle()
 
         assertThat(controller.playlists.value).hasSize(50)
-        coVerify(exactly = 0) { musicRepository.getPlaylistTracks(any(), any(), any()) }
+        coVerify(exactly = 0) { musicRepository.getPlaylistTracks(any(), any(), any(), any()) }
     }
 
     /** Only the rows the listener can see are resolved, and each one only once. */
@@ -98,9 +98,9 @@ class PlaylistMembershipControllerTest {
     fun `membership is resolved for the visible rows only and never twice`() = runTest {
         val playlists = (1..50).map { playlist(it.toString()) }
         coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns playlists
-        coEvery { musicRepository.getPlaylistTracks("1", any(), any()) } returns
+        coEvery { musicRepository.getPlaylistTracks("1", any(), any(), any()) } returns
             listOf(track("library://track/9"))
-        coEvery { musicRepository.getPlaylistTracks("2", any(), any()) } returns
+        coEvery { musicRepository.getPlaylistTracks("2", any(), any(), any()) } returns
             listOf(track("library://track/other"))
 
         val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
@@ -114,9 +114,9 @@ class PlaylistMembershipControllerTest {
         testScheduler.advanceUntilIdle()
 
         assertThat(controller.containsTrack.value).containsExactly("library://playlist/1")
-        coVerify(exactly = 1) { musicRepository.getPlaylistTracks("1", any(), any()) }
-        coVerify(exactly = 1) { musicRepository.getPlaylistTracks("2", any(), any()) }
-        coVerify(exactly = 0) { musicRepository.getPlaylistTracks("3", any(), any()) }
+        coVerify(exactly = 1) { musicRepository.getPlaylistTracks("1", any(), any(), any()) }
+        coVerify(exactly = 1) { musicRepository.getPlaylistTracks("2", any(), any(), any()) }
+        coVerify(exactly = 0) { musicRepository.getPlaylistTracks("3", any(), any(), any()) }
     }
 
     /**
@@ -128,7 +128,7 @@ class PlaylistMembershipControllerTest {
     fun `changing the track clears the ticks`() = runTest {
         val playlists = listOf(playlist("1"))
         coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns playlists
-        coEvery { musicRepository.getPlaylistTracks("1", any(), any()) } returns
+        coEvery { musicRepository.getPlaylistTracks("1", any(), any(), any()) } returns
             listOf(track("library://track/9"))
 
         val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
@@ -149,7 +149,7 @@ class PlaylistMembershipControllerTest {
     fun `a new track re-checks a playlist that was already checked`() = runTest {
         coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns
             listOf(playlist("1"))
-        coEvery { musicRepository.getPlaylistTracks("1", any(), any()) } returns
+        coEvery { musicRepository.getPlaylistTracks("1", any(), any(), any()) } returns
             listOf(track("library://track/9"))
 
         val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
@@ -163,7 +163,7 @@ class PlaylistMembershipControllerTest {
         controller.onPlaylistsVisible(listOf("library://playlist/1"))
         testScheduler.advanceUntilIdle()
 
-        coVerify(exactly = 2) { musicRepository.getPlaylistTracks("1", any(), any()) }
+        coVerify(exactly = 2) { musicRepository.getPlaylistTracks("1", any(), any(), any()) }
         assertThat(controller.containsTrack.value).isEmpty()
     }
 
@@ -172,7 +172,7 @@ class PlaylistMembershipControllerTest {
     fun `a failed check is retried on the next pass`() = runTest {
         coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns
             listOf(playlist("1"))
-        coEvery { musicRepository.getPlaylistTracks("1", any(), any()) } throws
+        coEvery { musicRepository.getPlaylistTracks("1", any(), any(), any()) } throws
             IllegalStateException("socket closed") andThen listOf(track("library://track/9"))
 
         val controller = PlaylistMembershipController(musicRepository, TestScope(testScheduler))
@@ -212,7 +212,7 @@ class PlaylistMembershipControllerTest {
     fun `removing a track clears the tick`() = runTest {
         coEvery { musicRepository.getPlaylists(any(), any(), any(), any(), any(), any()) } returns
             listOf(playlist("1"))
-        coEvery { musicRepository.getPlaylistTracks("1", any(), any()) } returns listOf(
+        coEvery { musicRepository.getPlaylistTracks("1", any(), any(), any()) } returns listOf(
             track("library://track/1"),
             track("library://track/9")
         )

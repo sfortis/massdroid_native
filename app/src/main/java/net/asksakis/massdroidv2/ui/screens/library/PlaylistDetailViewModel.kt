@@ -61,7 +61,16 @@ class PlaylistDetailViewModel @Inject constructor(
      */
     val isDynamicPlaylist: Boolean get() = isDynamic
 
-    private val _rawTracks = MutableStateFlow<List<Track>>(emptyList())
+    /**
+     * The tracks as the server listed them, with the sort rules of the server that listed them.
+     * Under [PlaylistSortRules.SERVER_LISTING] the tracks already come in the chosen order.
+     */
+    private data class Listing(
+        val tracks: List<Track> = emptyList(),
+        val rules: PlaylistSortRules = PlaylistSortRules.SORT_NAMES
+    )
+
+    private val _listing = MutableStateFlow(Listing())
 
     /**
      * The order every playlist is listed in.
@@ -73,22 +82,25 @@ class PlaylistDetailViewModel @Inject constructor(
      * were aligned with the server's, so a preference written by an older build is folded back
      * into a single key here. See [playlistSortKeyOf].
      */
-    val sortKey: StateFlow<PlaylistSortKey> = combine(
+    private val storedSortKey: Flow<PlaylistSortKey> = combine(
         settingsRepository.playlistSortKey,
         settingsRepository.playlistSortDescending
     ) { stored, descending -> playlistSortKeyOf(stored, descending) }
+        .distinctUntilChanged()
+
+    val sortKey: StateFlow<PlaylistSortKey> = storedSortKey
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlaylistSortKey.POSITION)
 
     private val _favoritesOnly = MutableStateFlow(false)
     val favoritesOnly: StateFlow<Boolean> = _favoritesOnly.asStateFlow()
 
     val tracks: StateFlow<List<Track>> = combine(
-        _rawTracks, sortKey, _favoritesOnly
-    ) { raw, key, favsOnly ->
-        val filtered = if (favsOnly) raw.filter { it.favorite } else raw
+        _listing, sortKey, _favoritesOnly
+    ) { listing, key, favsOnly ->
+        val filtered = if (favsOnly) listing.tracks.filter { it.favorite } else listing.tracks
         // Ordered exactly as Music Assistant would order it, so that what plays matches what
         // is listed even when the server does the sorting. See [sortedForListing].
-        filtered.sortedForListing(key)
+        filtered.sortedForListing(key, listing.rules)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val currentTrackUri: StateFlow<String?> = playerRepository.queueState
@@ -124,7 +136,7 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
-                loadTracks(forceRefresh = true)
+                loadTracks(forceRefresh = true, sortKey = storedSortKey.first())
             } finally {
                 _isRefreshing.value = false
             }
@@ -140,10 +152,20 @@ class PlaylistDetailViewModel @Inject constructor(
      */
     private var listingState = ListingState.PENDING
 
-    private suspend fun loadTracks(forceRefresh: Boolean) {
+    /**
+     * Read the listing, sorted by the server for [sortKey] when the server sorts listings
+     * itself. The rules are read before the request, so a listing is never labelled as sorted
+     * by the server when the request did not ask for it.
+     */
+    private suspend fun loadTracks(forceRefresh: Boolean, sortKey: PlaylistSortKey) {
         try {
-            _rawTracks.value = musicRepository.getPlaylistTracks(itemId, provider, forceRefresh)
+            val rules = musicRepository.playlistSortRules()
+            val tracks = musicRepository.getPlaylistTracks(itemId, provider, forceRefresh, sortKey)
+            _listing.value = Listing(tracks, rules)
             listingState = ListingState.LOADED
+        } catch (e: CancellationException) {
+            // A newer sort replaced this request; its own load owns the state now.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Load playlist tracks failed: ${e.message}")
             listingState = ListingState.FAILED
@@ -187,7 +209,17 @@ class PlaylistDetailViewModel @Inject constructor(
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     init {
-        viewModelScope.launch { loadTracks(forceRefresh = false) }
+        viewModelScope.launch {
+            // The first stored order loads the listing. After that, a new order reloads it only
+            // from a server that sorts listings itself; any other server's listing is sorted
+            // here and needs no second request.
+            storedSortKey.collectLatest { key ->
+                val sortedByServer = _listing.value.rules == PlaylistSortRules.SERVER_LISTING
+                if (listingState == ListingState.PENDING || sortedByServer) {
+                    loadTracks(forceRefresh = false, sortKey = key)
+                }
+            }
+        }
         viewModelScope.launch {
             try {
                 _playlists.value = musicRepository.getPlaylists(limit = 200)
@@ -429,7 +461,7 @@ class PlaylistDetailViewModel @Inject constructor(
             _busyTrackUri.value = track.uri
             try {
                 musicRepository.removeTrackFromPlaylist(playlist, position)
-                _rawTracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+                dropListedTrack(track, fallbackPosition, position)
             } catch (e: Exception) {
                 Log.w(TAG, "removeTrackFromPlaylist failed: ${e.message}")
                 _error.tryEmit(e.failureMessage("Couldn't remove that track"))
@@ -448,7 +480,7 @@ class PlaylistDetailViewModel @Inject constructor(
             try {
                 musicRepository.addTrackToPlaylist(destination, track.uri)
                 musicRepository.removeTrackFromPlaylist(source, position)
-                _rawTracks.update { list -> list.filterNot { it.uri == track.uri && (it.position ?: fallbackPosition) == position } }
+                dropListedTrack(track, fallbackPosition, position)
             } catch (e: Exception) {
                 Log.w(TAG, "moveTrackToPlaylist failed: ${e.message}")
                 _error.tryEmit(e.failureMessage("Couldn't move that track"))
@@ -475,8 +507,12 @@ class PlaylistDetailViewModel @Inject constructor(
             try {
                 musicRepository.setFavorite(uri, mediaType, itemId, !currentFavorite)
                 if (mediaType == MediaType.TRACK) {
-                    _rawTracks.update { list ->
-                        list.map { if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it }
+                    _listing.update { listing ->
+                        listing.copy(
+                            tracks = listing.tracks.map {
+                                if (it.itemId == itemId) it.copy(favorite = !currentFavorite) else it
+                            }
+                        )
                     }
                 }
             } catch (e: Exception) {
@@ -504,6 +540,16 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val blocked = blockedArtistUris.value.contains(uri)
             smartListeningRepository.setArtistBlocked(uri, artistName, blocked = !blocked)
+        }
+    }
+
+    private fun dropListedTrack(track: Track, fallbackPosition: Int, position: Int) {
+        _listing.update { listing ->
+            listing.copy(
+                tracks = listing.tracks.filterNot {
+                    it.uri == track.uri && (it.position ?: fallbackPosition) == position
+                }
+            )
         }
     }
 

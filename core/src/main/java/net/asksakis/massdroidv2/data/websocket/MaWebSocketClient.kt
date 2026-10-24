@@ -1173,6 +1173,13 @@ class MaWebSocketClient(
     fun serverSchemaVersion(): Int? = serverInfo?.schemaVersion
 
     /**
+     * The release the connected server reports, such as "2.10.7". Needed where a behaviour
+     * changed inside one release line without a schema change: every 2.10 release reports
+     * schema 65.
+     */
+    fun serverVersion(): String? = serverInfo?.serverVersion
+
+    /**
      * True when [host] is a private/LAN address that is NOT the host we reach the server through.
      * A "remotely accessible" image on such a host is only reachable on that LAN, so off-LAN
      * (cellular) or via a different remote/VPN endpoint it must be fetched through imageproxy

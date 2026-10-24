@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import net.asksakis.massdroidv2.data.image.ImageUrlResolver
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.model.PlaylistSortKey
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import org.junit.Test
 
@@ -24,15 +25,17 @@ import org.junit.Test
  * Users run many Music Assistant versions, so each newer form is sent only to a server whose
  * schema has it, and an older server keeps the form it understands. Radio became a
  * `radio_playlist://` item per seed in schema 63 (MA 2.10.0); a per-user dislike is certain
- * from schema 85 (MA 2.11.0b4).
+ * from schema 85 (MA 2.11.0b4); a playlist is sorted by its listing's `sort_field` from schema 95
+ * (MA 2.11, PR #7004).
  */
 class ServerFeatureGateTest {
 
     private val sent = mutableListOf<Pair<String, JsonObject?>>()
 
-    private fun repository(schema: Int?): MusicRepositoryImpl {
+    private fun repository(schema: Int?, version: String? = null): MusicRepositoryImpl {
         val ws = mockk<MaWebSocketClient>()
         every { ws.serverSchemaVersion() } returns schema
+        every { ws.serverVersion() } returns version
         every { ws.events } returns MutableSharedFlow()
         val command = slot<String>()
         val args = slot<JsonObject>()
@@ -121,5 +124,65 @@ class ServerFeatureGateTest {
         repo.undoServerDislike("deezer://track/5", wasFavorite = true)
 
         assertThat(sent).isEmpty()
+    }
+
+    @Test
+    fun `a 2_10 server is asked for a sorted playlist with sort_by`() = runTest {
+        repository(65, "2.10.7").playMedia("q", "library://playlist/50", "replace", sortKey = PlaylistSortKey.ARTIST)
+
+        val args = sent.single().second!!
+        assertThat(args["sort_by"]!!.jsonPrimitive.content).isEqualTo("artist")
+        assertThat(args.containsKey("sort_field")).isFalse()
+    }
+
+    @Test
+    fun `a 2_11 server is asked for the listing sort instead of the deprecated sort_by`() = runTest {
+        repository(99, "2.11.0b7").playMedia(
+            "q", "library://playlist/50", "replace", sortKey = PlaylistSortKey.DURATION_DESC
+        )
+
+        val args = sent.single().second!!
+        assertThat(args["sort_field"]!!.jsonPrimitive.content).isEqualTo("duration")
+        assertThat(args["sort_direction"]!!.jsonPrimitive.content).isEqualTo("desc")
+        assertThat(args.containsKey("sort_by")).isFalse()
+    }
+
+    @Test
+    fun `the playlist's own order sends no sort on any server`() = runTest {
+        repository(99, "2.11.0b7").playMedia("q", "library://playlist/50", "replace", sortKey = PlaylistSortKey.POSITION)
+        repository(65, "2.10.7").playMedia("q", "library://playlist/50", "replace", sortKey = PlaylistSortKey.POSITION)
+
+        for ((_, args) in sent) {
+            assertThat(args!!.keys).containsNoneOf("sort_by", "sort_field", "sort_direction")
+        }
+    }
+
+    @Test
+    fun `a 2_11 server sorts the playlist listing and returns all of it`() = runTest {
+        // Without a limit the 2.11 listing stops at 500 tracks, while the queue plays them all.
+        repository(99, "2.11.0b7").getPlaylistTracks("50", "library", sortKey = PlaylistSortKey.NAME)
+
+        val (command, args) = sent.single()
+        assertThat(command).isEqualTo("music/playlists/playlist_tracks")
+        assertThat(args!!["sort_field"]!!.jsonPrimitive.content).isEqualTo("name")
+        assertThat(args["sort_direction"]!!.jsonPrimitive.content).isEqualTo("asc")
+        assertThat(args["limit"]!!.jsonPrimitive.content).isEqualTo("0")
+    }
+
+    @Test
+    fun `an older server gets the playlist listing request it has always had`() = runTest {
+        // It sorts nothing itself; the app orders the answer under the server's rules.
+        repository(65, "2.10.7").getPlaylistTracks("50", "library", sortKey = PlaylistSortKey.NAME)
+
+        assertThat(sent.single().second!!.keys).containsNoneOf("sort_field", "sort_direction", "limit")
+    }
+
+    @Test
+    fun `a 2_11 listing asked for without an order keeps the server's default`() = runTest {
+        // Android Auto and the playlist membership check read playlists this way; they keep the
+        // capped default rather than loading every track of a large playlist.
+        repository(99, "2.11.0b7").getPlaylistTracks("50", "library")
+
+        assertThat(sent.single().second!!.keys).containsNoneOf("sort_field", "sort_direction", "limit")
     }
 }
