@@ -925,7 +925,13 @@ class SendspinAudioController(
                         // seek makes it start over with a full burst. Without it a phone back
                         // to solo after Break sync played on about 100 ms of cushion and
                         // underran on every small network delay (2026-10-22).
-                        if (joinedGroup) requestGroupRelock(player, "join")
+                        //
+                        // Only when the phone leads the group, though: the stream is then its own.
+                        // A phone that joins another player's group gets that group's stream/start
+                        // from the server, and a seek there restarts the track for every member.
+                        // MA redirects a member's seek to its group, and on 2026-10-24 that seek
+                        // started an idle group at the position of the phone's own track.
+                        if (joinedGroup && leadsGroup) requestGroupRelock(player, "join")
                         if (leftOwnGroup) requestGroupRelock(player, "leave")
                     }
                     // Playing-state used to be reconciled from player.state
