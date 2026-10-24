@@ -144,6 +144,18 @@ class TvSettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Smart Listening on this TV, the same setting as the phone's (kept per device). Off, a
+     * skip or a listen here is not scored, and "Not for me" can only reach a server that
+     * records dislikes (Music Assistant 2.11 and later).
+     */
+    val smartListeningEnabled: StateFlow<Boolean> = settingsRepository.smartListeningEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun setSmartListeningEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setSmartListeningEnabled(enabled) }
+    }
+
     fun setAudioFormat(format: SendspinAudioFormat) {
         viewModelScope.launch { settingsRepository.setSendspinAudioFormat(format.name) }
     }

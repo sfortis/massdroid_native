@@ -218,7 +218,7 @@ fun TvRoot(
                     onActiveChange = { miniPlayerActive = it },
                     modifier = Modifier
                         .onSizeChanged { miniPlayerHeightPx = it.height }
-                        .padding(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 16.dp)
+                        .padding(start = BAR_EDGE, end = BAR_EDGE, top = 4.dp, bottom = 16.dp)
                 )
             }
             // Volume OSD: pops on any volume change of the selected player, fades on its own.
@@ -235,7 +235,7 @@ fun TvRoot(
                     server = viewModel.serverLabel(),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(start = 48.dp, end = 48.dp, top = 4.dp, bottom = 16.dp)
+                        .padding(start = BAR_EDGE, end = BAR_EDGE, top = 4.dp, bottom = 16.dp)
                 )
             }
             }
@@ -317,6 +317,12 @@ private const val SPINNER_STEP_DEGREES = 18f
 private const val SPINNER_SWEEP_DEGREES = 270f
 private const val SPINNER_STROKE_FRACTION = 0.12f
 private const val FULL_TURN_DEGREES = 360f
+
+/**
+ * Side inset of the mini player bar and the reconnect notice: the 56 dp content inset of the
+ * screens above it, so the bar's edges line up with the first and last card.
+ */
+private val BAR_EDGE = 56.dp
 
 /** The screen crossfade, the same as Navigation's default, shared with the mini player bar. */
 private const val NAV_FADE_MS = 700

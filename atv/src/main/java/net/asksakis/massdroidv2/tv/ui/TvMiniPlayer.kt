@@ -74,9 +74,11 @@ import net.asksakis.massdroidv2.domain.model.Player
 private const val FOCUS_ATTACH_TRIES = 10
 private const val FOCUS_ATTACH_RETRY_MS = 50L
 
-// Explicit focus order along the bar: index 0 is the media surface, 1..5 the buttons.
+// Explicit focus order along the bar: index 0 is the media surface, then the buttons in the
+// order they are drawn. The two volume buttons show only for a player elsewhere
+// (TvMiniPlayerViewModel.volumeShown), so the bar has three buttons or five.
 private const val TRANSPORT_BUTTON_COUNT = 5
-private const val BAR_LAST_INDEX = TRANSPORT_BUTTON_COUNT
+private const val VOLUME_BUTTON_COUNT = 2
 
 // Settle window before the bar is disarmed after focus leaves it, so a focus move between two
 // of its own elements that briefly reports no focus does not drop the bar out of the focus tree.
@@ -124,6 +126,8 @@ fun TvMiniPlayer(
     // Every horizontal move along the bar is an explicit requestFocus on these, in a fixed order,
     // rather than Compose's spatial search, so LEFT and RIGHT always step to the neighbour.
     val buttonFocus = remember { List(TRANSPORT_BUTTON_COUNT) { FocusRequester() } }
+    val volumeShown by viewModel.volumeShown.collectAsStateWithLifecycle()
+    val barLastIndex = if (volumeShown) TRANSPORT_BUTTON_COUNT else TRANSPORT_BUTTON_COUNT - VOLUME_BUTTON_COUNT
     var focusedIndex by remember { mutableIntStateOf(0) }
     fun barTarget(index: Int): FocusRequester = if (index == 0) mediaFocus else buttonFocus[index - 1]
 
@@ -226,7 +230,7 @@ fun TvMiniPlayer(
                         true
                     }
                     Key.DirectionRight -> {
-                        if (focusedIndex < BAR_LAST_INDEX) runCatching { barTarget(focusedIndex + 1).requestFocus() }
+                        if (focusedIndex < barLastIndex) runCatching { barTarget(focusedIndex + 1).requestFocus() }
                         true
                     }
                     Key.DirectionDown -> true
@@ -258,6 +262,7 @@ fun TvMiniPlayer(
             },
             onPlayPause = viewModel::playPause,
             onNext = viewModel::next,
+            volumeShown = volumeShown,
             onVolumeDown = viewModel::volumeDown,
             onVolumeUp = viewModel::volumeUp,
             onSwitchPlayer = { showPicker = true }
@@ -289,6 +294,7 @@ private fun MiniPlayerBar(
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
+    volumeShown: Boolean,
     onVolumeDown: () -> Unit,
     onVolumeUp: () -> Unit,
     onSwitchPlayer: () -> Unit
@@ -377,15 +383,18 @@ private fun MiniPlayerBar(
             Icon(Icons.Filled.SkipNext, contentDescription = "Next")
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onVolumeDown, modifier = buttonModifier(3).pointerClick(onClick = onVolumeDown)) {
-            Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = "Volume down")
+        if (volumeShown) {
+            IconButton(onClick = onVolumeDown, modifier = buttonModifier(3).pointerClick(onClick = onVolumeDown)) {
+                Icon(Icons.AutoMirrored.Filled.VolumeDown, contentDescription = "Volume down")
+            }
+            Spacer(Modifier.width(6.dp))
+            IconButton(onClick = onVolumeUp, modifier = buttonModifier(4).pointerClick(onClick = onVolumeUp)) {
+                Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Volume up")
+            }
+            Spacer(Modifier.width(6.dp))
         }
-        Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onVolumeUp, modifier = buttonModifier(4).pointerClick(onClick = onVolumeUp)) {
-            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Volume up")
-        }
-        Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onSwitchPlayer, modifier = buttonModifier(5).pointerClick(onClick = onSwitchPlayer)) {
+        val switchIndex = if (volumeShown) TRANSPORT_BUTTON_COUNT else TRANSPORT_BUTTON_COUNT - VOLUME_BUTTON_COUNT
+        IconButton(onClick = onSwitchPlayer, modifier = buttonModifier(switchIndex).pointerClick(onClick = onSwitchPlayer)) {
             Icon(Icons.Filled.Speaker, contentDescription = "Switch player")
         }
         Spacer(Modifier.width(6.dp))

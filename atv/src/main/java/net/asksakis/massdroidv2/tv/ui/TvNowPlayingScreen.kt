@@ -1,7 +1,32 @@
 package net.asksakis.massdroidv2.tv.ui
 
-import net.asksakis.massdroidv2.domain.player.shownVolume
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.ThumbDown
+import net.asksakis.massdroidv2.data.lyrics.LyricsProvider
+import net.asksakis.massdroidv2.domain.feedback.DislikeUndo
+import net.asksakis.massdroidv2.domain.info.AboutText
+import net.asksakis.massdroidv2.ui.shared.SyncedLyricLine
+import net.asksakis.massdroidv2.ui.shared.SyncedLyrics
+import net.asksakis.massdroidv2.ui.shared.SyncedLyricsStyle
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
+import net.asksakis.massdroidv2.domain.player.shownVolume
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,8 +50,6 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.VolumeDown
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -48,6 +71,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Button
 import coil.compose.AsyncImage
+import net.asksakis.massdroidv2.ui.shared.AlbumArtBackdrop
+import net.asksakis.massdroidv2.ui.shared.FadingAutoScrollText
+import net.asksakis.massdroidv2.ui.shared.fadingAutoScrollTextHeight
+import net.asksakis.massdroidv2.ui.shared.rememberSettledArtwork
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -81,19 +108,127 @@ fun TvNowPlayingScreen(
     val shuffleOn = queue?.shuffleEnabled == true
     val repeatMode = queue?.repeatMode ?: RepeatMode.OFF
 
+    // The cover, blurred, behind the player, the same backdrop as the phone's. It follows the
+    // settled cover, so skipping through tracks does not repaint the screen for each one.
+    val settledArtwork = rememberSettledArtwork(media?.imageUrl)
+    val about by viewModel.about.collectAsStateWithLifecycle()
+    // The layout follows the last settled answer: while the next album is looked up, the
+    // cover keeps its size instead of growing and shrinking back on every album change.
+    var withAbout by remember { mutableStateOf(false) }
+    LaunchedEffect(about) {
+        when (about) {
+            is AboutText.Shown -> withAbout = true
+            AboutText.Absent -> withAbout = false
+            AboutText.Loading -> Unit
+        }
+    }
+    val coverSize by animateDpAsState(
+        targetValue = if (withAbout) COVER_SIZE_WITH_ABOUT else COVER_SIZE,
+        animationSpec = tween(ABOUT_RESIZE_MS, easing = FastOutSlowInEasing),
+        label = "cover"
+    )
+    val lyricsShown by viewModel.lyricsShown.collectAsStateWithLifecycle()
+    val volumeShown by viewModel.volumeShown.collectAsStateWithLifecycle()
+    val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
+    val playFocus = remember { FocusRequester() }
+
+    // "Not for me" buries the track and skips past it, so the bar offers the way back, as the
+    // phone's snackbar does. The Undo takes the cursor while the bar shows; when the bar goes,
+    // the cursor goes back to Play rather than nowhere.
+    var pendingUndo by remember { mutableStateOf<DislikeUndo?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var undoFocused by remember { mutableStateOf(false) }
+    val undoFocus = remember { FocusRequester() }
+    val dismissUndo = {
+        val hadFocus = undoFocused
+        pendingUndo = null
+        if (hadFocus) runCatching { playFocus.requestFocus() }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.dislikeUndo.collectLatest { undo ->
+            notice = null
+            pendingUndo = undo
+            delay(UNDO_WINDOW_MS)
+            dismissUndo()
+        }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.notice.collectLatest { text ->
+            notice = text
+            delay(NOTICE_MS)
+            notice = null
+        }
+    }
+    LaunchedEffect(pendingUndo) {
+        if (pendingUndo != null) undoFocus.requestFocusWhenAttached()
+    }
+    BackHandler(enabled = pendingUndo != null) { dismissUndo() }
+
     Surface(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxSize()) {
+            if (!settledArtwork.isNullOrBlank()) {
+                AlbumArtBackdrop(
+                    imageUrl = settledArtwork,
+                    isDark = true,
+                    surfaceColor = MaterialTheme.colorScheme.surface
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxSize().padding(64.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(48.dp)
             ) {
-                AsyncImage(
-                    model = media?.imageUrl,
-                    contentDescription = media?.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(360.dp)
-                )
+                // The left side shows the cover, or the lyrics in its place when they are on.
+                Crossfade(targetState = lyricsShown, animationSpec = tween(ABOUT_RESIZE_MS), label = "left") { showLyrics ->
+                    if (showLyrics) {
+                        LyricsPanel(
+                            lyrics = lyrics,
+                            elapsed = elapsed,
+                            modifier = Modifier.width(COVER_SIZE).fillMaxHeight()
+                        )
+                    } else {
+                    // The cover, with a few words about the album, or the artist, rolling slowly under
+                    // it, as wide as the cover. With text the cover makes room for four lines (cover,
+                    // gap and lines fill the 412 dp between the paddings); without, it takes the
+                    // height back. Both moves run together, so the change reads as one resize.
+                    Column(modifier = Modifier.width(coverSize)) {
+                        AsyncImage(
+                            model = media?.imageUrl,
+                            contentDescription = media?.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(coverSize)
+                        )
+                        val aboutStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        AnimatedVisibility(
+                            visible = withAbout,
+                            enter = expandVertically(tween(ABOUT_RESIZE_MS, easing = FastOutSlowInEasing)) +
+                                fadeIn(tween(ABOUT_RESIZE_MS)),
+                            exit = shrinkVertically(tween(ABOUT_RESIZE_MS, easing = FastOutSlowInEasing)) +
+                                fadeOut(tween(ABOUT_RESIZE_MS))
+                        ) {
+                            Column {
+                                Spacer(Modifier.height(16.dp))
+                                // The old album's text fades out while the next one is looked up,
+                                // and the new one fades in, inside a box that keeps its size.
+                                Crossfade(
+                                    targetState = (about as? AboutText.Shown)?.text,
+                                    animationSpec = tween(ABOUT_RESIZE_MS),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(fadingAutoScrollTextHeight(aboutStyle, ABOUT_TEXT_LINES)),
+                                    label = "about"
+                                ) { text ->
+                                    if (text != null) {
+                                        FadingAutoScrollText(text = text, style = aboutStyle, visibleLines = ABOUT_TEXT_LINES)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+                }
 
                 Column(modifier = Modifier.width(720.dp)) {
                     Text(
@@ -126,7 +261,6 @@ fun TvNowPlayingScreen(
                     )
 
                     Spacer(Modifier.height(24.dp))
-                    val playFocus = remember { FocusRequester() }
                     // Row 1: transport (centered) with shuffle + repeat
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -152,23 +286,58 @@ fun TvNowPlayingScreen(
                         ) { viewModel.cycleRepeat() }
                     }
                     Spacer(Modifier.height(16.dp))
-                    // Row 2: volume (centered)
+                    // Row 2: "Not for me" and the lyrics, as on the phone's action row, then the
+                    // volume of a player elsewhere (see TvNowPlayingViewModel.volumeShown).
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TransportIcon(Icons.Filled.VolumeDown, "Volume down") { viewModel.volumeDown() }
-                        Text(
-                            "${player?.let(::shownVolume) ?: 0}%",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        TransportIcon(Icons.Filled.VolumeUp, "Volume up") { viewModel.volumeUp() }
+                        TransportIcon(Icons.Filled.ThumbDown, "Not for me") { viewModel.dislikeCurrentTrack() }
+                        TransportIcon(Icons.Filled.MusicNote, "Lyrics", active = lyricsShown) { viewModel.toggleLyrics() }
+                        if (volumeShown) {
+                            // A thin rule between the track's actions and the player's volume.
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(24.dp)
+                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                            )
+                            TransportIcon(Icons.Filled.Remove, "Volume down") { viewModel.volumeDown() }
+                            Text(
+                                "${player?.let(::shownVolume) ?: 0}%",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            TransportIcon(Icons.Filled.Add, "Volume up") { viewModel.volumeUp() }
+                        }
                     }
 
                     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
                 }
+            }
+
+            val barText = pendingUndo?.let { "Won't play \"${it.trackName}\" again" } ?: notice
+            // The last text stays while the bar fades out.
+            var lastBarText by remember { mutableStateOf("") }
+            LaunchedEffect(barText) { if (barText != null) lastBarText = barText }
+            AnimatedVisibility(
+                visible = barText != null,
+                enter = fadeIn(tween(BAR_FADE_MS)),
+                exit = fadeOut(tween(BAR_FADE_MS)),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
+            ) {
+                TvNoticeBar(
+                    text = lastBarText,
+                    onUndo = pendingUndo?.let { undo ->
+                        {
+                            viewModel.undoDislike(undo)
+                            dismissUndo()
+                        }
+                    },
+                    undoFocus = undoFocus,
+                    onUndoFocusChanged = { undoFocused = it }
+                )
             }
 
             // Top-right actions: the active queue, then audio options (3-dots),
@@ -298,3 +467,109 @@ private fun formatTime(seconds: Double): String {
     val s = t % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
+
+/** The cover's edge with nothing under it. */
+private val COVER_SIZE = 360.dp
+
+/** The cover's edge with the about text under it: 300 + 16 + four lines fill the column. */
+private val COVER_SIZE_WITH_ABOUT = 300.dp
+
+/** One resize, cover and text together; slow enough to read as a move, not a jump. */
+private const val ABOUT_RESIZE_MS = 600
+
+/** Lines of the about text in view at once under the cover. */
+private const val ABOUT_TEXT_LINES = 4
+
+/** Lines of plain (unsynced) lyrics in view at once; they roll like the about text. */
+private const val PLAIN_LYRICS_LINES = 15
+
+/** How long the Undo stays offered after "Not for me"; the phone's short snackbar is about as long. */
+private const val UNDO_WINDOW_MS = 6_000L
+private const val NOTICE_MS = 3_000L
+private const val BAR_FADE_MS = 250
+
+/**
+ * The lyrics in the cover's place: synced lyrics drawn like the phone's (shared from
+ * :ui-shared), or plain lyrics rolling slowly. Not focusable, so the D-pad stays on the
+ * controls; the lines follow the playback position by themselves.
+ */
+@Composable
+private fun LyricsPanel(lyrics: TvLyrics, elapsed: () -> Double, modifier: Modifier = Modifier) {
+    val messageStyle = MaterialTheme.typography.bodyLarge
+    val messageColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        when (lyrics) {
+            TvLyrics.Loading -> Text("Loading lyrics\u2026", style = messageStyle, color = messageColor)
+            TvLyrics.None -> Text("No lyrics available", style = messageStyle, color = messageColor)
+            TvLyrics.Failed -> Text("Couldn't load the lyrics", style = messageStyle, color = messageColor)
+            is TvLyrics.Ready -> when (val content = lyrics.content) {
+                is LyricsProvider.LyricsContent.Synced -> {
+                    val lines = remember(content) { content.parsedLines.map { SyncedLyricLine(it.timeMs, it.text) } }
+                    SyncedLyrics(
+                        parsedLines = lines,
+                        elapsedTimeMs = (elapsed() * MILLIS_PER_SECOND).toLong(),
+                        timingOffsetMs = 0,
+                        style = SyncedLyricsStyle(
+                            currentLine = MaterialTheme.typography.headlineSmall,
+                            otherLine = MaterialTheme.typography.titleMedium,
+                            textColor = MaterialTheme.colorScheme.onSurface,
+                            mutedNoteColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            noteIcon = Icons.Filled.MusicNote
+                        ),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                is LyricsProvider.LyricsContent.Plain -> FadingAutoScrollText(
+                    text = content.text,
+                    style = messageStyle.copy(color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center),
+                    visibleLines = PLAIN_LYRICS_LINES
+                )
+                LyricsProvider.LyricsContent.None ->
+                    Text("No lyrics available", style = messageStyle, color = messageColor)
+            }
+        }
+    }
+}
+
+private const val MILLIS_PER_SECOND = 1000
+
+/** A short message at the bottom of the player, with Undo when [onUndo] is given. */
+@Composable
+private fun TvNoticeBar(
+    text: String,
+    onUndo: (() -> Unit)?,
+    undoFocus: FocusRequester,
+    onUndoFocusChanged: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp))
+            .padding(start = 24.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = NOTICE_TEXT_MAX_WIDTH)
+        )
+        if (onUndo != null) {
+            Spacer(Modifier.width(16.dp))
+            Button(
+                onClick = onUndo,
+                modifier = Modifier
+                    .focusRequester(undoFocus)
+                    .onFocusChanged { onUndoFocusChanged(it.isFocused) }
+                    .pointerClick(onClick = onUndo)
+            ) {
+                Text("Undo")
+            }
+        } else {
+            Spacer(Modifier.width(12.dp))
+        }
+    }
+}
+
+private val NOTICE_TEXT_MAX_WIDTH = 520.dp

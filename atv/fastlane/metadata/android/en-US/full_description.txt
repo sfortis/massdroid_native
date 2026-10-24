@@ -13,6 +13,6 @@ Features:
 * Rename the TV's player from Settings.
 * Shows what is playing to the Android TV system controls.
 
-Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device.
+Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device. The few words about the playing album or artist come from Wikipedia, by way of MusicBrainz and Wikidata, when Music Assistant has none.
 
 This app is an unofficial, third-party client and is not affiliated with the Music Assistant project.

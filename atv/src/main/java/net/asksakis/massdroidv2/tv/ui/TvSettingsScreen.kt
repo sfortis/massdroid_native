@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +31,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
+import androidx.tv.material3.Switch
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -45,6 +47,7 @@ fun TvSettingsScreen(
     val playerName by viewModel.playerName.collectAsStateWithLifecycle()
     val renameStatus by viewModel.renameStatus.collectAsStateWithLifecycle()
     val updateCheck by viewModel.updateCheck.collectAsStateWithLifecycle()
+    val smartListening by viewModel.smartListeningEnabled.collectAsStateWithLifecycle()
 
     Surface(modifier = Modifier.fillMaxSize()) {
         // Scrollable: the sections are taller than the screen, and the scroll brings the
@@ -91,12 +94,50 @@ fun TvSettingsScreen(
             OutputDelayControl(outputDelay = outputDelay, onChange = viewModel::setOutputDelay)
 
             Spacer(Modifier.height(40.dp))
+            LearningSection(enabled = smartListening, onToggle = viewModel::setSmartListeningEnabled)
+
+            Spacer(Modifier.height(40.dp))
             UpdatesSection(
                 version = viewModel.appVersion,
                 canCheck = viewModel.updateCheckEnabled,
                 status = updateCheck,
                 onCheck = viewModel::checkForUpdates
             )
+        }
+    }
+}
+
+/** Smart Listening, worded as on the phone's Settings. The whole row toggles it. */
+@Composable
+private fun LearningSection(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Text("Learning", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(12.dp))
+    val toggle = { onToggle(!enabled) }
+    Surface(
+        onClick = toggle,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+        modifier = Modifier.widthIn(max = 720.dp).pointerClick(onClick = toggle)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Smart Listening", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (enabled) {
+                        "Learns from skip/like/listen actions and improves recommendations"
+                    } else {
+                        "Skips and likes are not scored, but play history is still recorded."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = androidx.tv.material3.LocalContentColor.current.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            // Not focusable on its own: the row is the control, so the cursor has one stop.
+            Switch(checked = enabled, onCheckedChange = null)
         }
     }
 }

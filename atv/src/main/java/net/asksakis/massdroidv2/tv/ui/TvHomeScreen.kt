@@ -1,7 +1,6 @@
 package net.asksakis.massdroidv2.tv.ui
 
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -49,10 +48,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -226,18 +230,22 @@ private fun MixShelf(
                 title = "Smart Mix",
                 subtitle = if (building == MixLauncher.Mix.SmartMix) "Building\u2026" else null,
                 colors = SMART_MIX_COLORS,
+                glow = SMART_MIX_GLOW,
+                imageUrl = null,
                 icon = true,
                 modifier = focusModifierFor(SMART_MIX_KEY),
                 onClick = onSmartMix
             )
         }
         items(genres, key = { it.name }) { genre ->
-            val (start, end, _) = remember(genre.name) { genrePalette(genre.name) }
+            val (start, end, glow) = remember(genre.name) { genrePalette(genre.name) }
             val starting = (building as? MixLauncher.Mix.GenreRadio)?.genre == genre.name
             MixTile(
                 title = genre.name,
                 subtitle = if (starting) "Starting\u2026" else null,
                 colors = start to end,
+                glow = glow,
+                imageUrl = genre.imageUrl,
                 icon = false,
                 modifier = focusModifierFor("genre|${genre.name}"),
                 onClick = { onGenreRadio(genre.name) }
@@ -246,11 +254,18 @@ private fun MixShelf(
     }
 }
 
+/**
+ * A mix tile drawn like the phone's genre cards: the genre's gradient with two soft glows, an
+ * artist of the genre faintly behind it, and the name over it with a shadow. The gradient alone
+ * was too dark to read as a background on a TV.
+ */
 @Composable
 private fun MixTile(
     title: String,
     subtitle: String?,
     colors: Pair<Color, Color>,
+    glow: Color,
+    imageUrl: String?,
     icon: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
@@ -260,18 +275,40 @@ private fun MixTile(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(MIX_TILE_HEIGHT)
-                .background(Brush.linearGradient(listOf(colors.first, colors.second))),
+                .drawBehind {
+                    drawRect(Brush.linearGradient(listOf(colors.first, colors.second)))
+                    drawCircle(
+                        color = glow,
+                        radius = size.minDimension * 0.42f,
+                        center = Offset(size.width * 0.18f, size.height * 0.24f)
+                    )
+                    drawCircle(
+                        color = glow.copy(alpha = glow.alpha * 0.55f),
+                        radius = size.minDimension * 0.34f,
+                        center = Offset(size.width * 0.82f, size.height * 0.78f)
+                    )
+                },
             contentAlignment = Alignment.Center
         ) {
+            if (imageUrl != null) {
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    alpha = MIX_TILE_IMAGE_ALPHA,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 if (icon) {
                     Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = Color.White)
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                 }
                 Text(
                     title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMedium.copy(shadow = MIX_TILE_TEXT_SHADOW),
                     color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -287,8 +324,16 @@ private fun MixTile(
 
 private const val SMART_MIX_KEY = "smart_mix"
 private val SMART_MIX_COLORS = Color(0xFF3A2F6B) to Color(0xFF141026)
-private val MIX_TILE_WIDTH = 180.dp
-private val MIX_TILE_HEIGHT = 116.dp
+/** The violet of the Smart Mix gradient, as a glow, since Smart Mix has no genre palette. */
+private val SMART_MIX_GLOW = Color(0x557C6CFF)
+
+/** 2:1, the shape of the phone's genre cards. */
+private val MIX_TILE_WIDTH = 160.dp
+private val MIX_TILE_HEIGHT = 80.dp
+
+/** The artist behind a genre's name, as faint as on the phone so the name stays readable. */
+private const val MIX_TILE_IMAGE_ALPHA = 0.3f
+private val MIX_TILE_TEXT_SHADOW = Shadow(color = Color.Black.copy(alpha = 0.35f), blurRadius = 12f)
 
 private data class MediaCardData(
     val uri: String,
@@ -324,7 +369,25 @@ private fun Shelf(
     state: LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit
 ) {
-    Column(modifier = Modifier.padding(bottom = 28.dp)) {
+    Column(
+        modifier = Modifier
+            .padding(bottom = 28.dp)
+            // At either end of the row there is no card left in that direction, and Compose
+            // would search the whole screen instead: RIGHT on the last card jumped to the
+            // Browse and Settings buttons at the top. LEFT and RIGHT stay in the shelf; UP and
+            // DOWN still move between shelves. This sits on a group of its own around the row,
+            // because the restorer below sets the row's onExit and would replace it there.
+            .focusProperties {
+                onExit = {
+                    if (requestedFocusDirection == FocusDirection.Left ||
+                        requestedFocusDirection == FocusDirection.Right
+                    ) {
+                        cancelFocusChange()
+                    }
+                }
+            }
+            .focusGroup()
+    ) {
         Text(
             title,
             style = MaterialTheme.typography.titleLarge,
@@ -335,21 +398,12 @@ private fun Shelf(
         // so focused edge cards can scale without being clipped at the screen edge.
         LazyRow(
             state = state,
-            // At either end of the row there is no card left in that direction, and Compose
-            // would search the whole screen instead: RIGHT on the last card jumped to the
-            // Browse and Settings buttons at the top. LEFT and RIGHT stay in the row; UP and
-            // DOWN still move between rows.
-            modifier = Modifier
-                .focusProperties {
-                    onExit = {
-                        if (requestedFocusDirection == FocusDirection.Left ||
-                            requestedFocusDirection == FocusDirection.Right
-                        ) {
-                            cancelFocusChange()
-                        }
-                    }
-                }
-                .focusGroup(),
+            // UP and DOWN into the shelf land on the card it was left on, not on the card
+            // nearest on screen to the one in the shelf above or below. The row is a focus
+            // group of its own (every scrollable is), so the restorer goes straight on it, as
+            // the Compose focus guide shows for lazy lists; a second focusGroup here made the
+            // restorer remember the row instead of the card.
+            modifier = Modifier.focusRestorer(),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(horizontal = EDGE),
             content = content

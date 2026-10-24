@@ -1,7 +1,9 @@
 package net.asksakis.massdroidv2.tv.ui
 
-import net.asksakis.massdroidv2.domain.player.leadsVolumeGroup
-import net.asksakis.massdroidv2.domain.player.remoteVolumeStep
+import net.asksakis.massdroidv2.domain.player.VolumeKeyController
+import net.asksakis.massdroidv2.domain.player.VolumeKeyTarget
+import net.asksakis.massdroidv2.domain.player.volumeKeyTarget
+import kotlinx.coroutines.flow.combine
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -22,6 +24,7 @@ import javax.inject.Inject
 class TvMiniPlayerViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     settingsRepository: SettingsRepository,
+    private val volumeKeyController: VolumeKeyController,
 ) : ViewModel() {
 
     val players: StateFlow<List<Player>> = playerRepository.players
@@ -35,6 +38,26 @@ class TvMiniPlayerViewModel @Inject constructor(
 
     fun selectPlayer(playerId: String) = playerRepository.selectPlayer(playerId)
 
+    /**
+     * Whether the volume buttons show: only for a Music Assistant player elsewhere, decided as
+     * the remote's volume keys are ([volumeKeyTarget]). This TV's own output, a member of a
+     * group included, is left at full level for the TV or the receiver to set: turning it down
+     * here as well would attenuate twice. The keys rarely reach the app on a TV (a remote with
+     * IR or CEC control sends them straight to the receiver), so these buttons are the way.
+     */
+    val volumeShown: StateFlow<Boolean> = combine(selectedPlayer, localPlayerId) { player, localId ->
+        volumeKeyTarget(player, localId) is VolumeKeyTarget.RemotePlayer
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** A step on the selected player, through the same controller as the volume keys. */
+    fun volumeUp() {
+        volumeKeyController.step(up = true)
+    }
+
+    fun volumeDown() {
+        volumeKeyController.step(up = false)
+    }
+
     fun playPause() {
         val id = selectedPlayer.value?.playerId ?: return
         viewModelScope.launch { runCatching { playerRepository.playPause(id) } }
@@ -43,25 +66,5 @@ class TvMiniPlayerViewModel @Inject constructor(
     fun next() {
         val id = selectedPlayer.value?.playerId ?: return
         viewModelScope.launch { runCatching { playerRepository.next(id) } }
-    }
-
-    fun volumeUp() = changeVolume(VOLUME_STEP)
-    fun volumeDown() = changeVolume(-VOLUME_STEP)
-
-    // A group leader takes the group's volume, as on the phone; its own level moved only itself.
-    private fun changeVolume(delta: Int) {
-        val player = selectedPlayer.value ?: return
-        val isGroup = leadsVolumeGroup(player)
-        val level = remoteVolumeStep(player, isGroup, delta)
-        viewModelScope.launch {
-            runCatching {
-                if (isGroup) playerRepository.setGroupVolume(player.playerId, level)
-                else playerRepository.setVolume(player.playerId, level)
-            }
-        }
-    }
-
-    private companion object {
-        const val VOLUME_STEP = 5
     }
 }
