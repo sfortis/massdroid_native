@@ -836,24 +836,26 @@ class SendspinAudioController(
             sendspinManager.serverMetadata.collect { metadata ->
                 if (metadata == null) return@collect
 
-                val title = metadata.title?.takeIf { it.isNotBlank() } ?: currentTitle
-                val artist = metadata.artist ?: currentArtist
-                val album = metadata.album ?: currentAlbum
-                val durationMs = metadata.progress?.trackDuration ?: currentDurationMs
+                val fields = SendspinTrackFields(
+                    title = currentTitle,
+                    artist = currentArtist,
+                    album = currentAlbum,
+                    durationMs = currentDurationMs,
+                    artUrl = currentArtUrl,
+                ).updatedBy(metadata, sendspinManager.wire)
                 val rawPositionMs = metadata.progress?.trackProgress
                 val positionMs = rawPositionMs?.let(::serverPositionMs) ?: currentPositionMs
-                val artUrl = metadata.artworkUrl ?: currentArtUrl
-                val artChanged = artUrl != currentArtUrl
+                val artChanged = fields.artUrl != currentArtUrl
 
-                currentTitle = title
-                currentArtist = artist
-                currentAlbum = album
-                currentDurationMs = durationMs
+                currentTitle = fields.title
+                currentArtist = fields.artist
+                currentAlbum = fields.album
+                currentDurationMs = fields.durationMs
                 currentPositionMs = positionMs
 
                 if (artChanged) {
-                    currentArtUrl = artUrl
-                    currentArt = loadArt(artUrl)
+                    currentArtUrl = fields.artUrl
+                    currentArt = loadArt(fields.artUrl)
                 }
 
                 // playbackSpeed flows into `_currentIsPlaying` via the
