@@ -212,7 +212,7 @@ class NoiseClientSession(
         }
         onWire(payload.wire)
         val resolved = resolvePsk(payload, initialHandshake)
-        return resolved to handshake.writeMessage2(resolved.psk, MESSAGE_2_PAYLOAD)
+        return resolved to handshake.writeMessage2(resolved.psk, MESSAGE_2_PAYLOAD, payload.wire)
     }
 
     /**

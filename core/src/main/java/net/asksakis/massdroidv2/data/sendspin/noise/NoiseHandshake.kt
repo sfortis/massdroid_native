@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.data.sendspin.noise
 
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import net.asksakis.massdroidv2.data.sendspin.SendspinWire
 
 /**
  * Noise SymmetricState with SHA-256 and AES-GCM: the chaining key, the handshake hash and the
@@ -135,7 +136,8 @@ class NoiseResponderHandshake(
      * Mixes in [psk], writes handshake message 2 carrying [payload], and returns it with the
      * transport ciphers and the final handshake hash.
      */
-    fun writeMessage2(psk: ByteArray, payload: ByteArray): Result {
+    /** Writes message 2 under [psk]; the transport it returns frames messages for [wire]. */
+    fun writeMessage2(psk: ByteArray, payload: ByteArray, wire: SendspinWire = SendspinWire.LEGACY): Result {
         check(step == Step.AWAIT_PSK) { "message 1 has not been read" }
         require(psk.size == SendspinNoise.PSK_SIZE) { "PSK must be 32 bytes" }
         val re = checkNotNull(remoteEphemeral)
@@ -149,7 +151,7 @@ class NoiseResponderHandshake(
         step = Step.DONE
         return Result(
             message = message,
-            transport = NoiseTransport(send = responderToInitiator, receive = initiatorToResponder),
+            transport = NoiseTransport(send = responderToInitiator, receive = initiatorToResponder, wire = wire),
             handshakeHash = symmetric.handshakeHash,
         )
     }

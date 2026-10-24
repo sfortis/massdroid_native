@@ -7,6 +7,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import net.asksakis.massdroidv2.data.sendspin.SendspinWire
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.security.MessageDigest
@@ -22,7 +23,7 @@ import java.security.MessageDigest
  * There is one set of vectors per wire. The tests here hold for both; each subclass adds what
  * only its wire has.
  */
-abstract class NoiseGoldenVectorContract(resource: String) {
+abstract class NoiseGoldenVectorContract(resource: String, private val wire: SendspinWire) {
 
     protected val vectors: JsonObject = Json.parseToJsonElement(
         checkNotNull(javaClass.classLoader?.getResource(resource)).readText()
@@ -47,7 +48,7 @@ abstract class NoiseGoldenVectorContract(resource: String) {
     protected fun completedHandshake(): NoiseResponderHandshake.Result {
         val handshake = responder()
         handshake.readMessage1(bytes("msg1"))
-        return handshake.writeMessage2(bytes("psk"), "{}".toByteArray())
+        return handshake.writeMessage2(bytes("psk"), "{}".toByteArray(), wire)
     }
 
     @Test
@@ -115,23 +116,13 @@ abstract class NoiseGoldenVectorContract(resource: String) {
 
         assertThrows(NoiseProtocolException::class.java) { transport.decode(frame) }
     }
-}
-
-/**
- * The legacy wire of aiosendspin 9.1.1 (Music Assistant 2.10.0 to 2.10.6), made by
- * `generate_noise_vectors_9_1_1.py`. Fragments use types 2 and 3.
- */
-class LegacyNoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_9_1_1.json") {
 
     @Test
     fun `the client's frames are byte for byte the server's expectation, fragments included`() {
         val transport = completedHandshake().transport
         val sent = mutableListOf<ByteArray>()
         val clientPlaintext = bytes("client_plaintext")
-        // The script builds bytes([4]) + bytes(i % 251 for i in range(70000)).
-        val big = ByteArray(vectors.getValue("fragment_plaintext_length").jsonPrimitive.int) {
-            if (it == 0) 4 else ((it - 1) % 251).toByte()
-        }
+        val big = bigPlaintext()
 
         transport.sendText(String(clientPlaintext, 1, clientPlaintext.size - 1, Charsets.UTF_8)) { sent += it; true }
         transport.sendBinary(big) { sent += it; true }
@@ -142,6 +133,23 @@ class LegacyNoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_ve
             .isEqualTo(vectors.getValue("fragment_frame_sizes").jsonArray.map { it.jsonPrimitive.int })
         assertThat(fragments.map { sha256Hex(it) }).isEqualTo(list("fragment_frame_sha256"))
     }
+
+    protected fun bigPlaintext(): ByteArray =
+        // The script builds bytes([4]) + bytes(i % 251 for i in range(70000)).
+        ByteArray(vectors.getValue("fragment_plaintext_length").jsonPrimitive.int) {
+            if (it == 0) 4 else ((it - 1) % 251).toByte()
+        }
+
+    private fun sha256Hex(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
+}
+
+
+/**
+ * The legacy wire of aiosendspin 9.1.1 (Music Assistant 2.10.0 to 2.10.6), made by
+ * `generate_noise_vectors_9_1_1.py`. Fragments use types 2 and 3.
+ */
+class LegacyNoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_9_1_1.json", SendspinWire.LEGACY) {
 
     @Test
     fun `fragments reassemble into the original binary message`() {
@@ -188,15 +196,37 @@ class LegacyNoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_ve
         assertThat(peer.decode(frames.single())).isInstanceOf(NoiseTransport.Incoming.Text::class.java)
     }
 
-    private fun sha256Hex(data: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
 }
 
 /**
  * The Sendspin 1.0.0-rc1 wire of aiosendspin 10 (Music Assistant 2.10.7 and later), made by
  * `generate_noise_vectors_rc1.py`.
  */
-class Rc1NoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_rc1.json") {
+class Rc1NoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_rc1.json", SendspinWire.RC1) {
+
+    @Test
+    fun `the server's type 1 fragments reassemble into the original message`() {
+        val transport = completedHandshake().transport
+        list("server_frames").forEach { transport.decode(SendspinNoise.b64urlDecode(it)) }
+        val fragments = list("server_fragment_frames").map(SendspinNoise::b64urlDecode)
+
+        val decoded = fragments.map { transport.decode(it) }
+
+        assertThat(decoded.dropLast(1).all { it == null }).isTrue()
+        assertThat((decoded.last() as NoiseTransport.Incoming.Binary).data).isEqualTo(bigPlaintext())
+    }
+
+    @Test
+    fun `a single fragment frame flagged first and last is a complete message`() {
+        val transport = completedHandshake().transport
+        val frames = list("server_frames") + list("server_fragment_frames")
+        frames.forEach { transport.decode(SendspinNoise.b64urlDecode(it)) }
+
+        val decoded = transport.decode(bytes("single_fragment_frame")) as NoiseTransport.Incoming.Binary
+
+        assertThat(decoded.data).isEqualTo(SendspinNoise.b64urlDecode(list("server_plaintexts")[1]))
+    }
+
 
     @Test
     fun `message 1 names the category of the psk beside its id`() {

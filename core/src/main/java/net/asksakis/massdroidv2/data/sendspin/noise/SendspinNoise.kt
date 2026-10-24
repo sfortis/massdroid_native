@@ -22,6 +22,16 @@ object SendspinNoise {
 
     /** Plaintext type byte of a JSON control message inside a transport frame. */
     const val TYPE_JSON: Byte = 0
+
+    /** rc1 wire: a fragment, followed by a flags byte ([FRAGMENT_FLAG_FIRST], [FRAGMENT_FLAG_LAST]). */
+    const val TYPE_FRAGMENT: Byte = 1
+    const val FRAGMENT_FLAG_LAST = 0x01
+    const val FRAGMENT_FLAG_FIRST = 0x02
+
+    /** rc1 wire: flag bits 2 to 7 must be zero. */
+    const val FRAGMENT_FLAGS_RESERVED = 0xFC
+
+    /** Legacy wire: a fragment with more to come, and the last fragment. Reserved on the rc1 wire. */
     const val TYPE_FRAGMENT_MORE: Byte = 2
     const val TYPE_FRAGMENT_END: Byte = 3
 

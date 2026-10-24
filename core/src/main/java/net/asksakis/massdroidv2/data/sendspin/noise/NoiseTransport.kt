@@ -1,15 +1,23 @@
 package net.asksakis.massdroidv2.data.sendspin.noise
 
+import net.asksakis.massdroidv2.data.sendspin.SendspinWire
 import java.io.ByteArrayOutputStream
 
 /**
  * The Sendspin transport after the Noise handshake: every WebSocket frame is binary and holds one
  * Noise transport message.
  *
- * The first plaintext byte gives the message type. Type 0 is a JSON control message, types 2 and 3
- * are fragments of a message longer than one Noise message allows, and any other value is a binary
- * role message (audio chunks, artwork) passed on with its type byte, exactly as the legacy
- * unencrypted transport delivered it.
+ * The first plaintext byte gives the message type. Type 0 is a JSON control message, and any other
+ * value is a binary role message (audio chunks, artwork) passed on with its type byte, exactly as
+ * the legacy unencrypted transport delivered it. A message longer than one Noise message allows is
+ * split into fragments, framed per [wire]:
+ *
+ * - Legacy wire: type 2 for a fragment with more to come and type 3 for the last one. The first
+ *   fragment carries the original type in its second byte.
+ * - rc1 wire: type 1 followed by a flags byte, bit 1 for the first fragment and bit 0 for the last.
+ *   The first fragment carries the original type after the flags. A single frame with both bits is
+ *   a complete message. Types 2 and 3 are reserved and ignored. Any malformed sequence closes the
+ *   connection (spec `messaging.md`, binary message fragmentation).
  *
  * Each direction counts its own nonces, so frames must leave in the order they were encrypted.
  * [send] therefore encrypts and hands the frames to the socket under one lock. Receiving happens on
@@ -18,6 +26,7 @@ import java.io.ByteArrayOutputStream
 class NoiseTransport internal constructor(
     private var send: NoiseCipherState,
     private var receive: NoiseCipherState,
+    private val wire: SendspinWire = SendspinWire.LEGACY,
 ) {
     private val sendLock = Any()
     private var reassembly: ByteArrayOutputStream? = null
@@ -41,7 +50,11 @@ class NoiseTransport internal constructor(
     }
 
     private fun sendPlaintext(plaintext: ByteArray, sink: (ByteArray) -> Boolean): Boolean = synchronized(sendLock) {
-        fragment(plaintext).all { frame -> sink(send.encryptWithAd(EMPTY, frame)) }
+        val frames = when (wire) {
+            SendspinWire.LEGACY -> fragmentLegacy(plaintext)
+            SendspinWire.RC1 -> fragmentRc1(plaintext)
+        }
+        frames.all { frame -> sink(send.encryptWithAd(EMPTY, frame)) }
     }
 
     /**
@@ -57,7 +70,14 @@ class NoiseTransport internal constructor(
         }
         val plaintext = receive.decryptWithAd(EMPTY, frame)
         if (plaintext.isEmpty()) throw NoiseProtocolException("empty plaintext after decrypt")
-        return when (plaintext[0]) {
+        return when (wire) {
+            SendspinWire.LEGACY -> decodeLegacy(plaintext)
+            SendspinWire.RC1 -> decodeRc1(plaintext)
+        }
+    }
+
+    private fun decodeLegacy(plaintext: ByteArray): Incoming? =
+        when (plaintext[0]) {
             SendspinNoise.TYPE_FRAGMENT_MORE -> {
                 onFragmentMore(plaintext)
                 null
@@ -70,6 +90,41 @@ class NoiseTransport internal constructor(
                 dispatch(plaintext)
             }
         }
+
+    private fun decodeRc1(plaintext: ByteArray): Incoming? {
+        val type = plaintext[0]
+        if (type == SendspinNoise.TYPE_FRAGMENT) return onRc1Fragment(plaintext)
+        frameCheck(reassembly == null) { "non-fragment frame while a fragmented message is in flight" }
+        // Reserved on this wire. A binary message with an ID the client does not implement is ignored.
+        val reserved = type == SendspinNoise.TYPE_FRAGMENT_MORE || type == SendspinNoise.TYPE_FRAGMENT_END
+        return if (reserved) null else dispatch(plaintext)
+    }
+
+    private fun onRc1Fragment(plaintext: ByteArray): Incoming? {
+        frameCheck(plaintext.size >= RC1_FRAGMENT_HEADER) { "fragment without its flags byte" }
+        val flags = plaintext[1].toInt() and BYTE_MASK
+        frameCheck(flags and SendspinNoise.FRAGMENT_FLAGS_RESERVED == 0) { "fragment with reserved flag bits $flags" }
+        val first = flags and SendspinNoise.FRAGMENT_FLAG_FIRST != 0
+        val dataStart = if (first) {
+            frameCheck(reassembly == null) { "first fragment while another is in flight" }
+            frameCheck(plaintext.size > RC1_FRAGMENT_HEADER) { "first fragment without its type" }
+            val originalType = plaintext[RC1_FRAGMENT_HEADER]
+            frameCheck(originalType != SendspinNoise.TYPE_FRAGMENT) { "fragment of type 1" }
+            reassemblyType = originalType
+            reassembly = ByteArrayOutputStream()
+            RC1_FRAGMENT_HEADER + 1
+        } else {
+            frameCheck(reassembly != null) { "continuation fragment with no message in flight" }
+            RC1_FRAGMENT_HEADER
+        }
+        append(checkNotNull(reassembly), plaintext, dataStart)
+        val last = flags and SendspinNoise.FRAGMENT_FLAG_LAST != 0
+        return if (last) dispatch(finishReassembly()) else null
+    }
+
+    /** A malformed fragment sequence closes the connection; the receive state cannot recover from it. */
+    private inline fun frameCheck(valid: Boolean, message: () -> String) {
+        if (!valid) throw NoiseProtocolException(message())
     }
 
     /**
@@ -103,6 +158,12 @@ class NoiseTransport internal constructor(
     private fun onFragmentEnd(plaintext: ByteArray): ByteArray {
         val buffer = reassembly ?: throw NoiseProtocolException("fragment end frame with no message in flight")
         append(buffer, plaintext)
+        return finishReassembly()
+    }
+
+    /** Ends the message in flight and returns it with its original type byte in front. */
+    private fun finishReassembly(): ByteArray {
+        val buffer = checkNotNull(reassembly)
         reassembly = null
         // One copy into the result, not a second one through concatenation.
         val body = buffer.toByteArray()
@@ -112,12 +173,13 @@ class NoiseTransport internal constructor(
         }
     }
 
-    private fun append(buffer: ByteArrayOutputStream, plaintext: ByteArray) {
-        if (buffer.size() + plaintext.size - 1 > MAX_REASSEMBLED_BYTES) {
+    /** Appends the fragment data of [plaintext] from [start], the bytes after its header. */
+    private fun append(buffer: ByteArrayOutputStream, plaintext: ByteArray, start: Int = 1) {
+        if (buffer.size() + plaintext.size - start > MAX_REASSEMBLED_BYTES) {
             reassembly = null
             throw NoiseProtocolException("fragmented message exceeds $MAX_REASSEMBLED_BYTES bytes")
         }
-        buffer.write(plaintext, 1, plaintext.size - 1)
+        buffer.write(plaintext, start, plaintext.size - start)
     }
 
     private fun dispatch(plaintext: ByteArray): Incoming =
@@ -133,8 +195,36 @@ class NoiseTransport internal constructor(
         /** The server's own bound on one reassembled message (aiosendspin `wire.py`). */
         const val MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024
 
-        /** Splits an oversized plaintext the way aiosendspin `wire._fragment` does. */
-        fun fragment(plaintext: ByteArray): List<ByteArray> {
+        /** rc1 fragment header: the type byte and the flags byte. */
+        const val RC1_FRAGMENT_HEADER = 2
+        const val BYTE_MASK = 0xFF
+
+        /** Splits an oversized plaintext the way aiosendspin 10 `wire._fragment` does. */
+        fun fragmentRc1(plaintext: ByteArray): List<ByteArray> {
+            if (plaintext.size <= SendspinNoise.MAX_TRANSPORT_PLAINTEXT) return listOf(plaintext)
+            val originalType = plaintext[0]
+            val firstCapacity = SendspinNoise.MAX_TRANSPORT_PLAINTEXT - RC1_FRAGMENT_HEADER - 1
+            val nextCapacity = SendspinNoise.MAX_TRANSPORT_PLAINTEXT - RC1_FRAGMENT_HEADER
+            val frames = ArrayList<ByteArray>()
+            var offset = 1
+            while (offset < plaintext.size) {
+                val first = offset == 1
+                val end = minOf(offset + if (first) firstCapacity else nextCapacity, plaintext.size)
+                var flags = if (end == plaintext.size) SendspinNoise.FRAGMENT_FLAG_LAST else 0
+                if (first) flags = flags or SendspinNoise.FRAGMENT_FLAG_FIRST
+                val header = if (first) {
+                    byteArrayOf(SendspinNoise.TYPE_FRAGMENT, flags.toByte(), originalType)
+                } else {
+                    byteArrayOf(SendspinNoise.TYPE_FRAGMENT, flags.toByte())
+                }
+                frames += header + plaintext.copyOfRange(offset, end)
+                offset = end
+            }
+            return frames
+        }
+
+        /** Splits an oversized plaintext the way aiosendspin 9.1.1 `wire._fragment` does. */
+        fun fragmentLegacy(plaintext: ByteArray): List<ByteArray> {
             if (plaintext.size <= SendspinNoise.MAX_TRANSPORT_PLAINTEXT) return listOf(plaintext)
             val originalType = plaintext[0]
             val firstCapacity = SendspinNoise.MAX_TRANSPORT_PLAINTEXT - 2
