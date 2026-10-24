@@ -145,16 +145,18 @@ internal class SendspinNoiseFlow(
 
     fun onActivate(payload: ServerActivatePayload) {
         val psk = client.noisePsk() ?: return
-        payload.activeRoles?.let { activeRoles = it }
+        val wire = client.wire
+        activeRoles = NoiseActivationStep.effectiveRoles(payload, psk.category, activeRoles, wire)
         val step = NoiseActivationStep.decide(
             payload = payload,
             pskCategory = psk.category,
             effectiveRoles = activeRoles,
             playerActive = playerActive,
             resync = resyncPending,
+            wire = wire,
         )
         resyncPending = false
-        Log.d(TAG, "server/activate activities=${payload.activities} roles=$activeRoles psk=${psk.category} -> $step")
+        Log.d(TAG, "server/activate activities=${payload.activities} roles=$activeRoles psk=${psk.category} wire=$wire -> $step")
         val pairingStep = step is NoiseActivationStep.FinalizePairing || step is NoiseActivationStep.AbortPairing
         // Before the step, which may start the player and send its first state.
         if (!pairingStep) {

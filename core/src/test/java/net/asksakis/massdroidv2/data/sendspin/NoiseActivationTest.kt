@@ -23,7 +23,87 @@ class NoiseActivationTest {
         effectiveRoles: List<String> = payload.activeRoles.orEmpty(),
         playerActive: Boolean = false,
         resync: Boolean = false,
-    ) = NoiseActivationStep.decide(payload, psk, effectiveRoles, playerActive, resync)
+        wire: SendspinWire = SendspinWire.LEGACY,
+    ) = NoiseActivationStep.decide(payload, psk, effectiveRoles, playerActive, resync, wire)
+
+    private val pairingPsk = ActivatePairing(method = PAIR_METHOD_PAIRING_PSK)
+    private val unauthorized = NoiseActivationStep.Reject(GOODBYE_REASON_UNAUTHORIZED)
+
+    @Test
+    fun `on rc1 a pairing alongside playback is finalized, where the legacy wire refused it`() {
+        // aiosendspin 10 keeps an approved phone playing while it pairs and sends both activities.
+        val payload = ServerActivatePayload(activities = listOf("playback", "pairing"), pairing = pairingPsk)
+
+        assertThat(decide(payload, psk = PskCategory.PAIRING, effectiveRoles = roles, playerActive = true, wire = SendspinWire.RC1))
+            .isEqualTo(NoiseActivationStep.FinalizePairing)
+        assertThat(decide(payload, psk = PskCategory.PAIRING, effectiveRoles = roles, playerActive = true))
+            .isEqualTo(unauthorized)
+    }
+
+    @Test
+    fun `on rc1 management is not an activity, so it is refused even on a long-term psk`() {
+        val payload = ServerActivatePayload(activities = listOf("management"))
+
+        assertThat(decide(payload, wire = SendspinWire.RC1)).isEqualTo(unauthorized)
+        assertThat(decide(payload)).isNotEqualTo(unauthorized)
+    }
+
+    @Test
+    fun `on rc1 a long-term psk admits no pairing`() {
+        val payload = ServerActivatePayload(activities = listOf("pairing"), pairing = pairingPsk)
+
+        assertThat(decide(payload, wire = SendspinWire.RC1)).isEqualTo(unauthorized)
+    }
+
+    @Test
+    fun `on rc1 a player role on the pairing psk is admitted, because unpaired access is on`() {
+        val payload = ServerActivatePayload(activities = emptyList(), activeRoles = roles)
+
+        assertThat(decide(payload, psk = PskCategory.PAIRING, wire = SendspinWire.RC1)).isEqualTo(NoiseActivationStep.StartPlayer)
+    }
+
+    @Test
+    fun `on rc1 an unpaired phone the operator approved plays`() {
+        val payload = ServerActivatePayload(activities = listOf("playback"), activeRoles = roles)
+
+        assertThat(decide(payload, psk = PskCategory.SENTINEL, wire = SendspinWire.RC1)).isEqualTo(NoiseActivationStep.StartPlayer)
+    }
+
+    @Test
+    fun `on rc1 a pairing_psk pairing on another psk is aborted`() {
+        val payload = ServerActivatePayload(activities = listOf("pairing"), pairing = pairingPsk)
+
+        assertThat(decide(payload, psk = PskCategory.SENTINEL, wire = SendspinWire.RC1))
+            .isEqualTo(NoiseActivationStep.AbortPairing(PAIR_ABORT_METHOD_NOT_SUPPORTED))
+    }
+
+    @Test
+    fun `named roles replace the previous ones on either wire`() {
+        val payload = ServerActivatePayload(activities = emptyList(), activeRoles = listOf("metadata@v1"))
+
+        for (wire in SendspinWire.entries) {
+            assertThat(NoiseActivationStep.effectiveRoles(payload, PskCategory.LONG_TERM, roles, wire))
+                .containsExactly("metadata@v1")
+        }
+    }
+
+    @Test
+    fun `omitted roles persist while the connection can still play`() {
+        val payload = ServerActivatePayload(activities = emptyList())
+
+        assertThat(NoiseActivationStep.effectiveRoles(payload, PskCategory.LONG_TERM, roles, SendspinWire.RC1))
+            .isEqualTo(roles)
+        assertThat(NoiseActivationStep.effectiveRoles(payload, PskCategory.LONG_TERM, roles, SendspinWire.LEGACY))
+            .isEqualTo(roles)
+    }
+
+    @Test
+    fun `on rc1 omitted roles empty once the connection cannot play`() {
+        // A long-term PSK with pairing is not playback-capable on rc1; the persisted roles go.
+        val payload = ServerActivatePayload(activities = listOf("pairing"), pairing = pairingPsk)
+
+        assertThat(NoiseActivationStep.effectiveRoles(payload, PskCategory.LONG_TERM, roles, SendspinWire.RC1)).isEmpty()
+    }
 
     @Test
     fun `a paired idle phone starts its player although nothing is playing`() {

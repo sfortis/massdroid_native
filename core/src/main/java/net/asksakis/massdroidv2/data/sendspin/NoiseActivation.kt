@@ -6,6 +6,12 @@ import net.asksakis.massdroidv2.data.sendspin.noise.PskCategory
  * What a `server/activate` asks of the client on the Noise transport, following aiosendspin's
  * `_handle_server_activate` and `_apply_activation`.
  *
+ * The allowed activities depend on the wire. On the legacy wire (aiosendspin 9.1.1) a long-term
+ * PSK admits playback and the deprecated management, and pairing only ever comes alone. On the rc1
+ * wire (aiosendspin 10, spec `messaging.md`) a long-term PSK admits `[]` and `[playback]`, and a
+ * pairing or Sentinel PSK admits any mix of playback and pairing, because the phone always
+ * advertises unpaired access. Management is not an rc1 activity and is refused there.
+ *
  * The player role is active while `active_roles` names one. That set is sticky: a message without
  * it keeps the previous one. The `playback` activity only says whether the group is playing right
  * now, so it starts nothing by itself; a paired phone that is idle gets `activities: []` together
@@ -41,6 +47,7 @@ sealed class NoiseActivationStep {
          * @param effectiveRoles the active roles after applying this message's sticky set.
          * @param playerActive whether the player role was active before this message.
          * @param resync whether a re-handshake preceded this message.
+         * @param wire the connection's wire, which decides the allowed activities.
          */
         fun decide(
             payload: ServerActivatePayload,
@@ -48,9 +55,10 @@ sealed class NoiseActivationStep {
             effectiveRoles: List<String>,
             playerActive: Boolean,
             resync: Boolean,
+            wire: SendspinWire,
         ): NoiseActivationStep {
             val activities = payload.activities.toSet()
-            if (!admissible(pskCategory, activities, hasRoles = effectiveRoles.isNotEmpty())) {
+            if (!admissible(wire, pskCategory, activities, hasRoles = effectiveRoles.isNotEmpty())) {
                 return Reject(GOODBYE_REASON_UNAUTHORIZED)
             }
             if (ACTIVITY_PAIRING in activities) {
@@ -69,15 +77,47 @@ sealed class NoiseActivationStep {
         }
 
         /**
+         * The roles in force after [payload]. A message that names `active_roles` replaces them. On
+         * the legacy wire an omitted set keeps the previous one. On the rc1 wire it keeps it only
+         * while the connection stays playback-capable, and empties it otherwise (aiosendspin
+         * `_apply_activation`).
+         */
+        fun effectiveRoles(
+            payload: ServerActivatePayload,
+            pskCategory: PskCategory,
+            previous: List<String>,
+            wire: SendspinWire,
+        ): List<String> {
+            payload.activeRoles?.let { return it }
+            val playbackCapable = when (wire) {
+                SendspinWire.LEGACY -> true
+                SendspinWire.RC1 -> rc1ActivitiesAllowed(pskCategory, payload.activities.toSet() + ACTIVITY_PLAYBACK)
+            }
+            return if (playbackCapable) previous else emptyList()
+        }
+
+        /**
          * aiosendspin's `_admissible`: the activities, and any active role, must be ones the
          * matched PSK allows. The phone always advertises unpaired access, so a sentinel
          * connection may carry playback.
          */
-        private fun admissible(category: PskCategory, activities: Set<String>, hasRoles: Boolean): Boolean =
-            activitiesAllowed(category, activities) &&
-                (!hasRoles || activitiesAllowed(category, activities + ACTIVITY_PLAYBACK))
+        private fun admissible(wire: SendspinWire, category: PskCategory, activities: Set<String>, hasRoles: Boolean): Boolean {
+            val allowed: (Set<String>) -> Boolean = when (wire) {
+                SendspinWire.LEGACY -> { set -> legacyActivitiesAllowed(category, set) }
+                SendspinWire.RC1 -> { set -> rc1ActivitiesAllowed(category, set) }
+            }
+            return allowed(activities) && (!hasRoles || allowed(activities + ACTIVITY_PLAYBACK))
+        }
 
-        private fun activitiesAllowed(category: PskCategory, activities: Set<String>): Boolean = when {
+        /** aiosendspin 10 `_activities_allowed`, with unpaired access always on. */
+        private fun rc1ActivitiesAllowed(category: PskCategory, activities: Set<String>): Boolean =
+            if (category == PskCategory.LONG_TERM) {
+                activities.all { it == ACTIVITY_PLAYBACK }
+            } else {
+                activities.all { it == ACTIVITY_PLAYBACK || it == ACTIVITY_PAIRING }
+            }
+
+        private fun legacyActivitiesAllowed(category: PskCategory, activities: Set<String>): Boolean = when {
             ACTIVITY_PAIRING in activities -> activities == setOf(ACTIVITY_PAIRING)
             category == PskCategory.LONG_TERM -> activities.all { it == ACTIVITY_PLAYBACK || it == ACTIVITY_MANAGEMENT }
             category == PskCategory.SENTINEL -> activities.isEmpty() || activities == setOf(ACTIVITY_PLAYBACK)
