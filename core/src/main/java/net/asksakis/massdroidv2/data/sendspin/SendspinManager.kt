@@ -878,7 +878,7 @@ class SendspinManager(
     private fun swapEngineForGroup(grouped: Boolean) {
         val effectiveGrouped = grouped && !forceSolo
         groupedForCodec = effectiveGrouped
-        updatePreferredCodec()
+        if (updatePreferredCodec() && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
         val target: SendspinAudioEngine = if (effectiveGrouped) syncEngine else directEngine
         if (!effectiveGrouped && timeSyncJob != null) {
             // DIRECT (solo) is a pure FIFO with no peer to phase-lock to: it never
@@ -1018,11 +1018,11 @@ class SendspinManager(
         isCellularTransport = cellular
         _networkMode.value = if (cellular) "Mobile" else "WiFi"
         engine.setCellularTransport(cellular)
-        updatePreferredCodec()
+        val formatChanged = updatePreferredCodec()
         // min_buffer_ms follows the network, so the server hears of the change
         // now rather than at the next heartbeat. Only once the hello exchange is
         // done: state before client/hello is out of protocol order.
-        if (changed && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
+        if ((changed || formatChanged) && client.state.value in STATE_REPORTING_STATES) sendCurrentState()
     }
 
     @Volatile private var groupedForCodec = false
@@ -1040,8 +1040,19 @@ class SendspinManager(
     @Volatile var announcedCodec: String? = null
         private set
 
-    private fun updatePreferredCodec() {
-        _preferredCodec.value = preferredSendspinCodec(groupedForCodec, isCellularTransport)
+    /** The wire of the current connection; see [SendspinWire]. */
+    val wire: SendspinWire get() = client.wire
+
+    /**
+     * Recomputes the wanted codec. Returns whether the change has to reach the server through the
+     * next `client/state`: on the rc1 wire the wanted codec is the state's `format`, so it goes
+     * out at once instead of as `stream/request-format`, which rc1 removed.
+     */
+    private fun updatePreferredCodec(): Boolean {
+        val wanted = preferredSendspinCodec(groupedForCodec, isCellularTransport)
+        val changed = wanted != _preferredCodec.value
+        _preferredCodec.value = wanted
+        return changed && client.wire == SendspinWire.RC1
     }
 
     private fun sendCurrentState() {
@@ -1089,7 +1100,7 @@ class SendspinManager(
                         muted = muted,
                         outputDelayMs = specStaticDelayMs,
                         minBufferMs = minBufferMs,
-                        format = helloSupportedFormats(_preferredCodec.value).first(),
+                        format = helloSupportedFormats(_preferredCodec.value).first().also { announcedCodec = it.codec },
                     )
                 } else {
                     null

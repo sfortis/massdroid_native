@@ -112,7 +112,8 @@ fun sendspinMinBufferMs(onCellular: Boolean): Int =
  * The formats announced in `client/hello`, [preferredCodec] first. With
  * "automatic" the server streams the first entry; an explicit server format
  * overrides the order and is never touched by the client. A later change of
- * the wanted codec goes out as `stream/request-format`.
+ * the wanted codec goes out as `stream/request-format` on the legacy wire, and
+ * as the `format` of the next `client/state` on the rc1 wire.
  *
  * Everything stays at 48 kHz / 16 bit: the native output is PCM16, and a
  * single rate keeps resampling out of the timing path.

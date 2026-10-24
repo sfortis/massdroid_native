@@ -26,6 +26,7 @@ import net.asksakis.massdroidv2.data.sendspin.SendspinVolumeCoordinator
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.SendspinNoiseConnector
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
+import net.asksakis.massdroidv2.data.sendspin.SendspinWire
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -365,6 +366,8 @@ class SendspinCoordinator(
      * data). When that changes on a live connection (a network switch the socket
      * survives, as over a VPN, or a group join or leave), the change is requested
      * with `stream/request-format`, and only while the server is on "automatic".
+     * On the rc1 wire the manager sends the wanted codec as the `format` of
+     * every `client/state` instead, and the server applies an explicit format first.
      */
     private fun observeSendspinFormatChoice() {
         scope.launch {
@@ -398,6 +401,10 @@ class SendspinCoordinator(
     }
 
     private suspend fun requestPreferredCodecIfAutomatic(reason: String) {
+        // On the rc1 wire the wanted codec travels as the `format` of every client/state, and the
+        // server applies an explicit MA format first by itself, so there is nothing to request
+        // and no config to read (owner decision, 2026-10-24).
+        if (sendspinManager.wire == SendspinWire.RC1) return
         val wanted = sendspinManager.preferredCodec.value
         val announced = sendspinManager.announcedCodec ?: return // no hello yet: it will carry it
         if (wanted == announced) return
