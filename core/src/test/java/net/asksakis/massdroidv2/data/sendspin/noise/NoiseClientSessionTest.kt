@@ -13,12 +13,12 @@ import org.junit.Test
 /**
  * Drives a whole client session through the frames the server's own code produced: the init
  * exchange, the handshake, transport traffic, and an in-band re-handshake onto a pairing PSK.
- * See `generate_noise_vectors.py` for how the vectors were made.
+ * See `generate_noise_vectors_9_1_1.py` for how the vectors were made.
  */
 class NoiseClientSessionTest {
 
     private val vectors: JsonObject = Json.parseToJsonElement(
-        checkNotNull(javaClass.classLoader?.getResource("sendspin/noise_vectors.json")).readText()
+        checkNotNull(javaClass.classLoader?.getResource("sendspin/noise_vectors_9_1_1.json")).readText()
     ).jsonObject
 
     private fun str(key: String) = vectors.getValue(key).jsonPrimitive.content

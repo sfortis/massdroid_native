@@ -1,4 +1,10 @@
-"""Generate golden vectors for the MassDroid Sendspin Noise unit tests.
+"""Generate golden vectors for the MassDroid Sendspin Noise unit tests, legacy wire.
+
+These vectors describe the pre-1.0 Sendspin wire of aiosendspin 9.1.1, which Music Assistant
+2.10.0 to 2.10.6 ship. They are frozen: the script imports `encode_token` and `decode_token`,
+which aiosendspin 10 renamed, and it uses `_fragment`, which aiosendspin 10 changed to the type 1
+fragment framing. Do not run it against a newer server. The vectors for the Sendspin 1.0.0-rc1
+wire come from `generate_noise_vectors_rc1.py`.
 
 The vectors come from the same code the Music Assistant server runs: aiosendspin's Noise
 constants, psk_id derivation and fragmenter, and the noiseprotocol library it builds its
@@ -12,10 +18,10 @@ second PSK, the way aiosendspin's run_rehandshake_server does: both handshake me
 noise/handshake JSON inside the old transport, the prologue is the previous handshake hash, and
 both sides swap to the new session only after message 2.
 
-Run it inside the MA container, where aiosendspin is installed:
+It was run inside an MA container on aiosendspin 9.1.1:
 
-    ssh mass 'docker exec -i music-assistant-server python3 -' < core/src/test/resources/sendspin/generate_noise_vectors.py \
-        > core/src/test/resources/sendspin/noise_vectors.json
+    ssh mass 'docker exec -i music-assistant-server python3 -' < core/src/test/resources/sendspin/generate_noise_vectors_9_1_1.py \
+        > core/src/test/resources/sendspin/noise_vectors_9_1_1.json
 """
 
 from __future__ import annotations

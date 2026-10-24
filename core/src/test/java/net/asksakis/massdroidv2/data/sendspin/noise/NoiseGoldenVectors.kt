@@ -14,20 +14,23 @@ import java.security.MessageDigest
 /**
  * Checks the Sendspin Noise client against vectors produced by the server's own code.
  *
- * `core/src/test/resources/sendspin/generate_noise_vectors.py` runs inside the Music Assistant container with aiosendspin
- * 9.1.1 and the noiseprotocol library it builds on, with fixed static and ephemeral keys. Matching
- * those bytes proves the handshake, the key schedule, the AES-GCM nonce layout and the framing
- * agree with the server, which a round trip through our own code alone could not show.
+ * The generators in `core/src/test/resources/sendspin/` run inside a Music Assistant container
+ * with aiosendspin and the noiseprotocol library it builds on, with fixed static and ephemeral
+ * keys. Matching those bytes proves the handshake, the key schedule, the AES-GCM nonce layout and
+ * the framing agree with the server, which a round trip through our own code alone could not show.
+ *
+ * There is one set of vectors per wire. The tests here hold for both; each subclass adds what
+ * only its wire has.
  */
-class NoiseGoldenVectorTest {
+abstract class NoiseGoldenVectorContract(resource: String) {
 
-    private val vectors: JsonObject = Json.parseToJsonElement(
-        checkNotNull(javaClass.classLoader?.getResource("sendspin/noise_vectors.json")).readText()
+    protected val vectors: JsonObject = Json.parseToJsonElement(
+        checkNotNull(javaClass.classLoader?.getResource(resource)).readText()
     ).jsonObject
 
-    private fun str(key: String) = vectors.getValue(key).jsonPrimitive.content
-    private fun bytes(key: String) = SendspinNoise.b64urlDecode(str(key))
-    private fun list(key: String) = vectors.getValue(key).jsonArray.map { it.jsonPrimitive.content }
+    protected fun str(key: String) = vectors.getValue(key).jsonPrimitive.content
+    protected fun bytes(key: String) = SendspinNoise.b64urlDecode(str(key))
+    protected fun list(key: String) = vectors.getValue(key).jsonArray.map { it.jsonPrimitive.content }
 
     private fun clientStatic() = NoiseKeyPair.fromPrivateKey(bytes("client_static_private"))
 
@@ -41,7 +44,7 @@ class NoiseGoldenVectorTest {
         ephemeral = NoiseKeyPair.fromPrivateKey(bytes("client_ephemeral_private")),
     )
 
-    private fun completedHandshake(): NoiseResponderHandshake.Result {
+    protected fun completedHandshake(): NoiseResponderHandshake.Result {
         val handshake = responder()
         handshake.readMessage1(bytes("msg1"))
         return handshake.writeMessage2(bytes("psk"), "{}".toByteArray())
@@ -112,6 +115,13 @@ class NoiseGoldenVectorTest {
 
         assertThrows(NoiseProtocolException::class.java) { transport.decode(frame) }
     }
+}
+
+/**
+ * The legacy wire of aiosendspin 9.1.1 (Music Assistant 2.10.0 to 2.10.6), made by
+ * `generate_noise_vectors_9_1_1.py`. Fragments use types 2 and 3.
+ */
+class LegacyNoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_9_1_1.json") {
 
     @Test
     fun `the client's frames are byte for byte the server's expectation, fragments included`() {
@@ -180,4 +190,28 @@ class NoiseGoldenVectorTest {
 
     private fun sha256Hex(data: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * The Sendspin 1.0.0-rc1 wire of aiosendspin 10 (Music Assistant 2.10.7 and later), made by
+ * `generate_noise_vectors_rc1.py`.
+ */
+class Rc1NoiseGoldenVectorTest : NoiseGoldenVectorContract("sendspin/noise_vectors_rc1.json") {
+
+    @Test
+    fun `message 1 names the category of the psk beside its id`() {
+        // aiosendspin 10 puts psk_category into every message 1, and 9.1.1 never does, so this
+        // field is what tells the client which wire the server speaks.
+        val payload = Json.parseToJsonElement(str("msg1_payload")).jsonObject
+
+        assertThat(payload.getValue("psk_id").jsonPrimitive.content).isEqualTo(str("psk_id"))
+        assertThat(payload.getValue("psk_category").jsonPrimitive.content).isEqualTo("lt")
+    }
+
+    @Test
+    fun `the category codes are the three the spec names`() {
+        val codes = vectors.getValue("psk_category_codes").jsonObject.mapValues { it.value.jsonPrimitive.content }
+
+        assertThat(codes).containsExactly("LONG_TERM", "lt", "PAIRING", "pr", "SENTINEL", "sn")
+    }
 }

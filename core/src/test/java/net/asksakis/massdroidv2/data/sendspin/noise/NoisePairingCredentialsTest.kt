@@ -94,14 +94,16 @@ class NoisePairingCredentialsTest {
     }
 
     @Test
-    fun `the pairing token is byte for byte the server's encoding`() {
-        val vectors = Json.parseToJsonElement(
-            checkNotNull(javaClass.classLoader?.getResource("sendspin/noise_vectors.json")).readText()
-        ).jsonObject
-        fun bytes(key: String) = SendspinNoise.b64urlDecode(vectors.getValue(key).jsonPrimitive.content)
+    fun `the pairing token is byte for byte the server's encoding, on aiosendspin 9 and 10`() {
+        for (resource in listOf("sendspin/noise_vectors_9_1_1.json", "sendspin/noise_vectors_rc1.json")) {
+            val vectors = Json.parseToJsonElement(
+                checkNotNull(javaClass.classLoader?.getResource(resource)).readText()
+            ).jsonObject
+            fun bytes(key: String) = SendspinNoise.b64urlDecode(vectors.getValue(key).jsonPrimitive.content)
 
-        val token = SendspinPairingToken.encode(bytes("client_static_public"), bytes("pairing_psk"))
+            val token = SendspinPairingToken.encode(bytes("client_static_public"), bytes("pairing_psk"))
 
-        assertThat(token).isEqualTo(vectors.getValue("pairing_token").jsonPrimitive.content)
+            assertThat(token).isEqualTo(vectors.getValue("pairing_token").jsonPrimitive.content)
+        }
     }
 }
