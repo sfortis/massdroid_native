@@ -155,6 +155,8 @@ fun TvMediaCard(
                 Text(
                     title,
                     style = MaterialTheme.typography.bodyMedium,
+                    // A short name keeps the same height, so the cards of a row line up.
+                    minLines = titleMaxLines,
                     maxLines = titleMaxLines,
                     overflow = TextOverflow.Ellipsis
                 )
