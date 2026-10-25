@@ -19,11 +19,13 @@ import net.asksakis.massdroidv2.data.database.TrackArtistEntity
 import net.asksakis.massdroidv2.data.database.TrackEntity
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.ArtistLearningMetrics
+import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver
 import net.asksakis.massdroidv2.domain.repository.BlockedArtistInfo
 import net.asksakis.massdroidv2.domain.repository.DislikeReceipt
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import net.asksakis.massdroidv2.domain.repository.SmartListeningRepository
+import net.asksakis.massdroidv2.domain.repository.aliasesOrEmpty
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
 import net.asksakis.massdroidv2.domain.recommendation.addTrackSignal
@@ -247,7 +249,7 @@ class SmartListeningRepositoryImpl @Inject constructor(
     override suspend fun setArtistBlocked(artistUri: String, artistName: String?, blocked: Boolean) {
         val artistKey = MediaIdentity.canonicalArtistKey(uri = artistUri) ?: return
         val name = artistName?.takeIf { it.isNotBlank() }
-        val keys = (listOf(artistKey) + artistAliases.aliasesFor(artistKey))
+        val keys = (listOf(artistKey) + artistAliases.lookup(artistKey).aliasesOrEmpty())
             .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
             .distinct()
         if (blocked) {
@@ -279,9 +281,19 @@ class SmartListeningRepositoryImpl @Inject constructor(
             settingsRepository.setBlockedArtistAliasProviders(providersFingerprint)
             return false
         }
+        val blockedUris = existing.mapTo(HashSet()) { it.artistUri }
         var added = 0
         for (row in existing) {
-            val aliases = artistAliases.aliasesFor(row.artistUri)
+            val lookup = artistAliases.lookup(row.artistUri)
+            if (lookup is ArtistAliasLookup.Failed) {
+                // Recording the providers now would mark this expansion done with
+                // the rest of the blocks unexpanded, and it would not run again
+                // until the providers change. A lost connection made every lookup
+                // after it fail the same way.
+                Log.w(TAG, "Blocked-artist expansion stopped at ${row.artistUri}, +$added uri(s); retried on the next connect")
+                return added > 0
+            }
+            val aliases = lookup.aliasesOrEmpty()
                 .mapNotNull { MediaIdentity.canonicalArtistKey(uri = it) }
                 .filter { it != row.artistUri }
             if (aliases.isEmpty()) continue
@@ -294,7 +306,9 @@ class SmartListeningRepositoryImpl @Inject constructor(
                     )
                 }
             )
-            added += aliases.size
+            // Rows already blocked are written again, which names an unnamed one,
+            // but only new uris are counted.
+            added += aliases.count { blockedUris.add(it) }
         }
         settingsRepository.setBlockedArtistAliasProviders(providersFingerprint)
         Log.d(TAG, "Blocked-artist expansion for [$providersFingerprint]: ${existing.size} blocks, +$added uri(s)")

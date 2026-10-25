@@ -14,6 +14,7 @@ import net.asksakis.massdroidv2.data.database.TrackScoreRow
 import net.asksakis.massdroidv2.data.database.TransactionRunner
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.recommendation.TRACK_SUPPRESSION_THRESHOLD
+import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.Test
 
@@ -40,7 +41,7 @@ class DislikeSignalTest {
         every { it.smartListeningEnabled } returns flowOf(true)
     }
 
-    private val repo = SmartListeningRepositoryImpl(dao, settings, transactions) { emptyList() }
+    private val repo = SmartListeningRepositoryImpl(dao, settings, transactions) { ArtistAliasLookup.Unresolvable }
 
     private val track = Track(
         itemId = "t1",

@@ -12,6 +12,7 @@ import net.asksakis.massdroidv2.data.database.BlockedArtistEntity
 import net.asksakis.massdroidv2.data.database.BlockedArtistRow
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.database.TransactionRunner
+import net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup
 import net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import org.junit.Test
@@ -39,9 +40,11 @@ class BlockedArtistAliasTest {
     private fun repo(aliases: ArtistAliasResolver) =
         SmartListeningRepositoryImpl(dao, settings, transactions, aliases)
 
+    private fun resolved(aliases: List<String>) = ArtistAliasLookup.Resolved(aliases)
+
     @Test
     fun `blocking one uri blocks every uri the server knows`() = runTest {
-        val repo = repo { uri -> if (uri == libraryUri) listOf(providerUri) else emptyList() }
+        val repo = repo { uri -> resolved(if (uri == libraryUri) listOf(providerUri) else emptyList()) }
 
         repo.setArtistBlocked(libraryUri, "The Midnight", blocked = true)
 
@@ -56,7 +59,7 @@ class BlockedArtistAliasTest {
     fun `an artist the server cannot expand is still blocked under its own uri`() = runTest {
         // Offline, or a provider that reports no mappings. Storing the one uri
         // the caller had is no worse than the behaviour this replaced.
-        val repo = repo { emptyList() }
+        val repo = repo { ArtistAliasLookup.Unresolvable }
 
         repo.setArtistBlocked(providerUri, "Some Artist", blocked = true)
 
@@ -67,7 +70,7 @@ class BlockedArtistAliasTest {
 
     @Test
     fun `unblocking clears every uri, and the name as a safety net`() = runTest {
-        val repo = repo { uri -> if (uri == libraryUri) listOf(providerUri) else emptyList() }
+        val repo = repo { uri -> resolved(if (uri == libraryUri) listOf(providerUri) else emptyList()) }
 
         repo.setArtistBlocked(libraryUri, "The Midnight", blocked = false)
 
@@ -86,7 +89,7 @@ class BlockedArtistAliasTest {
         coEvery { dao.getBlockedArtists() } returns listOf(
             BlockedArtistRow(libraryUri, "The Midnight", 1_700_000_000_000)
         )
-        val repo = repo { uri -> if (uri == libraryUri) listOf(providerUri) else emptyList() }
+        val repo = repo { uri -> resolved(if (uri == libraryUri) listOf(providerUri) else emptyList()) }
 
         repo.backfillBlockedArtistAliases("acme,other")
 
@@ -120,9 +123,69 @@ class BlockedArtistAliasTest {
             BlockedArtistRow(libraryUri, "The Midnight", 1_700_000_000_000)
         )
 
-        val expanded = repo { listOf(providerUri) }.backfillBlockedArtistAliases("acme,newone")
+        val expanded = repo { resolved(listOf(providerUri)) }.backfillBlockedArtistAliases("acme,newone")
 
         assertThat(expanded).isTrue()
+        coVerify { settings.setBlockedArtistAliasProviders("acme,newone") }
+    }
+
+    @Test
+    fun `a lookup the server could not answer stops the run without recording the providers`() = runTest {
+        // A lost connection fails every lookup after it the same way, and
+        // recording the providers would mark the rest of the blocks expanded.
+        val unasked = "library://artist/303"
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000),
+            BlockedArtistRow(unasked, "Someone Else", 1_000),
+        )
+        val asked = mutableListOf<String>()
+        val repo = repo { uri ->
+            asked += uri
+            ArtistAliasLookup.Failed
+        }
+
+        val expanded = repo.backfillBlockedArtistAliases("acme,newone")
+
+        assertThat(expanded).isFalse()
+        assertThat(asked).containsExactly(libraryUri)
+        coVerify(exactly = 0) { dao.upsertBlockedArtists(any()) }
+        coVerify(exactly = 0) { settings.setBlockedArtistAliasProviders(any()) }
+    }
+
+    @Test
+    fun `a uri the server cannot resolve is passed over and the providers are recorded`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow("gone--Ab1://artist/7", "Old Provider", 2_000),
+            BlockedArtistRow(libraryUri, "The Midnight", 1_000),
+        )
+        val repo = repo { uri ->
+            if (uri == libraryUri) resolved(listOf(providerUri)) else ArtistAliasLookup.Unresolvable
+        }
+
+        val expanded = repo.backfillBlockedArtistAliases("acme,newone")
+
+        assertThat(expanded).isTrue()
+        coVerify { settings.setBlockedArtistAliasProviders("acme,newone") }
+    }
+
+    @Test
+    fun `aliases that are blocked already do not count as an expansion`() = runTest {
+        // The run used to count every alias it wrote, so a second run over the
+        // same providers reported uris it had only written again.
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000),
+            BlockedArtistRow(providerUri, "The Midnight", 2_000),
+        )
+        val repo = repo { uri ->
+            resolved(listOf(if (uri == libraryUri) providerUri else libraryUri))
+        }
+
+        val expanded = repo.backfillBlockedArtistAliases("acme,newone")
+
+        assertThat(expanded).isFalse()
         coVerify { settings.setBlockedArtistAliasProviders("acme,newone") }
     }
 
@@ -155,7 +218,7 @@ class BlockedArtistAliasTest {
         )
         coEvery { dao.getUnnamedBlockedArtists() } returns emptyList()
 
-        val shown = repo { emptyList() }.getBlockedArtists()
+        val shown = repo { ArtistAliasLookup.Unresolvable }.getBlockedArtists()
 
         assertThat(shown.map { it.artistName }).containsExactly("The Midnight")
     }

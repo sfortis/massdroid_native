@@ -16,6 +16,30 @@ package net.asksakis.massdroidv2.domain.repository
  * what this resolves.
  */
 fun interface ArtistAliasResolver {
-    /** The other uris for [artistUri], or empty when it cannot be resolved. */
-    suspend fun aliasesFor(artistUri: String): List<String>
+    /** The other uris for [artistUri], or why there are none. */
+    suspend fun lookup(artistUri: String): ArtistAliasLookup
 }
+
+/**
+ * The answer to one alias lookup.
+ *
+ * [Unresolvable] and [Failed] both leave the caller with no aliases, but they mean different
+ * things to a caller that remembers it has done the work: asking again after [Unresolvable]
+ * gets the same answer, while [Failed] may succeed on the next connection.
+ */
+sealed interface ArtistAliasLookup {
+    /** The server answered. The list is empty when it knows the artist under this uri only. */
+    data class Resolved(val aliases: List<String>) : ArtistAliasLookup
+
+    /**
+     * Asking again will not help: the server does not know the uri, or the uri names a
+     * provider this server does not have, such as one from another server.
+     */
+    data object Unresolvable : ArtistAliasLookup
+
+    /** No answer: a timeout, a lost connection, or a provider that is down for now. */
+    data object Failed : ArtistAliasLookup
+}
+
+fun ArtistAliasLookup.aliasesOrEmpty(): List<String> =
+    (this as? ArtistAliasLookup.Resolved)?.aliases.orEmpty()

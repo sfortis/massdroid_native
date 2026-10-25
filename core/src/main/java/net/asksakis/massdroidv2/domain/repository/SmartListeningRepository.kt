@@ -50,7 +50,9 @@ interface SmartListeningRepository {
      * [providersFingerprint] identifies the server's music providers. The work
      * is skipped while it matches what the last expansion saw, and repeats when
      * it changes, because a newly added provider gives blocked artists uris that
-     * nobody has blocked. Returns true when something was actually expanded.
+     * nobody has blocked. A lookup the server could not answer ends the run
+     * without recording the fingerprint, so it runs again on the next connect.
+     * Returns true when a uri that was not blocked yet was added.
      */
     suspend fun backfillBlockedArtistAliases(providersFingerprint: String): Boolean
     suspend fun getBlockedArtistUris(): Set<String>

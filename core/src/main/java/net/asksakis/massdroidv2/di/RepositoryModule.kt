@@ -61,9 +61,12 @@ object RepositoryModule {
     @Provides
     @Singleton
     fun provideArtistAliasResolver(
-        musicRepository: MusicRepository
+        musicRepository: MusicRepository,
+        providerManifestCache: net.asksakis.massdroidv2.data.provider.ProviderManifestCache
     ): net.asksakis.massdroidv2.domain.repository.ArtistAliasResolver =
-        net.asksakis.massdroidv2.data.repository.MaArtistAliasResolver(musicRepository)
+        net.asksakis.massdroidv2.data.repository.MaArtistAliasResolver(musicRepository) {
+            providerManifestCache.musicProviders
+        }
 
     @Provides
     @Singleton

@@ -18,7 +18,7 @@ class SmartListeningSignalsTest {
         transactions = object : net.asksakis.massdroidv2.data.database.TransactionRunner {
             override suspend fun <R> inTransaction(block: suspend () -> R): R = block()
         },
-        artistAliases = { emptyList() },
+        artistAliases = { net.asksakis.massdroidv2.domain.repository.ArtistAliasLookup.Unresolvable },
     )
 
     private val dur = 180.0

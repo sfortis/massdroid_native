@@ -1284,7 +1284,17 @@ class MaApiException(message: String, val code: Int) : Exception(message) {
     /** True when the server refused the command because the account is not an admin (MA 2.9.0+). */
     val isPermissionDenied: Boolean get() = code == INSUFFICIENT_PERMISSIONS_CODE
 
+    /**
+     * True when the server refused because the provider that owns the item is not available. The
+     * server sends the same code for an instance it has never had, such as one named in a uri
+     * from another server.
+     */
+    val isProviderUnavailable: Boolean get() = code == PROVIDER_UNAVAILABLE_CODE
+
     companion object {
+        /** MA's ProviderUnavailableError error code. */
+        const val PROVIDER_UNAVAILABLE_CODE = 1
+
         /** MA's InsufficientPermissions error code. */
         const val INSUFFICIENT_PERMISSIONS_CODE = 22
 
