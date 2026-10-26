@@ -136,11 +136,18 @@ fun TvHomeScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = EDGE),
                 horizontalArrangement = Arrangement.End
             ) {
-                IconButton(onClick = onOpenBrowse, modifier = Modifier.pointerClick(onClick = onOpenBrowse)) {
+                // Remembered like a card, so Back from Browse or Settings lands on the button.
+                IconButton(
+                    onClick = onOpenBrowse,
+                    modifier = focusModifierFor(BROWSE_BUTTON_KEY).pointerClick(onClick = onOpenBrowse)
+                ) {
                     Icon(Icons.Filled.GridView, contentDescription = "Browse")
                 }
                 Spacer(Modifier.width(8.dp))
-                IconButton(onClick = onOpenSettings, modifier = Modifier.pointerClick(onClick = onOpenSettings)) {
+                IconButton(
+                    onClick = onOpenSettings,
+                    modifier = focusModifierFor(SETTINGS_BUTTON_KEY).pointerClick(onClick = onOpenSettings)
+                ) {
                     Icon(Icons.Filled.Settings, contentDescription = "Settings")
                 }
             }
@@ -361,6 +368,9 @@ private fun ContentShelf(
 }
 
 private const val FOCUS_RESTORE_TRIES = 25
+// Focus memory keys of the two top buttons; card keys are uris, so these cannot collide.
+private const val BROWSE_BUTTON_KEY = "button:browse"
+private const val SETTINGS_BUTTON_KEY = "button:settings"
 private const val FOCUS_RESTORE_RETRY_MS = 60L
 
 @Composable
