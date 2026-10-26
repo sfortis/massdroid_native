@@ -92,19 +92,21 @@ fun ExpandingPlayerSheet(
     // the queue sheet on top of it.
     var expanded by rememberSaveable { mutableStateOf(false) }
     var showQueueSheet by rememberSaveable { mutableStateOf(false) }
-    var expandAfterRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // The back stack entry of the screen the full player was opened over, when it left for
+    // an artist or an album. Only Back to that same screen opens it again.
+    var expandOnReturnTo by rememberSaveable { mutableStateOf<String?>(null) }
     // Start the animation where the restored state says it already is, otherwise a
     // sheet that comes back expanded would be drawn collapsed until something moved it.
     val animatable = remember { Animatable(if (expanded) 1f else 0f) }
     val scope = rememberCoroutineScope()
 
-    // Re-expand when returning from detail screen navigated from NowPlaying
+    // Re-expand on the way back from a detail screen opened from Now Playing. Matching the
+    // route the player left for instead treated any later navigation as the way back, so an
+    // album opened from that artist page brought the player up over the album.
     LaunchedEffect(Unit) {
         navController.currentBackStackEntryFlow.collect { entry ->
-            val route = entry.destination.route
-            val pending = expandAfterRoute
-            if (pending != null && route != pending && !expanded) {
-                expandAfterRoute = null
+            if (expandOnReturnTo != null && entry.id == expandOnReturnTo && !expanded) {
+                expandOnReturnTo = null
                 expanded = true
                 animatable.animateTo(1f, tween(400, easing = FastOutSlowInEasing))
             }
@@ -253,7 +255,7 @@ fun ExpandingPlayerSheet(
                             onBack = { expanded = false; scope.launch { animatable.animateTo(0f, tween(450, easing = FastOutSlowInEasing)) } },
                             onNavigateToArtist = { id, prov, name ->
                                 scope.launch {
-                                    expandAfterRoute = Routes.ARTIST_DETAIL
+                                    expandOnReturnTo = navController.currentBackStackEntry?.id
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.artistDetail(id, prov, name))
@@ -261,7 +263,7 @@ fun ExpandingPlayerSheet(
                             },
                             onNavigateToAlbum = { id, prov, name ->
                                 scope.launch {
-                                    expandAfterRoute = Routes.ALBUM_DETAIL
+                                    expandOnReturnTo = navController.currentBackStackEntry?.id
                                     expanded = false
                                     animatable.animateTo(0f, tween(300, easing = FastOutSlowInEasing))
                                     navController.navigate(Routes.albumDetail(id, prov, name))
