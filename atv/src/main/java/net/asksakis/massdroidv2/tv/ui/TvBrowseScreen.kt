@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -52,6 +53,22 @@ fun TvBrowseScreen(
     var entered by rememberSaveable { mutableStateOf(false) }
     val chipFocus = rememberInitialFocus(enabled = !entered) { entered = true }
     val gridFocus = rememberGridItemFocus(itemKeys, gridState, autoFocusOnLoad = false)
+    // Folders is a chip, not a card, so neither of the above brings the cursor back to it, and
+    // a return from Folders left it on the first chip.
+    var returnToFolders by rememberSaveable { mutableStateOf(false) }
+    val foldersFocus = remember { FocusRequester() }
+    // Runs when the screen composes again on the way back, not when the flag is set.
+    LaunchedEffect(Unit) {
+        if (returnToFolders) {
+            foldersFocus.requestFocusWhenAttached()
+            returnToFolders = false
+        }
+    }
+    val openFolders = {
+        returnToFolders = true
+        gridFocus.forget()
+        onOpenFolders()
+    }
 
     LaunchedEffect(gridState, items.size) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
@@ -75,7 +92,12 @@ fun TvBrowseScreen(
                 }
                 // Provider folder tree (RadioBrowser, ORF, Filesystem...), the MA UI "Browse".
                 // Not a flat category, so it opens its own drill-down screen.
-                CategoryChip("Folders", selected = false, onClick = onOpenFolders)
+                CategoryChip(
+                    "Folders",
+                    selected = false,
+                    modifier = Modifier.focusRequester(foldersFocus),
+                    onClick = openFolders
+                )
             }
         }
     ) {

@@ -56,6 +56,14 @@ class GridItemFocus internal constructor(
             .focusRequester(requesterFor(key))
 
     internal fun requesterFor(key: String): FocusRequester = requesters.getOrPut(key) { FocusRequester() }
+
+    /**
+     * Drops the remembered card, for a screen that leaves from a control outside the grid and
+     * puts the cursor back on that control itself; a remembered card would take it instead.
+     */
+    fun forget() {
+        lastKey.value = null
+    }
 }
 
 @Composable
