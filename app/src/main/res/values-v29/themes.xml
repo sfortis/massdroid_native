@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app draws its own dark theme in Compose, but the window theme is a light one, so a
+         system that forces dark mode on light apps (MIUI does) recolours the UI again: on a Mi MIX
+         2S the snackbar kept its light background while its dark text was turned white, and the
+         message could not be read. Android 10 and later honour this flag. -->
+    <style name="Theme.MassDroidV2" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+    <style name="Theme.MassDroidV2.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+</resources>
