@@ -17,6 +17,11 @@ val localProperties = Properties().apply {
 android {
     namespace = "net.asksakis.massdroidv2.tv"
     compileSdk = 36
+    // The same NDK as :core. Without it AGP looks for its own default NDK, which is not
+    // installed, and then neither strips the native libraries of the APK nor extracts
+    // their symbols for Play (it reports them as already stripped). F-Droid builds with
+    // this NDK too (`ndk:` in the fdroiddata metadata).
+    ndkVersion = "27.3.13750724"
 
     defaultConfig {
         applicationId = "net.asksakis.massdroidv2.tv"
@@ -104,6 +109,9 @@ android {
             dimension = "distribution"
             buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
+            // The native symbols go into the AAB, so Play shows function names in native
+            // crashes. Only the Play flavor: the F-Droid build must stay reproducible.
+            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
         }
     }
 
