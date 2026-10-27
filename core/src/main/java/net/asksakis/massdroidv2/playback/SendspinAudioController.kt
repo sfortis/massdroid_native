@@ -776,6 +776,7 @@ class SendspinAudioController(
             sendspinManager.connectionState.collect { state ->
                 val wasStreaming = transportState == SendspinState.STREAMING
                 val wasError = transportState == SendspinState.ERROR
+                val wasUp = transportState == SendspinState.SYNCING || transportState == SendspinState.STREAMING
                 transportState = state
                 recomputeAvailability()
                 Log.d(TAG, "Sendspin state: $state, isStreaming=$isStreaming, isReady=$isReady, sync=$localSyncState")
@@ -804,6 +805,7 @@ class SendspinAudioController(
                 if (state == SendspinState.ERROR && !wasError) {
                     sendspinManager.onTransportFailure()
                 }
+                if (state == SendspinState.SYNCING && !wasUp) requestOwnPlayerIfMissing()
                 notifyStateChanged()
             }
         }
@@ -2289,6 +2291,22 @@ class SendspinAudioController(
 
     private fun notifyStateChanged() {
         onStateChanged(isReady, isStreaming, currentIsPlaying)
+    }
+
+    /**
+     * Asks for the player list again when it lacks this phone's own player once Sendspin is up.
+     *
+     * An account with a player filter sees its own Sendspin player only after MA has tied the
+     * Sendspin connection to the app's WebSocket, which happens when Sendspin connects. The app
+     * reads players/all before that, and a player that stayed registered from the previous run
+     * brings no PLAYER_ADDED, so the phone was missing from Players until some later update of
+     * it, or for good (2026-10-27, the Play review account on the mass-test server).
+     */
+    private fun requestOwnPlayerIfMissing() {
+        val ownId = plannedPlayerId.value ?: return
+        if (playerRepository.players.value.any { it.playerId == ownId }) return
+        Log.d(TAG, "Own player $ownId not in the player list after Sendspin came up; reading players again")
+        scope.launch { playerRepository.refreshPlayers() }
     }
 
     private fun recomputeAvailability() {
