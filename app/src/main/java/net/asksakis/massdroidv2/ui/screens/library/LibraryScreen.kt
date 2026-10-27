@@ -3,7 +3,6 @@ package net.asksakis.massdroidv2.ui.screens.library
 import net.asksakis.massdroidv2.ui.components.MdSearchField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
-import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
@@ -43,7 +42,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import net.asksakis.massdroidv2.ui.components.MdPullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -353,11 +352,10 @@ fun LibraryScreen(
                 @OptIn(ExperimentalMaterial3Api::class)
                 val refreshState = rememberPullToRefreshState()
                 val refreshingHere = isRefreshing && page == selectedTab
-                PullToRefreshBox(
+                MdPullToRefreshBox(
                     isRefreshing = refreshingHere,
                     onRefresh = { viewModel.refresh() },
                     state = refreshState,
-                    indicator = { MdRefreshIndicator(refreshState, refreshingHere) },
                     modifier = Modifier.fillMaxSize()
                 ) {
                     when (page) {

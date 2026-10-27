@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
-import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -18,7 +17,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import net.asksakis.massdroidv2.ui.components.MdPullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -91,11 +90,10 @@ fun PodcastDetailScreen(
         }
     ) { paddingValues ->
         val refreshState = rememberPullToRefreshState()
-        PullToRefreshBox(
+        MdPullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
             state = refreshState,
-            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)

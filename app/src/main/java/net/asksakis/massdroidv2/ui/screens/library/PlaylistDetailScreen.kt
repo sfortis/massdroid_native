@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
-import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
@@ -8,7 +7,7 @@ import net.asksakis.massdroidv2.ui.components.MdTextButton
 import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import net.asksakis.massdroidv2.ui.components.MdPullToRefreshBox
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import net.asksakis.massdroidv2.ui.components.LocalMiniPlayerPadding
@@ -170,11 +169,10 @@ fun PlaylistDetailScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         val refreshState = rememberPullToRefreshState()
-        PullToRefreshBox(
+        MdPullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
             state = refreshState,
-            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)

@@ -1,6 +1,5 @@
 package net.asksakis.massdroidv2.ui.screens.library
 
-import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
@@ -24,7 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import net.asksakis.massdroidv2.ui.components.MdPullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -161,11 +160,10 @@ fun ArtistDetailScreen(
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
         val refreshState = rememberPullToRefreshState()
-        PullToRefreshBox(
+        MdPullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { viewModel.refresh() },
             state = refreshState,
-            indicator = { MdRefreshIndicator(refreshState, isRefreshing) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)

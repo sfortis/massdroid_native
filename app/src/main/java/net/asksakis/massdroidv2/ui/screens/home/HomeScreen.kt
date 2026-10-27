@@ -6,7 +6,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalConfiguration
 import android.content.res.Configuration
 import net.asksakis.massdroidv2.ui.components.SearchFieldDefaults
-import net.asksakis.massdroidv2.ui.components.MdRefreshIndicator
 import net.asksakis.massdroidv2.ui.components.dropShadow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Surface
@@ -65,7 +64,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import net.asksakis.massdroidv2.ui.components.MdPullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -319,11 +318,10 @@ fun HomeScreen(
             } else if (sections.isEmpty() && isDisconnected) {
                 EmptyStateView(onConfigureServer)
             } else {
-                PullToRefreshBox(
+                MdPullToRefreshBox(
                     isRefreshing = isRefreshing,
                     onRefresh = { viewModel.refresh() },
                     state = pullToRefreshState,
-                    indicator = { MdRefreshIndicator(pullToRefreshState, isRefreshing) },
                     modifier = Modifier.fillMaxSize()
                 ) {
                     LazyColumn(
