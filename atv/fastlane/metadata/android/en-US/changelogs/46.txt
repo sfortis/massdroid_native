@@ -1,0 +1,2 @@
+Lyrics, "Not for me" and a few words about the album or artist in the full player, and the cursor returns to where you left it.
+Next and previous are greyed out when there is nothing to skip to.

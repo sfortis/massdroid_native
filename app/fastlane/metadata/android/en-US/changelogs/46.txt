@@ -1,0 +1,2 @@
+Now Playing shows a few words about the album or artist, settings come back with Android's backup, and next and previous are greyed out when there is nothing to skip to.
+Android Automotive signs in again by itself after changing networks.

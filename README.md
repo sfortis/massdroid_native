@@ -50,8 +50,37 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 
 ## What's New ![NEW](https://img.shields.io/badge/-NEW-brightgreen)
 
+### Added
+- Now Playing shows a few words about the album or the artist, on the phone and on Android TV.
+- Your settings come back with Android's backup on a new phone. Your password and the phone's speaker identity are never backed up.
+- Android TV: lyrics, "Not for me", the blurred cover behind the full player, and a Smart Listening switch.
+- Android Automotive: a Mixes tab, and Browse moves into Library so every tab fits the screen.
+- "Not for me" also reaches Music Assistant 2.11, and can be undone.
+
+### Improved
+- The phone speaker supports the newer speaker protocol of Music Assistant 2.10.7 and later.
+- Sorted playlists play in the order you see them on Music Assistant 2.10.7 and later.
+- Smart Mix ends with songs you love, so the music that follows stays in the same style.
+- Android TV: the cursor returns to where you left it, every row lines up, and slow screens show loading and Retry.
+- The app reconnects faster when the phone changes network.
+- The full player uses less battery, and animations stop while the screen is off.
+- A call pauses only the phone when it plays in a group, not the whole group.
+- Release files are smaller.
+
 ### Fixed
-- The app no longer installs on x86 devices it cannot run on.
+- Next and previous are greyed out when there is nothing to skip to, such as a radio on its own.
+- Android Automotive: the car signs in again by itself after changing networks. (#80)
+- Android Automotive: music started from the car's screens no longer plays nowhere. (#37)
+- The phone joining another speaker's group no longer restarts the group's music.
+- Break sync on a group leader no longer hands the queue to another speaker.
+- A radio no longer shows the previous song's artist.
+- A network drop while signing in no longer signs you out.
+- Sign-in details go only to the server you signed in to.
+- The pull-to-refresh spinner no longer stays on screen.
+- On Xiaomi phones, message text is readable again.
+
+### F-Droid
+- MassDroid and MassDroid TV are now on F-Droid.
 
 ## Screenshots
 
@@ -152,10 +181,13 @@ Download the latest signed APK from [GitHub Releases](https://github.com/sfortis
 
 ### F-Droid build
 
-MassDroid is not on F-Droid yet; the submission is in progress. Each release carries the
-builds meant for F-Droid: `massdroid-vX.Y.Z_fdroid.apk` for the phone and
-`massdroid-vX.Y.Z_tv_fdroid.apk` for Android TV. They have no in-app updater, so install the
-regular `massdroid-vX.Y.Z.apk` or `massdroid-vX.Y.Z_tv.apk` instead.
+MassDroid is on F-Droid for the phone
+([net.asksakis.massdroidv2](https://f-droid.org/packages/net.asksakis.massdroidv2/)) and for
+Android TV ([net.asksakis.massdroidv2.tv](https://f-droid.org/packages/net.asksakis.massdroidv2.tv/)).
+F-Droid publishes the same signed files as the release page, `massdroid-vX.Y.Z_fdroid.apk` and
+`massdroid-vX.Y.Z_tv_fdroid.apk`, once its own build of the release matches them. These builds
+have no in-app updater; F-Droid updates them. Outside F-Droid, install the regular
+`massdroid-vX.Y.Z.apk` or `massdroid-vX.Y.Z_tv.apk` instead.
 
 If your app stopped offering updates, you are probably on the F-Droid build: from v2.26.0 to
 v2.38.1 the in-app updater installed it by mistake. Install the regular APK over it once. Both
