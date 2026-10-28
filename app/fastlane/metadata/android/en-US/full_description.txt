@@ -15,7 +15,7 @@ Features:
 * Audiobooks and podcasts with chapter-aware controls.
 * Android Auto and Android TV support.
 
-Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device. Artist bios come from Wikipedia when Music Assistant has none.
+Genres come from your Music Assistant library and from MusicBrainz, with no account or API key to set up; the recommendation data stays on the device. Artist bios and the few words about the playing album come from Wikipedia when Music Assistant has none.
 
 About permissions:
 

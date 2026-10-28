@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Effective date: October 21, 2026
+Effective date: October 28, 2026
 
 MassDroid is an open-source Android app for controlling a Music Assistant server. It is available
 for phones, Android TV and Android Automotive OS. This policy describes what the app does with
@@ -24,13 +24,15 @@ The app connects to the following services, and to nothing else.
   the credentials you provide, and exchanges with it everything it needs to browse your library
   and control playback. This server belongs to you or to whoever runs it, and its own privacy
   terms apply to it.
-- **MusicBrainz** (musicbrainz.org). To fill in missing genres and to find artist biographies, the
-  app sends the names and MusicBrainz identifiers of artists: those in your library, and the
-  artists of tracks you start playing, so MusicBrainz can see which artists you listen to and when.
-  No account and no identifier of you or of your device is sent.
-- **Wikipedia and Wikidata** (wikipedia.org, wikidata.org). On the phone's artist page, when Music
-  Assistant has no biography for the artist, the app looks up the artist's Wikipedia summary. Only
-  the artist reference is sent.
+- **MusicBrainz** (musicbrainz.org). To fill in missing genres, to find artist biographies and to
+  describe the album that is playing, the app sends the names and MusicBrainz identifiers of
+  artists, and the titles of the albums you play: the artists in your library, and the artists and
+  albums of tracks you start playing, so MusicBrainz can see which artists and albums you listen to
+  and when. No account and no identifier of you or of your device is sent.
+- **Wikipedia and Wikidata** (wikipedia.org, wikidata.org). On the phone's artist page, and on the
+  Now Playing screen of the phone and the TV, when Music Assistant has no description of the artist
+  or of the playing album, the app looks up its Wikipedia summary. Only the reference to the album
+  or the artist is sent.
 - **GitHub** (github.com), only in the build downloaded from GitHub. That build checks GitHub for a
   newer release and downloads it when you ask. The Google Play and F-Droid builds do not.
 - **Image hosts.** Cover art is loaded through your Music Assistant server. When the server
@@ -45,7 +47,7 @@ its own privacy policy.
 The app keeps the following on your device: your server address, your sign-in token, and, when
 you sign in with a username and password, both of them, so it can sign in again by itself; the key
 that identifies this device as a Music Assistant player; your settings; your play history and the
-preference scores it uses for recommendations; cached genres, biographies and artwork; when Follow
+preference scores it uses for recommendations; cached genres, biographies, album descriptions and artwork; when Follow
 Me is on, the names and identifiers of the Wi-Fi networks and Bluetooth devices it uses to
 recognize each room; and, when you turn on "Keep a log" in Settings, a diagnostic log of the
 last day, which turning the setting off deletes.
