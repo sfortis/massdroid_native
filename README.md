@@ -15,7 +15,7 @@
 
 <br/>
 
-<a href="https://apps.obtainium.imranr.dev/redirect.html?r=obtainium://add/https://github.com/sfortis/massdroid_native"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="58" /></a>&nbsp;&nbsp;<a href="https://www.buymeacoffee.com/sfortis" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="58" /></a>
+<a href="https://apps.obtainium.imranr.dev/redirect.html?r=obtainium://add/https://github.com/sfortis/massdroid_native"><img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="58" /></a>&nbsp;&nbsp;<a href="https://f-droid.org/packages/net.asksakis.massdroidv2/"><img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get it on F-Droid" height="58" /></a>&nbsp;&nbsp;<a href="https://www.buymeacoffee.com/sfortis" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="58" /></a>
 
 _This app is an unofficial third-party client and is not affiliated with the Music Assistant project._
 
@@ -193,6 +193,13 @@ If your app stopped offering updates, you are probably on the F-Droid build: fro
 v2.38.1 the in-app updater installed it by mistake. Install the regular APK over it once. Both
 builds have the same package and signing key, so your settings are kept, and the app updates
 itself again from then on.
+
+### Google Play (testing)
+
+MassDroid is in internal testing on Google Play for phones, Android TV and Android Automotive.
+To join, send the email address of your Google account to massdroid@asksakis.net. Once it is
+added, you get a link that opens MassDroid in the Play Store of every device signed in to that
+account.
 
 ### Dev build (latest features, may be unstable)
 
