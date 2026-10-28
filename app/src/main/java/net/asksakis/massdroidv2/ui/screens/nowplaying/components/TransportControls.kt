@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import net.asksakis.massdroidv2.domain.model.QueueState
 import net.asksakis.massdroidv2.domain.model.RepeatMode
+import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.screens.nowplaying.NowPlayingViewModel
 
@@ -49,6 +50,10 @@ internal fun TransportControls(
     // one names that source, rather than doing nothing at all, but they are drawn as
     // unavailable.
     val locked = queueState?.isDynamic == true
+    // A chapter jump is not a queue move, so an audiobook keeps both buttons.
+    val skip = queueState.skipAvailability()
+    val previousEnabled = enabled && (isAudiobook || skip.previous)
+    val nextEnabled = enabled && (isAudiobook || skip.next)
     val buttonSize = if (compact) 40.dp else 48.dp
     val playSize = if (compact) 52.dp else 64.dp
     val iconSize = if (compact) 26.dp else 32.dp
@@ -89,7 +94,7 @@ internal fun TransportControls(
         MdIconButton(onClick = {
             onHaptic()
             if (isAudiobook) viewModel.previousChapter() else viewModel.previous()
-        }, modifier = Modifier.size(buttonSize), enabled = enabled) {
+        }, modifier = Modifier.size(buttonSize), enabled = previousEnabled) {
             Icon(
                 Icons.Default.SkipPrevious,
                 contentDescription = if (isAudiobook) "Previous chapter" else "Previous",
@@ -111,7 +116,7 @@ internal fun TransportControls(
         MdIconButton(onClick = {
             onHaptic()
             if (isAudiobook) viewModel.nextChapter() else viewModel.next()
-        }, modifier = Modifier.size(buttonSize), enabled = enabled) {
+        }, modifier = Modifier.size(buttonSize), enabled = nextEnabled) {
             Icon(
                 Icons.Default.SkipNext,
                 contentDescription = if (isAudiobook) "Next chapter" else "Next",

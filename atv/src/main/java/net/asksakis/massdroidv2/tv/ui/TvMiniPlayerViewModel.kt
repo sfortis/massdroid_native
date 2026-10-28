@@ -9,9 +9,11 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.domain.model.Player
+import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
@@ -48,6 +50,11 @@ class TvMiniPlayerViewModel @Inject constructor(
     val volumeShown: StateFlow<Boolean> = combine(selectedPlayer, localPlayerId) { player, localId ->
         volumeKeyTarget(player, localId) is VolumeKeyTarget.RemotePlayer
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** False when next would do nothing, for example on a radio alone in the queue. */
+    val canNext: StateFlow<Boolean> = playerRepository.queueState
+        .map { it.skipAvailability().next }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     /** A step on the selected player, through the same controller as the volume keys. */
     fun volumeUp() {

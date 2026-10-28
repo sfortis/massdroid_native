@@ -2,6 +2,11 @@ package net.asksakis.massdroidv2.domain.model
 
 data class QueueState(
     val queueId: String,
+    /**
+     * Whether the player is playing this queue. False while another source, such as a
+     * streaming service's own connect mode, has taken the player over.
+     */
+    val active: Boolean = true,
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val elapsedTime: Double = 0.0,

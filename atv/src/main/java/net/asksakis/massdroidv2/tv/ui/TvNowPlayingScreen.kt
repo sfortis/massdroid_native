@@ -87,6 +87,7 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.RepeatMode
+import net.asksakis.massdroidv2.domain.model.skipAvailability
 
 @Composable
 fun TvNowPlayingScreen(
@@ -100,6 +101,7 @@ fun TvNowPlayingScreen(
     val elapsedState = viewModel.elapsed.collectAsStateWithLifecycle()
     val elapsed: () -> Double = remember(elapsedState) { { elapsedState.value } }
     val queue by viewModel.queueState.collectAsStateWithLifecycle()
+    val skip = queue.skipAvailability()
     val outputDelay by settingsViewModel.outputDelay.collectAsStateWithLifecycle()
     var showOptions by remember { mutableStateOf(false) }
     val media = player?.currentMedia
@@ -272,13 +274,15 @@ fun TvNowPlayingScreen(
                             "Shuffle",
                             active = shuffleOn
                         ) { viewModel.toggleShuffle() }
-                        TransportIcon(Icons.Filled.SkipPrevious, "Previous") { viewModel.previous() }
+                        TransportIcon(Icons.Filled.SkipPrevious, "Previous", enabled = skip.previous) {
+                            viewModel.previous()
+                        }
                         TransportIcon(
                             if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                             if (playing) "Pause" else "Play",
                             modifier = Modifier.focusRequester(playFocus)
                         ) { viewModel.playPause() }
-                        TransportIcon(Icons.Filled.SkipNext, "Next") { viewModel.next() }
+                        TransportIcon(Icons.Filled.SkipNext, "Next", enabled = skip.next) { viewModel.next() }
                         TransportIcon(
                             if (repeatMode == RepeatMode.ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat,
                             "Repeat",
@@ -398,6 +402,7 @@ private fun TransportIcon(
     description: String,
     modifier: Modifier = Modifier,
     active: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     // Active toggles (shuffle on / repeat) get a filled primary container; the
@@ -411,7 +416,13 @@ private fun TransportIcon(
     } else {
         IconButtonDefaults.colors()
     }
-    IconButton(onClick = onClick, modifier = modifier.pointerClick(onClick = onClick), colors = colors) {
+    // A disabled tv-material button keeps its focus, so the D-pad still steps across the row.
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.pointerClick(enabled = enabled, onClick = onClick),
+        enabled = enabled,
+        colors = colors
+    ) {
         Icon(icon, contentDescription = description)
     }
 }

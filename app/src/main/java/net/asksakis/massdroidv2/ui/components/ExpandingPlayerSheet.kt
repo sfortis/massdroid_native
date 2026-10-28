@@ -295,6 +295,7 @@ fun ExpandingPlayerSheet(
                             isPlaying = miniPlayerUiState.isPlaying,
                             onPlayPause = { guard { miniPlayerViewModel.playPause() } },
                             onNext = { guard { miniPlayerViewModel.next() } },
+                            canNext = miniPlayerUiState.canNext,
                             onQueue = { showQueueSheet = true },
                             onClick = { expanded = true; scope.launch { animatable.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) } },
                             onSwipeLeft = { miniPlayerViewModel.switchPlayer(1) },

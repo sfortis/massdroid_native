@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
+import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import kotlinx.coroutines.flow.first
@@ -28,7 +29,9 @@ data class MiniPlayerUiState(
     val artist: String = "",
     val imageUrl: String? = null,
     val isPlaying: Boolean = false,
-    val playerName: String = ""
+    val playerName: String = "",
+    /** False when next would do nothing, for example on a radio alone in the queue. */
+    val canNext: Boolean = true
 )
 
 @HiltViewModel
@@ -60,7 +63,8 @@ class MiniPlayerViewModel @Inject constructor(
             artist = currentTrack?.artistNames ?: selectedPlayer?.currentMedia?.artist.orEmpty(),
             imageUrl = currentTrack?.imageUrl ?: selectedPlayer?.currentMedia?.imageUrl,
             isPlaying = selectedPlayer?.state == PlaybackState.PLAYING,
-            playerName = selectedPlayer?.displayName.orEmpty()
+            playerName = selectedPlayer?.displayName.orEmpty(),
+            canNext = queueState.skipAvailability().next
         )
     }
         .distinctUntilChanged()

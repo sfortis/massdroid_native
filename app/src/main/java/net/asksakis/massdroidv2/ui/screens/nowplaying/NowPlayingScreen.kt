@@ -81,6 +81,7 @@ import net.asksakis.massdroidv2.domain.model.QueueSource
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 import net.asksakis.massdroidv2.domain.model.AudioFormatInfo
+import net.asksakis.massdroidv2.domain.model.skipAvailability
 import net.asksakis.massdroidv2.domain.recommendation.MediaIdentity
 import net.asksakis.massdroidv2.ui.components.AddToPlaylistDialog
 import net.asksakis.massdroidv2.ui.components.SheetDefaults
@@ -765,7 +766,7 @@ private fun NowPlayingPortrait(
             onNext = { if (controlsEnabled) viewModel.next() },
             onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
             canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
-            canSwipeNext = controlsEnabled,
+            canSwipeNext = controlsEnabled && queueState.skipAvailability().next,
             onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
             // A negative top gap lifts the cover into its surface's own top band.
             modifier = Modifier
@@ -1045,7 +1046,7 @@ private fun NowPlayingLandscape(
                     onNext = { if (controlsEnabled) viewModel.next() },
                     onPrevious = { if (controlsEnabled) viewModel.previousTrack() },
                     canSwipePrevious = controlsEnabled && (queueState?.currentIndex ?: 0) > 0,
-                    canSwipeNext = controlsEnabled,
+                    canSwipeNext = controlsEnabled && queueState.skipAvailability().next,
                     onHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
                     fillMaxWidth = false
                 )

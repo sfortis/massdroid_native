@@ -104,6 +104,12 @@ data class CurrentMedia(
 data class ServerQueue(
     @SerialName("queue_id") val queueId: String,
     val available: Boolean = true,
+    /**
+     * Whether this queue is what the player is playing. The server sets it from the
+     * player's `active_source`, and it refuses next and previous on a queue that is not
+     * active, because another source has taken the player over.
+     */
+    val active: Boolean = true,
     @SerialName("shuffle_enabled") val shuffleEnabled: Boolean = false,
     @SerialName("repeat_mode") val repeatMode: String = "off",
     @SerialName("elapsed_time") val elapsedTime: Double = 0.0,

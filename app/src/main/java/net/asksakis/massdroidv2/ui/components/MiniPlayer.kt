@@ -38,6 +38,7 @@ fun MiniPlayer(
     imageUrl: String?,
     isPlaying: Boolean,
     onPlayPause: () -> Unit,
+    canNext: Boolean = true,
     onNext: () -> Unit,
     onQueue: () -> Unit,
     onClick: () -> Unit,
@@ -165,7 +166,8 @@ fun MiniPlayer(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onNext()
                     },
-                    modifier = Modifier.size(44.dp)
+                    modifier = Modifier.size(44.dp),
+                    enabled = canNext
                 ) {
                     Icon(
                         imageVector = Icons.Default.SkipNext,

@@ -804,6 +804,7 @@ private fun MiniPlayerContainer(
         isPlaying = miniPlayerUiState.isPlaying,
         onPlayPause = { miniPlayerViewModel.playPause() },
         onNext = { miniPlayerViewModel.next() },
+        canNext = miniPlayerUiState.canNext,
         onQueue = { showQueueSheet = true },
         onClick = onClick
     )

@@ -127,6 +127,7 @@ fun TvMiniPlayer(
     // rather than Compose's spatial search, so LEFT and RIGHT always step to the neighbour.
     val buttonFocus = remember { List(TRANSPORT_BUTTON_COUNT) { FocusRequester() } }
     val volumeShown by viewModel.volumeShown.collectAsStateWithLifecycle()
+    val canNext by viewModel.canNext.collectAsStateWithLifecycle()
     val barLastIndex = if (volumeShown) TRANSPORT_BUTTON_COUNT else TRANSPORT_BUTTON_COUNT - VOLUME_BUTTON_COUNT
     var focusedIndex by remember { mutableIntStateOf(0) }
     fun barTarget(index: Int): FocusRequester = if (index == 0) mediaFocus else buttonFocus[index - 1]
@@ -262,6 +263,7 @@ fun TvMiniPlayer(
             },
             onPlayPause = viewModel::playPause,
             onNext = viewModel::next,
+            canNext = canNext,
             volumeShown = volumeShown,
             onVolumeDown = viewModel::volumeDown,
             onVolumeUp = viewModel::volumeUp,
@@ -294,6 +296,7 @@ private fun MiniPlayerBar(
     onOpen: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
+    canNext: Boolean,
     volumeShown: Boolean,
     onVolumeDown: () -> Unit,
     onVolumeUp: () -> Unit,
@@ -379,7 +382,12 @@ private fun MiniPlayerBar(
             )
         }
         Spacer(Modifier.width(6.dp))
-        IconButton(onClick = onNext, modifier = buttonModifier(2).pointerClick(onClick = onNext)) {
+        // Disabled, the button keeps its focus, so LEFT and RIGHT still step across it.
+        IconButton(
+            onClick = onNext,
+            modifier = buttonModifier(2).pointerClick(enabled = canNext, onClick = onNext),
+            enabled = canNext
+        ) {
             Icon(Icons.Filled.SkipNext, contentDescription = "Next")
         }
         Spacer(Modifier.width(6.dp))

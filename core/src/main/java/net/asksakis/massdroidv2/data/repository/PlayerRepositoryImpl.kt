@@ -2553,6 +2553,7 @@ fun ServerMediaItem.toChapters(): List<Chapter> =
 
 fun ServerQueue.toDomain(imageResolver: ImageUrlResolver): QueueState = QueueState(
     queueId = queueId,
+    active = active,
     shuffleEnabled = shuffleEnabled,
     repeatMode = RepeatMode.fromApi(repeatMode),
     elapsedTime = elapsedTime,
