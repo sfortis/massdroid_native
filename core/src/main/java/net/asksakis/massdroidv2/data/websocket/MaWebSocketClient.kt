@@ -877,24 +877,34 @@ class MaWebSocketClient(
                     return@launch
                 }
                 val login = pendingLogin
+                val token = authToken
+                val creds = savedCredentials
                 if (login != null) {
                     loginWithCredentials(login.first, login.second)
-                } else if (authToken != null) {
-                    // Try token auth first, fallback to saved credentials if it fails
-                    try {
-                        authorizeWithToken(authToken!!)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Token auth failed: ${e.message}, trying saved credentials")
-                        val creds = savedCredentials
-                        if (creds != null && passwordFallbackAllowedFor(trusted, offered)) {
-                            loginWithCredentials(creds.first, creds.second)
-                        } else {
-                            throw e  // No fallback available
+                } else when (
+                    automaticSignIn(token, creds != null, passwordFallbackAllowedFor(trusted, offered))
+                ) {
+                    AutomaticSignIn.TOKEN -> {
+                        // Try token auth first, fallback to saved credentials if it fails
+                        try {
+                            authorizeWithToken(token!!)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Token auth failed: ${e.message}, trying saved credentials")
+                            if (creds != null && passwordFallbackAllowedFor(trusted, offered)) {
+                                loginWithCredentials(creds.first, creds.second)
+                            } else {
+                                throw e  // No fallback available
+                            }
                         }
                     }
-                } else {
-                    _connectionState.value = ConnectionState.Error("No token or credentials available")
-                    return@launch
+                    AutomaticSignIn.PASSWORD -> {
+                        Log.d(TAG, "No saved token, signing in with the saved password")
+                        loginWithCredentials(creds!!.first, creds.second)
+                    }
+                    AutomaticSignIn.NONE -> {
+                        _connectionState.value = ConnectionState.Error("No token or credentials available")
+                        return@launch
+                    }
                 }
 
                 Log.d(TAG, "Authenticated")
@@ -1250,6 +1260,23 @@ internal const val DIFFERENT_SERVER_MESSAGE =
  */
 internal fun isTransientAuthFailure(e: Throwable): Boolean =
     e is MaApiException && e.mayHaveTakenEffect
+
+/** How a connection that no sign-in screen started proves who the user is. */
+internal enum class AutomaticSignIn { TOKEN, PASSWORD, NONE }
+
+/**
+ * The saved token when there is one, else the saved password. A token the server refused is
+ * cleared, and so is a blank one read from storage, so without the password branch every
+ * later reconnect stopped at "No token or credentials available" until the user signed in
+ * again by hand (issue #80, seen in a car moving between networks). The password goes only
+ * where [passwordAllowed] says the token could fall back to it.
+ */
+internal fun automaticSignIn(token: String?, hasSavedPassword: Boolean, passwordAllowed: Boolean): AutomaticSignIn =
+    when {
+        !token.isNullOrBlank() -> AutomaticSignIn.TOKEN
+        hasSavedPassword && passwordAllowed -> AutomaticSignIn.PASSWORD
+        else -> AutomaticSignIn.NONE
+    }
 
 class MaApiException(message: String, val code: Int) : Exception(message) {
     /**

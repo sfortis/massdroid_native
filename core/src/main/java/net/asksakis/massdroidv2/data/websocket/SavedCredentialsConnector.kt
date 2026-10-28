@@ -20,12 +20,16 @@ class SavedCredentialsConnector @Inject constructor(
     private val settingsRepository: SettingsRepository
 ) {
 
-    /** True when saved credentials exist; nothing is connected until [connectIfNeeded]. */
-    suspend fun hasSavedToken(): Boolean {
-        val url = settingsRepository.serverUrl.first()
-        val token = settingsRepository.authToken.first()
-        return url.isNotBlank() && token.isNotBlank() && url.contains("://")
-    }
+    /**
+     * True when the app can sign in by itself: a server address and either a token or a
+     * username with its password. Nothing is connected until [connectIfNeeded].
+     */
+    suspend fun hasSavedCredentials(): Boolean = canSignInUnattended(
+        url = settingsRepository.serverUrl.first(),
+        token = settingsRepository.authToken.first(),
+        username = settingsRepository.username.first(),
+        password = settingsRepository.password.first(),
+    )
 
     /**
      * Connect if the client needs it and the listener has not disconnected on purpose,
@@ -36,7 +40,8 @@ class SavedCredentialsConnector @Inject constructor(
         wsClient.startupReady.first { it }
         if (wsClient.connectionState.value is ConnectionState.Connected) return true
         if (wsClient.connectionState.value.needsConnect() && !wsClient.userDisconnected) {
-            if (!hasSavedToken()) return false
+            if (!hasSavedCredentials()) return false
+            // A blank token is fine here: the client then signs in with the saved password.
             wsClient.connect(
                 settingsRepository.serverUrl.first(),
                 settingsRepository.authToken.first(),
@@ -53,3 +58,12 @@ class SavedCredentialsConnector @Inject constructor(
         const val DEFAULT_TIMEOUT_MS = 5_000L
     }
 }
+
+/**
+ * Whether saved settings are enough to sign in with no screen open. The token alone used to be
+ * required, while the car's playback service already counted a saved password: with the token
+ * gone the car showed its tabs as signed in and never connected (issue #80).
+ */
+internal fun canSignInUnattended(url: String, token: String, username: String, password: String): Boolean =
+    url.isNotBlank() && url.contains("://") &&
+        (token.isNotBlank() || (username.isNotBlank() && password.isNotBlank()))

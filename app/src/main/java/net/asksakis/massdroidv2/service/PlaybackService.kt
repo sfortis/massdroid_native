@@ -94,13 +94,7 @@ class PlaybackService : MediaLibraryService() {
      * (that left the AAOS media center stuck on a blank, tab-less sign-in screen). Read fresh
      * (suspending) per query so there is no startup race against the first DataStore emission.
      */
-    private suspend fun hasStoredCredentials(): Boolean {
-        val url = settingsRepository.serverUrl.first()
-        val token = settingsRepository.authToken.first()
-        val user = settingsRepository.username.first()
-        val pass = settingsRepository.password.first()
-        return url.isNotBlank() && (token.isNotBlank() || (user.isNotBlank() && pass.isNotBlank()))
-    }
+    private suspend fun hasStoredCredentials(): Boolean = savedCredentialsConnector.hasSavedCredentials()
 
     /**
      * In the car (AAOS) the system media center binds this service WITHOUT ever
