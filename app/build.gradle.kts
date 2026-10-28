@@ -182,18 +182,22 @@ android {
             buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "false")
-            // The native symbols go into the AAB, so Play shows function names in native
-            // crashes. Only the Play flavors: the F-Droid build must stay reproducible.
-            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
+            // Full native symbols, so Play shows the function, file and line of a native
+            // crash. Play does not read them from the AAB, so ~/work/play_store_tools
+            // uploads them with the bundle. Only the Play flavors: the F-Droid build must stay
+            // reproducible.
+            ndk { debugSymbolLevel = "FULL" }
         }
         create("automotive") {
             dimension = "distribution"
             buildConfigField("boolean", "IS_PLAY_STORE", "true")
             buildConfigField("boolean", "ENABLE_UPDATE_CHECK", "false")
             buildConfigField("boolean", "IS_AUTOMOTIVE", "true")
-            // The native symbols go into the AAB, so Play shows function names in native
-            // crashes. Only the Play flavors: the F-Droid build must stay reproducible.
-            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
+            // Full native symbols, so Play shows the function, file and line of a native
+            // crash. Play does not read them from the AAB, so ~/work/play_store_tools
+            // uploads them with the bundle. Only the Play flavors: the F-Droid build must stay
+            // reproducible.
+            ndk { debugSymbolLevel = "FULL" }
         }
     }
 
