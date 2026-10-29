@@ -106,10 +106,11 @@ jobs:
     name: Google Play bundles
     runs-on: ubuntu-latest
     env:
-      # internal while the app is in testing. An app that was never published accepts only draft
-      # releases; switch to completed once it is live.
-      PLAY_TRACK: internal
-      PLAY_STATUS: draft
+      # The closed test, so every release reaches the testers group once Google has reviewed it.
+      # The phone's closed track is "alpha"; the TV and AAOS closed tracks are named "closed".
+      PLAY_PHONE_TRACK: alpha
+      PLAY_FORM_FACTOR_TRACK: closed
+      PLAY_STATUS: completed
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
     steps:
       - uses: actions/checkout@v6
@@ -142,6 +143,11 @@ jobs:
           mv "$(find build-output/app/outputs/bundle/automotiveRelease -name '*.aab' | head -1)" "build-output/play/massdroid-${VERSION}_automotive.aab"
           mv "$(find build-output/atv/outputs/bundle/playRelease -name '*.aab' | head -1)" "build-output/play/massdroid-${VERSION}_tv_play.aab"
           ls -la build-output/play
+          # Play does not read the native debug symbols inside the bundle, so each upload carries
+          # them separately, taken from the bundle's metadata.
+          for name in play automotive tv_play; do
+            unzip -q "build-output/play/massdroid-${VERSION}_${name}.aab" 'BUNDLE-METADATA/com.android.tools.build.debugsymbols/*' -d "build-output/symbols-${name}"
+          done
           # The F-Droid changelog of this version doubles as the Play "What's new" text.
           CODE=$(grep -E 'versionCode\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+).*/\1/')
           NOTES="app/fastlane/metadata/android/en-US/changelogs/${CODE}.txt"
@@ -165,7 +171,9 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
           releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_play.aab
-          track: ${{ env.PLAY_TRACK }}
+          mappingFile: build-output/app/outputs/mapping/playRelease/mapping.txt
+          debugSymbols: build-output/symbols-play/BUNDLE-METADATA/com.android.tools.build.debugsymbols
+          track: ${{ env.PLAY_PHONE_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
@@ -177,7 +185,9 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
           releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_automotive.aab
-          track: automotive:${{ env.PLAY_TRACK }}
+          mappingFile: build-output/app/outputs/mapping/automotiveRelease/mapping.txt
+          debugSymbols: build-output/symbols-automotive/BUNDLE-METADATA/com.android.tools.build.debugsymbols
+          track: automotive:${{ env.PLAY_FORM_FACTOR_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
@@ -189,7 +199,9 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: net.asksakis.massdroidv2
           releaseFiles: build-output/play/massdroid-${{ steps.stage.outputs.version }}_tv_play.aab
-          track: tv:${{ env.PLAY_TRACK }}
+          mappingFile: build-output/atv/outputs/mapping/playRelease/mapping.txt
+          debugSymbols: build-output/symbols-tv_play/BUNDLE-METADATA/com.android.tools.build.debugsymbols
+          track: tv:${{ env.PLAY_FORM_FACTOR_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
           whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
