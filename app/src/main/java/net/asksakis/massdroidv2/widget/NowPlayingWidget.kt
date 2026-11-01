@@ -202,6 +202,23 @@ class NowPlayingWidget : GlanceAppWidget() {
         textLineHeight(STACK_TITLE_SP, fontScale) + STACK_TEXT_GAP + STACK_PLAY_MIN
 
     /**
+     * The title, the artist, the tighter gap and the smallest buttons. The stack shows
+     * the artist only on a card at least this tall, so the second line never takes its
+     * height out of the buttons.
+     */
+    private fun stackWithArtistMinHeight(fontScale: Float): Dp =
+        stackTextHeight(fontScale, withArtist = true) + STACK_PLAY_MIN
+
+    /** The text rows of the stack and the gap under them, at the viewer's font scale. */
+    private fun stackTextHeight(fontScale: Float, withArtist: Boolean): Dp =
+        if (withArtist) {
+            textLineHeight(STACK_TITLE_SP, fontScale) + textLineHeight(STACK_ARTIST_SP, fontScale) +
+                STACK_ARTIST_TEXT_GAP
+        } else {
+            textLineHeight(STACK_TITLE_SP, fontScale) + STACK_TEXT_GAP
+        }
+
+    /**
      * The chip, the two text rows and the spacers between them in the wide layout,
      * at the viewer's font scale. What is left of the card's height goes to the
      * buttons.
@@ -249,12 +266,12 @@ class NowPlayingWidget : GlanceAppWidget() {
      * the rest is a column with the title above the buttons. Stacking them gives the
      * title the whole width instead of the sliver left beside three buttons.
      *
-     * The artist is not shown at this size. A card one cell high fits one line of text
-     * and a row of buttons, and a second line took its height out of the buttons until
-     * they were clipped by the bottom edge. The title and the transport are what this
-     * size is for; the artist returns on the taller cards.
+     * The artist line is shown only when the card is tall enough for both text lines
+     * and the smallest buttons. A second line once took its height out of the buttons
+     * until they were clipped by the bottom edge, so a shorter card shows the title
+     * alone, as before.
      *
-     * The buttons take whatever height the title leaves, within bounds, so the column
+     * The buttons take whatever height the text leaves, within bounds, so the column
      * cannot outgrow the card however short the host makes it. They end up below
      * Material's 48dp target, which a row this size cannot honour and still show a
      * readable title; the system's own media widgets make the same trade here.
@@ -266,7 +283,8 @@ class NowPlayingWidget : GlanceAppWidget() {
         innerHeight: Dp,
         fontScale: Float
     ) {
-        val play = (innerHeight - textLineHeight(STACK_TITLE_SP, fontScale) - STACK_TEXT_GAP)
+        val withArtist = innerHeight >= stackWithArtistMinHeight(fontScale)
+        val play = (innerHeight - stackTextHeight(fontScale, withArtist))
             .coerceIn(STACK_PLAY_MIN, STACK_PLAY_MAX)
         Row(
             modifier = GlanceModifier.fillMaxSize(),
@@ -280,7 +298,10 @@ class NowPlayingWidget : GlanceAppWidget() {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 TitleLine(snapshot, STACK_TITLE_SP.sp, centred = true)
-                Spacer(GlanceModifier.height(STACK_TEXT_GAP))
+                if (withArtist) {
+                    SubtitleLine(snapshot, STACK_ARTIST_SP.sp, centred = true)
+                }
+                Spacer(GlanceModifier.height(if (withArtist) STACK_ARTIST_TEXT_GAP else STACK_TEXT_GAP))
                 TransportButtons(snapshot, sideSize = play * STACK_SIDE_RATIO, playSize = play)
             }
         }
@@ -307,7 +328,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 if (snapshot.isPlaying) R.drawable.ic_widget_pause else R.drawable.ic_widget_play,
                 if (snapshot.isPlaying) "Pause" else "Play",
                 TransportCommand.PLAY_PAUSE,
-                innerHeight.coerceAtMost(STACK_PLAY_MAX),
+                innerHeight.coerceAtMost(MINIMAL_PLAY_MAX),
                 filled = true
             )
         }
@@ -567,7 +588,8 @@ class NowPlayingWidget : GlanceAppWidget() {
         private const val LINE_HEIGHT_RATIO = 1.3f
 
         /** Text sizes the layouts reserve height for, in sp, so the budget and the Text agree. */
-        private const val STACK_TITLE_SP = 13f
+        private const val STACK_TITLE_SP = 15f
+        private const val STACK_ARTIST_SP = 12f
         private const val CHIP_SP = 12f
         private const val FULL_TITLE_SP = 17f
         private const val FULL_ARTIST_SP = 14f
@@ -581,11 +603,18 @@ class NowPlayingWidget : GlanceAppWidget() {
         private val STACK_TEXT_GAP = 6.dp
         private val STACK_PLAY_MIN = 26.dp
 
+        /** The gap under the artist line, smaller so the second line fits on a one-cell card. */
+        private val STACK_ARTIST_TEXT_GAP = 4.dp
+
         /**
-         * The buttons take whatever the title leaves, so this cap is what stops them
-         * filling a card that has room to spare once the artist is gone.
+         * The buttons take whatever the text leaves, so this cap is what stops them
+         * filling a card that has room to spare. At 44dp they took most of the card and
+         * left the title small (#73); the room now goes to the text.
          */
-        private val STACK_PLAY_MAX = 44.dp
+        private val STACK_PLAY_MAX = 36.dp
+
+        /** The play button of the minimal row, the only control that layout has. */
+        private val MINIMAL_PLAY_MAX = 44.dp
 
         /** Side buttons against the play button, kept close so the row reads as one control. */
         private const val STACK_SIDE_RATIO = 0.9f
