@@ -148,14 +148,18 @@ jobs:
           for name in play automotive tv_play; do
             unzip -q "build-output/play/massdroid-${VERSION}_${name}.aab" 'BUNDLE-METADATA/com.android.tools.build.debugsymbols/*' -d "build-output/symbols-${name}"
           done
-          # The F-Droid changelog of this version doubles as the Play "What's new" text.
-          CODE=$(grep -E 'versionCode\s*=' app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+).*/\1/')
-          NOTES="app/fastlane/metadata/android/en-US/changelogs/${CODE}.txt"
-          if [ -f "$NOTES" ]; then
-            mkdir -p build-output/whatsnew
-            cp "$NOTES" build-output/whatsnew/whatsnew-en-US
-            echo "whatsnew=build-output/whatsnew" >> "$GITHUB_OUTPUT"
-          fi
+          # The F-Droid changelog of this version doubles as the Play "What's new" text. The phone
+          # and AAOS bundles come from :app and take its changelog; the TV bundle takes the one
+          # in atv/fastlane, so TV testers do not read the phone's notes.
+          for module in app atv; do
+            CODE=$(grep -E 'versionCode\s*=' "${module}/build.gradle.kts" | head -1 | sed -E 's/.*=\s*([0-9]+).*/\1/')
+            NOTES="${module}/fastlane/metadata/android/en-US/changelogs/${CODE}.txt"
+            if [ -f "$NOTES" ]; then
+              mkdir -p "build-output/whatsnew-${module}"
+              cp "$NOTES" "build-output/whatsnew-${module}/whatsnew-en-US"
+              echo "whatsnew_${module}=build-output/whatsnew-${module}" >> "$GITHUB_OUTPUT"
+            fi
+          done
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Keep bundles as a workflow artifact
@@ -176,7 +180,7 @@ jobs:
           track: ${{ env.PLAY_PHONE_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
-          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_app }}
 
       - name: Upload Android Automotive OS bundle to Google Play
         if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
@@ -190,7 +194,7 @@ jobs:
           track: automotive:${{ env.PLAY_FORM_FACTOR_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
-          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_app }}
 
       - name: Upload Android TV bundle to Google Play
         if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
@@ -204,4 +208,4 @@ jobs:
           track: tv:${{ env.PLAY_FORM_FACTOR_TRACK }}
           status: ${{ env.PLAY_STATUS }}
           releaseName: ${{ steps.stage.outputs.version }}
-          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew }}
+          whatsNewDirectory: ${{ steps.stage.outputs.whatsnew_atv }}
