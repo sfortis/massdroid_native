@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Effective date: October 28, 2026
+Effective date: November 1, 2026
 
 MassDroid is an open-source Android app for controlling a Music Assistant server. It is available
 for phones, Android TV and Android Automotive OS. This policy describes what the app does with
@@ -87,5 +87,5 @@ date.
 
 ## Contact
 
-Questions about this policy can be asked in the project's issue tracker:
-https://github.com/sfortis/massdroid_native/issues
+Questions about this policy can be sent by email to massdroid@asksakis.net, or asked in the
+project's issue tracker: https://github.com/sfortis/massdroid_native/issues
