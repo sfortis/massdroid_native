@@ -178,7 +178,7 @@ private fun CarSignInScreen(
                         onValueChange = { url = it },
                         label = { Text("Server URL") },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(12.dp))

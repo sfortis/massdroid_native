@@ -868,6 +868,8 @@ private fun ServerUrlField(value: TextFieldValue, onValueChange: (TextFieldValue
         label = { Text("Server URL") },
         placeholder = { Text("https://ma.example.com") },
         singleLine = true,
+        // Autocorrect split "homeassistant" into two words, and a host with a space is no address.
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
         isError = urlMissingScheme,
         supportingText = if (urlMissingScheme) {
             { Text("Add http:// or https:// to the URL") }

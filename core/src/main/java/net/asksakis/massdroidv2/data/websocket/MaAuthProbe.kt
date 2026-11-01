@@ -123,7 +123,15 @@ class MaAuthProbe(
             }
         }
 
-        val request = Request.Builder().url(wsUrl).build()
+        // The probe runs while the user types, so the address is often half written. OkHttp
+        // throws on a host it cannot parse (a space from autocorrect, a lone "http://"), and
+        // that exception used to escape the ViewModel and end the app.
+        val request = try {
+            Request.Builder().url(wsUrl).build()
+        } catch (e: IllegalArgumentException) {
+            Log.d(TAG, "Not probing an invalid URL: ${e.message}")
+            return@withContext null
+        }
         val socket = httpClient.newWebSocket(request, listener)
 
         // Wait until the socket is open before sending the command.
