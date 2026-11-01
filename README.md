@@ -39,6 +39,8 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - [Requirements](#requirements)
 - [Installation](#installation)
   - [Stable release](#stable-release)
+  - [F-Droid build](#f-droid-build)
+  - [Google Play (testing)](#google-play-testing)
   - [Dev build](#dev-build-latest-features-may-be-unstable)
 - [Verifying a download](#verifying-a-download)
 - [Configuration](#configuration)
@@ -196,10 +198,16 @@ itself again from then on.
 
 ### Google Play (testing)
 
-MassDroid is in internal testing on Google Play for phones, Android TV and Android Automotive.
-To join, send the email address of your Google account to massdroid@asksakis.net. Once it is
-added, you get a link that opens MassDroid in the Play Store of every device signed in to that
-account.
+MassDroid is in closed testing on Google Play for phones, Android TV and Android Automotive.
+To join:
+
+1. Join the [massdroid-testers](https://groups.google.com/g/massdroid-testers) group with the Google account you use on the Play Store.
+2. Open the [testing page](https://play.google.com/apps/testing/net.asksakis.massdroidv2) on that account, accept the invite, and install MassDroid from the Play Store.
+
+The same two steps cover all three apps on that account. The Play version installs over the
+GitHub or F-Droid one and keeps your settings. Going back from Play to a GitHub APK on the TV or
+the car needs an uninstall. Google needs at least 12 testers for two weeks before the app can go
+public, so every tester helps.
 
 ### Dev build (latest features, may be unstable)
 
