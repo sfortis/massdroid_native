@@ -204,9 +204,11 @@ To join:
 1. Join the [massdroid-testers](https://groups.google.com/g/massdroid-testers) group with the Google account you use on the Play Store.
 2. Open the [testing page](https://play.google.com/apps/testing/net.asksakis.massdroidv2) on that account, accept the invite, and install MassDroid from the Play Store.
 
-The same two steps cover all three apps on that account. The Play version installs over the
-GitHub or F-Droid one and keeps your settings. Going back from Play to a GitHub APK on the TV or
-the car needs an uninstall. Google needs at least 12 testers for two weeks before the app can go
+The same two steps cover all three apps on that account. On the phone and in the car, the Play
+version installs over the GitHub or F-Droid one and keeps your settings; going back from Play to
+a GitHub APK in the car needs an uninstall. On Android TV the Play version is a separate app, so
+remove the GitHub or F-Droid TV app after you install it from Play; its settings do not carry
+over. Google needs at least 12 testers for two weeks before the app can go
 public, so every tester helps.
 
 ### Dev build (latest features, may be unstable)
