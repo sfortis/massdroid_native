@@ -59,6 +59,10 @@ fun normalizedAddress(url: String): String {
     return if (isDefault) "$scheme://$host$rest" else trimmed
 }
 
+/** Whether two saved or chosen server URLs are the same address; see [normalizedAddress]. */
+fun sameServer(a: String, b: String): Boolean =
+    normalizedAddress(a).equals(normalizedAddress(b), ignoreCase = true)
+
 private val DEFAULT_PORT = Regex("""^(https?)://([^/:]+):(\d+)(.*)$""", RegexOption.IGNORE_CASE)
 
 /** The address of [url] without its scheme, which is how the sign-in screens show it. */
@@ -84,22 +88,24 @@ fun serverRows(
         earlier.any { it.equals(url, ignoreCase = true) } -> "Used before"
         else -> null
     }
-    val found = announced.map { server ->
+    val foundAddresses = announced.map { normalizedAddress(it.url) }
+    val found = announced.mapIndexed { i, server ->
+        val address = foundAddresses[i]
         ServerRow(
             url = server.url,
             name = server.name,
             detail = listOfNotNull(
-                usedLabel(normalizedAddress(server.url)),
+                usedLabel(address),
                 displayAddressOf(server.url),
                 server.version?.let { "v$it" }
             ).joinToString(" · "),
             group = ServerRowGroup.ON_THIS_NETWORK,
             isHomeAssistantAddon = server.isHomeAssistantAddon,
-            canForget = earlier.any { it.equals(normalizedAddress(server.url), ignoreCase = true) }
+            canForget = earlier.any { it.equals(address, ignoreCase = true) }
         )
     }
     val used = (listOf(saved).filter { it.isNotEmpty() } + earlier)
-        .filter { url -> found.none { normalizedAddress(it.url).equals(url, ignoreCase = true) } }
+        .filter { url -> foundAddresses.none { it.equals(url, ignoreCase = true) } }
         .map { url ->
             ServerRow(
                 url = url,

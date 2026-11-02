@@ -23,15 +23,16 @@ import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient.ConnectOrigin
 import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 /**
- * The phone's sign-in to a server and everything it saves, owned by the app instead of a
- * screen. The sign-in used to run in the Settings or onboarding ViewModel, so leaving the
- * screen while it ran cancelled the saving, or the return to the server that worked.
+ * The sign-in to a server and everything it saves, owned by the app instead of a screen, so
+ * leaving the screen does not stop it.
  *
  * Nothing is saved until the attempt's own connection, told apart by its generation, is
  * [ConnectionState.Connected]. A failed, timed-out or abandoned attempt connects again to the
@@ -126,7 +127,7 @@ class SignInSession internal constructor(
         begin(serverUrl, serverId) {
             val expected = serverId ?: savedPasswordOwner()
             Credentials(username, password) {
-                wsClient.connectWithLogin(serverUrl, username, password, expected) { }
+                wsClient.connectWithLogin(serverUrl, username, password, expected)
             }
         }
     }
@@ -164,7 +165,7 @@ class SignInSession internal constructor(
                 } else {
                     wsClient.clearSavedCredentials()
                 }
-                wsClient.connect(serverUrl, account.token, MaWebSocketClient.ConnectOrigin.SIGN_IN, serverId)
+                wsClient.connect(serverUrl, account.token, ConnectOrigin.SIGN_IN, serverId)
             }
         }
     }
@@ -174,7 +175,7 @@ class SignInSession internal constructor(
         begin(serverUrl, serverId = null) {
             Credentials(username = "", password = "") {
                 wsClient.clearSavedCredentials()
-                wsClient.connect(serverUrl, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
+                wsClient.connect(serverUrl, token, ConnectOrigin.SIGN_IN)
             }
         }
     }
@@ -334,7 +335,7 @@ class SignInSession internal constructor(
             // Everything that loads per account loads on a new connection, so the server that
             // turned out to be another one is connected again after the reset.
             wsClient.disconnect()
-            wsClient.connect(session.url, session.token, MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS, session.serverId)
+            wsClient.connect(session.url, session.token, ConnectOrigin.SAVED_CREDENTIALS, session.serverId)
         }
         // Only the attempt still in charge reports success: one that a newer attempt or a cancel
         // replaced must not close a screen that is waiting for the newer one.
@@ -346,9 +347,10 @@ class SignInSession internal constructor(
         val stillCurrent = synchronized(lock) { (pending === attempt).also { if (it) pending = null } }
         // A newer attempt or a cancel owns the connection now.
         if (!stillCurrent) return
+        // Given up before connecting: prepare already said why, and nothing needs undoing.
+        if (!attempt.connectIssued) return
         val previous = attempt.previous
-        val returned = if (attempt.connectIssued) saveLock.withLock { returnTo(previous) } else false
-        if (outcome == null && !attempt.connectIssued) return
+        val returned = saveLock.withLock { returnTo(previous) }
         val reason = (outcome as? ConnectionState.Error)?.message ?: "The server did not answer."
         val target = displayAddressOf(attempt.url)
         _error.value = when {
@@ -382,7 +384,7 @@ class SignInSession internal constructor(
         wsClient.connect(
             previous.url,
             previous.token,
-            MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS,
+            ConnectOrigin.SAVED_CREDENTIALS,
             previous.serverId
         )
         wsClient.forgetLastSession(keepServerId = previous.serverId)

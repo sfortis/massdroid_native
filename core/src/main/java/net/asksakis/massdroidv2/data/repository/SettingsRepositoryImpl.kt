@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.connection.normalizedAddress
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -912,8 +913,6 @@ internal fun mergeRecentSearch(
 // The per-server entries of the device store. Top-level and internal so the rules are tested on
 // plain preferences, without a DataStore.
 
-/** An address as the keys name it; see [normalizedAddress]. */
-private fun addressOf(url: String) = normalizedAddress(url)
 
 /**
  * Saves one server's account and the address it was used through. The address now leads to
@@ -929,7 +928,7 @@ internal fun MutablePreferences.putServerEntry(
 ) {
     this[serverTokenKey(serverId)] = token
     this[serverUsernameKey(serverId)] = username
-    putAddress(addressOf(url), serverId, usedAtMs)
+    putAddress(normalizedAddress(url), serverId, usedAtMs)
 }
 
 private fun MutablePreferences.putAddress(address: String, serverId: String, usedAtMs: Long) {
@@ -948,8 +947,8 @@ private fun MutablePreferences.putAddress(address: String, serverId: String, use
  * server's account: Sign out leaves those.
  */
 internal fun MutablePreferences.forgetServerAt(url: String, serverId: String?, savedUrl: String) {
-    val wanted = addressOf(url)
-    if (savedUrl.isBlank() || wanted.equals(addressOf(savedUrl), ignoreCase = true)) return
+    if (savedUrl.isBlank() || sameServer(url, savedUrl)) return
+    val wanted = normalizedAddress(url)
     val keys = storedKeysFor(wanted)
     val servers = (listOfNotNull(serverId) + keys.mapNotNull { this[addressKey(it)] }).distinct()
     keys.forEach { removeAddress(it) }
@@ -993,7 +992,7 @@ private fun MutablePreferences.migrateLegacyAddresses() {
             val usedAt = this[legacyServerUsedAtKey(serverId)] ?: 0L
             remove(legacyServerUrlKey(serverId))
             remove(legacyServerUsedAtKey(serverId))
-            if (!url.isNullOrBlank()) putAddress(addressOf(url), serverId, usedAt)
+            if (!url.isNullOrBlank()) putAddress(normalizedAddress(url), serverId, usedAt)
         }
 }
 
@@ -1003,7 +1002,7 @@ internal fun Preferences.usedAddresses(): List<String> =
 
 /** The stored keys that name [address], an earlier build's unnormalized spelling included. */
 private fun Preferences.storedKeysFor(address: String): List<String> =
-    addresses().filter { addressOf(it).equals(address, ignoreCase = true) }
+    addresses().filter { sameServer(it, address) }
 
 private fun Preferences.addresses(): List<String> =
     asMap().keys.map { it.name }.filter { it.startsWith(ADDRESS_PREFIX) }.map { it.removePrefix(ADDRESS_PREFIX) }

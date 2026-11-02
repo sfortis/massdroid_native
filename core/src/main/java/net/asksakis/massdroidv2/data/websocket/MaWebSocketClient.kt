@@ -370,14 +370,15 @@ class MaWebSocketClient(
     /**
      * Signs in to [url] with a username and password and returns the generation of the
      * connection, as [connect] does. [expectedServerId] works as there: a password the app
-     * filled in for one server goes only to that server.
+     * filled in for one server goes only to that server. [onToken] receives the token the
+     * server issues; a caller that reads it from [authenticatedSession] passes none.
      */
     fun connectWithLogin(
         url: String,
         username: String,
         password: String,
         expectedServerId: String? = null,
-        onToken: (String) -> Unit
+        onToken: ((String) -> Unit)? = null
     ): Int = synchronized(connectLock) {
         // Same idle-sleep exception as [connect].
         val hasOngoingReconnect = reconnectJob?.isActive == true && !isIdleRetrySleeping()

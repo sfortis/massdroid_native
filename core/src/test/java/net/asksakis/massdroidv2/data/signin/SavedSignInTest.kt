@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.data.signin
 
 import com.google.common.truth.Truth.assertThat
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.ServerAccount
 import org.junit.Test
 
