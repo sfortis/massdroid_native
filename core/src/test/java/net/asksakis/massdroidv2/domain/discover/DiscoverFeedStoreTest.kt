@@ -179,9 +179,12 @@ class DiscoverFeedStoreTest {
         coVerify(timeout = WAIT_MS) { orchestrator.buildFeed() }
 
         sessionEventBus.emitReset()
-        delay(SETTLE_MS)
+        // The reset must have run before the build answers; a fixed wait was not always
+        // enough under load.
+        withTimeout(WAIT_MS) { store.resetsDone.first { it == 1 } }
         release.complete(Unit)
-        delay(SETTLE_MS)
+        // The build has ended, so a feed it wrongly applied would be on screen by now.
+        withTimeout(WAIT_MS) { store.buildsEnded.first { it >= 1 } }
 
         assertThat(store.state.value.sections).isEmpty()
         assertThat(store.libraryContext()).isNull()

@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.domain.discover
 
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -395,6 +396,7 @@ class DiscoverFeedStore @Inject constructor(
                     _state.update { it.copy(isLoading = false, isRefreshing = false) }
                 }
             }
+            _buildsEnded.update { it + 1 }
         }
     }
 
@@ -454,6 +456,24 @@ class DiscoverFeedStore @Inject constructor(
         if (synchronized(lock) { startSession != session }) discoverCache.clear()
     }
 
+    private val _buildsEnded = MutableStateFlow(0)
+
+    /**
+     * How many full builds have ended, applied, dropped or failed. Tests wait on it instead of
+     * a fixed time for a build to finish.
+     */
+    @VisibleForTesting
+    internal val buildsEnded: StateFlow<Int> = _buildsEnded.asStateFlow()
+
+    private val _resetsDone = MutableStateFlow(0)
+
+    /**
+     * How many account switches the store has applied. Tests wait on it, because the reset
+     * runs on the store's own scope some time after the switch is announced.
+     */
+    @VisibleForTesting
+    internal val resetsDone: StateFlow<Int> = _resetsDone.asStateFlow()
+
     // Account switch: nothing of the previous account may stay on screen or feed a mix.
     private fun reset() {
         Log.d(TAG, "Session reset: dropping the Discover feed")
@@ -470,5 +490,6 @@ class DiscoverFeedStore @Inject constructor(
             topArtists = emptyList()
             _state.value = State(isLoading = false)
         }
+        _resetsDone.update { it + 1 }
     }
 }
