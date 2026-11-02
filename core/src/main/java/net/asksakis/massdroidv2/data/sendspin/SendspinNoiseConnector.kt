@@ -68,7 +68,6 @@ class SendspinNoiseConnector @Inject constructor(
     // One move of the legacy player at a time: a Noise registration and a legacy one can overlap.
     private val legacyLock = Mutex()
 
-    /** The player id to start Sendspin with and, on MA 2.10.0 and later, the Noise session factory. */
     /**
      * What a Sendspin start uses, planned for the MA server [serverId]: the player id and, on
      * Noise, the session factory.

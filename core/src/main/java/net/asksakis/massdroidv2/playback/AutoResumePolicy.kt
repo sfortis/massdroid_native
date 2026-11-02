@@ -3,9 +3,8 @@ package net.asksakis.massdroidv2.playback
 import net.asksakis.massdroidv2.domain.model.PlaybackState
 
 /**
- * When playback on this phone starts again without the listener pressing play. Both cases used
- * to resume too often: every Bluetooth connect after a pause, and every MA reconnect after a
- * pause made somewhere else.
+ * When playback on this phone starts again without the listener pressing play: after a
+ * Bluetooth device connects, and after an MA reconnect.
  */
 internal object AutoResumePolicy {
 
@@ -45,13 +44,12 @@ internal object AutoResumePolicy {
      * player registers again was caused by the drop, not by anyone stopping the music. A
      * recorded PLAYING is therefore held against other reports for [POST_DROP_HOLD_MS] after the
      * connection comes back, unless a PLAYING report or a reconnect that read the record
-     * ([consumedByReconnect]) ends the hold first. Without the hold, a second MA reconnect
-     * during one Wi-Fi to mobile handover read the drop's IDLE and lost a resume that was owed.
+     * ([consumedByReconnect]) ends the hold first, so a second MA reconnect during one Wi-Fi to
+     * mobile handover still finds the resume it is owed.
      *
      * A report held back is kept, and it becomes the state once the window is over, whether or
-     * not another report arrives ([stateAt]). The players list can stay quiet for hours, and
-     * without that an MA reconnect at night read the old PLAYING and started the music after a
-     * pause.
+     * not another report arrives ([stateAt]). The players list can stay quiet for hours, so an
+     * MA reconnect at night reads the pause, not the old PLAYING.
      *
      * Only a recorded PLAYING is held, since nothing else can start a resume. That also keeps
      * the first reports after start(), which begins with the connection down, from being

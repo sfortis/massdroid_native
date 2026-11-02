@@ -34,7 +34,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.update
@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.sendspin.AcousticCalibrationCoordinator
 import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
+import net.asksakis.massdroidv2.data.sendspin.SendspinClient
 import net.asksakis.massdroidv2.data.sendspin.SendspinManager
 import net.asksakis.massdroidv2.data.sendspin.isBluetoothSink
 import net.asksakis.massdroidv2.data.sendspin.bluetoothSinkIdentity
@@ -471,7 +472,7 @@ class SendspinAudioController(
         }
     }
 
-    private fun pauseForRouteLoss(lostSink: String? = null) {
+    private fun pauseForRouteLoss(lostSink: String?) {
         val id = sendspinPlayerId ?: return
         // Silence locally first (mute + freeze) so the brief window before the
         // pause lands cannot leak audio to the phone speaker. pauseAudio() stops
@@ -1115,10 +1116,7 @@ class SendspinAudioController(
         }
 
         // The server's last word on this phone's player, kept for the resume after an MA
-        // reconnect. Only reports that arrive while the Sendspin connection is up count: when
-        // that connection drops, MA stops and unregisters the player, so a PAUSED or IDLE that
-        // follows says nothing about whether someone stopped the music, and the players list is
-        // emptied on every MA disconnect anyway.
+        // reconnect; see AutoResumePolicy.recordServerReport for which reports count.
         collectorJobs += scope.launch {
             combine(playerRepository.players, sendspinManager.connectionState, ::Pair)
                 .collect { (players, transport) ->
@@ -1359,17 +1357,11 @@ class SendspinAudioController(
                     val sendspinIsSelected =
                         playerRepository.selectedPlayer.value?.playerId == sendspinPlayerId
                     val intent = _userIntent.value
-                    // Resume only what the network cut: the server was playing when it last
-                    // spoke, and the listener here still wanted it. A pause from the MA web
-                    // UI, Home Assistant or another phone, or the end of the queue, leaves
-                    // the local intent untouched but makes the server's state PAUSED or IDLE.
-                    // The local intent still counts, because the pause this phone sends when
-                    // a car is switched off is often lost with the network.
+                    // Resume only what the network cut; see AutoResumePolicy.reconnectResumes.
                     val readAt = SystemClock.elapsedRealtime()
-                    val serverState = AutoResumePolicy.stateAt(
-                        serverPlaybackRecord.getAndUpdate { AutoResumePolicy.consumedByReconnect(it, readAt) },
-                        readAt,
-                    )
+                    val serverState = serverPlaybackRecord
+                        .updateAndGet { AutoResumePolicy.consumedByReconnect(it, readAt) }
+                        .state
                     val wantToResume = AutoResumePolicy.reconnectResumes(intent, sendspinIsSelected, serverState)
                     Log.d(
                         TAG,
@@ -2307,7 +2299,7 @@ class SendspinAudioController(
      */
     private fun buildCredentialsProvider(
         plannedServerId: String
-    ): suspend () -> net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? = {
+    ): suspend () -> SendspinClient.Credentials? = {
         sendspinCredentials(
             maState = wsClient.connectionState.value,
             lastSession = wsClient.lastSession,
@@ -2460,8 +2452,8 @@ internal fun sendspinCredentials(
     maState: ConnectionState,
     lastSession: AuthenticatedSession?,
     plannedServerId: String
-): net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? {
+): SendspinClient.Credentials? {
     val session = (maState as? ConnectionState.Connected)?.session ?: lastSession ?: return null
     if (session.serverId != plannedServerId) return null
-    return net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials(session.url, session.token)
+    return SendspinClient.Credentials(session.url, session.token)
 }
