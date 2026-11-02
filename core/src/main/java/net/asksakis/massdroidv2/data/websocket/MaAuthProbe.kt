@@ -52,16 +52,16 @@ class MaAuthProbe(
     }
 
     /**
-     * Whether anything answers HTTP at [origin] within [timeoutMs]. Any status counts, because
+     * Whether anything answers HTTP at [origin] within [REACH_TIMEOUT_MS]. Any status counts, because
      * the question is only whether this phone can reach the address at all.
      */
-    suspend fun answersHttp(origin: String, timeoutMs: Long = REACH_TIMEOUT_MS): Boolean = withContext(Dispatchers.IO) {
+    suspend fun answersHttp(origin: String): Boolean = withContext(Dispatchers.IO) {
         val request = try {
             Request.Builder().url(origin).head().build()
         } catch (_: IllegalArgumentException) {
             return@withContext false
         }
-        val client = clientFor(origin).newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
+        val client = clientFor(origin).newBuilder().callTimeout(REACH_TIMEOUT_MS, TimeUnit.MILLISECONDS).build()
         try {
             client.newCall(request).execute().use { true }
         } catch (e: IOException) {

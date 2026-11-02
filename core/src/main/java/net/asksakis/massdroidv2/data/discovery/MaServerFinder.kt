@@ -27,15 +27,11 @@ import kotlin.coroutines.resume
  * add-on" for the add-on, whose announced name is only its container hostname.
  */
 data class DiscoveredServer(
-    val serverId: String,
     val name: String,
     val url: String,
     val version: String?,
     val isHomeAssistantAddon: Boolean
-) {
-    /** The address without its scheme, for display. */
-    val address: String get() = url.substringAfter("://")
-}
+)
 
 /** The name to show for a server that announces [announced] as its name. */
 internal fun displayNameOf(announced: String?, isHomeAssistantAddon: Boolean): String {
@@ -52,7 +48,6 @@ internal fun displayNameOf(announced: String?, isHomeAssistantAddon: Boolean): S
  * home, so the address found on this network is used instead.
  */
 internal fun discoveredServerOf(
-    serviceName: String,
     txt: Map<String, String?>,
     hostAddress: String?,
     port: Int
@@ -67,7 +62,6 @@ internal fun discoveredServerOf(
     }
     val isAddon = txt["homeassistant_addon"].toBoolean()
     return DiscoveredServer(
-        serverId = txt["server_id"] ?: serviceName,
         name = displayNameOf(txt["name"], isAddon),
         url = url,
         version = txt["server_version"],
@@ -190,7 +184,6 @@ class MaServerFinder @Inject constructor(
         val record = reply.record
         val port = record.port ?: return null
         return discoveredServerOf(
-            serviceName = service.serviceName,
             txt = record.txt,
             hostAddress = record.addresses.firstOrNull { !it.contains(':') } ?: reply.responder,
             port = port
@@ -225,7 +218,6 @@ class MaServerFinder @Inject constructor(
         @Suppress("DEPRECATION") // getHost is replaced by getHostAddresses only from API 34.
         val address = host ?: return null
         return discoveredServerOf(
-            serviceName = serviceName,
             txt = attributes.mapValues { (_, value) -> value?.toString(Charsets.UTF_8) },
             hostAddress = address.hostAddress,
             port = port

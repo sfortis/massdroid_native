@@ -3,7 +3,6 @@ package net.asksakis.massdroidv2.service
 import net.asksakis.massdroidv2.playback.SendspinAudioController
 
 import android.app.PendingIntent
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -37,7 +36,6 @@ import net.asksakis.massdroidv2.domain.repository.PlaybackPosition
 import net.asksakis.massdroidv2.domain.repository.PlayerSelectionLock
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.player.TransportCommand
-import net.asksakis.massdroidv2.ui.MainActivity
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
@@ -354,23 +352,11 @@ class AndroidAutoController(
     }
 
     private fun createMediaSession(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
-        // The session activity is the "open the app" target the now-playing surface and the
-        // dock launch. On automotive MainActivity is disabled (the car never shows the full
-        // phone UI), and the sign-in screen as the target made the dock and now playing open
-        // sign-in first, so it is the media center showing MassDroid. Sign-in stays reachable
-        // through the media center's gear and through the signed-out session error.
-        // Phone/TV keep MainActivity.
-        val sessionIntent = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-            carMediaCenterIntent(service)
-        } else {
-            Intent(service, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-        }
+        // The session activity is the "open the app" target of the now-playing surface and the dock.
         val pendingIntent = PendingIntent.getActivity(
             service,
             0,
-            sessionIntent,
+            carOrPhoneLaunchIntent(service),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         session = MediaLibraryService.MediaLibrarySession.Builder(service, remotePlayer!!, libraryCallback)

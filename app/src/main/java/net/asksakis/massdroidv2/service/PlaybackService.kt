@@ -29,7 +29,6 @@ import net.asksakis.massdroidv2.data.websocket.sendCommand
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
-import net.asksakis.massdroidv2.ui.MainActivity
 import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import javax.inject.Inject
 
@@ -306,16 +305,9 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
-        // MainActivity is disabled in the car, so a tap there opens the media center instead.
         val contentIntent = PendingIntent.getActivity(
             this, CONN_CONTENT_REQUEST_CODE,
-            if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-                carMediaCenterIntent(this)
-            } else {
-                Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                }
-            },
+            carOrPhoneLaunchIntent(this),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 

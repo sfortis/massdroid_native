@@ -55,7 +55,6 @@ class MdnsMessageTest {
     @Test
     fun `a server is built from the answer's base URL`() {
         val server = discoveredServerOf(
-            serviceName = "21c3",
             txt = mapOf("base_url" to "http://192.168.1.14:8095", "name" to "Music Assistant (mass)", "server_id" to "21c3"),
             hostAddress = "192.168.1.14",
             port = 8095
@@ -67,7 +66,6 @@ class MdnsMessageTest {
     @Test
     fun `a base URL on another port gives way to the address on this network`() {
         val server = discoveredServerOf(
-            serviceName = "21c3",
             txt = mapOf("base_url" to "https://music.example.com"),
             hostAddress = "192.168.1.14",
             port = 8095

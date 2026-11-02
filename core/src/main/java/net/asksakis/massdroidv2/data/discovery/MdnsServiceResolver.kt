@@ -42,11 +42,7 @@ class MdnsServiceResolver @Inject constructor(
      * goes out on [network], the network discovery found the service on when Android says so
      * (API 33 and later), else on the first Wi-Fi or Ethernet network.
      */
-    suspend fun resolve(
-        instance: String,
-        network: Network? = null,
-        timeoutMs: Long = RESOLVE_TIMEOUT_MS
-    ): MdnsReply? =
+    suspend fun resolve(instance: String, network: Network? = null): MdnsReply? =
         withContext(Dispatchers.IO) {
             val local = network ?: localNetwork()
             try {
@@ -56,7 +52,7 @@ class MdnsServiceResolver @Inject constructor(
                     if (local != null) pinTo(socket, local)
                     socket.timeToLive = MULTICAST_TTL
                     socket.soTimeout = RECEIVE_SLICE_MS
-                    exchange(socket, instance, timeoutMs)
+                    exchange(socket, instance)
                 }
             } catch (e: IOException) {
                 Log.d(TAG, "Own resolve of $instance failed: ${e.message}")
@@ -82,7 +78,7 @@ class MdnsServiceResolver @Inject constructor(
         }
     }
 
-    private suspend fun exchange(socket: MulticastSocket, instance: String, timeoutMs: Long): MdnsReply? {
+    private suspend fun exchange(socket: MulticastSocket, instance: String): MdnsReply? {
         val query = MdnsMessage.query(instance, Random.nextInt(1, MAX_QUERY_ID))
         val group = InetAddress.getByName(MDNS_GROUP)
         val buffer = ByteArray(MAX_PACKET)
@@ -90,7 +86,7 @@ class MdnsServiceResolver @Inject constructor(
         // separate packets, so the resolve waits until one responder has sent both.
         val replies = HashMap<String, MdnsServiceRecord>()
         // The elapsed clock, so a change of the wall clock cannot stretch or end the wait.
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        val deadline = SystemClock.elapsedRealtime() + RESOLVE_TIMEOUT_MS
         var nextSend = 0L
         while (SystemClock.elapsedRealtime() < deadline) {
             coroutineContext.ensureActive()
