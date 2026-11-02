@@ -166,11 +166,19 @@ class DiscoverFeedStoreTest {
     fun `a build that finishes after an account switch is dropped`() = runBlocking {
         coEvery { cache.load() } returns null
         val release = CompletableDeferred<Unit>()
+        val builds = java.util.concurrent.atomic.AtomicInteger()
         coEvery { orchestrator.buildFeed() } coAnswers {
             // The switch cancels the build, but a build that already has its answer finishes
             // without suspending again; NonCancellable stands for that.
-            withContext(NonCancellable) { release.await() }
-            feed(liveSection)
+            if (builds.incrementAndGet() == 1) {
+                withContext(NonCancellable) { release.await() }
+                feed(liveSection)
+            } else {
+                // A build the store starts after the switch is the new account's, and may run
+                // when a watcher or the connection is seen late. It comes back empty, so only
+                // the build from before the switch could put Live on screen.
+                feed()
+            }
         }
         val store = store()
         val viewer = launch(Dispatchers.Default) { store.state.collect {} }
