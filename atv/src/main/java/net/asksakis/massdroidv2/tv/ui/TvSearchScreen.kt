@@ -23,7 +23,9 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
@@ -69,12 +71,29 @@ fun TvSearchScreen(
         viewModel.errors.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
+    val itemKeys = remember(items) { items.map { it.key } }
+    val gridFocus = rememberGridItemFocus(itemKeys, gridState, autoFocusOnLoad = false)
+    // A submitted search (the search key, a recent search, a spoken one) is final, so its
+    // results take the cursor once they are in. Typing never does: the results change under
+    // every letter, and the cursor must stay in the field. Without this, a recent search left
+    // the cursor on a chip that had just vanished, and Compose sent it back to the field,
+    // which reopened the keyboard over the results.
+    var focusResults by remember { mutableStateOf(false) }
+    LaunchedEffect(itemKeys.firstOrNull(), session.isSearching) {
+        if (focusResults && itemKeys.isNotEmpty() && !session.isSearching) {
+            focusResults = false
+            gridFocus.requesterFor(itemKeys.first()).requestFocusWhenAttached()
+        }
+    }
+    val submit = { focusResults = true; viewModel.submitQuery() }
+    val searchAgain = { query: String -> focusResults = true; viewModel.searchAgain(query) }
+
     // Voice input through the TV's speech recogniser (the Google app on Android TV): what it
     // heard is searched at once, as a submitted query, since the listener has said it all.
     val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
         when {
-            !heard.isNullOrBlank() -> viewModel.searchAgain(heard)
+            !heard.isNullOrBlank() -> searchAgain(heard)
             // The recogniser came back without a word: cancelled, or voice is not set up on
             // this TV (remote not paired, no Assistant). Said once, so a dead key is not a riddle.
             result.resultCode != Activity.RESULT_OK ->
@@ -102,8 +121,6 @@ fun TvSearchScreen(
     // The field takes the cursor on the first entry, so one press of the centre key opens the
     // keyboard. A return from an artist has a saved card, which the grid focus helper restores.
     val fieldFocus = rememberInitialFocus(enabled = session.query.isBlank())
-    val itemKeys = remember(items) { items.map { it.key } }
-    val gridFocus = rememberGridItemFocus(itemKeys, gridState, autoFocusOnLoad = false)
 
     TvGridScreen(
         title = "Search",
@@ -126,7 +143,7 @@ fun TvSearchScreen(
                             value = session.query,
                             keyboardType = KeyboardType.Text,
                             imeAction = ImeAction.Search,
-                            onImeAction = viewModel::submitQuery,
+                            onImeAction = submit,
                             focusRequester = fieldFocus,
                             onValueChange = viewModel::updateQuery
                         )
@@ -146,7 +163,7 @@ fun TvSearchScreen(
         }
     ) {
         if (items.isEmpty()) {
-            SearchEmptyState(session, filter, recent, onSearchAgain = viewModel::searchAgain)
+            SearchEmptyState(session, filter, recent, onSearchAgain = searchAgain)
         } else {
             TvMediaGrid(gridState) {
                 items(items, key = { it.key }) { item ->
