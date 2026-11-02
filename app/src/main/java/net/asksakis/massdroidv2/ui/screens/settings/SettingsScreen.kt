@@ -648,10 +648,48 @@ private fun ServerSection(
         viewModel.signIn.oauthErrors.collect { msg -> viewModel.signIn.setError(msg) }
     }
 
+    // Change server opens the server list while the current connection stays up, so leaving it
+    // changes nothing. Saveable, so a rotation keeps the list open.
+    var changingServer by rememberSaveable { mutableStateOf(false) }
+    val attemptedUrl by viewModel.signIn.attemptedUrl.collectAsStateWithLifecycle()
+    val leaveChangeServer = {
+        changingServer = false
+        viewModel.signIn.clearError()
+        viewModel.serverPicker.changeServer()
+    }
+    val chosenServer by viewModel.serverPicker.chosen.collectAsStateWithLifecycle()
+    // Back from a chosen server returns to the list first, then closes the list.
+    BackHandler(enabled = changingServer && isConnected) {
+        if (chosenServer != null) {
+            viewModel.signIn.clearError()
+            viewModel.serverPicker.changeServer()
+        } else {
+            leaveChangeServer()
+        }
+    }
+    // A sign-in to another server that connected ends Change server.
+    LaunchedEffect(isConnected, serverUrl, attemptedUrl) {
+        if (changingServer && isConnected && attemptedUrl != null && serverUrl == attemptedUrl) {
+            leaveChangeServer()
+        }
+    }
+
     SettingsSectionHeader("Server")
     // The URL cannot be edited while connected, so it is the status row's second line.
     ConnectionStatusRow(connectionState = connectionState, detail = serverUrl.takeIf { isConnected })
-    if (isConnected) {
+    if (isConnected && changingServer) {
+        SettingsRow(
+            title = "Keep using this server",
+            icon = Icons.AutoMirrored.Filled.ArrowBack,
+            supporting = "Close the server list without changing anything",
+            onClick = leaveChangeServer
+        )
+        SignInForm(
+            viewModel = viewModel,
+            connectionState = connectionState,
+            draft = draft
+        )
+    } else if (isConnected) {
         // Saveable so the question is still open after a rotation. Signing out cannot be
         // undone from here, because the password has to be typed again.
         var confirmingSignOut by rememberSaveable { mutableStateOf(false) }
@@ -659,6 +697,16 @@ private fun ServerSection(
             title = "Signed in as ${currentUser?.username ?: "unknown"}",
             icon = Icons.Default.Person,
             supporting = currentUser?.authMethod?.let { "via $it" }
+        )
+        SettingsRow(
+            title = "Change server",
+            icon = Icons.Default.Dns,
+            supporting = "Pick another Music Assistant server",
+            onClick = {
+                viewModel.signIn.clearError()
+                viewModel.serverPicker.changeServer()
+                changingServer = true
+            }
         )
         SettingsRow(
             title = "Sign out",

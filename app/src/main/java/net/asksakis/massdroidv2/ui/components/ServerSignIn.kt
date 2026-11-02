@@ -556,6 +556,4 @@ fun chooseClientCertificate(activity: Activity, current: String?, onResult: (Str
     )
 }
 
-const val NO_CERTIFICATE_CHOSEN = "No certificate was chosen. If the list did not open, this phone has no " +
-    "client certificate yet: install it in the Android settings first (search there for \"certificate\"), " +
-    "then try again."
+const val NO_CERTIFICATE_CHOSEN = "No certificate found on this phone."
