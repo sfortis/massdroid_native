@@ -74,6 +74,8 @@ interface SendspinAudioEngine {
     fun onOutputRouteChanged(reason: String)
     fun getRoutedDeviceType(): Int? = null
     fun getRoutedDeviceProductName(): String? = null
+    /** The [android.media.AudioDeviceInfo.getId] of the device the output is bound to, or null. */
+    fun getRoutedDeviceId(): Int? = null
 
     // Buffer info
     fun bufferDurationMs(): Long

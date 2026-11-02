@@ -292,6 +292,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
     @Volatile private var oldestLiveGeneration = 0L
     @Volatile protected var startupWaitStartedMs = 0L
     @Volatile private var routedDeviceType = -1
+    @Volatile private var routedDeviceId = -1
     @Volatile private var routedProductName: String? = null
     // Full output-path latency from AudioManager.getOutputLatency (DAC/analog
     // included), which Oboe getTimestamp under-reports. The gap (this minus the
@@ -716,6 +717,8 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
 
     override fun getRoutedDeviceProductName(): String? = routedProductName
 
+    override fun getRoutedDeviceId(): Int? = routedDeviceId.takeIf { it > 0 }
+
     override fun bufferDurationMs(): Long {
         val head = frameQueue.peek()?.serverTimestampUs ?: return 0L
         val tail = lastEnqueuedTimestampUs
@@ -1025,9 +1028,11 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
             null
         }
         val newType = info?.type ?: -1
+        val newId = info?.id ?: -1
         val newName = info?.productName?.toString()
-        if (newType == routedDeviceType && newName == routedProductName) return
+        if (newType == routedDeviceType && newId == routedDeviceId && newName == routedProductName) return
         routedDeviceType = newType
+        routedDeviceId = newId
         routedProductName = newName
         Log.d(TAG, "Routed device: type=$newType ($newName) id=$id")
         onRoutingChanged?.invoke()
@@ -1769,6 +1774,7 @@ abstract class SendspinPlaybackEngine(context: Context) : SendspinAudioEngine {
         unregisterDeviceCallback()
         nativeOutput.release()
         routedDeviceType = -1
+        routedDeviceId = -1
         routedProductName = null
         configured = false
         syncMuted = false
