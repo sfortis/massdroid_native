@@ -47,8 +47,23 @@ class MaArtistAliasResolverTest {
         val lookup = resolver.lookup(providerUri)
 
         assertThat(lookup).isEqualTo(
-            ArtistAliasLookup.Resolved(listOf("tidal--Q9://artist/55", libraryUri))
+            ArtistAliasLookup.Resolved(listOf("tidal--Q9://artist/55", libraryUri), artistName = "The Midnight")
         )
+    }
+
+    @Test
+    fun `an artist the server gives no name is answered without one`() = runTest {
+        coEvery { music.getArtist("202", "library", true) } returns Artist(
+            itemId = "202",
+            provider = "library",
+            name = " ",
+            uri = libraryUri,
+            providerUris = listOf(providerUri),
+        )
+
+        val lookup = resolver.lookup(libraryUri)
+
+        assertThat(lookup).isEqualTo(ArtistAliasLookup.Resolved(listOf(providerUri), artistName = null))
     }
 
     @Test

@@ -45,7 +45,8 @@ class MaArtistAliasResolver(
             ArtistAliasLookup.Resolved(
                 (artist.providerUris + artist.uri)
                     .filter { it.isNotBlank() && it != artistUri }
-                    .distinct()
+                    .distinct(),
+                artistName = artist.name.takeIf { it.isNotBlank() }
             )
         } catch (e: CancellationException) {
             throw e
@@ -65,11 +66,11 @@ class MaArtistAliasResolver(
     }
 
     /**
-     * Library and builtin uris belong to every server. A provider uri carries the
-     * instance id, and the domain is accepted as well for a provider whose uris use it.
+     * Library and builtin uris belong to every server ([isServerLocalUri]). A provider uri
+     * carries the instance id, and the domain is accepted as well for a provider whose uris use it.
      */
     private fun isServedHere(provider: String): Boolean {
-        if (provider in SERVER_WIDE_PROVIDERS) return true
+        if (provider in SERVER_LOCAL_PROVIDERS) return true
         val providers = musicProviders()
         return providers.isEmpty() ||
             providers.any { it.instanceId == provider || it.domain == provider }
@@ -92,6 +93,16 @@ class MaArtistAliasResolver(
 
     private companion object {
         const val TAG = "ArtistAliases"
-        val SERVER_WIDE_PROVIDERS = setOf("library", "builtin")
     }
 }
+
+/**
+ * Library and builtin uris exist on every server, and their ids are each server's own: the same
+ * uri names another artist, or nothing, on another server. Provider uris carry the provider
+ * instance and name the same item wherever that provider is.
+ */
+private val SERVER_LOCAL_PROVIDERS = setOf("library", "builtin")
+
+/** Whether [uri] is one of the server's own ids; see [SERVER_LOCAL_PROVIDERS]. */
+internal fun isServerLocalUri(uri: String): Boolean =
+    uri.substringBefore("://", "").trim() in SERVER_LOCAL_PROVIDERS

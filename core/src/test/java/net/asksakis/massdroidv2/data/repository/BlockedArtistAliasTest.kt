@@ -40,7 +40,9 @@ class BlockedArtistAliasTest {
     private fun repo(aliases: ArtistAliasResolver) =
         SmartListeningRepositoryImpl(dao, settings, transactions, aliases)
 
-    private fun resolved(aliases: List<String>) = ArtistAliasLookup.Resolved(aliases)
+    // The server names the fixture artist as the blocks do.
+    private fun resolved(aliases: List<String>, name: String? = "The Midnight") =
+        ArtistAliasLookup.Resolved(aliases, name)
 
     @Test
     fun `blocking one uri blocks every uri the server knows`() = runTest {
@@ -187,6 +189,100 @@ class BlockedArtistAliasTest {
 
         assertThat(expanded).isFalse()
         coVerify { settings.setBlockedArtistAliasProviders("acme,newone") }
+    }
+
+    // --- a server's own uris after a switch to another server ---
+
+    @Test
+    fun `a library uri that names another artist on this server adds nothing`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(BlockedArtistRow(libraryUri, "The Midnight", 1_000))
+
+        val expanded = repo { resolved(listOf(providerUri), name = "Someone Else") }
+            .backfillBlockedArtistAliases("acme,other")
+
+        assertThat(expanded).isFalse()
+        coVerify(exactly = 0) { dao.upsertBlockedArtists(any()) }
+        coVerify { settings.setBlockedArtistAliasProviders("acme,other") }
+    }
+
+    @Test
+    fun `the same name in another spelling is the same artist`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(BlockedArtistRow(libraryUri, "Beyonce", 1_000))
+
+        val expanded = repo { resolved(listOf(providerUri), name = "Beyoncé") }
+            .backfillBlockedArtistAliases("acme,other")
+
+        assertThat(expanded).isTrue()
+    }
+
+    @Test
+    fun `a library row without a name on either side is skipped`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000),
+            BlockedArtistRow("library://artist/303", null, 1_000),
+        )
+        val repo = repo { uri -> resolved(listOf(providerUri), name = if (uri == libraryUri) " " else "The Midnight") }
+
+        assertThat(repo.backfillBlockedArtistAliases("acme,other")).isFalse()
+        coVerify(exactly = 0) { dao.upsertBlockedArtists(any()) }
+    }
+
+    @Test
+    fun `an unnamed provider row is still expanded`() = runTest {
+        // Provider uris name the same item on every server; the name guard is not theirs.
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(BlockedArtistRow(providerUri, null, 1_000))
+
+        val expanded = repo { resolved(listOf(libraryUri), name = null) }.backfillBlockedArtistAliases("acme,other")
+
+        assertThat(expanded).isTrue()
+        val rows = slot<List<BlockedArtistEntity>>()
+        coVerify { dao.upsertBlockedArtists(capture(rows)) }
+        assertThat(rows.captured.map { it.artistUri }).containsExactly(libraryUri)
+    }
+
+    @Test
+    fun `a skipped row does not stop the rows after it`() = runTest {
+        val second = "library://artist/303"
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000),
+            BlockedArtistRow(second, "Someone Else", 1_000),
+        )
+        val repo = repo { uri ->
+            if (uri == libraryUri) resolved(listOf(providerUri), name = "A Stranger") else resolved(listOf("acme--Xy1://artist/9"), name = "Someone Else")
+        }
+
+        assertThat(repo.backfillBlockedArtistAliases("acme,other")).isTrue()
+        coVerify { settings.setBlockedArtistAliasProviders("acme,other") }
+        val rows = slot<List<BlockedArtistEntity>>()
+        coVerify(exactly = 1) { dao.upsertBlockedArtists(capture(rows)) }
+        assertThat(rows.captured.map { it.artistUri }).containsExactly("acme--Xy1://artist/9")
+    }
+
+    @Test
+    fun `a skipped row followed by a failed lookup records nothing`() = runTest {
+        every { settings.blockedArtistAliasProviders } returns flowOf("acme")
+        coEvery { dao.getBlockedArtists() } returns listOf(
+            BlockedArtistRow(libraryUri, "The Midnight", 2_000),
+            BlockedArtistRow("library://artist/303", "Someone Else", 1_000),
+        )
+        val repo = repo { uri -> if (uri == libraryUri) resolved(listOf(providerUri), name = "A Stranger") else ArtistAliasLookup.Failed }
+
+        assertThat(repo.backfillBlockedArtistAliases("acme,other")).isFalse()
+        coVerify(exactly = 0) { settings.setBlockedArtistAliasProviders(any()) }
+    }
+
+    @Test
+    fun `names are compared without case, accents or punctuation, and never when one is missing`() {
+        assertThat(isSameArtist("The Midnight", "the-midnight")).isTrue()
+        assertThat(isSameArtist("Beyonce", "Beyoncé")).isTrue()
+        assertThat(isSameArtist("The Midnight", "Someone Else")).isFalse()
+        assertThat(isSameArtist(null, "The Midnight")).isFalse()
+        assertThat(isSameArtist("The Midnight", " ")).isFalse()
     }
 
     @Test

@@ -28,8 +28,11 @@ fun interface ArtistAliasResolver {
  * gets the same answer, while [Failed] may succeed on the next connection.
  */
 sealed interface ArtistAliasLookup {
-    /** The server answered. The list is empty when it knows the artist under this uri only. */
-    data class Resolved(val aliases: List<String>) : ArtistAliasLookup
+    /**
+     * The server answered. The list is empty when it knows the artist under this uri only.
+     * [artistName] is the name the server gave the artist, null when it gave none.
+     */
+    data class Resolved(val aliases: List<String>, val artistName: String? = null) : ArtistAliasLookup
 
     /**
      * Asking again will not help: the server does not know the uri, or the uri names a
