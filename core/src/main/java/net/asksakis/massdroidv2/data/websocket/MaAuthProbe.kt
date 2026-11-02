@@ -90,7 +90,8 @@ class MaAuthProbe(
                 json.decodeFromJsonElement(ListSerializer(MaAuthProvider.serializer()), raw)
             }.getOrNull()
         }.orEmpty().map { it.toInfo() }
-        return ServerAnswer.MusicAssistant(version, providers)
+        val serverId = (exchange.hello?.get("server_id") as? JsonPrimitive)?.contentOrNull
+        return ServerAnswer.MusicAssistant(version, providers, serverId)
     }
 
     /**
@@ -223,7 +224,11 @@ class MaAuthProbe(
 
 /** What an address said when asked whether it is Music Assistant. */
 sealed interface ServerAnswer {
-    data class MusicAssistant(val version: String, val providers: List<AuthProviderInfo>) : ServerAnswer
+    data class MusicAssistant(
+        val version: String,
+        val providers: List<AuthProviderInfo>,
+        val serverId: String? = null
+    ) : ServerAnswer
 
     /** No Music Assistant answered. [error] is the connection failure, null when there was none to name. */
     data class Failed(val error: Throwable?) : ServerAnswer

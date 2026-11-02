@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.domain.repository
 import kotlinx.coroutines.flow.Flow
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
+import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.model.SortOption
 
 interface SettingsRepository : TrustedServerStore {
@@ -232,6 +233,46 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun setClientCertAlias(alias: String?)
     suspend fun setUsername(username: String)
     suspend fun setPassword(password: String)
+
+    /**
+     * The account saved for the Music Assistant server [serverId] (its `server_id`), so a
+     * sign-in to a server used before can continue with its own token. Blank when none is
+     * saved. The keys above stay the account of the current server, which the TV and the car
+     * read; these are kept beside them, one entry per server.
+     */
+    fun serverAccount(serverId: String): Flow<ServerAccount>
+
+    /**
+     * Saves a sign-in that succeeded: the current account (token, username, password, trusted
+     * server), the per-server entry with the address and the time it was used, and the server
+     * address last, so the saved address never names a server whose token is not saved yet.
+     * Another server saved under the same address is dropped, since the address now leads here.
+     */
+    suspend fun saveSignIn(serverId: String, url: String, token: String, username: String, password: String)
+
+    /** Saves the token of a connection that signed in by itself, such as a reconnect. */
+    suspend fun saveConnectionToken(serverId: String, url: String, token: String)
+
+    /** Forgets [token] wherever it is saved, the current account and [serverId]'s entry, in one edit. */
+    suspend fun forgetRejectedToken(serverId: String?, token: String)
+
+    /** Forgets the token saved for [serverId]; its username stays for the sign-in form. */
+    suspend fun forgetServerToken(serverId: String)
+
+    /**
+     * Copies the account saved before tokens were kept per server into the entry of the server
+     * it belongs to, once per install. Later calls do nothing.
+     */
+    suspend fun migrateToServerAccounts()
+
+    /**
+     * The last address of every server signed in to from this phone, most recently used first,
+     * for the server list of the sign-in.
+     */
+    val usedServerUrls: Flow<List<String>>
+
+    /** Forgets the server last used at [url]: its token, username, address and time of use. */
+    suspend fun forgetServerAt(url: String)
     suspend fun setSendspinEnabled(enabled: Boolean)
     suspend fun setSmartListeningEnabled(enabled: Boolean)
     suspend fun setSmartMixVariety(value: Float)

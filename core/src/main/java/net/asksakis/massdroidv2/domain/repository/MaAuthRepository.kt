@@ -20,6 +20,12 @@ interface MaAuthRepository {
     val oauthErrors: SharedFlow<String>
 
     /**
+     * A Home Assistant sign-in that came back with a token. Nothing is saved here: the phone's
+     * sign-in session connects with it and saves it only once the server accepted it.
+     */
+    val completedOAuthSignIns: SharedFlow<OAuthSignIn>
+
+    /**
      * Checks that Music Assistant answers at [serverUrl] and loads its login providers into
      * [availableProviders], which empties when it does not answer.
      */
@@ -43,11 +49,23 @@ interface MaAuthRepository {
     fun handleAppResumed()
 
     /**
-     * Wipe everything tied to the current sign-in: token, saved credentials,
-     * discover cache, and the live WebSocket connection. The server URL is
-     * preserved so the user can sign back in to the same server.
+     * Wipe everything tied to the current sign-in: the current server's token and
+     * password, the discover cache, and the live WebSocket connection. The server URL
+     * and the username are preserved so the user can sign back in to the same server,
+     * and the accounts saved for other servers are left alone.
      */
     suspend fun signOut()
+
+    /**
+     * Drops the per-account state (the Discover cache and everything held in memory) before a
+     * sign-in to another server, as Sign out and the Home Assistant sign-in do.
+     */
+    suspend fun prepareServerSwitch()
+}
+
+/** The server a Home Assistant sign-in was for, and the token it returned. */
+class OAuthSignIn(val url: String, val token: String) {
+    override fun toString(): String = "OAuthSignIn(${url.substringAfter("://")})"
 }
 
 /**

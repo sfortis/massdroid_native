@@ -111,6 +111,7 @@ private fun CarSignInScreen(
     val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
     val picker = viewModel.serverPicker
     val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
     val chosen by picker.chosen.collectAsStateWithLifecycle()
     val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
     val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
@@ -221,11 +222,15 @@ private fun CarSignInScreen(
                         // address of one's own is the last row.
                         ServerList(
                             rows = rows,
+                            searching = searching,
                             onPick = { row ->
                                 viewModel.cancelAttempt()
                                 attempted = false
                                 picker.choose(row.url, row.name)
                             },
+                            onSearchAgain = picker::searchAgain,
+                            onForget = picker::forget,
+                            largeTargets = true,
                             onOther = { choosingOther = true }
                         )
                     } else {

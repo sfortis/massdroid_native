@@ -7,8 +7,11 @@ sealed interface ServerCheck {
 
     data object Checking : ServerCheck
 
-    /** Music Assistant answered at [url]. */
-    data class Found(val url: String, val version: String) : ServerCheck
+    /**
+     * Music Assistant answered at [url]. [serverId] is the `server_id` its greeting carried,
+     * which names the account saved for it.
+     */
+    data class Found(val url: String, val version: String, val serverId: String? = null) : ServerCheck
 
     /**
      * The address cannot be used, and [message] says why in words the user can act on.
@@ -29,7 +32,10 @@ data class ServerRow(
     val name: String,
     val detail: String?,
     val group: ServerRowGroup,
-    val isHomeAssistantAddon: Boolean = false
+    val isHomeAssistantAddon: Boolean = false,
+    // A server used before that is not the current one, found on the network or not, which the
+    // list can forget. The current server is left by Sign out instead.
+    val canForget: Boolean = false
 )
 
 /** A server announced on the local network, as the server list needs it. */
@@ -44,30 +50,50 @@ data class AnnouncedServer(
 fun displayAddressOf(url: String): String = url.substringAfter("://").trimEnd('/')
 
 /**
- * The rows of the server list: the server used last, then the servers announced on this
- * network. The last used server gets a row of its own only when it was not announced, and an
- * announced server that was used last says so in its detail line.
+ * The rows of the server list: the server used last and the other servers signed in to before
+ * ([usedBefore], most recent first), then the servers announced on this network. A used
+ * server gets a row of its own only when it was not announced, and an announced server that was
+ * used says so in its detail line.
  */
-fun serverRows(savedUrl: String, announced: List<AnnouncedServer>): List<ServerRow> {
+fun serverRows(
+    savedUrl: String,
+    announced: List<AnnouncedServer>,
+    usedBefore: List<String> = emptyList()
+): List<ServerRow> {
     val saved = savedUrl.trim().trimEnd('/')
+    val earlier = usedBefore.map { it.trim().trimEnd('/') }
+        .filter { it.isNotEmpty() && !it.equals(saved, ignoreCase = true) }
+        .distinctBy { it.lowercase() }
+    fun usedLabel(url: String): String? = when {
+        saved.isNotEmpty() && url.equals(saved, ignoreCase = true) -> "Last used"
+        earlier.any { it.equals(url, ignoreCase = true) } -> "Used before"
+        else -> null
+    }
     val found = announced.map { server ->
-        val wasUsed = saved.isNotEmpty() && server.url.trimEnd('/') == saved
         ServerRow(
             url = server.url,
             name = server.name,
             detail = listOfNotNull(
-                "Last used".takeIf { wasUsed },
+                usedLabel(server.url.trimEnd('/')),
                 displayAddressOf(server.url),
                 server.version?.let { "v$it" }
             ).joinToString(" · "),
             group = ServerRowGroup.ON_THIS_NETWORK,
-            isHomeAssistantAddon = server.isHomeAssistantAddon
+            isHomeAssistantAddon = server.isHomeAssistantAddon,
+            canForget = earlier.any { it.equals(server.url.trimEnd('/'), ignoreCase = true) }
         )
     }
-    val lastUsed = if (saved.isNotEmpty() && found.none { it.url.trimEnd('/') == saved }) {
-        ServerRow(url = saved, name = displayAddressOf(saved), detail = null, group = ServerRowGroup.LAST_USED)
-    } else {
-        null
-    }
-    return listOfNotNull(lastUsed) + found
+    val used = (listOf(saved).filter { it.isNotEmpty() } + earlier)
+        .filter { url -> found.none { it.url.trimEnd('/').equals(url, ignoreCase = true) } }
+        .map { url ->
+            ServerRow(
+                url = url,
+                name = displayAddressOf(url),
+                // With one used server the group heading says it all.
+                detail = usedLabel(url).takeIf { earlier.isNotEmpty() },
+                group = ServerRowGroup.LAST_USED,
+                canForget = !url.equals(saved, ignoreCase = true)
+            )
+        }
+    return used + found
 }

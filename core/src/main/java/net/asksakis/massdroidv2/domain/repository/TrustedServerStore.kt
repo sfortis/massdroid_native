@@ -12,4 +12,10 @@ import kotlinx.coroutines.flow.Flow
 interface TrustedServerStore {
     val trustedServerId: Flow<String?>
     suspend fun setTrustedServerId(serverId: String?)
+
+    /**
+     * Trusts [serverId] only if [stillCurrent] holds inside the write, so a connection that a
+     * newer one replaced cannot overwrite the trust the newer one restored.
+     */
+    suspend fun setTrustedServerIdIf(serverId: String, stillCurrent: () -> Boolean)
 }

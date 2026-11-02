@@ -48,7 +48,6 @@ class SettingsViewModel @Inject constructor(
     private val smartListeningRepository: SmartListeningRepository,
     private val libraryGenreEnricher: net.asksakis.massdroidv2.data.genre.LibraryGenreEnricher,
     private val genreRepository: net.asksakis.massdroidv2.data.genre.GenreRepository,
-    private val maAuthRepository: net.asksakis.massdroidv2.domain.repository.MaAuthRepository,
     private val whatsNewRepository: WhatsNewRepository,
     serverPickerFactory: ServerPicker.Factory,
     signInFactory: SignInController.Factory
@@ -92,7 +91,7 @@ class SettingsViewModel @Inject constructor(
 
     fun signOut() {
         viewModelScope.launch {
-            maAuthRepository.signOut()
+            signIn.signOut()
         }
     }
 

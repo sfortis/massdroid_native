@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.cache.DiscoverCache
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
@@ -28,6 +29,7 @@ import net.asksakis.massdroidv2.domain.connection.unfinishedSignInMessage
 import net.asksakis.massdroidv2.domain.connection.unreachableSignInMessage
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
+import net.asksakis.massdroidv2.domain.repository.OAuthSignIn
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 
 @Singleton
@@ -60,6 +62,9 @@ class MaAuthRepositoryImpl @Inject constructor(
     private val _oauthErrors = MutableSharedFlow<String>(extraBufferCapacity = 2)
     override val oauthErrors: SharedFlow<String> = _oauthErrors.asSharedFlow()
 
+    private val _completedOAuthSignIns = MutableSharedFlow<OAuthSignIn>(extraBufferCapacity = 1)
+    override val completedOAuthSignIns: SharedFlow<OAuthSignIn> = _completedOAuthSignIns.asSharedFlow()
+
     /** Pending OAuth target URL; needed when the callback resolves. */
     @Volatile private var pendingServerUrl: String? = null
     /** Nonce of the sign-in in progress; a callback without it is not ours. */
@@ -78,7 +83,7 @@ class MaAuthRepositoryImpl @Inject constructor(
             is ServerAnswer.MusicAssistant -> {
                 _availableProviders.value = answer.providers
                 Log.d(TAG, "Music Assistant ${answer.version} at $serverUrl: ${answer.providers.map { it.providerId }}")
-                ServerCheck.Found(serverUrl, answer.version)
+                ServerCheck.Found(serverUrl, answer.version, answer.serverId)
             }
             is ServerAnswer.Failed -> {
                 _availableProviders.value = emptyList()
@@ -139,12 +144,19 @@ class MaAuthRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun prepareServerSwitch() {
+        runCatching { discoverCache.clear() }
+        sessionEventBus.emitReset()
+    }
+
     override suspend fun signOut() {
-        Log.d(TAG, "signOut(): wiping token, credentials, discover cache, and disconnecting")
+        Log.d(TAG, "signOut(): wiping token, password, discover cache, and disconnecting")
         runCatching { wsClient.disconnect() }
         wsClient.clearSavedCredentials()
+        // Only this server's token and password are forgotten. The accounts saved for other
+        // servers stay, and the username stays for the sign-in form.
+        settingsRepository.trustedServerId.first()?.let { settingsRepository.forgetServerToken(it) }
         settingsRepository.setAuthToken("")
-        settingsRepository.setUsername("")
         settingsRepository.setPassword("")
         // The next sign-in is explicit and trusts whichever server answers it.
         runCatching { settingsRepository.setTrustedServerId(null) }
@@ -206,35 +218,16 @@ class MaAuthRepositoryImpl @Inject constructor(
     }
 
     private fun finishOAuth(url: String, token: String) {
-        scope.launch {
-            try {
-                settingsRepository.setAuthToken(token)
-                // Clear any built-in credentials saved from a previous attempt
-                // so the persisted auth state is unambiguous: OAuth-token only.
-                settingsRepository.setUsername("")
-                settingsRepository.setPassword("")
-                wsClient.clearSavedCredentials()
-                // The previous account's selected player almost certainly does
-                // not exist on the new server; drop it so we don't try to
-                // restore a phantom selection.
-                settingsRepository.setSelectedPlayerId(null)
-                // Discover content is per-account; wipe the on-disk cache so the
-                // home screen doesn't briefly show items the new user hasn't seen.
-                discoverCache.clear()
-                // Notify everyone holding per-account in-memory state to drop it
-                // before the new connection brings fresh data in.
-                sessionEventBus.emitReset()
-                wsClient.connect(url, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
-                Log.d(TAG, "OAuth completed, connecting to $url with new token")
-            } catch (e: Exception) {
-                Log.w(TAG, "OAuth completion failed: ${e.message}")
-                _oauthErrors.tryEmit("Sign-in completed but connection failed: ${e.message}")
-            } finally {
-                _oauthInProgress.value = false
-                pendingServerUrl = null
-                oauthStartedAtMs = 0L
-            }
+        // The sign-in session connects with the token and saves it, with the server, only once
+        // the server accepted it. Saving here left an unreachable server saved with a token
+        // nobody had checked, and the previous server's password wiped.
+        if (!_completedOAuthSignIns.tryEmit(OAuthSignIn(url, token))) {
+            _oauthErrors.tryEmit("Sign-in completed but could not be applied. Please try again.")
         }
+        Log.d(TAG, "OAuth completed for $url")
+        _oauthInProgress.value = false
+        pendingServerUrl = null
+        oauthStartedAtMs = 0L
     }
 }
 

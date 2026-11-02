@@ -5,129 +5,156 @@ import android.security.KeyChain
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
-import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaTokenInfo
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.connection.ChosenServer
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
+import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 /**
- * Signing in to the server chosen in step 1: with a username and password, with the saved
- * token, or through Home Assistant, plus the client certificate for servers behind mutual
- * TLS. The phone's Settings screen and its onboarding share it, so both sign in the same way.
- * Each ViewModel creates one with its own scope through [Factory].
+ * The sign-in form of the server chosen in step 1: with a username and password, with the
+ * account saved for that server, or through Home Assistant, plus the client certificate for
+ * servers behind mutual TLS. The phone's Settings screen and its onboarding share it, so both
+ * sign in the same way. Each ViewModel creates one with its own scope through [Factory]; the
+ * attempt itself runs in the app-scoped [SignInSession], so leaving the screen does not stop it.
  */
 class SignInController private constructor(
     private val scope: CoroutineScope,
     private val wsClient: MaWebSocketClient,
     private val settings: SettingsRepository,
-    private val auth: MaAuthRepository
+    private val auth: MaAuthRepository,
+    private val session: SignInSession
 ) {
     class Factory @Inject constructor(
         private val wsClient: MaWebSocketClient,
         private val settings: SettingsRepository,
-        private val auth: MaAuthRepository
+        private val auth: MaAuthRepository,
+        private val session: SignInSession
     ) {
-        fun create(scope: CoroutineScope): SignInController = SignInController(scope, wsClient, settings, auth)
+        fun create(scope: CoroutineScope): SignInController =
+            SignInController(scope, wsClient, settings, auth, session)
     }
 
-    private val _error = MutableStateFlow<String?>(null)
+    private val formError = MutableStateFlow<String?>(null)
 
-    /** What went wrong with the form itself, such as an empty field or a failed Home Assistant sign-in. */
-    val error: StateFlow<String?> = _error.asStateFlow()
-
-    private val _attemptedUrl = MutableStateFlow<String?>(null)
+    /**
+     * What went wrong: with the form itself, such as an empty field or a failed Home Assistant
+     * sign-in, or with the last attempt, when the app went back to the previous server.
+     */
+    val error: StateFlow<String?> = combine(formError, session.error) { form, attempt -> form ?: attempt }
+        .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
     /**
      * The server the last sign-in went to. The client's connection error belongs to that
      * attempt, so a screen shows it only while the same server is chosen.
      */
-    val attemptedUrl: StateFlow<String?> = _attemptedUrl.asStateFlow()
+    val attemptedUrl: StateFlow<String?> = session.attemptedUrl
 
     /** The sign-in providers of the server checked last. */
     val providers: StateFlow<List<AuthProviderInfo>> = auth.availableProviders
     val oauthInProgress: StateFlow<Boolean> = auth.oauthInProgress
     val oauthErrors: SharedFlow<String> = auth.oauthErrors
 
-    val savedUsername: StateFlow<String> =
-        settings.username.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), "")
-    val savedPassword: StateFlow<String> =
-        settings.password.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), "")
-    val authToken: StateFlow<String> =
-        settings.authToken.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), "")
     val clientCertAlias: StateFlow<String?> =
         settings.clientCertAlias.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), null)
 
-    fun login(serverUrl: String, username: String, password: String) {
-        val user = username.trim()
-        val pass = password.trim()
-        if (user.isBlank() || pass.isBlank()) {
-            _error.value = "Enter your username and password."
-            return
-        }
-        _error.value = null
-        _attemptedUrl.value = serverUrl
-        scope.launch {
-            settings.setServerUrl(serverUrl)
-            settings.setUsername(user)
-            settings.setPassword(pass)
-        }
-        wsClient.setSavedCredentials(user, pass)
-        wsClient.connectWithLogin(serverUrl, user, pass) { token ->
-            scope.launch { settings.setAuthToken(token) }
+    /**
+     * What the form may offer for [server]. The account saved for it gives the username and the
+     * "Continue as" choice. The saved password belongs to the current server only, so another
+     * server never sees it, not even prefilled.
+     */
+    fun savedSignIn(server: ChosenServer): Flow<SavedSignIn> {
+        val serverId = (server.check as? ServerCheck.Found)?.serverId
+        val account = serverId?.let(settings::serverAccount) ?: flowOf(null)
+        return combine(
+            settings.serverUrl,
+            settings.trustedServerId,
+            settings.username,
+            settings.password,
+            account
+        ) { savedUrl, trustedId, username, password, saved ->
+            savedSignInFor(
+                server = server.url,
+                serverId = serverId,
+                current = CurrentAccount(savedUrl, trustedId, username, password),
+                saved = saved
+            )
         }
     }
 
-    fun connectWithToken(serverUrl: String) {
-        val token = authToken.value
-        if (token.isBlank()) {
-            _error.value = "Couldn't sign in with the saved token. Sign in with your username and password."
+    /**
+     * Signs in to [server] with a username and password; see [SignInSession.login]. A password
+     * that is the one saved for the current server goes only to that server, whether the form
+     * filled it in or it was typed again.
+     */
+    fun login(server: ChosenServer, username: String, password: String) {
+        val user = username.trim()
+        val pass = password.trim()
+        if (user.isBlank() || pass.isBlank()) {
+            formError.value = "Enter your username and password."
             return
         }
-        _error.value = null
-        _attemptedUrl.value = serverUrl
-        scope.launch { settings.setServerUrl(serverUrl) }
-        wsClient.connect(serverUrl, token, MaWebSocketClient.ConnectOrigin.SIGN_IN)
+        formError.value = null
+        scope.launch {
+            val saved = savedSignIn(server).first()
+            val passwordWasSaved = saved.password.isNotEmpty() && saved.password == pass
+            session.login(server.url, saved.serverId, user, pass, passwordWasSaved)
+        }
+    }
+
+    /** The server the last sign-in saved, until [consumeSuccess]; see [SignInSession.succeeded]. */
+    val succeeded: StateFlow<String?> = session.succeeded
+
+    fun consumeSuccess() = session.consumeSuccess()
+
+    /** Signs out of the current server; see [SignInSession.signOut]. */
+    suspend fun signOut() = session.signOut()
+
+    /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
+    fun continueAs(server: ChosenServer, saved: SavedSignIn) {
+        val serverId = saved.serverId ?: return
+        formError.value = null
+        session.continueWithSavedAccount(server.url, serverId)
     }
 
     /**
      * Returns the URL to open in a browser tab to begin the Home Assistant sign-in, or null on
-     * failure, which [oauthErrors] reports.
+     * failure, which [oauthErrors] reports. The server is saved when the sign-in completes, not
+     * here, so a sign-in the user abandons in the browser changes nothing.
      */
     suspend fun startHomeAssistantOAuth(serverUrl: String): String? {
-        _error.value = null
-        _attemptedUrl.value = serverUrl
-        settings.setServerUrl(serverUrl)
+        clearError()
         return auth.startHomeAssistantOAuth(serverUrl)
     }
 
-    /**
-     * Abandons the sign-in in progress when the user leaves its server: a connection still being
-     * set up is closed, so it cannot finish and sign in to the server the user moved away from.
-     */
+    /** Abandons the sign-in in progress when the user leaves its server; see [SignInSession.cancel]. */
     fun cancelAttempt() {
-        if (wsClient.connectionState.value is ConnectionState.Connecting) wsClient.disconnect()
-        auth.cancelOAuth()
-        _attemptedUrl.value = null
-        _error.value = null
+        formError.value = null
+        session.cancel()
     }
 
     fun clearError() {
-        _error.value = null
+        formError.value = null
+        session.clearError()
     }
 
     fun setError(message: String) {
-        _error.value = message
+        formError.value = message
     }
 
     /** Uses the certificate the user picked in the system KeyChain picker. A null alias is a cancel. */
@@ -184,3 +211,67 @@ class SignInController private constructor(
         const val STOP_TIMEOUT_MS = 5_000L
     }
 }
+
+/**
+ * What the sign-in form may offer for one server.
+ *
+ * @property serverId the server's `server_id`, when it answered the check.
+ * @property continueAs the name of the account saved for the server, or null when it has no
+ *   saved token.
+ */
+data class SavedSignIn(
+    val serverId: String?,
+    val username: String,
+    val password: String,
+    val continueAs: String?
+) {
+    // The password is a secret, so it never reaches a log.
+    override fun toString(): String =
+        "SavedSignIn(serverId=$serverId, username=$username, hasPassword=${password.isNotEmpty()}, continueAs=$continueAs)"
+
+    companion object {
+        val NONE = SavedSignIn(serverId = null, username = "", password = "", continueAs = null)
+    }
+}
+
+/** The account of the current server, as the keys that are not per server hold it. */
+internal data class CurrentAccount(
+    val url: String,
+    val serverId: String?,
+    val username: String,
+    val password: String
+)
+
+/**
+ * What the form may offer for the server at [server] whose check gave [serverId], given the
+ * [current] server's account and the account [saved] for [serverId]. The server is the current
+ * one when the two `server_id`s match, or by address when either is unknown. Only then is the
+ * password offered.
+ */
+internal fun savedSignInFor(
+    server: String,
+    serverId: String?,
+    current: CurrentAccount,
+    saved: ServerAccount?,
+    nameOf: (ServerAccount) -> String = ::accountName
+): SavedSignIn {
+    val isCurrent = if (serverId != null && current.serverId != null) {
+        serverId == current.serverId
+    } else {
+        sameServer(current.url, server)
+    }
+    return SavedSignIn(
+        serverId = serverId,
+        username = saved?.username?.takeIf { it.isNotBlank() } ?: current.username.takeIf { isCurrent }.orEmpty(),
+        password = current.password.takeIf { isCurrent }.orEmpty(),
+        continueAs = saved?.takeIf { it.hasToken }?.let(nameOf)
+    )
+}
+
+/** The name to show for a saved account: the user the token names, else the saved username. */
+private fun accountName(account: ServerAccount): String =
+    MaTokenInfo.decode(account.token)?.username ?: account.username.ifBlank { "saved account" }
+
+/** Whether two saved or chosen server URLs name the same server. */
+fun sameServer(a: String, b: String): Boolean =
+    a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)

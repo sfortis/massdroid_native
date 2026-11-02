@@ -1,6 +1,11 @@
 package net.asksakis.massdroidv2.ui.components
 
 import android.app.Activity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import android.content.Context
 import android.security.KeyChain
 import androidx.browser.customtabs.CustomTabsIntent
@@ -22,6 +27,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
 import net.asksakis.massdroidv2.data.signin.SignInController
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -39,6 +45,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -81,28 +88,94 @@ val ServerAddressInputSaver = listSaver<ServerAddressInput, String>(
 @Composable
 fun ServerList(
     rows: List<ServerRow>,
+    searching: Boolean,
     onPick: (ServerRow) -> Unit,
-    onOther: () -> Unit
+    onSearchAgain: () -> Unit,
+    onOther: () -> Unit,
+    onForget: ((ServerRow) -> Unit)? = null,
+    largeTargets: Boolean = false
 ) {
     val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED }
     val found = rows.filter { it.group == ServerRowGroup.ON_THIS_NETWORK }
+    // A long press on a server used before offers to forget it. Saved by address, so the
+    // question survives a rotation.
+    var forgettingUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    val forgetAction: (ServerRow) -> (() -> Unit)? = { row ->
+        { forgettingUrl = row.url }.takeIf { onForget != null && row.canForget }
+    }
     if (lastUsed.isNotEmpty()) {
-        ServerListHeader("Last used")
-        lastUsed.forEach { row -> ServerListRow(row, onPick) }
+        ServerListHeader("Recently used")
+        lastUsed.forEach { row -> ServerListRow(row, onPick, onLongPress = forgetAction(row)) }
+    }
+    rows.firstOrNull { it.url == forgettingUrl }?.let { row ->
+        ForgetServerDialog(
+            name = row.name,
+            onConfirm = {
+                onForget?.invoke(row)
+                forgettingUrl = null
+            },
+            onDismiss = { forgettingUrl = null }
+        )
     }
     ServerListHeader("On this network")
-    if (found.isEmpty()) {
-        Text(
-            text = "Looking for Music Assistant on this network.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp)
+    when {
+        found.isNotEmpty() -> found.forEach { row -> ServerListRow(row, onPick, onLongPress = forgetAction(row)) }
+        searching -> SearchingForServers(Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp))
+        else -> NoServerFound(
+            onSearchAgain,
+            Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp),
+            largeTarget = largeTargets
         )
-    } else {
-        found.forEach { row -> ServerListRow(row, onPick) }
     }
     SettingsRow(title = "Other server", icon = Icons.Default.Add, onClick = onOther)
 }
+
+/** The first seconds of a search of the network, before an empty list means anything. */
+@Composable
+fun SearchingForServers(modifier: Modifier = Modifier) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
+        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "Looking for Music Assistant on this network",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * A search that found nothing, and why that is expected away from the server's network. The
+ * search goes on in the background, and a server it finds later replaces this.
+ */
+@Composable
+fun NoServerFound(onSearchAgain: () -> Unit, modifier: Modifier = Modifier, largeTarget: Boolean = false) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("No server found on this network", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            text = NO_SERVER_FOUND_HINT,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        MdOutlinedButton(
+            onClick = onSearchAgain,
+            // A car screen needs a target that is easy to hit while parked.
+            modifier = if (largeTarget) {
+                Modifier.padding(top = 8.dp).fillMaxWidth().heightIn(min = CAR_TOUCH_TARGET)
+            } else {
+                Modifier.padding(top = 4.dp)
+            }
+        ) {
+            Text("Search again")
+        }
+    }
+}
+
+private val CAR_TOUCH_TARGET = 64.dp
+
+/** Why the network search can find nothing, and what to do instead. */
+const val NO_SERVER_FOUND_HINT =
+    "Servers are found only on the same Wi-Fi as Music Assistant. Away from home or on a VPN, use Other server."
 
 @Composable
 private fun ServerListHeader(text: String) {
@@ -115,7 +188,7 @@ private fun ServerListHeader(text: String) {
 }
 
 @Composable
-private fun ServerListRow(row: ServerRow, onPick: (ServerRow) -> Unit) {
+private fun ServerListRow(row: ServerRow, onPick: (ServerRow) -> Unit, onLongPress: (() -> Unit)? = null) {
     SettingsRow(
         title = row.name,
         icon = when {
@@ -124,7 +197,39 @@ private fun ServerListRow(row: ServerRow, onPick: (ServerRow) -> Unit) {
             else -> Icons.Default.Dns
         },
         supporting = row.detail,
-        onClick = { onPick(row) }
+        modifier = if (onLongPress != null) Modifier.longPressable(onLongPress) { onPick(row) } else Modifier,
+        onClick = { onPick(row) }.takeIf { onLongPress == null }
+    )
+}
+
+/** A tap picks the row, and a long press, with a vibration only then, offers to forget it. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun Modifier.longPressable(onLongPress: () -> Unit, onClick: () -> Unit): Modifier {
+    val haptic = LocalHapticFeedback.current
+    return combinedClickable(
+        onClick = onClick,
+        onLongClickLabel = "Forget this server",
+        onLongClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onLongPress()
+        }
+    )
+}
+
+@Composable
+private fun ForgetServerDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Forget this server?") },
+        text = {
+            Text(
+                "MassDroid forgets $name and the sign-in it saved for it. " +
+                    "To use it again, sign in with your username and password."
+            )
+        },
+        confirmButton = { MdTextButton(onClick = onConfirm) { Text("Forget") } },
+        dismissButton = { MdTextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -366,10 +471,9 @@ fun SignInStep(
     modifier: Modifier = Modifier,
     label: String? = "Sign in"
 ) {
-    val authToken by signIn.authToken.collectAsStateWithLifecycle()
     val error by signIn.error.collectAsStateWithLifecycle()
-    val savedUsername by signIn.savedUsername.collectAsStateWithLifecycle()
-    val savedPassword by signIn.savedPassword.collectAsStateWithLifecycle()
+    val saved by remember(signIn, server) { signIn.savedSignIn(server) }
+        .collectAsStateWithLifecycle(SavedSignIn.NONE)
     val providers by signIn.providers.collectAsStateWithLifecycle()
     val oauthInProgress by signIn.oauthInProgress.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -377,8 +481,8 @@ fun SignInStep(
 
     // An untouched field shows the saved value, which also covers the saved values arriving
     // a frame after the first composition.
-    val username = draft.username ?: savedUsername
-    val password = draft.password ?: savedPassword
+    val username = draft.username ?: saved.username
+    val password = draft.password ?: saved.password
     // The providers belong to the server checked last, which is this one once it answered.
     val homeAssistant = server.check is ServerCheck.Found && providers.any { it.isHomeAssistant }
 
@@ -393,6 +497,19 @@ fun SignInStep(
         )
 
         label?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+
+        saved.continueAs?.let { name ->
+            ContinueAsButton(
+                name = name,
+                connecting = connecting,
+                onClick = { signIn.continueAs(server, saved) }
+            )
+            Text(
+                text = "Or sign in with another account:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         if (homeAssistant) {
             HomeAssistantSignIn(
@@ -431,13 +548,7 @@ fun SignInStep(
 
         SignInButton(
             connecting = connecting,
-            onClick = {
-                if (authToken.isNotBlank() && username.isBlank() && password.isBlank()) {
-                    signIn.connectWithToken(server.url)
-                } else {
-                    signIn.login(server.url, username, password)
-                }
-            }
+            onClick = { signIn.login(server, username, password) }
         )
     }
 }
@@ -531,6 +642,20 @@ private fun SignInButton(connecting: Boolean, onClick: () -> Unit) {
             Spacer(modifier = Modifier.width(8.dp))
             Text("Sign in")
         }
+    }
+}
+
+/** Signs in with the account this phone saved for the server, before the fields for another one. */
+@Composable
+private fun ContinueAsButton(name: String, connecting: Boolean, onClick: () -> Unit) {
+    MdButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !connecting
+    ) {
+        Icon(Icons.Default.Person, contentDescription = null)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Continue as $name")
     }
 }
 

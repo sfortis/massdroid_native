@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.VerifiedUser
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -67,6 +66,8 @@ import net.asksakis.massdroidv2.ui.components.MdIconButton
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 import net.asksakis.massdroidv2.ui.components.OtherServerSheet
 import net.asksakis.massdroidv2.ui.components.NO_CERTIFICATE_CHOSEN
+import net.asksakis.massdroidv2.ui.components.NoServerFound
+import net.asksakis.massdroidv2.ui.components.SearchingForServers
 import net.asksakis.massdroidv2.ui.components.SignInStep
 import net.asksakis.massdroidv2.ui.components.chooseClientCertificate
 import net.asksakis.massdroidv2.ui.components.launchCustomTab
@@ -248,6 +249,7 @@ private fun StepTitle(title: String, line: String) {
 private fun ServerStep(viewModel: OnboardingViewModel) {
     val picker = viewModel.serverPicker
     val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
     val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
     var choosingOther by rememberSaveable { mutableStateOf(false) }
     val pick: (ServerRow) -> Unit = { row ->
@@ -255,22 +257,29 @@ private fun ServerStep(viewModel: OnboardingViewModel) {
         picker.choose(row.url, row.name)
     }
 
+    val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED }
+    val found = rows.filter { it.group == ServerRowGroup.ON_THIS_NETWORK }
     StepHeader(step = 1, onBack = viewModel::backToWelcome)
     StepTitle(
         "Choose your server",
-        if (rows.isEmpty()) "Looking for Music Assistant on your network." else "Found on your network. Tap one to go on."
+        when {
+            found.isNotEmpty() -> "Found on your network. Tap one to go on."
+            searching -> "Looking for Music Assistant on your network."
+            lastUsed.isNotEmpty() -> "Pick a server you used before, or type its address."
+            else -> "Type your server's address under Other server."
+        }
     )
 
-    val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED }
-    val found = rows.filter { it.group == ServerRowGroup.ON_THIS_NETWORK }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (lastUsed.isNotEmpty()) {
-            GroupLabel("Last used")
+            GroupLabel("Recently used")
             lastUsed.forEach { row -> ServerTile(row, onClick = { pick(row) }) }
         }
-        if (found.isNotEmpty()) {
-            GroupLabel("On this network")
-            found.forEach { row -> ServerTile(row, onClick = { pick(row) }) }
+        GroupLabel("On this network")
+        when {
+            found.isNotEmpty() -> found.forEach { row -> ServerTile(row, onClick = { pick(row) }) }
+            searching -> SearchingForServers()
+            else -> NoServerFound(onSearchAgain = picker::searchAgain)
         }
         Tile(
             icon = Icons.Default.Add,
@@ -281,20 +290,6 @@ private fun ServerStep(viewModel: OnboardingViewModel) {
         )
     }
     Spacer(Modifier.height(24.dp))
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "Still looking for servers on this network",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-    Spacer(Modifier.height(8.dp))
     ClientCertificateLink(viewModel)
 
     if (choosingOther) {

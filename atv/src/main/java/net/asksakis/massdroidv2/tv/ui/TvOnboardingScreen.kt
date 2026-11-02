@@ -157,13 +157,18 @@ private fun ColumnScope.TvServerList(
     onOther: () -> Unit
 ) {
     val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
     val firstFocus = remember { FocusRequester() }
     val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED }
     val found = rows.filter { it.group == ServerRowGroup.ON_THIS_NETWORK }
     // The first button takes the focus, so one press of OK picks it. It changes when the
     // first server appears, or when the last used server is found on the network and moves to
     // that group, which is why the key is the first row with its group.
-    LaunchedEffect(rows.firstOrNull()?.let { it.url to it.group }) { runCatching { firstFocus.requestFocus() } }
+    // The search state is part of the key: Search again leaves the composition when it is
+    // pressed, and the focus then moves to the first button left instead of being lost.
+    LaunchedEffect(rows.firstOrNull()?.let { it.url to it.group }, searching) {
+        runCatching { firstFocus.requestFocus() }
+    }
 
     Text("Choose your server", style = MaterialTheme.typography.titleLarge)
     var first = true
@@ -174,19 +179,34 @@ private fun ColumnScope.TvServerList(
         Modifier
     }
     if (lastUsed.isNotEmpty()) {
-        TvGroupLabel("Last used")
+        TvGroupLabel("Recently used")
         lastUsed.forEach { row -> TvServerButton(row, focusModifier()) { onPick(row) } }
     }
     TvGroupLabel("On this network")
-    if (found.isEmpty()) {
-        Text(
-            "Looking for Music Assistant on this network.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-    } else {
-        found.forEach { row -> TvServerButton(row, focusModifier()) { onPick(row) } }
+    when {
+        found.isNotEmpty() -> found.forEach { row -> TvServerButton(row, focusModifier()) { onPick(row) } }
+        searching -> {
+            Text(
+                "Looking for Music Assistant on this network",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        else -> {
+            // The search goes on in the background, and a server it finds replaces this.
+            Text("No server found on this network", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Servers are found only on the same network as Music Assistant. " +
+                    "Away from home or on a VPN, use Other server.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = picker::searchAgain, modifier = focusModifier().pointerClick(onClick = picker::searchAgain)) {
+                Text("Search again")
+            }
+        }
     }
     Spacer(Modifier.height(8.dp))
     Button(onClick = onOther, modifier = focusModifier().pointerClick(onClick = onOther)) {

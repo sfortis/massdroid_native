@@ -4,7 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Step 1 of the sign-in lists the server used last and the servers found on the network. A
+ * Step 1 of the sign-in lists the servers used before and the servers found on the network. A
  * server that is both must show once, or the user has to guess which of the two rows to pick.
  */
 class ServerRowsTest {
@@ -27,6 +27,36 @@ class ServerRowsTest {
         assertThat(rows).hasSize(2)
         assertThat(rows.single { it.name == "mass" }.detail).isEqualTo("Last used · 192.168.1.14:8095 · v2.10.9")
         assertThat(rows.single { it.name == "Home Assistant add-on" }.detail).isEqualTo("192.168.1.41:8095 · v2.10.9")
+    }
+
+    @Test
+    fun `every server used before is listed, the last used first`() {
+        val rows = serverRows(
+            "https://ma.example.com",
+            emptyList(),
+            usedBefore = listOf("https://ma.example.com/", "https://office.example.com")
+        )
+        assertThat(rows.map { it.url }).containsExactly("https://ma.example.com", "https://office.example.com").inOrder()
+        assertThat(rows.map { it.detail }).containsExactly("Last used", "Used before").inOrder()
+        assertThat(rows.map { it.group }.toSet()).containsExactly(ServerRowGroup.LAST_USED)
+    }
+
+    @Test
+    fun `only servers used before can be forgotten, not the current one`() {
+        val rows = serverRows("https://ma.example.com", emptyList(), usedBefore = listOf("https://office.example.com"))
+        assertThat(rows.associate { it.url to it.canForget }).containsExactly(
+            "https://ma.example.com", false,
+            "https://office.example.com", true
+        )
+    }
+
+    @Test
+    fun `a server used before that was found shows once and says so`() {
+        val rows = serverRows("https://ma.example.com", listOf(addon, mass), usedBefore = listOf("http://192.168.1.14:8095"))
+        assertThat(rows.map { it.url }).containsExactly(
+            "https://ma.example.com", "http://192.168.1.41:8095", "http://192.168.1.14:8095"
+        ).inOrder()
+        assertThat(rows.single { it.name == "mass" }.detail).isEqualTo("Used before · 192.168.1.14:8095 · v2.10.9")
     }
 
     @Test

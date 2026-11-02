@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.data.discovery
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +11,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -30,7 +33,7 @@ import javax.inject.Inject
 /**
  * The state of the two-step sign-in that the phone, the TV and the car share.
  *
- * Step 1 lists the server used last and the servers found on the network, and offers an
+ * Step 1 lists the servers used before and the servers found on the network, and offers an
  * address of the user's own, which is checked while it is typed. Choosing a server checks it
  * as well, so step 2 shows its version, or why it cannot be used, before anybody types a
  * password. Each ViewModel creates one with its own scope through [Factory], so the state
@@ -40,7 +43,7 @@ class ServerPicker private constructor(
     private val scope: CoroutineScope,
     private val finder: MaServerFinder,
     private val auth: MaAuthRepository,
-    settings: SettingsRepository
+    private val settings: SettingsRepository
 ) {
     class Factory @Inject constructor(
         private val finder: MaServerFinder,
@@ -50,18 +53,50 @@ class ServerPicker private constructor(
         fun create(scope: CoroutineScope): ServerPicker = ServerPicker(scope, finder, auth, settings)
     }
 
+    // Each search of the network; Search again starts a new one.
+    private val searches = MutableStateFlow(0)
+
     /** The rows of step 1. Network discovery runs only while this is collected. */
+    @OptIn(ExperimentalCoroutinesApi::class)
     val rows: StateFlow<List<ServerRow>> = combine(
         settings.serverUrl,
-        finder.servers()
-            .catch { e ->
-                Log.w(TAG, "Server discovery failed: ${e.message}")
-                emit(emptyList())
-            }
-            .onStart { emit(emptyList()) }
-    ) { saved, found ->
-        serverRows(saved, found.map { AnnouncedServer(it.url, it.name, it.version, it.isHomeAssistantAddon) })
+        settings.usedServerUrls,
+        searches.flatMapLatest {
+            finder.servers()
+                .catch { e ->
+                    Log.w(TAG, "Server discovery failed: ${e.message}")
+                    emit(emptyList())
+                }
+                .onStart { emit(emptyList()) }
+        }
+    ) { saved, usedBefore, found ->
+        serverRows(saved, found.map { AnnouncedServer(it.url, it.name, it.version, it.isHomeAssistantAddon) }, usedBefore)
     }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptyList())
+
+    /**
+     * True for the first [FIRST_SEARCH_MS] of a search. A list with no server found after that
+     * says so instead of looking forever, while the search goes on in the background: away from
+     * the server's network, or on a VPN, mDNS finds nothing at all.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val searching: StateFlow<Boolean> = searches.flatMapLatest {
+        flow {
+            emit(true)
+            delay(FIRST_SEARCH_MS)
+            emit(false)
+        }
+    }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), true)
+
+    /** Forgets a server used before, which drops its row; see [ServerRow.canForget]. */
+    fun forget(row: ServerRow) {
+        if (!row.canForget) return
+        scope.launch { settings.forgetServerAt(row.url) }
+    }
+
+    /** Starts the search of the network again. */
+    fun searchAgain() {
+        searches.update { it + 1 }
+    }
 
     private val _chosen = MutableStateFlow<ChosenServer?>(null)
 
@@ -151,6 +186,9 @@ class ServerPicker private constructor(
     private companion object {
         const val TAG = "ServerPicker"
         const val STOP_TIMEOUT_MS = 5_000L
+        // Long enough for every server on the network to answer, short enough not to look
+        // stuck: mDNS answers arrive within a few seconds when there is anything to find.
+        const val FIRST_SEARCH_MS = 8_000L
         const val TYPING_PAUSE_MS = 500L
     }
 }

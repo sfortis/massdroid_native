@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -19,12 +20,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
+import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
-import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -42,7 +44,7 @@ import javax.inject.Inject
 class CarSignInViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val settingsRepository: SettingsRepository,
-    private val authRepository: MaAuthRepository,
+    private val signInSession: SignInSession,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
@@ -54,8 +56,10 @@ class CarSignInViewModel @Inject constructor(
     /** Step 1 and step 2 of the sign-in, shared with the phone and the TV. */
     val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
 
+    // The form's own error; the attempt's error comes from the sign-in session.
     private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    val error: StateFlow<String?> = combine(_error, signInSession.error) { form, attempt -> form ?: attempt }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     // ---- MassDroid player audio settings ----------------------------------
     // The car IS the Sendspin player, so these tune its own output. Audio
@@ -208,26 +212,28 @@ class CarSignInViewModel @Inject constructor(
     val serverUrl: StateFlow<String> = settingsRepository.serverUrl
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
-    private val _attemptedUrl = MutableStateFlow<String?>(null)
-
     /** The server the last sign-in went to; the client's connection error belongs to it. */
-    val attemptedUrl: StateFlow<String?> = _attemptedUrl.asStateFlow()
+    val attemptedUrl: StateFlow<String?> = signInSession.attemptedUrl
 
     fun clearError() {
         _error.value = null
+        signInSession.clearError()
     }
 
     /**
      * Abandons a sign-in still being set up when the user leaves its server, so it cannot
-     * finish and sign in to the server the user moved away from.
+     * finish and sign in to the server the user moved away from; see [SignInSession.cancel].
      */
     fun cancelAttempt() {
-        if (connectionState.value is ConnectionState.Connecting) wsClient.disconnect()
-        _attemptedUrl.value = null
         _error.value = null
+        signInSession.cancel()
     }
 
-    /** Starts a sign-in; false when the input was rejected and nothing was sent. */
+    /**
+     * Starts a sign-in; false when the input was rejected and nothing was sent. It runs in the
+     * phone's sign-in session, which saves the server only once it accepted the sign-in and
+     * returns to the previous server when it does not.
+     */
     fun login(url: String, username: String, password: String): Boolean {
         val user = username.trim()
         val pass = password.trim()
@@ -236,16 +242,9 @@ class CarSignInViewModel @Inject constructor(
             return false
         }
         _error.value = null
-        _attemptedUrl.value = url
-        viewModelScope.launch {
-            settingsRepository.setServerUrl(url)
-            settingsRepository.setUsername(user)
-            settingsRepository.setPassword(pass)
-        }
-        wsClient.setSavedCredentials(user, pass)
-        wsClient.connectWithLogin(url, user, pass) { token ->
-            viewModelScope.launch { settingsRepository.setAuthToken(token) }
-        }
+        val serverId = (serverPicker.chosen.value?.check as? ServerCheck.Found)?.serverId
+            ?.takeIf { serverPicker.chosen.value?.url == url }
+        signInSession.login(url, serverId, user, pass, passwordWasSaved = false)
         return true
     }
 
@@ -270,7 +269,7 @@ class CarSignInViewModel @Inject constructor(
     }
 
     fun signOut() {
-        viewModelScope.launch { authRepository.signOut() }
+        viewModelScope.launch { signInSession.signOut() }
     }
 
     private suspend fun loadCertificate(alias: String, context: Context) {

@@ -17,14 +17,25 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
+import java.io.IOException
 import javax.net.ssl.*
 import kotlin.math.min
 
+/**
+ * The client's connection. [Connected] and [Error] carry the generation of the socket they
+ * belong to (see [MaWebSocketClient.connect]), so a caller waiting for its own connection is not
+ * misled by the state an earlier socket left behind.
+ */
 sealed class ConnectionState {
     data object Disconnected : ConnectionState()
     data object Connecting : ConnectionState()
-    data class Connected(val serverInfo: ServerInfo) : ConnectionState()
-    data class Error(val message: String) : ConnectionState()
+    data class Connected(
+        val serverInfo: ServerInfo,
+        val generation: Int = 0,
+        // What this connection signed in with, fixed when it connected; see authenticatedSession.
+        val session: AuthenticatedSession? = null
+    ) : ConnectionState()
+    data class Error(val message: String, val generation: Int = 0) : ConnectionState()
 }
 
 /**
@@ -122,6 +133,15 @@ class MaWebSocketClient(
 
     private val _events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ServerEvent> = _events.asSharedFlow()
+
+    private val _rejectedTokens = MutableSharedFlow<RejectedToken>(extraBufferCapacity = 4)
+
+    /**
+     * A token the server refused, with the server that refused it. Its owner forgets exactly
+     * that token: reading the state after an error could not tell a refused token from a
+     * password sign-in that failed while another server's token was saved.
+     */
+    val rejectedTokens: SharedFlow<RejectedToken> = _rejectedTokens.asSharedFlow()
     private val _startupReady = MutableStateFlow(false)
     val startupReady: StateFlow<Boolean> = _startupReady.asStateFlow()
 
@@ -167,17 +187,22 @@ class MaWebSocketClient(
         }
     }
 
-    var serverInfo: ServerInfo? = null
+    @Volatile var serverInfo: ServerInfo? = null
         private set
-    var authToken: String? = null
+    @Volatile var authToken: String? = null
         private set
-    private var serverUrl: String? = null
-    private var pendingLogin: Pair<String, String>? = null
+    @Volatile private var serverUrl: String? = null
+    // Taken by connect, connectWithLogin and disconnect, and by the socket callbacks that write
+    // the state, so a check of the generation and the write that depends on it go together.
+    private val connectLock = Any()
+    // The server_id a token saved for one server was stored under; see connect().
+    @Volatile private var expectedServerId: String? = null
+    @Volatile private var pendingLogin: Pair<String, String>? = null
     @Volatile private var savedCredentials: Pair<String, String>? = null
-    private var onTokenReceived: ((String) -> Unit)? = null
+    @Volatile private var onTokenReceived: ((String) -> Unit)? = null
     @Volatile var userDisconnected = false
         private set
-    private var reconnectJob: Job? = null
+    @Volatile private var reconnectJob: Job? = null
     // The reconnect job while it sleeps out its delay; after that it only runs doConnect.
     @Volatile private var sleepingReconnectJob: Job? = null
 
@@ -192,7 +217,7 @@ class MaWebSocketClient(
      * error. Cancelled the moment the handshake arrives (auth then governs via
      * its own per-command timeout).
      */
-    private var handshakeWatchdogJob: Job? = null
+    @Volatile private var handshakeWatchdogJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var lastNetworkReviveMs = 0L
     @Volatile
@@ -296,11 +321,15 @@ class MaWebSocketClient(
         SIGN_IN,
     }
 
-    fun connect(url: String, token: String, origin: ConnectOrigin) {
-        // Set both ways: a successful session turns retries on, and a sign-in to a mistyped
-        // address afterwards kept retrying it instead of showing one error.
-        retriesEnabled = origin == ConnectOrigin.SAVED_CREDENTIALS
-        explicitSignIn = origin == ConnectOrigin.SIGN_IN
+    /**
+     * Connects to [url] with [token]. When [expectedServerId] is given, the token is sent only
+     * to the server whose greeting carries that `server_id`: a token saved for one server must
+     * not reach another machine that answers at the same address.
+     */
+    fun connect(url: String, token: String, origin: ConnectOrigin, expectedServerId: String? = null): Int =
+        synchronized(connectLock) { connectLocked(url, token, origin, expectedServerId) }
+
+    private fun connectLocked(url: String, token: String, origin: ConnectOrigin, expectedServerId: String?): Int {
         // A pending retry suppresses this call, EXCEPT an idle-phase sleep: that one
         // is up to IDLE_RETRY_MS away, and a caller asking to connect now (the user
         // opening the app, an auto-connect site seeing a dead client) must not be
@@ -315,23 +344,36 @@ class MaWebSocketClient(
                 _connectionState.value is ConnectionState.Connected
         if (!userDisconnected && sameEndpoint && (isActiveOrConnecting || hasOngoingReconnect)) {
             Log.d(TAG, "connect() ignored: connection already active/connecting for $url")
-            return
+            return connectionGeneration
         }
+        // Set both ways: a successful session turns retries on, and a sign-in to a mistyped
+        // address afterwards kept retrying it instead of showing one error. Set only after the
+        // check above, so a sign-in to the server already connected does not turn off the
+        // retries of the connection it leaves in place.
+        retriesEnabled = origin == ConnectOrigin.SAVED_CREDENTIALS
+        explicitSignIn = origin == ConnectOrigin.SIGN_IN
+        this.expectedServerId = expectedServerId
         serverUrl = url
         authToken = token
         pendingLogin = null
         userDisconnected = false
         ensureNetworkCallback()
         cancelReconnect()
-        doConnect(url)
+        return doConnect(url)
     }
 
+    /**
+     * Signs in to [url] with a username and password and returns the generation of the
+     * connection, as [connect] does. [expectedServerId] works as there: a password the app
+     * filled in for one server goes only to that server.
+     */
     fun connectWithLogin(
         url: String,
         username: String,
         password: String,
+        expectedServerId: String? = null,
         onToken: (String) -> Unit
-    ) {
+    ): Int = synchronized(connectLock) {
         // Same idle-sleep exception as [connect].
         val hasOngoingReconnect = reconnectJob?.isActive == true && !isIdleRetrySleeping()
         val sameEndpoint = serverUrl == url && pendingLogin == (username to password)
@@ -340,11 +382,14 @@ class MaWebSocketClient(
                 _connectionState.value is ConnectionState.Connected
         if (!userDisconnected && sameEndpoint && (isActiveOrConnecting || hasOngoingReconnect)) {
             Log.d(TAG, "connectWithLogin() ignored: connection already active/connecting for $url")
-            return
+            return@synchronized connectionGeneration
         }
         serverUrl = url
         authToken = null
         explicitSignIn = true
+        // A sign-in that fails shows one error; it does not keep retrying the address.
+        retriesEnabled = false
+        this.expectedServerId = expectedServerId
         pendingLogin = username to password
         onTokenReceived = onToken
         userDisconnected = false
@@ -353,7 +398,10 @@ class MaWebSocketClient(
         doConnect(url)
     }
 
-    private fun doConnect(url: String) {
+    /** Opens a new socket to [url] and returns its generation. */
+    private fun doConnect(url: String): Int = synchronized(connectLock) { doConnectLocked(url) }
+
+    private fun doConnectLocked(url: String): Int {
         // Close any existing connection first
         webSocket?.close(1000, null)
         webSocket = null
@@ -379,8 +427,8 @@ class MaWebSocketClient(
             Request.Builder().url(wsUrl).build()
         } catch (e: IllegalArgumentException) {
             Log.e(TAG, "Invalid server URL: $wsUrl", e)
-            _connectionState.value = ConnectionState.Error("Invalid server URL. Include http:// or https://")
-            return
+            _connectionState.value = errorState("Invalid server URL. Include http:// or https://", gen)
+            return gen
         }
         val socket = client.newWebSocket(request, object : WebSocketListener() {
 
@@ -410,7 +458,9 @@ class MaWebSocketClient(
                 cancelHandshakeWatchdog()
                 endedGeneration = gen
                 this@MaWebSocketClient.webSocket = null
-                _connectionState.value = ConnectionState.Disconnected
+                synchronized(connectLock) {
+                    if (gen == connectionGeneration) _connectionState.value = ConnectionState.Disconnected
+                }
                 consumeStableConnectionBackoffReset()
                 failAllPending("Connection closed")
                 scheduleReconnect()
@@ -426,13 +476,14 @@ class MaWebSocketClient(
 
                 if (isPermanentSslError(t)) {
                     Log.e(TAG, "Permanent SSL/TLS error, not retrying")
-                    _connectionState.value = ConnectionState.Error(
-                        "TLS certificate mismatch. The server certificate doesn't match this hostname."
+                    writeError(
+                        "TLS certificate mismatch. The server certificate doesn't match this hostname.",
+                        gen
                     )
                     return
                 }
 
-                _connectionState.value = ConnectionState.Error(describeConnectionFailure(t, url, signingIn = explicitSignIn))
+                writeError(describeConnectionFailure(t, url, signingIn = explicitSignIn), gen)
                 consumeStableConnectionBackoffReset()
                 scheduleReconnect()
             }
@@ -445,6 +496,7 @@ class MaWebSocketClient(
         // comes after this write.
         webSocket = socket
         if (endedGeneration == gen && webSocket === socket) webSocket = null
+        return gen
     }
 
     /**
@@ -465,8 +517,9 @@ class MaWebSocketClient(
             webSocket?.close(1000, "handshake timeout")
             webSocket = null
             failAllPending("Handshake timeout")
-            _connectionState.value = ConnectionState.Error(
-                "Server not responding. Check the address and that Music Assistant is reachable on this network."
+            writeError(
+                "Server not responding. Check the address and that Music Assistant is reachable on this network.",
+                gen
             )
             consumeStableConnectionBackoffReset()
             scheduleReconnect()
@@ -478,7 +531,25 @@ class MaWebSocketClient(
         handshakeWatchdogJob = null
     }
 
-    fun disconnect() {
+    private fun errorState(message: String, gen: Int) = ConnectionState.Error(message, gen)
+
+    /** Writes the error of socket [gen], unless a newer socket has replaced it meanwhile. */
+    private fun writeError(message: String, gen: Int) = synchronized(connectLock) {
+        if (gen == connectionGeneration) _connectionState.value = errorState(message, gen)
+    }
+
+    /**
+     * What the connection [generation] signed in with, while it is the current connected one,
+     * or null. The URL, the token and the server are fixed together when it connected, so a
+     * caller that saves them never mixes them with a newer connection's.
+     */
+    fun authenticatedSession(generation: Int): AuthenticatedSession? {
+        val state = _connectionState.value as? ConnectionState.Connected ?: return null
+        if (state.generation != generation || generation != connectionGeneration) return null
+        return state.session
+    }
+
+    fun disconnect() = synchronized(connectLock) {
         userDisconnected = true
         retriesEnabled = false
         lastAuthenticatedAtMs = 0L
@@ -685,7 +756,7 @@ class MaWebSocketClient(
                 // stop advertising an active retry, but keep probing slowly instead of
                 // giving up outright (see retryDelayBaseMs).
                 Log.w(TAG, "Retry budget ($MAX_RETRY_COUNT) spent, dropping to idle retries")
-                _connectionState.value = ConnectionState.Error("Connection lost. Check server and retry.")
+                _connectionState.value = errorState("Connection lost. Check server and retry.", connectionGeneration)
             }
             _isReconnecting.value = attempt <= MAX_RETRY_COUNT
             val jitterFactor = ThreadLocalRandom.current().nextDouble(0.85, 1.15)
@@ -855,16 +926,34 @@ class MaWebSocketClient(
         // old socket's pending requests, so a late answer or timeout must not touch the state.
         val gen = connectionGeneration
         scope.launch {
+            // The token this sign-in sent, if it sent one; refused, it is reported in the catch.
+            var tokenSent: String? = null
+            // Written after the sign-in, outside its try: a storage failure there is not a
+            // refused token.
+            var trustServer: String? = null
             try {
                 val offered = serverInfo?.serverId
                 val trusted = trustedServers?.trustedServerId?.first()
-                if (!credentialsAllowedFor(explicitSignIn, trusted, offered)) {
+                // A connect that names its server decides by that alone: the return to the
+                // previous server must work while the attempt's server is still trusted.
+                val expected = expectedServerId
+                val allowed = if (expected != null) {
+                    savedTokenAllowedFor(expected, offered)
+                } else {
+                    credentialsAllowedFor(explicitSignIn, trusted, offered)
+                }
+                val fallbackAllowed = if (expected != null) {
+                    savedTokenAllowedFor(expected, offered)
+                } else {
+                    passwordFallbackAllowedFor(trusted, offered)
+                }
+                if (!allowed) {
                     // Another machine answers at the saved address, typically a device on a
                     // foreign network at the same private IP. Neither the token nor the password
                     // goes to it; a retrying client tries again later, and the real server
                     // signs in as usual once the phone is back on its network.
                     Log.w(TAG, "Server at $serverUrl is not the one signed in to; not sending credentials")
-                    _connectionState.value = ConnectionState.Error(DIFFERENT_SERVER_MESSAGE)
+                    if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error(DIFFERENT_SERVER_MESSAGE, gen)
                     if (retriesEnabled) webSocket?.close(1000, "different server")
                     return@launch
                 }
@@ -874,15 +963,16 @@ class MaWebSocketClient(
                 if (login != null) {
                     loginWithCredentials(login.first, login.second)
                 } else when (
-                    automaticSignIn(token, creds != null, passwordFallbackAllowedFor(trusted, offered))
+                    automaticSignIn(token, creds != null, fallbackAllowed)
                 ) {
                     AutomaticSignIn.TOKEN -> {
                         // Try token auth first, fallback to saved credentials if it fails
+                        tokenSent = token
                         try {
                             authorizeWithToken(token!!)
                         } catch (e: Exception) {
                             Log.w(TAG, "Token auth failed: ${e.message}, trying saved credentials")
-                            if (creds != null && passwordFallbackAllowedFor(trusted, offered)) {
+                            if (creds != null && fallbackAllowed) {
                                 loginWithCredentials(creds.first, creds.second)
                             } else {
                                 throw e  // No fallback available
@@ -894,7 +984,7 @@ class MaWebSocketClient(
                         loginWithCredentials(creds!!.first, creds.second)
                     }
                     AutomaticSignIn.NONE -> {
-                        _connectionState.value = ConnectionState.Error("No token or credentials available")
+                        if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error("No token or credentials available", gen)
                         return@launch
                     }
                 }
@@ -903,14 +993,21 @@ class MaWebSocketClient(
                 lastAuthenticatedAtMs = System.currentTimeMillis()
                 val info = serverInfo
                 if (info == null) {
-                    _connectionState.value = ConnectionState.Error("Missing server handshake")
+                    if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error("Missing server handshake", gen)
                     return@launch
                 }
-                if (gen != connectionGeneration) return@launch
-                _connectionState.value = ConnectionState.Connected(info)
+                val session = authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                    serverUrl?.let { url -> AuthenticatedSession(url, token, info.serverId) }
+                }
+                val current = synchronized(connectLock) {
+                    (gen == connectionGeneration).also {
+                        if (it) _connectionState.value = ConnectionState.Connected(info, gen, session)
+                    }
+                }
+                if (!current) return@launch
                 retriesEnabled = true
                 explicitSignIn = false
-                if (trusted != info.serverId) trustedServers?.setTrustedServerId(info.serverId)
+                if (trusted != info.serverId) trustServer = info.serverId
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -923,12 +1020,20 @@ class MaWebSocketClient(
                     // out by a handover or a slow server; a retrying client drops this socket
                     // and the normal reconnect signs in again.
                     Log.w(TAG, "Auth interrupted: ${e.message}; keeping the token")
-                    _connectionState.value = ConnectionState.Error("No answer to sign-in: ${e.message}")
+                    if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error("No answer to sign-in: ${e.message}", gen)
                     if (retriesEnabled) webSocket?.close(1000, "auth interrupted")
                 } else {
                     Log.e(TAG, "Auth failed: ${e.message}")
                     authToken = null
-                    _connectionState.value = ConnectionState.Error("Authentication failed: ${e.message}")
+                    tokenSent?.let { _rejectedTokens.tryEmit(RejectedToken(serverInfo?.serverId, it)) }
+                    if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error("Authentication failed: ${e.message}", gen)
+                }
+            }
+            trustServer?.takeIf { gen == connectionGeneration }?.let { id ->
+                try {
+                    trustedServers?.setTrustedServerIdIf(id) { gen == connectionGeneration }
+                } catch (e: IOException) {
+                    Log.w(TAG, "Could not save the trusted server: ${e.message}")
                 }
             }
         }
@@ -1252,12 +1357,29 @@ internal fun credentialsAllowedFor(explicitSignIn: Boolean, trusted: String?, of
     explicitSignIn || trusted == null || offered == null || offered == trusted
 
 /**
+ * Whether a token saved for the server [expected] may go to the server that greeted with
+ * [offered]. A connect that names no server leaves the decision to [credentialsAllowedFor].
+ */
+internal fun savedTokenAllowedFor(expected: String?, offered: String?): Boolean =
+    expected == null || offered == expected
+
+/**
  * Whether a refused token may fall back to the saved password. The password belongs to the
  * [trusted] server, so even an explicit sign-in to another address does not send it there;
  * with no trusted server yet (the first connection after an update) it may.
  */
 internal fun passwordFallbackAllowedFor(trusted: String?, offered: String?): Boolean =
     credentialsAllowedFor(explicitSignIn = false, trusted = trusted, offered = offered)
+
+/** What a signed-in connection used; see [MaWebSocketClient.authenticatedSession]. */
+class AuthenticatedSession(val url: String, val token: String, val serverId: String) {
+    override fun toString(): String = "AuthenticatedSession(${url.substringAfter("://")}, $serverId)"
+}
+
+/** A token [serverId] refused; see [MaWebSocketClient.rejectedTokens]. */
+class RejectedToken(val serverId: String?, val token: String) {
+    override fun toString(): String = "RejectedToken($serverId)"
+}
 
 internal const val DIFFERENT_SERVER_MESSAGE =
     "This address answered as a different Music Assistant server, so the app did not sign in. " +

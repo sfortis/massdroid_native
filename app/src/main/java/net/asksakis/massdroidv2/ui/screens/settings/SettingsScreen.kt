@@ -651,45 +651,65 @@ private fun ServerSection(
     // Change server opens the server list while the current connection stays up, so leaving it
     // changes nothing. Saveable, so a rotation keeps the list open.
     var changingServer by rememberSaveable { mutableStateOf(false) }
-    val attemptedUrl by viewModel.signIn.attemptedUrl.collectAsStateWithLifecycle()
+    val chosenServer by viewModel.serverPicker.chosen.collectAsStateWithLifecycle()
+    val clearDraft = {
+        draft.username = null
+        draft.password = null
+    }
+    // Leaving abandons a sign-in still running, and a switch that was under way returns to the
+    // saved server; what was typed for the other server is forgotten.
     val leaveChangeServer = {
         changingServer = false
-        viewModel.signIn.clearError()
+        viewModel.signIn.cancelAttempt()
         viewModel.serverPicker.changeServer()
+        clearDraft()
     }
-    val chosenServer by viewModel.serverPicker.chosen.collectAsStateWithLifecycle()
-    // Back from a chosen server returns to the list first, then closes the list.
-    BackHandler(enabled = changingServer && isConnected) {
+    // Back from a chosen server returns to the list first, then closes the list. Enabled while
+    // a switch is still connecting too, so BACK then cancels it and returns to the saved server.
+    BackHandler(enabled = changingServer) {
         if (chosenServer != null) {
-            viewModel.signIn.clearError()
+            viewModel.signIn.cancelAttempt()
             viewModel.serverPicker.changeServer()
+            // A password typed for that server must not be offered to the next one.
+            clearDraft()
         } else {
             leaveChangeServer()
         }
     }
-    // A sign-in to another server that connected ends Change server.
-    LaunchedEffect(isConnected, serverUrl, attemptedUrl) {
-        if (changingServer && isConnected && attemptedUrl != null && serverUrl == attemptedUrl) {
-            leaveChangeServer()
+    // A sign-in that saved its server ends Change server. The session says so explicitly: the
+    // saved address already matches when the user signs in to the current server again, and
+    // matching it closed the list before a wrong password could show its error.
+    val succeeded by viewModel.signIn.succeeded.collectAsStateWithLifecycle()
+    LaunchedEffect(succeeded) {
+        if (succeeded == null) return@LaunchedEffect
+        if (changingServer) {
+            changingServer = false
+            viewModel.serverPicker.changeServer()
         }
+        clearDraft()
+        viewModel.signIn.consumeSuccess()
     }
 
     SettingsSectionHeader("Server")
     // The URL cannot be edited while connected, so it is the status row's second line.
     ConnectionStatusRow(connectionState = connectionState, detail = serverUrl.takeIf { isConnected })
-    if (isConnected && changingServer) {
-        SettingsRow(
-            title = "Keep using this server",
-            icon = Icons.AutoMirrored.Filled.ArrowBack,
-            supporting = "Close the server list without changing anything",
-            onClick = leaveChangeServer
-        )
+    if (!isConnected || changingServer) {
+        // One place for the form, so a short drop of the connection while the list is open
+        // keeps what the list holds (an open Other server sheet, the chosen server).
+        if (isConnected) {
+            SettingsRow(
+                title = "Keep using this server",
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                supporting = "Close the server list without changing anything",
+                onClick = leaveChangeServer
+            )
+        }
         SignInForm(
             viewModel = viewModel,
             connectionState = connectionState,
             draft = draft
         )
-    } else if (isConnected) {
+    } else {
         // Saveable so the question is still open after a rotation. Signing out cannot be
         // undone from here, because the password has to be typed again.
         var confirmingSignOut by rememberSaveable { mutableStateOf(false) }
@@ -703,8 +723,10 @@ private fun ServerSection(
             icon = Icons.Default.Dns,
             supporting = "Pick another Music Assistant server",
             onClick = {
-                viewModel.signIn.clearError()
+                // A fresh start: no attempt, error or chosen server left from an earlier one.
+                viewModel.signIn.cancelAttempt()
                 viewModel.serverPicker.changeServer()
+                clearDraft()
                 changingServer = true
             }
         )
@@ -722,17 +744,13 @@ private fun ServerSection(
                 confirmLabel = "Sign out",
                 onConfirm = {
                     confirmingSignOut = false
+                    clearDraft()
+                    viewModel.signIn.cancelAttempt()
                     viewModel.signOut()
                 },
                 onDismiss = { confirmingSignOut = false }
             )
         }
-    } else {
-        SignInForm(
-            viewModel = viewModel,
-            connectionState = connectionState,
-            draft = draft
-        )
     }
 }
 
@@ -750,6 +768,7 @@ private fun SignInForm(
 ) {
     val picker = viewModel.serverPicker
     val rows by picker.rows.collectAsStateWithLifecycle()
+    val searching by picker.searching.collectAsStateWithLifecycle()
     val chosen by picker.chosen.collectAsStateWithLifecycle()
     val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
     var choosingOther by rememberSaveable { mutableStateOf(false) }
@@ -758,10 +777,13 @@ private fun SignInForm(
     if (server == null) {
         ServerList(
             rows = rows,
+            searching = searching,
             onPick = { row ->
                 viewModel.signIn.clearError()
                 picker.choose(row.url, row.name)
             },
+            onSearchAgain = picker::searchAgain,
+            onForget = picker::forget,
             onOther = { choosingOther = true }
         )
     } else {
@@ -770,7 +792,13 @@ private fun SignInForm(
             server = server,
             connecting = connectionState is ConnectionState.Connecting,
             draft = draft,
-            onChangeServer = picker::changeServer,
+            onChangeServer = {
+                viewModel.signIn.cancelAttempt()
+                picker.changeServer()
+                // A password typed for that server must not be offered to the next one.
+                draft.username = null
+                draft.password = null
+            },
             onCheckAgain = picker::checkAgain,
             modifier = Modifier.padding(horizontal = SETTINGS_ROW_INSET, vertical = 8.dp)
         )

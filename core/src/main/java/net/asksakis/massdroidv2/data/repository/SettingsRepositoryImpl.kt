@@ -10,16 +10,19 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.model.SortOption
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.MapSerializer
@@ -52,6 +55,14 @@ private val KEY_TRUSTED_SERVER_ID = stringPreferencesKey("trusted_server_id")
 private val KEY_CLIENT_CERT_ALIAS = stringPreferencesKey("client_cert_alias")
 private val KEY_USERNAME = stringPreferencesKey("username")
 private val KEY_PASSWORD = stringPreferencesKey("password")
+
+// One token and one username per Music Assistant server, named by its server_id.
+private fun serverTokenKey(serverId: String) = stringPreferencesKey("auth_token@$serverId")
+private fun serverUsernameKey(serverId: String) = stringPreferencesKey("username@$serverId")
+private val KEY_SERVER_ACCOUNTS_MIGRATED = booleanPreferencesKey("server_accounts_migrated")
+private const val SERVER_URL_PREFIX = "url@"
+private fun serverUrlKey(serverId: String) = stringPreferencesKey("$SERVER_URL_PREFIX$serverId")
+private fun serverUsedAtKey(serverId: String) = longPreferencesKey("used_at@$serverId")
 private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
 private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
 private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
@@ -186,6 +197,10 @@ class SettingsRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun setTrustedServerIdIf(serverId: String, stillCurrent: () -> Boolean) {
+        context.deviceDataStore.edit { if (stillCurrent()) it[KEY_TRUSTED_SERVER_ID] = serverId }
+    }
+
     override suspend fun setServerUrl(url: String) {
         context.dataStore.edit { it[KEY_SERVER_URL] = url }
     }
@@ -227,6 +242,56 @@ class SettingsRepositoryImpl @Inject constructor(
     override suspend fun setPassword(password: String) {
         context.deviceDataStore.edit { it[KEY_PASSWORD] = password }
     }
+
+    override fun serverAccount(serverId: String): Flow<ServerAccount> = deviceData.map { prefs ->
+        ServerAccount(
+            token = prefs[serverTokenKey(serverId)].orEmpty(),
+            username = prefs[serverUsernameKey(serverId)].orEmpty(),
+        )
+    }.distinctUntilChanged()
+
+    override suspend fun saveSignIn(serverId: String, url: String, token: String, username: String, password: String) {
+        context.deviceDataStore.edit {
+            it[KEY_AUTH_TOKEN] = token
+            it[KEY_USERNAME] = username
+            it[KEY_PASSWORD] = password
+            it[KEY_TRUSTED_SERVER_ID] = serverId
+            it.putServerEntry(serverId, url, token, username)
+        }
+        context.dataStore.edit { it[KEY_SERVER_URL] = url }
+    }
+
+    override suspend fun saveConnectionToken(serverId: String, url: String, token: String) {
+        context.deviceDataStore.edit {
+            it[KEY_AUTH_TOKEN] = token
+            it.putServerEntry(serverId, url, token, it[KEY_USERNAME].orEmpty())
+        }
+    }
+
+    override suspend fun forgetRejectedToken(serverId: String?, token: String) {
+        context.deviceDataStore.edit { it.forgetRejectedToken(serverId, token) }
+    }
+
+    override suspend fun forgetServerToken(serverId: String) {
+        context.deviceDataStore.edit { it.remove(serverTokenKey(serverId)) }
+    }
+
+    override suspend fun migrateToServerAccounts() {
+        val url = serverUrl.first()
+        context.deviceDataStore.edit { it.migrateToServerAccounts(url) }
+    }
+
+    override suspend fun forgetServerAt(url: String) {
+        context.deviceDataStore.edit { it.forgetServerAt(url) }
+    }
+
+    override val usedServerUrls: Flow<List<String>> = deviceData.map { prefs ->
+        prefs.asMap().keys
+            .filter { it.name.startsWith(SERVER_URL_PREFIX) }
+            .map { it.name.removePrefix(SERVER_URL_PREFIX) }
+            .sortedByDescending { prefs[serverUsedAtKey(it)] ?: 0L }
+            .mapNotNull { prefs[serverUrlKey(it)] }
+    }.distinctUntilChanged()
 
     override val sendspinEnabled: Flow<Boolean> = safeData.map { prefs ->
         prefs[KEY_SENDSPIN_ENABLED] ?: true
@@ -840,4 +905,66 @@ internal fun mergeRecentSearch(
         it.equals(entry, ignoreCase = true) || it.equals(superseded, ignoreCase = true)
     }
     return (listOf(entry) + kept).take(MAX_RECENT_SEARCHES)
+}
+
+// The per-server entries of the device store. Top-level and internal so the rules are tested on
+// plain preferences, without a DataStore.
+
+/**
+ * Saves one server's entry. Another server last used at the same address loses only that
+ * address (and when it was used), so it leaves Recently used, but keeps its token: two servers
+ * can share a private address on different networks, such as a friend's and one's own.
+ */
+internal fun MutablePreferences.putServerEntry(
+    serverId: String,
+    url: String,
+    token: String,
+    username: String,
+    usedAtMs: Long = System.currentTimeMillis()
+) {
+    serverIdsAt(url).filter { it != serverId }.forEach {
+        remove(serverUrlKey(it))
+        remove(serverUsedAtKey(it))
+    }
+    this[serverTokenKey(serverId)] = token
+    this[serverUsernameKey(serverId)] = username
+    this[serverUrlKey(serverId)] = url
+    this[serverUsedAtKey(serverId)] = usedAtMs
+}
+
+/** Forgets every server last used at [url], except the current one, which Sign out leaves. */
+internal fun MutablePreferences.forgetServerAt(url: String) {
+    val current = this[KEY_TRUSTED_SERVER_ID]
+    serverIdsAt(url).filter { it != current }.forEach {
+        remove(serverTokenKey(it))
+        remove(serverUsernameKey(it))
+        remove(serverUrlKey(it))
+        remove(serverUsedAtKey(it))
+    }
+}
+
+/** Forgets [token] where it is still the saved one: the current account and [serverId]'s entry. */
+internal fun MutablePreferences.forgetRejectedToken(serverId: String?, token: String) {
+    if (this[KEY_AUTH_TOKEN] == token) this[KEY_AUTH_TOKEN] = ""
+    if (serverId != null && this[serverTokenKey(serverId)] == token) remove(serverTokenKey(serverId))
+}
+
+/**
+ * Copies the account saved before tokens were kept per server into its server's entry, once:
+ * a flag marks it done even when there was nothing to copy.
+ */
+internal fun MutablePreferences.migrateToServerAccounts(url: String) {
+    if (this[KEY_SERVER_ACCOUNTS_MIGRATED] == true) return
+    this[KEY_SERVER_ACCOUNTS_MIGRATED] = true
+    val serverId = this[KEY_TRUSTED_SERVER_ID] ?: return
+    val token = this[KEY_AUTH_TOKEN].orEmpty()
+    if (token.isBlank() || url.isBlank() || this[serverTokenKey(serverId)] != null) return
+    putServerEntry(serverId, url, token, this[KEY_USERNAME].orEmpty(), usedAtMs = 0L)
+}
+
+private fun Preferences.serverIdsAt(url: String): List<String> {
+    val address = url.trim().trimEnd('/')
+    return asMap().keys.filter { it.name.startsWith(SERVER_URL_PREFIX) }
+        .map { it.name.removePrefix(SERVER_URL_PREFIX) }
+        .filter { this[serverUrlKey(it)]?.trim()?.trimEnd('/').equals(address, ignoreCase = true) }
 }

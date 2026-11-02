@@ -35,6 +35,18 @@ class TrustedServerCredentialsTest {
     }
 
     @Test
+    fun `a token saved for one server goes only to that server`() {
+        assertThat(savedTokenAllowedFor(expected = "office", offered = "office")).isTrue()
+        assertThat(savedTokenAllowedFor(expected = "office", offered = "home")).isFalse()
+        assertThat(savedTokenAllowedFor(expected = "office", offered = null)).isFalse()
+    }
+
+    @Test
+    fun `a connect that names no server leaves the decision to the trusted server check`() {
+        assertThat(savedTokenAllowedFor(expected = null, offered = "home")).isTrue()
+    }
+
+    @Test
     fun `the first connection after an update has no trusted server yet and is allowed`() {
         assertThat(credentialsAllowedFor(explicitSignIn = false, trusted = null, offered = "home")).isTrue()
     }
