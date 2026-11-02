@@ -81,6 +81,9 @@ internal fun TvTextField(
         editing = false
         runCatching { frameFocus.requestFocus() }
     }
+    // Whether this field took the KeyDown of the BACK press still under way, so it takes the
+    // matching KeyUp as well.
+    var backDownTaken by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             label,
@@ -91,6 +94,25 @@ internal fun TvTextField(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                // BACK with the keyboard already closed ends the editing and leaves the cursor on
+                // the frame, instead of leaving the screen. Both halves of the press are taken,
+                // because TvMainActivity runs the back dispatch on the KeyUp, and a KeyUp left to
+                // it went back a screen as well. Placed ahead of the frame's focus, so it also
+                // sees the KeyUp that arrives after the focus moved from the field to the frame.
+                .onPreviewKeyEvent { event ->
+                    if (event.key != Key.Back) return@onPreviewKeyEvent false
+                    when (event.type) {
+                        KeyEventType.KeyDown -> if (editing) {
+                            backDownTaken = true
+                            stopEditing()
+                            true
+                        } else {
+                            false
+                        }
+                        KeyEventType.KeyUp -> backDownTaken.also { backDownTaken = false }
+                        else -> false
+                    }
+                }
                 .focusRequester(frameFocus)
                 .onFocusChanged { if (!editing) focused = it.isFocused }
                 // OK on the remote, or a click, opens the keyboard.
@@ -150,12 +172,6 @@ internal fun TvTextField(
                         when (event.key) {
                             Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
                             Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
-                            // BACK with the keyboard already closed ends the editing and leaves
-                            // the cursor on the frame, instead of leaving the screen.
-                            Key.Back -> {
-                                stopEditing()
-                                true
-                            }
                             else -> false
                         }
                     }

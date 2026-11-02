@@ -83,15 +83,21 @@ class TvOnboardingViewModel @Inject constructor(
         }
         _error.value = null
         _attemptedUrl.value = url
-        viewModelScope.launch {
-            settingsRepository.setServerUrl(url)
-            settingsRepository.setUsername(username)
-            settingsRepository.setPassword(password)
-        }
-        wsClient.setSavedCredentials(username, password)
         _attempting.value = true
+        // Everything is saved only when the server hands out a token, as on the phone. Saved
+        // before, a failed sign-in to another server left its URL next to the old server's
+        // token, and BACK out of Change server then made TvRootViewModel retry that pair for good.
         wsClient.connectWithLogin(url, username, password) { token ->
-            viewModelScope.launch { settingsRepository.setAuthToken(token) }
+            // The URL is written last, so the server a later start connects to changes only once
+            // the sign-in for it is saved. The four values live in two DataStores, so one edit
+            // cannot hold them all.
+            viewModelScope.launch {
+                settingsRepository.setAuthToken(token)
+                settingsRepository.setUsername(username)
+                settingsRepository.setPassword(password)
+                settingsRepository.setServerUrl(url)
+            }
+            wsClient.setSavedCredentials(username, password)
         }
 
         // Backstop the UI: the core client now has its own handshake watchdog, but
