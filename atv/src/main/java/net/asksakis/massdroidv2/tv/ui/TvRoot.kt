@@ -66,7 +66,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
 /** Routes that show the mini player bar (browsing surfaces; never under the full player). */
-private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse")
+private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse", "search")
 
 /**
  * Top-level TV destination switch:
@@ -79,6 +79,7 @@ private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse")
 @Composable
 fun TvRoot(
     miniPlayerShortcut: kotlinx.coroutines.flow.SharedFlow<Unit>? = null,
+    voiceSearchShortcut: kotlinx.coroutines.flow.SharedFlow<Unit>? = null,
     viewModel: TvRootViewModel = hiltViewModel()
 ) {
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
@@ -118,6 +119,18 @@ fun TvRoot(
             val miniPlayerEntry = remember { MutableSharedFlow<Unit>(extraBufferCapacity = 1) }
             if (miniPlayerShortcut != null) {
                 LaunchedEffect(miniPlayerShortcut) { miniPlayerShortcut.collect { miniPlayerEntry.tryEmit(Unit) } }
+            }
+            // The remote's microphone key: go to Search (unless already there) and listen. The
+            // request is a flag the screen clears, because the screen is not composed yet when
+            // the key arrives from elsewhere, so a flow emitted now would be missed.
+            var voiceRequested by remember { mutableStateOf(false) }
+            if (voiceSearchShortcut != null) {
+                LaunchedEffect(voiceSearchShortcut) {
+                    voiceSearchShortcut.collect {
+                        voiceRequested = true
+                        if (nav.currentBackStackEntry?.destination?.route != "search") nav.navigate("search")
+                    }
+                }
             }
             // The bar is drawn over the screens instead of below them, so opening the full
             // player is one step: the bar fades out together with the screen it belongs to,
@@ -162,7 +175,8 @@ fun TvRoot(
                             onOpenArtist = { itemId, provider ->
                                 nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
                             },
-                            onOpenBrowse = { nav.navigate("browse") }
+                            onOpenBrowse = { nav.navigate("browse") },
+                            onOpenSearch = { nav.navigate("search") }
                         )
                     }
                 }
@@ -172,7 +186,19 @@ fun TvRoot(
                             onOpenArtist = { itemId, provider ->
                                 nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
                             },
-                            onOpenFolders = { nav.navigate("serverbrowse") }
+                            onOpenFolders = { nav.navigate("serverbrowse") },
+                            onOpenSearch = { nav.navigate("search") }
+                        )
+                    }
+                }
+                composable("search") {
+                    MiniPlayerSpace(miniPlayerHeight) {
+                        TvSearchScreen(
+                            onOpenArtist = { itemId, provider ->
+                                nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
+                            },
+                            voiceRequested = voiceRequested,
+                            onVoiceHandled = { voiceRequested = false }
                         )
                     }
                 }

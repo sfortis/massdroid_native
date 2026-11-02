@@ -38,6 +38,9 @@ class TvMainActivity : ComponentActivity() {
     /** Long-press BACK anywhere jumps to the mini player bar (10-foot shortcut). */
     private val miniPlayerShortcut = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
+    /** The remote's microphone or search key anywhere opens Search and listens. */
+    private val voiceSearchShortcut = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
     @Inject lateinit var playerRepository: PlayerRepository
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var volumeKeyController: VolumeKeyController
@@ -55,7 +58,7 @@ class TvMainActivity : ComponentActivity() {
         lifecycleScope.launch { settingsRepository.sendspinClientId.collect { sendspinClientId = it } }
         setContent {
             MassDroidTvTheme {
-                TvRoot(miniPlayerShortcut = miniPlayerShortcut)
+                TvRoot(miniPlayerShortcut = miniPlayerShortcut, voiceSearchShortcut = voiceSearchShortcut)
                 DevBuildBadge()
             }
         }
@@ -101,6 +104,13 @@ class TvMainActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             event.startTracking()
+            return true
+        }
+        // The microphone key of TV remotes (Sony, among others) reaches the app as SEARCH or
+        // VOICE_ASSIST before the system's own voice search takes it. Handled here, it opens
+        // Search listening, so a query never needs the on-screen keyboard.
+        if (keyCode == KeyEvent.KEYCODE_SEARCH || keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
+            if (event.repeatCount == 0) voiceSearchShortcut.tryEmit(Unit)
             return true
         }
         return super.onKeyDown(keyCode, event)

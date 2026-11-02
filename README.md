@@ -126,7 +126,7 @@ MassDroid is a full-featured Music Assistant companion app built around music ex
 - **Artist Blocking** : Block any artist from all recommendations, radio stations, and Smart Mix results
 - **Media Session** : Android media notification with playback controls
 - **Player Settings** : Rename players, set icons, configure crossfade, volume normalization, streaming codec, and the output channels a speaker plays. Setting one speaker to left and another to right turns a group into a stereo pair, and a sync sheet lines every member of a group up by ear.
-- **Android TV** : Full client for Shield and Google TV: the same Discover Home as the phone with Smart Mix and Genre Radio, library browsing, control of any player from a mini player always at hand, and the TV as a synced speaker
+- **Android TV** : Full client for Shield and Google TV: the same Discover Home as the phone with Smart Mix and Genre Radio, library browsing, search across your providers by keyboard or the remote's microphone key, control of any player from a mini player always at hand, and the TV as a synced speaker
 - **Diagnostics** : A settings screen with the app and server versions, the logs the app keeps on disk, and the battery setting that decides whether it may work in the background, which is what a problem report needs. A separate connection view shows a live latency graph with roundtrip stats.
 - **mTLS Support** : Client certificate authentication for secure remote access
 - **MiniPlayer** : Persistent mini player bar across all screens

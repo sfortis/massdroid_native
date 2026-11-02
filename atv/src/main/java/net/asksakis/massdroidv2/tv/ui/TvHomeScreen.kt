@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -76,6 +77,7 @@ fun TvHomeScreen(
     onOpenSettings: () -> Unit,
     onOpenArtist: (itemId: String, provider: String) -> Unit,
     onOpenBrowse: () -> Unit,
+    onOpenSearch: () -> Unit,
     viewModel: TvHomeViewModel = hiltViewModel()
 ) {
     val sections by viewModel.sections.collectAsStateWithLifecycle()
@@ -136,7 +138,14 @@ fun TvHomeScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = EDGE),
                 horizontalArrangement = Arrangement.End
             ) {
-                // Remembered like a card, so Back from Browse or Settings lands on the button.
+                // Remembered like a card, so Back from Search, Browse or Settings lands on the button.
+                IconButton(
+                    onClick = onOpenSearch,
+                    modifier = focusModifierFor(SEARCH_BUTTON_KEY).pointerClick(onClick = onOpenSearch)
+                ) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                }
+                Spacer(Modifier.width(8.dp))
                 IconButton(
                     onClick = onOpenBrowse,
                     modifier = focusModifierFor(BROWSE_BUTTON_KEY).pointerClick(onClick = onOpenBrowse)
@@ -368,7 +377,8 @@ private fun ContentShelf(
 }
 
 private const val FOCUS_RESTORE_TRIES = 25
-// Focus memory keys of the two top buttons; card keys are uris, so these cannot collide.
+// Focus memory keys of the three top buttons; card keys are uris, so these cannot collide.
+private const val SEARCH_BUTTON_KEY = "button:search"
 private const val BROWSE_BUTTON_KEY = "button:browse"
 private const val SETTINGS_BUTTON_KEY = "button:settings"
 private const val FOCUS_RESTORE_RETRY_MS = 60L
