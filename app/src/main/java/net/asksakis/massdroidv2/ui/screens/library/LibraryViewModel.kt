@@ -85,6 +85,12 @@ class LibraryViewModel @Inject constructor(
         favs[tab] ?: false
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    // The Artists tab's album-artist filter and the Albums tab's album types, each for one tab only.
+    private val _albumArtistsOnly = MutableStateFlow(false)
+    val albumArtistsOnly: StateFlow<Boolean> = _albumArtistsOnly.asStateFlow()
+    private val _albumTypes = MutableStateFlow<Set<AlbumType>>(emptySet())
+    val albumTypes: StateFlow<Set<AlbumType>> = _albumTypes.asStateFlow()
+
     val selectedProviders: StateFlow<Set<String>> = combine(_selectedProvidersMap, _currentTab) { map, tab ->
         map[tab] ?: emptySet()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
@@ -221,7 +227,8 @@ class LibraryViewModel @Inject constructor(
             orderBy = orderByForTab(LibraryTabKey.ARTISTS.index),
             favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ARTISTS.index),
             providerFilter = providerFilterFor(LibraryTabKey.ARTISTS),
-            genreIds = genreIds
+            genreIds = genreIds,
+            albumArtistsOnly = _albumArtistsOnly.value
         )
 
     private suspend fun fetchAlbums(search: String?, genreIds: List<Int>?, limit: Int, offset: Int) =
@@ -230,7 +237,8 @@ class LibraryViewModel @Inject constructor(
             orderBy = orderByForTab(LibraryTabKey.ALBUMS.index),
             favoriteOnly = favoriteOnlyForTab(LibraryTabKey.ALBUMS.index),
             providerFilter = providerFilterFor(LibraryTabKey.ALBUMS),
-            genreIds = genreIds
+            genreIds = genreIds,
+            albumTypes = _albumTypes.value
         )
 
     private suspend fun fetchTracks(search: String?, genreIds: List<Int>?, limit: Int, offset: Int) =
@@ -485,6 +493,9 @@ class LibraryViewModel @Inject constructor(
             _sortDescendings.value = settingsRepository.librarySortDescending.first()
             _favoritesOnlyMap.value = settingsRepository.libraryFavoritesOnly.first()
             _selectedProvidersMap.value = settingsRepository.libraryProviderFilters.first()
+            _albumArtistsOnly.value = settingsRepository.libraryAlbumArtistsOnly.first()
+            _albumTypes.value = settingsRepository.libraryAlbumTypes.first()
+                .mapNotNull { AlbumType.fromServer(it) }.toSet()
             _settingsLoaded.value = true
         }
         // Keep syncing after initial load
@@ -663,6 +674,20 @@ class LibraryViewModel @Inject constructor(
         val newVal = _favoritesOnlyMap.value[tab] != true
         _favoritesOnlyMap.value = _favoritesOnlyMap.value + (tab to newVal)
         viewModelScope.launch { settingsRepository.setLibraryFavoritesOnly(tab, newVal) }
+        reloadCurrentTab()
+    }
+
+    fun toggleAlbumArtistsOnly() {
+        val newVal = !_albumArtistsOnly.value
+        _albumArtistsOnly.value = newVal
+        viewModelScope.launch { settingsRepository.setLibraryAlbumArtistsOnly(newVal) }
+        reloadCurrentTab()
+    }
+
+    fun toggleAlbumType(type: AlbumType) {
+        val updated = _albumTypes.value.let { if (type in it) it - type else it + type }
+        _albumTypes.value = updated
+        viewModelScope.launch { settingsRepository.setLibraryAlbumTypes(updated.map { it.serverValue }.toSet()) }
         reloadCurrentTab()
     }
 

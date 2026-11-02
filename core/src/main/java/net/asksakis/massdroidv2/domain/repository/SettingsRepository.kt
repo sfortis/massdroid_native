@@ -108,6 +108,10 @@ interface SettingsRepository : TrustedServerStore {
     val librarySortDescending: Flow<Map<Int, Boolean>>
     val libraryFavoritesOnly: Flow<Map<Int, Boolean>>
     val libraryProviderFilters: Flow<Map<Int, Set<String>>>
+    /** The Artists tab lists only artists credited on an album in the library. */
+    val libraryAlbumArtistsOnly: Flow<Boolean>
+    /** The album types the Albums tab keeps, as the server spells them; empty keeps all. */
+    val libraryAlbumTypes: Flow<Set<String>>
     // Single global sort for the tracks inside any playlist (PlaylistDetail), applied to every
     // playlist and persisted across navigation/restart (not per-playlist, not per-tab).
     val playlistSortKey: Flow<String>
@@ -249,6 +253,8 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)
     suspend fun setLibraryFavoritesOnly(tab: Int, favoritesOnly: Boolean)
+    suspend fun setLibraryAlbumArtistsOnly(enabled: Boolean)
+    suspend fun setLibraryAlbumTypes(types: Set<String>)
     suspend fun setLibraryProviderFilters(tab: Int, instanceIds: Set<String>)
     suspend fun setPlaylistSortKey(key: String)
     suspend fun setPlaylistSortDescending(descending: Boolean)

@@ -3,6 +3,8 @@ package net.asksakis.massdroidv2.tv.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +46,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
+import net.asksakis.massdroidv2.domain.model.AlbumType
 import net.asksakis.massdroidv2.domain.model.SortOption
 
 /**
@@ -174,7 +177,12 @@ fun TvMediaCard(
     }
 }
 
-/** The sort picker of the grid screens; the screen's view model keeps the choice. */
+/**
+ * The sort picker of the grid screens; the screen's view model keeps the choice. Browse adds its
+ * library filters below the sort: [albumArtistsOnly] on Artists and [albumTypes] on Albums, each
+ * null where it does not apply.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TvSortDialog(
     current: SortOption,
@@ -182,7 +190,11 @@ fun TvSortDialog(
     descending: Boolean,
     onSelect: (SortOption) -> Unit,
     onSetDescending: (Boolean) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    albumArtistsOnly: Boolean? = null,
+    onToggleAlbumArtistsOnly: () -> Unit = {},
+    albumTypes: Set<AlbumType>? = null,
+    onToggleAlbumType: (AlbumType) -> Unit = {}
 ) {
     val initialFocus = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
@@ -222,6 +234,25 @@ fun TvSortDialog(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         DirectionChip("Ascending", selected = !descending) { onSetDescending(false) }
                         DirectionChip("Descending", selected = descending) { onSetDescending(true) }
+                    }
+                }
+                albumArtistsOnly?.let { selected ->
+                    Spacer(Modifier.height(12.dp))
+                    Text("Filter", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+                    DirectionChip("Album artists only", selected = selected, onClick = onToggleAlbumArtistsOnly)
+                }
+                albumTypes?.let { selectedTypes ->
+                    Spacer(Modifier.height(12.dp))
+                    Text("Album types", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AlbumType.entries.forEach { type ->
+                            DirectionChip(type.label, selected = type in selectedTypes) { onToggleAlbumType(type) }
+                        }
                     }
                 }
             }

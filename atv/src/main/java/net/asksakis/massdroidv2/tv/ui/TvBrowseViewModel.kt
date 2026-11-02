@@ -11,12 +11,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.asksakis.massdroidv2.data.util.LibraryPager
 import net.asksakis.massdroidv2.domain.model.Album
+import net.asksakis.massdroidv2.domain.model.AlbumType
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.model.Playlist
 import net.asksakis.massdroidv2.domain.model.Radio
@@ -26,6 +28,7 @@ import net.asksakis.massdroidv2.domain.model.sortOptionFor
 import net.asksakis.massdroidv2.domain.model.Track
 import net.asksakis.massdroidv2.domain.repository.MusicRepository
 import net.asksakis.massdroidv2.domain.repository.PlayerRepository
+import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 enum class BrowseCategory(val label: String, val libraryTab: LibraryTabKey) {
@@ -60,6 +63,7 @@ data class BrowseItem(
 class TvBrowseViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val playerRepository: PlayerRepository,
+    private val settingsRepository: SettingsRepository,
     @ApplicationContext context: Context,
 ) : ViewModel() {
 
@@ -79,11 +83,23 @@ class TvBrowseViewModel @Inject constructor(
         descs[cat] ?: false
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    // The same library filters as the phone: album artists for Artists, album types for Albums.
+    private val _albumArtistsOnly = MutableStateFlow(false)
+    val albumArtistsOnly: StateFlow<Boolean> = _albumArtistsOnly.asStateFlow()
+    private val _albumTypes = MutableStateFlow<Set<AlbumType>>(emptySet())
+    val albumTypes: StateFlow<Set<AlbumType>> = _albumTypes.asStateFlow()
+
     private val artistsPager = LibraryPager(viewModelScope, { a: Artist -> a.uri }) { l, o ->
-        musicRepository.getArtists(limit = l, offset = o, orderBy = orderByFor(BrowseCategory.ARTISTS))
+        musicRepository.getArtists(
+            limit = l, offset = o, orderBy = orderByFor(BrowseCategory.ARTISTS),
+            albumArtistsOnly = _albumArtistsOnly.value
+        )
     }
     private val albumsPager = LibraryPager(viewModelScope, { a: Album -> a.uri }) { l, o ->
-        musicRepository.getAlbums(limit = l, offset = o, orderBy = orderByFor(BrowseCategory.ALBUMS))
+        musicRepository.getAlbums(
+            limit = l, offset = o, orderBy = orderByFor(BrowseCategory.ALBUMS),
+            albumTypes = _albumTypes.value
+        )
     }
     private val tracksPager = LibraryPager(viewModelScope, { t: Track -> t.uri }) { l, o ->
         musicRepository.getTracks(limit = l, offset = o, orderBy = orderByFor(BrowseCategory.TRACKS))
@@ -148,9 +164,33 @@ class TvBrowseViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TvLoad.LOADING)
 
+    // No page is fetched before the saved filters are read, or the first page would arrive
+    // unfiltered while the dialog shows the filter on.
+    private var filtersLoaded = false
+
     init {
-        // A reload, not a loadMore: only a reload marks the first page as loading.
-        artistsPager.reloadIfEmpty()
+        viewModelScope.launch {
+            _albumArtistsOnly.value = settingsRepository.libraryAlbumArtistsOnly.first()
+            _albumTypes.value = settingsRepository.libraryAlbumTypes.first()
+                .mapNotNull { AlbumType.fromServer(it) }.toSet()
+            filtersLoaded = true
+            // A reload, not a loadMore: only a reload marks the first page as loading.
+            pagerFor(_category.value).reloadIfEmpty()
+        }
+    }
+
+    fun toggleAlbumArtistsOnly() {
+        val newVal = !_albumArtistsOnly.value
+        _albumArtistsOnly.value = newVal
+        viewModelScope.launch { settingsRepository.setLibraryAlbumArtistsOnly(newVal) }
+        artistsPager.reload()
+    }
+
+    fun toggleAlbumType(type: AlbumType) {
+        val updated = _albumTypes.value.let { if (type in it) it - type else it + type }
+        _albumTypes.value = updated
+        viewModelScope.launch { settingsRepository.setLibraryAlbumTypes(updated.map { it.serverValue }.toSet()) }
+        albumsPager.reload()
     }
 
     /** Load the current category again, after a failure. */
@@ -158,11 +198,13 @@ class TvBrowseViewModel @Inject constructor(
 
     fun selectCategory(cat: BrowseCategory) {
         _category.value = cat
-        pagerFor(cat).reloadIfEmpty()
+        if (filtersLoaded) pagerFor(cat).reloadIfEmpty()
     }
 
     /** Fetch the next page of the current category as the grid nears its end. */
-    fun loadMore() = pagerFor(_category.value).loadMore()
+    fun loadMore() {
+        if (filtersLoaded) pagerFor(_category.value).loadMore()
+    }
 
     /**
      * Set + persist the current category's sort and refetch it (pager params are live).

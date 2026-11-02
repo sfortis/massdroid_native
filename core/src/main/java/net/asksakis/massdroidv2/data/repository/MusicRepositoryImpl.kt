@@ -143,18 +143,42 @@ class MusicRepositoryImpl @Inject constructor(
         // off the collector's (Main) dispatcher.
     }.flowOn(Dispatchers.Default)
 
-    override suspend fun getArtists(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?, genreIds: List<Int>?): List<Artist> {
+    override suspend fun getArtists(
+        search: String?,
+        limit: Int,
+        offset: Int,
+        orderBy: String?,
+        favoriteOnly: Boolean,
+        providerFilter: List<String>?,
+        genreIds: List<Int>?,
+        albumArtistsOnly: Boolean
+    ): List<Artist> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ARTISTS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds)
+            LibraryItemsArgs(
+                search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds,
+                albumArtistsOnly = albumArtistsOnly
+            )
         )
         return parseMediaItems(result).mapNotNull { it.toArtist() }
     }
 
-    override suspend fun getAlbums(search: String?, limit: Int, offset: Int, orderBy: String?, favoriteOnly: Boolean, providerFilter: List<String>?, genreIds: List<Int>?): List<Album> {
+    override suspend fun getAlbums(
+        search: String?,
+        limit: Int,
+        offset: Int,
+        orderBy: String?,
+        favoriteOnly: Boolean,
+        providerFilter: List<String>?,
+        genreIds: List<Int>?,
+        albumTypes: Set<AlbumType>
+    ): List<Album> {
         val result = wsClient.sendCommand(
             MaCommands.Music.ALBUMS_LIBRARY_ITEMS,
-            LibraryItemsArgs(search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds)
+            LibraryItemsArgs(
+                search, limit, offset, orderBy, favoriteOnly, providerFilter, genreIds,
+                albumTypes = albumTypes.map { it.serverValue }
+            )
         )
         return parseMediaItems(result).mapNotNull { it.toAlbum() }
     }

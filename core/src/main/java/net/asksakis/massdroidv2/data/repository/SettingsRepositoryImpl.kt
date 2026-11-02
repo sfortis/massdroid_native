@@ -132,6 +132,8 @@ class SettingsRepositoryImpl @Inject constructor(
         private val KEY_LIBRARY_SORT_DESC = stringPreferencesKey("library_sort_desc")
         private val KEY_LIBRARY_FAV_ONLY = stringPreferencesKey("library_fav_only")
         private val KEY_LIBRARY_PROVIDER_FILTERS = stringPreferencesKey("library_provider_filters")
+        private val KEY_LIBRARY_ALBUM_ARTISTS_ONLY = booleanPreferencesKey("library_album_artists_only")
+        private val KEY_LIBRARY_ALBUM_TYPES = stringPreferencesKey("library_album_types")
         private val KEY_PLAYLIST_SORT_KEY = stringPreferencesKey("playlist_sort_key")
         private val KEY_PLAYLIST_SORT_DESC = booleanPreferencesKey("playlist_sort_desc")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
@@ -753,6 +755,25 @@ class SettingsRepositoryImpl @Inject constructor(
             val current = parseStringMap(prefs[KEY_LIBRARY_PROVIDER_FILTERS]).toMutableMap()
             if (instanceIds.isEmpty()) current.remove(tab) else current[tab] = instanceIds.joinToString("|")
             prefs[KEY_LIBRARY_PROVIDER_FILTERS] = encodeStringMap(current)
+        }
+    }
+
+    override val libraryAlbumArtistsOnly: Flow<Boolean> = safeData.map { prefs ->
+        prefs[KEY_LIBRARY_ALBUM_ARTISTS_ONLY] ?: false
+    }
+
+    override suspend fun setLibraryAlbumArtistsOnly(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[KEY_LIBRARY_ALBUM_ARTISTS_ONLY] = enabled }
+    }
+
+    // Album types joined by '|': the server's type names are plain lowercase words.
+    override val libraryAlbumTypes: Flow<Set<String>> = safeData.map { prefs ->
+        prefs[KEY_LIBRARY_ALBUM_TYPES].orEmpty().split("|").filter { it.isNotBlank() }.toSet()
+    }
+
+    override suspend fun setLibraryAlbumTypes(types: Set<String>) {
+        context.dataStore.edit { prefs ->
+            if (types.isEmpty()) prefs.remove(KEY_LIBRARY_ALBUM_TYPES) else prefs[KEY_LIBRARY_ALBUM_TYPES] = types.joinToString("|")
         }
     }
 
