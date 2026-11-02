@@ -32,6 +32,7 @@ import net.asksakis.massdroidv2.domain.model.sortOptionsFor
 fun TvBrowseScreen(
     onOpenArtist: (itemId: String, provider: String) -> Unit,
     onOpenFolders: () -> Unit,
+    onOpenSearch: () -> Unit,
     viewModel: TvBrowseViewModel = hiltViewModel()
 ) {
     val category by viewModel.category.collectAsStateWithLifecycle()
@@ -98,6 +99,9 @@ fun TvBrowseScreen(
                     modifier = Modifier.focusRequester(foldersFocus),
                     onClick = openFolders
                 )
+                // Search is a screen of its own as well: the library grid stays the library, and
+                // the results of a query across the providers get their own grid.
+                CategoryChip("Search", selected = false, onClick = onOpenSearch)
             }
         }
     ) {
@@ -150,8 +154,9 @@ private fun availableSortOptions(category: BrowseCategory): List<SortOption> =
 
 private const val BROWSE_LOAD_MORE_THRESHOLD = 12
 
+/** A pill chip of the grid screens' header rows: the Browse categories, the search filters, a recent search. */
 @Composable
-private fun CategoryChip(
+internal fun CategoryChip(
     label: String,
     selected: Boolean,
     modifier: Modifier = Modifier,

@@ -1,4 +1,5 @@
 ### Added
+- Android TV: Search across your library and your music providers, with filter chips and your recent searches.
 - Now Playing shows a few words about the album or the artist, on the phone and on Android TV.
 - Your settings come back with Android's backup on a new phone. Your password and the phone's speaker identity are never backed up.
 - Android TV: lyrics, "Not for me", the blurred cover behind the full player, and a Smart Listening switch.

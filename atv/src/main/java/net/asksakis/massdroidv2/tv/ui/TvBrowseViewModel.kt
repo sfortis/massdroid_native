@@ -47,6 +47,8 @@ data class BrowseItem(
     val isArtist: Boolean = false,
     val itemId: String = "",
     val provider: String = "",
+    /** The grid key. Search prefixes the category, so a uri matched in two categories stays unique. */
+    val key: String = uri,
 )
 
 /**

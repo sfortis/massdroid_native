@@ -66,7 +66,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
 /** Routes that show the mini player bar (browsing surfaces; never under the full player). */
-private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse")
+private val MINI_PLAYER_ROUTES = setOf("home", "browse", "serverbrowse", "search")
 
 /**
  * Top-level TV destination switch:
@@ -162,7 +162,8 @@ fun TvRoot(
                             onOpenArtist = { itemId, provider ->
                                 nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
                             },
-                            onOpenBrowse = { nav.navigate("browse") }
+                            onOpenBrowse = { nav.navigate("browse") },
+                            onOpenSearch = { nav.navigate("search") }
                         )
                     }
                 }
@@ -172,7 +173,17 @@ fun TvRoot(
                             onOpenArtist = { itemId, provider ->
                                 nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
                             },
-                            onOpenFolders = { nav.navigate("serverbrowse") }
+                            onOpenFolders = { nav.navigate("serverbrowse") },
+                            onOpenSearch = { nav.navigate("search") }
+                        )
+                    }
+                }
+                composable("search") {
+                    MiniPlayerSpace(miniPlayerHeight) {
+                        TvSearchScreen(
+                            onOpenArtist = { itemId, provider ->
+                                nav.navigate("artist/${Uri.encode(itemId)}/${Uri.encode(provider)}")
+                            }
                         )
                     }
                 }
