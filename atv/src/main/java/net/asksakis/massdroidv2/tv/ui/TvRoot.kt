@@ -244,7 +244,13 @@ fun TvRoot(
         hasSavedServer && !changeServer -> {
             TvConnectingScreen(server = viewModel.serverLabel(), onChangeServer = { viewModel.changeServer() })
         }
-        else -> TvOnboardingScreen()
+        else -> {
+            // BACK on the server list after Change server goes back to the saved server
+            // instead of leaving the app. Composed before the onboarding, whose own BACK
+            // (one step back inside it) takes precedence while it has a step to go back to.
+            BackHandler(enabled = hasSavedServer && changeServer) { viewModel.cancelChangeServer() }
+            TvOnboardingScreen()
+        }
     }
 }
 
