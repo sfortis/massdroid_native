@@ -179,8 +179,12 @@ class MaWebSocketAuthBindingTest {
         client.setSavedCredentials("alice", "home password")
 
         client.connect(home.url, "home token", ConnectOrigin.SAVED_CREDENTIALS)
-        withTimeout(WAIT_MS) { client.connectionState.first { it is ConnectionState.Error } }
+        // Not the Error state: after a sign-in with no answer the client closes the socket to
+        // retry, and the state moves on at once, so a waiting collector can miss the Error.
+        // The token is dropped only once the password after it has timed out.
+        withTimeout(WAIT_MS) { while (rejected.isEmpty() || client.authToken != null) delay(POLL_MS) }
 
+        assertThat(home.text).contains("auth/login")
         assertThat(rejected.map { it.token }).containsExactly("home token")
         assertThat(client.authToken).isNull()
         watcher.cancel()
