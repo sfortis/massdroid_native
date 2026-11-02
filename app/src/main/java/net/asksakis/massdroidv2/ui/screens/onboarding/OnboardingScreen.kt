@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.ui.screens.onboarding
 
 import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -81,7 +82,7 @@ import net.asksakis.massdroidv2.ui.components.rememberSignInDraft
 fun OnboardingScreen(onFinished: () -> Unit, viewModel: OnboardingViewModel = hiltViewModel()) {
     val started by viewModel.started.collectAsStateWithLifecycle()
     val chosen by viewModel.serverPicker.chosen.collectAsStateWithLifecycle()
-    val activity = LocalContext.current as? Activity
+    val activity = LocalActivity.current
 
     // The onboarding leaves by itself once a sign-in connects. Watching here rather than from
     // MainActivity keeps that true after the activity is recreated with this route on top.
