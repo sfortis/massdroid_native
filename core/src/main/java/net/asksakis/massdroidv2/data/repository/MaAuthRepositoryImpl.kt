@@ -152,6 +152,9 @@ class MaAuthRepositoryImpl @Inject constructor(
     override suspend fun signOut() {
         Log.d(TAG, "signOut(): wiping token, password, discover cache, and disconnecting")
         runCatching { wsClient.disconnect() }
+        // First, with the disconnect: a planned Sendspin start with no session sends nothing, so
+        // there is no fallback to the saved token while it is being forgotten below.
+        wsClient.forgetLastSession()
         wsClient.clearSavedCredentials()
         // Only this server's token and password are forgotten. The accounts saved for other
         // servers stay, and the username stays for the sign-in form.

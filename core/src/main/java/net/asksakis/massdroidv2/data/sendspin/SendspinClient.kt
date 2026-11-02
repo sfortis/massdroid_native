@@ -104,7 +104,10 @@ class SendspinClient(
         private const val CLOSE_PROTOCOL_ERROR = 1002
     }
 
-    data class Credentials(val serverUrl: String, val token: String)
+    data class Credentials(val serverUrl: String, val token: String) {
+        // The token is a secret, so it never reaches a log.
+        override fun toString(): String = "Credentials(${serverUrl.substringAfter("://")})"
+    }
 
     // @Volatile because the connect and close paths write it from different
     // threads than the ones that read it. Without the visibility guarantee, a

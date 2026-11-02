@@ -1,8 +1,10 @@
 package net.asksakis.massdroidv2.ui.car
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.os.Bundle
 import android.security.KeyChain
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,6 +68,7 @@ import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.service.carMediaCenterIntent
 import net.asksakis.massdroidv2.ui.components.ChosenServerCard
 import net.asksakis.massdroidv2.ui.components.OtherServerSheet
 import net.asksakis.massdroidv2.ui.components.ServerList
@@ -90,9 +93,28 @@ class CarSignInActivity : ComponentActivity() {
             // report day mode (isSystemInDarkTheme() = false), which would render this
             // parked screen white and jarring next to the dark media UI (and at night).
             MassDroidTheme(darkTheme = true) {
-                CarSignInScreen(onClose = { finish() })
+                CarSignInScreen(onClose = ::closeToMediaCenter)
             }
         }
+    }
+
+    /**
+     * Closes the screen into the media center showing MassDroid. The screen opens from the media
+     * center's gear and from the signed-out session error, and an older recents entry can still
+     * bring it up on its own; a plain finish() then left the user on the home screen instead of
+     * the media center. Without a media center to open, the screen only closes.
+     */
+    private fun closeToMediaCenter() {
+        try {
+            startActivity(carMediaCenterIntent(this))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No media center to open: ${e.message}")
+        }
+        finish()
+    }
+
+    private companion object {
+        const val TAG = "CarSignIn"
     }
 }
 
@@ -131,7 +153,9 @@ private fun CarSignInScreen(
     var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
 
     // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
-    // server to the server list. The arrow in the top bar still closes the screen.
+    // server to the server list. From the list it closes the screen the way the arrow in the top
+    // bar does, into the media center.
+    BackHandler(enabled = !choosingOther && chosen == null, onBack = onClose)
     BackHandler(enabled = choosingOther || chosen != null) {
         if (choosingOther) {
             picker.clearTyped()
@@ -190,7 +214,7 @@ private fun CarSignInScreen(
         topBar = {
             // Explicit back affordance: the AAOS media center has no guaranteed back
             // button on a parked settings activity, so the gear/SessionError entry would
-            // otherwise be a one-way trip. The arrow finish()es back to the media center.
+            // otherwise be a one-way trip. The arrow closes into the media center.
             TopAppBar(
                 title = {},
                 navigationIcon = {

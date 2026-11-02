@@ -539,6 +539,25 @@ class MaWebSocketClient(
     }
 
     /**
+     * What the last connection of this process signed in with, kept after it ends, so a caller
+     * that reconnects while MA is down still uses one server's address and token together.
+     * Null before the first connection of the process, after Sign out ([forgetLastSession]),
+     * and after its token was refused.
+     */
+    @Volatile var lastSession: AuthenticatedSession? = null
+        private set
+
+    /**
+     * Forgets [lastSession], unless it belongs to [keepServerId]. Sign out forgets it outright,
+     * so nothing reconnects with the old account. An attempt that is not saved forgets a session
+     * of any server but the one the app returns to, so nothing keeps connecting to a server the
+     * user did not stay on.
+     */
+    fun forgetLastSession(keepServerId: String? = null) {
+        if (keepServerId == null || lastSession?.serverId != keepServerId) lastSession = null
+    }
+
+    /**
      * What the connection [generation] signed in with, while it is the current connected one,
      * or null. The URL, the token and the server are fixed together when it connected, so a
      * caller that saves them never mixes them with a newer connection's.
@@ -931,9 +950,19 @@ class MaWebSocketClient(
             // Written after the sign-in, outside its try: a storage failure there is not a
             // refused token.
             var trustServer: String? = null
+            // The server this socket greeted with, for a refusal reported after a newer socket.
+            var offeredId: String? = null
             try {
                 val offered = serverInfo?.serverId
+                offeredId = offered
                 val trusted = trustedServers?.trustedServerId?.first()
+                // The read above suspends. A newer socket may have replaced this one meanwhile, and
+                // the commands below go out on whatever socket is current, so nothing of this
+                // sign-in may be sent: it would carry the token to the newer socket's server.
+                if (gen != connectionGeneration) {
+                    Log.d(TAG, "Sign-in of a replaced socket dropped before sending credentials")
+                    return@launch
+                }
                 // A connect that names its server decides by that alone: the return to the
                 // previous server must work while the attempt's server is still trusted.
                 val expected = expectedServerId
@@ -1001,7 +1030,10 @@ class MaWebSocketClient(
                 }
                 val current = synchronized(connectLock) {
                     (gen == connectionGeneration).also {
-                        if (it) _connectionState.value = ConnectionState.Connected(info, gen, session)
+                        if (it) {
+                            _connectionState.value = ConnectionState.Connected(info, gen, session)
+                            if (session != null) lastSession = session
+                        }
                     }
                 }
                 if (!current) return@launch
@@ -1011,6 +1043,15 @@ class MaWebSocketClient(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                val refused = tokenSent?.takeIf { !isTransientAuthFailure(e) }
+                // A refused token is not kept for Sendspin, whichever socket sent it.
+                if (refused != null && lastSession?.token == refused) lastSession = null
+                // It is reported, and so forgotten from the settings, only for the current socket.
+                // A replaced socket's commands may have gone out on a newer socket to another
+                // server, and that refusal says nothing about the token's own server.
+                if (refused != null && gen == connectionGeneration) {
+                    _rejectedTokens.tryEmit(RejectedToken(offeredId, refused))
+                }
                 if (gen != connectionGeneration) {
                     Log.d(TAG, "Auth of a replaced socket ended: ${e.message}")
                     return@launch
@@ -1025,7 +1066,6 @@ class MaWebSocketClient(
                 } else {
                     Log.e(TAG, "Auth failed: ${e.message}")
                     authToken = null
-                    tokenSent?.let { _rejectedTokens.tryEmit(RejectedToken(serverInfo?.serverId, it)) }
                     if (gen == connectionGeneration) _connectionState.value = ConnectionState.Error("Authentication failed: ${e.message}", gen)
                 }
             }

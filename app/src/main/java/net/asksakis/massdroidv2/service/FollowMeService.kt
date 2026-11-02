@@ -84,6 +84,8 @@ class FollowMeService : Service() {
          * started again from a foreground entry point, and it is sticky once running.
          */
         fun start(context: Context) {
+            // No Follow Me in a car: the automotive manifest declares this service disabled.
+            if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
             try {
                 context.startService(Intent(context, FollowMeService::class.java))
             } catch (e: IllegalStateException) {
@@ -99,6 +101,7 @@ class FollowMeService : Service() {
          * enabled, so `onStartCommand` goes foreground at once.
          */
         fun startFromExemption(context: Context, reason: String) {
+            if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) return
             try {
                 ContextCompat.startForegroundService(context, Intent(context, FollowMeService::class.java))
                 Log.i(TAG, "Started after $reason")

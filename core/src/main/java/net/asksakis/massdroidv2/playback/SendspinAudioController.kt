@@ -50,6 +50,7 @@ import net.asksakis.massdroidv2.data.sendspin.routedBluetoothSink
 import net.asksakis.massdroidv2.data.sendspin.soleBluetoothSinkName
 import net.asksakis.massdroidv2.data.sendspin.SendspinState
 import net.asksakis.massdroidv2.data.sendspin.SyncState
+import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.PlaybackState
@@ -1249,7 +1250,7 @@ class SendspinAudioController(
                     clientId,
                     clientName,
                     noiseSessionFactory = plan.noiseSessionFactory,
-                    credentialsProvider = buildCredentialsProvider(),
+                    credentialsProvider = buildCredentialsProvider(plan.serverId),
                 )
                 Log.d(TAG, "Sendspin started, playerId=$clientId noise=${plan.noiseSessionFactory != null} seedVol=$seedVolume")
             } else {
@@ -2301,19 +2302,17 @@ class SendspinAudioController(
     // region Sendspin connection helpers
 
     /**
-     * Credentials lookup used by the SendspinClient on every (re)connect
-     * attempt. Pulls the live MA WebSocket token if present, falling back to
-     * the persisted token so the very first attempt after a process restart
-     * also has something to send.
+     * Credentials lookup used by the SendspinClient on every (re)connect attempt, for a start
+     * planned for the MA server [plannedServerId]; see [sendspinCredentials].
      */
-    private fun buildCredentialsProvider(): suspend () -> net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? = {
-        val url = settingsRepository.serverUrl.first()
-        val token = wsClient.authToken ?: settingsRepository.authToken.first()
-        if (url.isBlank() || token.isBlank()) {
-            null
-        } else {
-            net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials(url, token)
-        }
+    private fun buildCredentialsProvider(
+        plannedServerId: String
+    ): suspend () -> net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? = {
+        sendspinCredentials(
+            maState = wsClient.connectionState.value,
+            lastSession = wsClient.lastSession,
+            plannedServerId = plannedServerId
+        )
     }
 
     /**
@@ -2443,4 +2442,26 @@ class SendspinAudioController(
     }
 
     // endregion
+}
+
+/**
+ * The address and token a Sendspin connection uses, always from one session, so the address of
+ * one server is never paired with the token of another: the live MA connection's while MA is
+ * connected, else the last connection of this process ([lastSession]). The saved pair is never
+ * used: it is written to two stores one after the other, and a read in between mixes them.
+ *
+ * A start is planned for one MA server ([plannedServerId]), and its player id and protocol
+ * belong to that server. A session of another server gives null, so a controller that a server
+ * change is about to replace never connects to the new server with the old plan. No session at
+ * all gives null too: a plan is made only once MA connected, so none left means Sign out or a
+ * refused token.
+ */
+internal fun sendspinCredentials(
+    maState: ConnectionState,
+    lastSession: AuthenticatedSession?,
+    plannedServerId: String
+): net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials? {
+    val session = (maState as? ConnectionState.Connected)?.session ?: lastSession ?: return null
+    if (session.serverId != plannedServerId) return null
+    return net.asksakis.massdroidv2.data.sendspin.SendspinClient.Credentials(session.url, session.token)
 }

@@ -354,16 +354,14 @@ class AndroidAutoController(
     }
 
     private fun createMediaSession(libraryCallback: MediaLibraryService.MediaLibrarySession.Callback) {
-        // The session activity is the "open the app" target the now-playing surface
-        // launches. On automotive MainActivity is disabled (the car never shows the
-        // full phone UI), so point it at the car sign-in/settings screen instead -
-        // by class name, since that activity only exists in the automotive flavor.
+        // The session activity is the "open the app" target the now-playing surface and the
+        // dock launch. On automotive MainActivity is disabled (the car never shows the full
+        // phone UI), and the sign-in screen as the target made the dock and now playing open
+        // sign-in first, so it is the media center showing MassDroid. Sign-in stays reachable
+        // through the media center's gear and through the signed-out session error.
         // Phone/TV keep MainActivity.
         val sessionIntent = if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
-            Intent().apply {
-                setClassName(service, "net.asksakis.massdroidv2.ui.car.CarSignInActivity")
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
+            carMediaCenterIntent(service)
         } else {
             Intent(service, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

@@ -27,7 +27,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" tools:node="remove" />
-    <!-- Only Follow Me used these, and it is removed from the car build below. -->
+    <!-- Only Follow Me used these, and it is disabled in the car build below. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" tools:node="remove" />
 
@@ -96,22 +96,28 @@
              stays exported (it carries the OAuth musicassistant://auth VIEW filter for
              phones), so a stray explicit/implicit intent could still surface the phone
              UI in the car. The car never needs it - sign-in is CarSignInActivity (gear)
-             and the app is the media-center tile - so switch it off entirely here. A
-             PendingIntent that still points at it (e.g. the min-importance connection
-             notification) simply no-ops on tap rather than opening the phone UI. -->
+             and the app is the media-center tile - so switch it off entirely here. The
+             connection notification and the media session open the media center instead
+             (carMediaCenterIntent). -->
         <activity
             android:name=".ui.MainActivity"
             android:enabled="false"
             tools:node="merge" />
 
-        <!-- Follow Me (room-detection proximity scanning) has no place in a car. Its start
-             receiver goes too: on every boot and every update it started the app in both
-             car users, the headless system user included, only to log that Follow Me is off,
-             and that process brought up a second media session. The media center binds the
-             playback service by itself when it needs it. -->
+        <!-- Follow Me (room-detection proximity scanning) has no place in a car. The service
+             is declared disabled rather than removed, with its foregroundServiceType written
+             here as well: the code that starts it still exists in the shared sources, and
+             lint's check of this variant reads the service type from this file, not from the
+             merged manifest. FollowMeService.start does nothing in the car build. Its start receiver
+             is removed: on every boot and every update it started the app in both car users,
+             the headless system user included, only to log that Follow Me is off, and that
+             process brought up a second media session. The media center binds the playback
+             service by itself when it needs it. -->
         <service
             android:name=".service.FollowMeService"
-            tools:node="remove" />
+            android:enabled="false"
+            android:foregroundServiceType="connectedDevice"
+            tools:node="merge" />
         <receiver
             android:name=".service.FollowMeStartReceiver"
             tools:node="remove" />

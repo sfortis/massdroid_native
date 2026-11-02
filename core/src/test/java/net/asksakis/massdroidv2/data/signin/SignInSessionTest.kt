@@ -156,6 +156,8 @@ class SignInSessionTest {
         assertThat(savedUrl.value).isEqualTo(homeUrl)
         assertThat(session.error.value).contains("Still using home:8095")
         verify { client.connect(homeUrl, "home token", MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS, "home") }
+        // A session the attempt may have left behind is not kept, unless it is the home server's.
+        verify { client.forgetLastSession("home") }
     }
 
     @Test
@@ -193,6 +195,7 @@ class SignInSessionTest {
 
         assertThat(connects.last()).isEqualTo(homeUrl to "home token")
         assertThat(savedUrl.value).isEqualTo(homeUrl)
+        verify { client.forgetLastSession("home") }
     }
 
     @Test

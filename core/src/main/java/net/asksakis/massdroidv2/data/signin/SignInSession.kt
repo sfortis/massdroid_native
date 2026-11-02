@@ -367,8 +367,13 @@ class SignInSession internal constructor(
      * server, so the trust the attempt's server may have gained does not refuse it.
      */
     private suspend fun returnTo(previous: Previous?): Boolean {
+        // The attempt may have connected before it was abandoned (a cancel before the save, the
+        // wrong server, a timeout). Its session is not kept, or Sendspin would keep registering
+        // this phone on a server the user did not stay on. Forgotten after the connect or the
+        // disconnect below has replaced the attempt's socket, so it cannot sign in again after.
         if (previous == null || (previous.token.isBlank() && previous.password.isBlank())) {
             wsClient.disconnect()
+            wsClient.forgetLastSession(keepServerId = previous?.serverId)
             return false
         }
         settings.setSelectedPlayerId(previous.selectedPlayerId)
@@ -380,6 +385,7 @@ class SignInSession internal constructor(
             MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS,
             previous.serverId
         )
+        wsClient.forgetLastSession(keepServerId = previous.serverId)
         // After the connect, which replaced the attempt's socket, so that socket's late trust
         // write cannot overwrite this one.
         settings.setTrustedServerId(previous.serverId)

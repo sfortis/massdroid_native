@@ -42,6 +42,9 @@ class PlaybackService : MediaLibraryService() {
         private const val TAG = "PlaybackSvc"
         private const val CONN_CHANNEL_ID = "massdroid_connection"
         private const val CONN_NOTIFICATION_ID = 3
+        // Not 0, the media session's: in the car both open the media center with the same
+        // intent, and one request code would make them one PendingIntent.
+        private const val CONN_CONTENT_REQUEST_CODE = 1
     }
 
     @Inject lateinit var playerRepository: PlayerRepository
@@ -303,10 +306,15 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
+        // MainActivity is disabled in the car, so a tap there opens the media center instead.
         val contentIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            this, CONN_CONTENT_REQUEST_CODE,
+            if (net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
+                carMediaCenterIntent(this)
+            } else {
+                Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )

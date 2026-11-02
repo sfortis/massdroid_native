@@ -69,7 +69,11 @@ class SendspinNoiseConnector @Inject constructor(
     private val legacyLock = Mutex()
 
     /** The player id to start Sendspin with and, on MA 2.10.0 and later, the Noise session factory. */
-    class StartPlan(val clientId: String, val noiseSessionFactory: NoiseSessionFactory?)
+    /**
+     * What a Sendspin start uses, planned for the MA server [serverId]: the player id and, on
+     * Noise, the session factory.
+     */
+    class StartPlan(val clientId: String, val noiseSessionFactory: NoiseSessionFactory?, val serverId: String)
 
     /**
      * Waits for the MA connection, then picks the protocol by its `server_version`.
@@ -89,7 +93,7 @@ class SendspinNoiseConnector @Inject constructor(
         if (!supportsNoise(version)) {
             Log.i(TAG, "MA $version: legacy Sendspin")
             val id = stored ?: UUID.randomUUID().toString().also { settingsRepository.setSendspinClientId(it) }
-            return StartPlan(id, null)
+            return StartPlan(id, null, connected.serverInfo.serverId)
         }
         val identity = withContext(Dispatchers.IO) { identityStore.identity() }
         if (stored != identity.peerId) {
@@ -100,7 +104,11 @@ class SendspinNoiseConnector @Inject constructor(
             Log.i(TAG, "Player id is now ${identity.peerId} (was $stored)")
         }
         Log.i(TAG, "MA $version: Sendspin over Noise")
-        return StartPlan(identity.peerId, NoiseSessionFactory { NoiseClientSession(identity, credentials) })
+        return StartPlan(
+            identity.peerId,
+            NoiseSessionFactory { NoiseClientSession(identity, credentials) },
+            connected.serverInfo.serverId
+        )
     }
 
     /**
