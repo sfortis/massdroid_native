@@ -241,7 +241,12 @@ class DiscoverFeedStoreTest {
 
         assertThat(store.radioGenres().map { it.name }).containsExactly("Rock", "Synth-pop")
         sessionEventBus.emitReset()
-        withTimeout(WAIT_MS) { store.state.first { it.sections.isEmpty() } }
+        // Read state.value and do not collect it: a collector counts as a screen watching, and
+        // a watched store that is connected builds the feed again at once. That rebuild raced
+        // the check and failed this test under load, either way round.
+        withTimeout(WAIT_MS) {
+            while (store.state.value.sections.isNotEmpty()) delay(POLL_MS)
+        }
         assertThat(store.radioGenres()).isEmpty()
     }
 
@@ -265,5 +270,6 @@ class DiscoverFeedStoreTest {
     private companion object {
         const val WAIT_MS = 5_000L
         const val SETTLE_MS = 200L
+        const val POLL_MS = 10L
     }
 }
