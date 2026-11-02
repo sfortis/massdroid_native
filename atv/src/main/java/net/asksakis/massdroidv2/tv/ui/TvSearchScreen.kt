@@ -1,6 +1,7 @@
 package net.asksakis.massdroidv2.tv.ui
 
 import android.content.ActivityNotFoundException
+import android.app.Activity
 import android.content.Intent
 import android.speech.RecognizerIntent
 import android.widget.Toast
@@ -25,6 +26,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -65,7 +73,13 @@ fun TvSearchScreen(
     // heard is searched at once, as a submitted query, since the listener has said it all.
     val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-        if (!heard.isNullOrBlank()) viewModel.searchAgain(heard)
+        when {
+            !heard.isNullOrBlank() -> viewModel.searchAgain(heard)
+            // The recogniser came back without a word: cancelled, or voice is not set up on
+            // this TV (remote not paired, no Assistant). Said once, so a dead key is not a riddle.
+            result.resultCode != Activity.RESULT_OK ->
+                Toast.makeText(context, "Voice input didn't start. Is voice set up on this TV?", Toast.LENGTH_LONG).show()
+        }
     }
     val startVoice = {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -95,8 +109,18 @@ fun TvSearchScreen(
         title = "Search",
         header = {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = TV_GRID_EDGE)) {
+                val focusManager = LocalFocusManager.current
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Box(modifier = Modifier.weight(1f)) {
+                    // The field keeps LEFT and RIGHT for its cursor, so with nothing typed RIGHT
+                    // would go nowhere; then it reaches the microphone button beside the field.
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .onPreviewKeyEvent { event ->
+                                event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight &&
+                                    session.query.isEmpty() && focusManager.moveFocus(FocusDirection.Right)
+                            }
+                    ) {
                         TvTextField(
                             label = "Artist, album, track, playlist, radio or audiobook",
                             value = session.query,
