@@ -1,11 +1,10 @@
 package net.asksakis.massdroidv2.ui.car
 
-import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.os.Bundle
-import android.security.KeyChain
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -62,16 +61,17 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import net.asksakis.massdroidv2.data.signin.SavedSignIn
-import net.asksakis.massdroidv2.data.signin.sameServer
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
 import net.asksakis.massdroidv2.service.carMediaCenterIntent
 import net.asksakis.massdroidv2.ui.components.ChosenServerCard
 import net.asksakis.massdroidv2.ui.components.OtherServerSheet
 import net.asksakis.massdroidv2.ui.components.ServerList
+import net.asksakis.massdroidv2.ui.components.chooseClientCertificate
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 import kotlin.math.roundToInt
 
@@ -125,6 +125,7 @@ private fun CarSignInScreen(
     viewModel: CarSignInViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val activity = LocalActivity.current
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val certAlias by viewModel.certAlias.collectAsStateWithLifecycle()
@@ -146,11 +147,14 @@ private fun CarSignInScreen(
     var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
     var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
     var choosingOther by rememberSaveable { mutableStateOf(false) }
-    // Only auto-close after a sign-in initiated from THIS screen, so opening the
-    // gear while already connected (to change server / sign out) does not slam shut.
-    var attempted by rememberSaveable { mutableStateOf(false) }
-    // The server this screen last sent a sign-in to; only its success closes the screen.
+    // The server this screen last sent a sign-in to; only its success closes the screen, so
+    // opening the gear while connected, to change server or sign out, does not close it.
     var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    // Leaving the chosen server abandons its sign-in, which then can no longer close the screen.
+    val leaveServer: () -> Unit = {
+        viewModel.cancelAttempt()
+        sentUrl = null
+    }
 
     // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
     // server to the server list. From the list it closes the screen the way the arrow in the top
@@ -161,8 +165,7 @@ private fun CarSignInScreen(
             picker.clearTyped()
             choosingOther = false
         } else {
-            viewModel.cancelAttempt()
-            attempted = false
+            leaveServer()
             picker.changeServer()
         }
     }
@@ -173,9 +176,10 @@ private fun CarSignInScreen(
     // Closes on a sign-in from this screen that saved its server. Connected alone is not enough:
     // a failed switch connects to the previous server again.
     val succeeded by viewModel.succeeded.collectAsStateWithLifecycle()
-    LaunchedEffect(succeeded, attempted, sentUrl) {
+    LaunchedEffect(succeeded, sentUrl) {
         val done = succeeded ?: return@LaunchedEffect
-        if (attempted && sentUrl != null && sameServer(done, sentUrl.orEmpty())) {
+        val sent = sentUrl ?: return@LaunchedEffect
+        if (sameServer(done, sent)) {
             viewModel.consumeSuccess()
             onClose()
         }
@@ -252,8 +256,7 @@ private fun CarSignInScreen(
                             rows = rows,
                             searching = searching,
                             onPick = { row ->
-                                viewModel.cancelAttempt()
-                                attempted = false
+                                leaveServer()
                                 picker.choose(row.url, row.name)
                             },
                             onSearchAgain = picker::searchAgain,
@@ -265,8 +268,7 @@ private fun CarSignInScreen(
                         ChosenServerCard(
                             server = server,
                             onChange = {
-                                viewModel.cancelAttempt()
-                                attempted = false
+                                leaveServer()
                                 picker.changeServer()
                             },
                             onCheckAgain = picker::checkAgain
@@ -281,7 +283,6 @@ private fun CarSignInScreen(
                                 onClick = {
                                     viewModel.continueAs(server, saved)
                                     sentUrl = server.url
-                                    attempted = true
                                 },
                                 enabled = !connecting,
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
@@ -322,7 +323,6 @@ private fun CarSignInScreen(
                                 // Connected; a rejected input while already connected keeps it open.
                                 if (viewModel.login(server, username, password)) {
                                     sentUrl = server.url
-                                    attempted = true
                                 }
                             },
                             enabled = !connecting,
@@ -363,12 +363,10 @@ private fun CarSignInScreen(
                             TextButton(onClick = { viewModel.clearCertificate() }) { Text("Remove") }
                         }
                         OutlinedButton(onClick = {
-                            val activity = context as? Activity ?: return@OutlinedButton
-                            KeyChain.choosePrivateKeyAlias(
-                                activity,
-                                { alias -> viewModel.onCertificateSelected(alias, context) },
-                                null, null, null, -1, null,
-                            )
+                            val host = activity ?: return@OutlinedButton
+                            chooseClientCertificate(host, certAlias) { alias ->
+                                viewModel.onCertificateSelected(alias, context)
+                            }
                         }) {
                             Icon(Icons.Default.Security, contentDescription = null)
                             Spacer(Modifier.width(8.dp))

@@ -21,7 +21,7 @@ import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.connection.ServerRow
-import net.asksakis.massdroidv2.domain.connection.normalizedAddress
+import net.asksakis.massdroidv2.domain.connection.sameServer
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
@@ -103,20 +103,22 @@ class SignInController private constructor(
     /**
      * Signs in to [server] with a username and password; see [SignInSession.login]. The
      * password goes only to the server the check named. When the check named none and the
-     * password is the one saved for the current server, it goes only to that server.
+     * password is the one saved for the current server, it goes only to that server. Returns
+     * false when an empty field rejected the input and nothing was sent.
      */
-    fun login(server: ChosenServer, username: String, password: String) {
+    fun login(server: ChosenServer, username: String, password: String): Boolean {
         val user = username.trim()
         val pass = password.trim()
         if (user.isBlank() || pass.isBlank()) {
             formError.value = "Enter your username and password."
-            return
+            return false
         }
         formError.value = null
         session.login(server.url, (server.check as? ServerCheck.Found)?.serverId, user, pass) {
             val saved = savedSignIn(server).first()
             saved.passwordServerId.takeIf { saved.password.isNotEmpty() && saved.password == pass }
         }
+        return true
     }
 
     /** Forgets a server used before from the list; see [SignInSession.forget]. */
@@ -288,7 +290,3 @@ internal fun savedSignInFor(
 /** The name to show for a saved account: the user the token names, else the saved username. */
 private fun accountName(account: ServerAccount): String =
     MaTokenInfo.decode(account.token)?.username ?: account.username.ifBlank { "saved account" }
-
-/** Whether two saved or chosen server URLs are the same address; see [normalizedAddress]. */
-fun sameServer(a: String, b: String): Boolean =
-    normalizedAddress(a).equals(normalizedAddress(b), ignoreCase = true)

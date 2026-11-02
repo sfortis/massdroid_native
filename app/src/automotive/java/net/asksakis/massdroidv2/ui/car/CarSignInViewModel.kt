@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -23,7 +22,6 @@ import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 import net.asksakis.massdroidv2.data.signin.SavedSignIn
 import net.asksakis.massdroidv2.data.signin.SignInController
-import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
@@ -37,18 +35,15 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 /**
- * Minimal car (AAOS) sign-in / server-config view model. Reuses the shared
- * :core [MaWebSocketClient] login flow exactly like the phone SettingsViewModel
- * and the TV onboarding screen, but stays intentionally small (username/password
- * + optional client certificate) so the parked car screen never pulls in the
- * full phone settings surface. OAuth is deliberately omitted (it needs a browser
- * round-trip that is not reliable in a car).
+ * The car (AAOS) sign-in and the settings of the car's own player. The sign-in is the phone's
+ * [SignInController] and [ServerPicker], so the car picks a server and signs in the way the
+ * phone does. It offers a username and password, the account saved for the server, and a
+ * client certificate. Home Assistant sign-in is left out, because it needs a browser.
  */
 @HiltViewModel
 class CarSignInViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val settingsRepository: SettingsRepository,
-    private val signInSession: SignInSession,
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
@@ -56,7 +51,7 @@ class CarSignInViewModel @Inject constructor(
     signInFactory: SignInController.Factory,
 ) : ViewModel() {
 
-    // The phone's sign-in form logic: what to prefill for a server, and "Continue as".
+    // The phone's sign-in form: what to prefill for a server, "Continue as", and the attempt.
     private val signIn: SignInController = signInFactory.create(viewModelScope)
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
@@ -64,10 +59,8 @@ class CarSignInViewModel @Inject constructor(
     /** Step 1 and step 2 of the sign-in, shared with the phone and the TV. */
     val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
 
-    // The form's own error; the attempt's error comes from the sign-in session.
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = combine(_error, signInSession.error) { form, attempt -> form ?: attempt }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The form's error or the last attempt's; see [SignInController.error]. */
+    val error: StateFlow<String?> = signIn.error
 
     // ---- MassDroid player audio settings ----------------------------------
     // The car IS the Sendspin player, so these tune its own output. Audio
@@ -217,21 +210,12 @@ class CarSignInViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     /** The server the last sign-in went to; the client's connection error belongs to it. */
-    val attemptedUrl: StateFlow<String?> = signInSession.attemptedUrl
+    val attemptedUrl: StateFlow<String?> = signIn.attemptedUrl
 
-    fun clearError() {
-        _error.value = null
-        signInSession.clearError()
-    }
+    fun clearError() = signIn.clearError()
 
-    /**
-     * Abandons a sign-in still being set up when the user leaves its server, so it cannot
-     * finish and sign in to the server the user moved away from; see [SignInSession.cancel].
-     */
-    fun cancelAttempt() {
-        _error.value = null
-        signInSession.cancel()
-    }
+    /** Abandons the sign-in in progress when the user leaves its server; see [SignInController.cancelAttempt]. */
+    fun cancelAttempt() = signIn.cancelAttempt()
 
     /**
      * What the form may offer for [server], as on the phone: that server's saved username, the
@@ -240,33 +224,23 @@ class CarSignInViewModel @Inject constructor(
     fun savedSignIn(server: ChosenServer): Flow<SavedSignIn> = signIn.savedSignIn(server)
 
     /** The server the last sign-in saved; the screen closes on it, see [consumeSuccess]. */
-    val succeeded: StateFlow<String?> = signInSession.succeeded
+    val succeeded: StateFlow<String?> = signIn.succeeded
 
-    fun consumeSuccess() = signInSession.consumeSuccess()
+    fun consumeSuccess() = signIn.consumeSuccess()
 
     /**
-     * Starts a sign-in; false when the input was rejected and nothing was sent. It runs in the
-     * phone's sign-in session, which saves the server only once it accepted the sign-in and
-     * returns to the previous server when it does not.
+     * Starts a sign-in; false when the input was rejected and nothing was sent. The server is
+     * saved only once it accepted the sign-in, and the app returns to the previous server when
+     * it does not; see [SignInController.login].
      */
-    fun login(server: ChosenServer, username: String, password: String): Boolean {
-        if (username.isBlank() || password.isBlank()) {
-            _error.value = "Enter your username and password."
-            return false
-        }
-        _error.value = null
+    fun login(server: ChosenServer, username: String, password: String): Boolean =
         signIn.login(server, username, password)
-        return true
-    }
 
     /** Forgets a server used before from the list; see [SignInController.forget]. */
     fun forget(row: ServerRow) = signIn.forget(row)
 
     /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
-    fun continueAs(server: ChosenServer, saved: SavedSignIn) {
-        _error.value = null
-        signIn.continueAs(server, saved)
-    }
+    fun continueAs(server: ChosenServer, saved: SavedSignIn) = signIn.continueAs(server, saved)
 
     /**
      * Apply a client certificate picked from the Android KeyChain. Mirrors the
@@ -289,7 +263,7 @@ class CarSignInViewModel @Inject constructor(
     }
 
     fun signOut() {
-        viewModelScope.launch { signInSession.signOut() }
+        viewModelScope.launch { signIn.signOut() }
     }
 
     private suspend fun loadCertificate(alias: String, context: Context) {
