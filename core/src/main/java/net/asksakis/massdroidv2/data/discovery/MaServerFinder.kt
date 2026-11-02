@@ -1,25 +1,22 @@
 package net.asksakis.massdroidv2.data.discovery
 
 import android.content.Context
+import android.os.Build
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.domain.connection.ServerAddress
 import net.asksakis.massdroidv2.domain.connection.musicAssistantCandidate
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import java.net.Inet6Address
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -48,6 +45,36 @@ internal fun displayNameOf(announced: String?, isHomeAssistantAddon: Boolean): S
         ?: name.ifEmpty { DEFAULT_SERVER_NAME }
 }
 
+/**
+ * The server a resolved service describes. The server's base URL keeps its scheme (https when
+ * Music Assistant serves TLS itself), but only while it points at the port the service
+ * announced. A base URL on another port is a reverse proxy, which may not be reachable from
+ * home, so the address found on this network is used instead.
+ */
+internal fun discoveredServerOf(
+    serviceName: String,
+    txt: Map<String, String?>,
+    hostAddress: String?,
+    port: Int
+): DiscoveredServer? {
+    val baseUrl = txt["base_url"]?.toHttpUrlOrNull()
+    val url = if (baseUrl != null && baseUrl.port == port) {
+        baseUrl.toString().trimEnd('/')
+    } else {
+        val host = hostAddress?.substringBefore('%')?.takeIf { it.isNotEmpty() } ?: return null
+        val hostPart = if (host.contains(':')) "[$host]" else host
+        "http://$hostPart:$port"
+    }
+    val isAddon = txt["homeassistant_addon"].toBoolean()
+    return DiscoveredServer(
+        serverId = txt["server_id"] ?: serviceName,
+        name = displayNameOf(txt["name"], isAddon),
+        url = url,
+        version = txt["server_version"],
+        isHomeAssistantAddon = isAddon
+    )
+}
+
 private const val HOME_ASSISTANT_ADDON_NAME = "Home Assistant add-on"
 private const val DEFAULT_SERVER_NAME = "Music Assistant"
 private val ANNOUNCED_NAME = Regex("^Music Assistant \\((.+)\\)$")
@@ -63,7 +90,8 @@ private val ANNOUNCED_NAME = Regex("^Music Assistant \\((.+)\\)$")
 @Singleton
 class MaServerFinder @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val probe: MaAuthProbe
+    private val probe: MaAuthProbe,
+    private val ownResolver: MdnsServiceResolver
 ) {
     /**
      * The servers on this network, updated as they appear and disappear. Discovery runs only
@@ -77,8 +105,8 @@ class MaServerFinder @Inject constructor(
             return@callbackFlow
         }
         val found = LinkedHashMap<String, DiscoveredServer>()
-        // NsdManager before API 34 refuses a second resolve while one is running, so the
-        // services found are resolved one at a time.
+        // The services found are resolved one at a time, which is all NsdManager allows an app
+        // before API 34.
         val toResolve = Channel<NsdServiceInfo>(Channel.UNLIMITED)
         send(emptyList())
 
@@ -105,8 +133,7 @@ class MaServerFinder @Inject constructor(
 
         val resolver = launch {
             for (service in toResolve) {
-                val resolved = nsd.resolveWithRetry(service) ?: continue
-                val server = resolved.toDiscoveredServer() ?: continue
+                val server = resolveServer(nsd, service) ?: continue
                 synchronized(found) {
                     found[service.serviceName] = server
                     trySend(found.values.toList())
@@ -137,20 +164,29 @@ class MaServerFinder @Inject constructor(
     }
 
     /**
-     * Resolves [service], trying again while the system is busy. Before Android 14 NsdManager
-     * runs one resolve at a time for the whole app and answers a second one with
-     * FAILURE_ALREADY_ACTIVE, and a resolve that ran past a timeout cannot be stopped, so on the
-     * Mi MIX (Android 10) every server failed with codes 3 and 101 (2026-11-01). The resolves of
-     * every list therefore share one lock, and a failed one waits and goes again.
+     * Turns a service found by discovery into a server, in one of two ways. From Android 14 the
+     * system resolves it, and the app's own query covers a resolve that fails. Before Android 14
+     * the system resolve is never started: it runs one at a time per app, cannot be stopped,
+     * and stalls on servers that share a host name (every Music Assistant server registers
+     * `mass.local.`), which on the Shield left every other server unresolved behind it.
      */
-    private suspend fun NsdManager.resolveWithRetry(service: NsdServiceInfo): NsdServiceInfo? {
-        repeat(RESOLVE_ATTEMPTS) { attempt ->
-            val resolved = resolveLock.withLock { withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { resolve(service) } }
-            if (resolved != null) return resolved
-            delay(RESOLVE_RETRY_DELAY_MS * (attempt + 1))
+    private suspend fun resolveServer(nsd: NsdManager, service: NsdServiceInfo): DiscoveredServer? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val resolved = withTimeoutOrNull(SYSTEM_RESOLVE_TIMEOUT_MS) { nsd.resolve(service) }
+            resolved?.toDiscoveredServer()?.let { return it }
         }
-        Log.d(TAG, "Gave up resolving ${service.serviceName}")
-        return null
+        val reply = ownResolver.resolve("${service.serviceName}.$SERVICE_DOMAIN") ?: run {
+            Log.d(TAG, "No answer for ${service.serviceName}")
+            return null
+        }
+        val record = reply.record
+        val port = record.port ?: return null
+        return discoveredServerOf(
+            serviceName = service.serviceName,
+            txt = record.txt,
+            hostAddress = record.addresses.firstOrNull { !it.contains(':') } ?: reply.responder,
+            port = port
+        )
     }
 
     @Suppress("DEPRECATION") // resolveService is the call that exists on every supported API level.
@@ -169,38 +205,20 @@ class MaServerFinder @Inject constructor(
         }
 
     private fun NsdServiceInfo.toDiscoveredServer(): DiscoveredServer? {
-        val txt = attributes.mapValues { (_, value) -> value?.toString(Charsets.UTF_8) }
         @Suppress("DEPRECATION") // getHost is replaced by getHostAddresses only from API 34.
         val address = host ?: return null
-        val hostText = address.hostAddress?.substringBefore('%') ?: return null
-        val hostPart = if (address is Inet6Address) "[$hostText]" else hostText
-        // The server's base URL keeps its scheme (https when Music Assistant serves TLS itself),
-        // but only while it points at the port the server announced. A base URL on another
-        // port is a reverse proxy, which may not be reachable from home, so the address found
-        // on this network is used instead.
-        val baseUrl = txt["base_url"]?.toHttpUrlOrNull()
-        val url = if (baseUrl != null && baseUrl.port == port) {
-            baseUrl.toString().trimEnd('/')
-        } else {
-            "http://$hostPart:$port"
-        }
-        val isAddon = txt["homeassistant_addon"].toBoolean()
-        return DiscoveredServer(
-            serverId = txt["server_id"] ?: serviceName,
-            name = displayNameOf(txt["name"], isAddon),
-            url = url,
-            version = txt["server_version"],
-            isHomeAssistantAddon = isAddon
+        return discoveredServerOf(
+            serviceName = serviceName,
+            txt = attributes.mapValues { (_, value) -> value?.toString(Charsets.UTF_8) },
+            hostAddress = address.hostAddress,
+            port = port
         )
     }
-
-    private val resolveLock = Mutex()
 
     private companion object {
         const val TAG = "MaServerFinder"
         const val SERVICE_TYPE = "_mass._tcp."
-        const val RESOLVE_TIMEOUT_MS = 10_000L
-        const val RESOLVE_ATTEMPTS = 4
-        const val RESOLVE_RETRY_DELAY_MS = 600L
+        const val SERVICE_DOMAIN = "_mass._tcp.local"
+        const val SYSTEM_RESOLVE_TIMEOUT_MS = 5_000L
     }
 }
