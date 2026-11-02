@@ -132,8 +132,9 @@ class MaServerFinder @Inject constructor(
         }
 
         val resolver = launch {
+            val fallback = SystemFallbackGate()
             for (service in toResolve) {
-                val server = resolveServer(nsd, service) ?: continue
+                val server = resolveServer(nsd, service, fallback) ?: continue
                 synchronized(found) {
                     found[service.serviceName] = server
                     trySend(found.values.toList())
@@ -164,21 +165,28 @@ class MaServerFinder @Inject constructor(
     }
 
     /**
-     * Turns a service found by discovery into a server, in one of two ways. From Android 14 the
-     * system resolves it, and the app's own query covers a resolve that fails. Before Android 14
-     * the system resolve is never started: it runs one at a time per app, cannot be stopped,
-     * and stalls on servers that share a host name (every Music Assistant server registers
-     * `mass.local.`), which on the Shield left every other server unresolved behind it.
+     * Turns a service found by discovery into a server. From Android 14 the system resolves it,
+     * and the app's own query covers a resolve that fails. Before Android 14 the app's own query
+     * goes first, and the system resolve stands in only while [fallback] allows it (a VPN that
+     * keeps the query off the local network, for example). The system resolve there runs one at
+     * a time per app, cannot be stopped, and stalls on servers that share a host name (every
+     * Music Assistant server registers `mass.local.`), which on the Shield left every other
+     * server unresolved behind it, so it is never the first try.
      */
-    private suspend fun resolveServer(nsd: NsdManager, service: NsdServiceInfo): DiscoveredServer? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val resolved = withTimeoutOrNull(SYSTEM_RESOLVE_TIMEOUT_MS) { nsd.resolve(service) }
-            resolved?.toDiscoveredServer()?.let { return it }
-        }
-        val reply = ownResolver.resolve("${service.serviceName}.$SERVICE_DOMAIN") ?: run {
+    private suspend fun resolveServer(
+        nsd: NsdManager,
+        service: NsdServiceInfo,
+        fallback: SystemFallbackGate
+    ): DiscoveredServer? {
+        val systemFirst = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        if (systemFirst) systemResolve(nsd, service)?.let { return it }
+        val network = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) service.network else null
+        val reply = ownResolver.resolve("${service.serviceName}.$SERVICE_DOMAIN", network) ?: run {
             Log.d(TAG, "No answer for ${service.serviceName}")
-            return null
+            if (systemFirst || !fallback.open) return null
+            return systemResolve(nsd, service).also { if (it == null) fallback.close("the system resolve failed too") }
         }
+        if (!systemFirst) fallback.close("the app's own query works on this network")
         val record = reply.record
         val port = record.port ?: return null
         return discoveredServerOf(
@@ -189,10 +197,13 @@ class MaServerFinder @Inject constructor(
         )
     }
 
+    private suspend fun systemResolve(nsd: NsdManager, service: NsdServiceInfo): DiscoveredServer? =
+        withTimeoutOrNull(SYSTEM_RESOLVE_TIMEOUT_MS) { nsd.resolve(service) }?.toDiscoveredServer()
+
     @Suppress("DEPRECATION") // resolveService is the call that exists on every supported API level.
     private suspend fun NsdManager.resolve(service: NsdServiceInfo): NsdServiceInfo? =
         suspendCancellableCoroutine { cont ->
-            resolveService(service, object : NsdManager.ResolveListener {
+            val listener = object : NsdManager.ResolveListener {
                 override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
                     if (cont.isActive) cont.resume(serviceInfo)
                 }
@@ -201,7 +212,13 @@ class MaServerFinder @Inject constructor(
                     Log.d(TAG, "Could not resolve ${serviceInfo.serviceName}: $errorCode")
                     if (cont.isActive) cont.resume(null)
                 }
-            })
+            }
+            resolveService(service, listener)
+            // A resolve that timed out keeps running in the daemon unless it is stopped, which
+            // Android allows from API 34; before that it cannot be stopped at all.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                cont.invokeOnCancellation { runCatching { stopServiceResolution(listener) } }
+            }
         }
 
     private fun NsdServiceInfo.toDiscoveredServer(): DiscoveredServer? {
@@ -213,6 +230,24 @@ class MaServerFinder @Inject constructor(
             hostAddress = address.hostAddress,
             port = port
         )
+    }
+
+    /**
+     * Whether the system resolve may still stand in for the app's own query in this discovery
+     * session, before Android 14. It stays open only while it can help: the own query has not
+     * worked yet (it is kept from the local network, by a VPN for example), and the system
+     * resolve has not failed. Each failed one costs 5 s that cannot be stopped, and a stopped
+     * server the system still lists made every later fallback fail with "already active".
+     */
+    private class SystemFallbackGate {
+        var open = true
+            private set
+
+        fun close(reason: String) {
+            if (!open) return
+            open = false
+            Log.d(TAG, "System resolve fallback off for this discovery: $reason")
+        }
     }
 
     private companion object {

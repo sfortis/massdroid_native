@@ -75,7 +75,74 @@ class MdnsMessageTest {
         assertThat(server.url).isEqualTo("http://192.168.1.14:8095")
     }
 
+    @Test
+    fun `a TXT entry that runs past its record is refused`() {
+        // The record says 3 bytes, the entry inside it claims 10, and the bytes after it would
+        // be read as the rest of the entry.
+        val rdata = byteArrayOf(10, 'a'.code.toByte(), '='.code.toByte())
+        val packet = singleRecord(instance, type = 16, rdata = rdata) + "bcdefghij".toByteArray()
+        assertThat(MdnsMessage.parseAnswer(packet, packet.size, instance)).isNull()
+    }
+
+    @Test
+    fun `an SRV record too short to hold a port and a target is refused`() {
+        // The zero byte after the record would otherwise be read as an empty target.
+        val packet = singleRecord(instance, type = 33, rdata = byteArrayOf(0, 0, 0, 0, 0x1F, 0x9F.toByte())) + byteArrayOf(0)
+        assertThat(MdnsMessage.parseAnswer(packet, packet.size, instance)).isNull()
+    }
+
+    @Test
+    fun `SRV and TXT sent in separate packets make one complete record`() {
+        val srv = MdnsServiceRecord(port = 8095, target = "mass.local", txt = emptyMap(), addresses = listOf("192.168.1.14"))
+        val txt = MdnsServiceRecord(
+            port = null,
+            target = null,
+            txt = mapOf("base_url" to "http://192.168.1.14:8095"),
+            addresses = emptyList(),
+            hasTxt = true
+        )
+        assertThat(srv.isComplete).isFalse()
+        assertThat(txt.isComplete).isFalse()
+        val merged = srv.mergedWith(txt)
+        assertThat(merged.isComplete).isTrue()
+        assertThat(merged.port).isEqualTo(8095)
+        assertThat(merged.txt["base_url"]).isEqualTo("http://192.168.1.14:8095")
+        assertThat(merged.addresses).containsExactly("192.168.1.14")
+        assertThat(txt.mergedWith(srv)).isEqualTo(merged)
+    }
+
+    @Test
+    fun `a TXT record with no properties still counts as the TXT record`() {
+        val packet = singleRecord(instance, type = 16, rdata = byteArrayOf(0))
+        val record = MdnsMessage.parseAnswer(packet, packet.size, instance)!!
+        assertThat(record.hasTxt).isTrue()
+        assertThat(record.txt).isEmpty()
+    }
+
     private fun label(text: String) = byteArrayOf(text.length.toByte()) + text.toByteArray()
+
+    /** A response with one record of [type] about [name], holding [rdata]. */
+    private fun singleRecord(name: String, type: Int, rdata: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        fun short(value: Int) {
+            out.write(value shr 8 and 0xFF)
+            out.write(value and 0xFF)
+        }
+        short(0x1234)
+        short(0x8400)
+        short(0)
+        short(1)
+        short(0)
+        short(0)
+        for (part in name.split('.')) out.write(label(part))
+        out.write(0)
+        short(type)
+        short(0x8001)
+        out.write(byteArrayOf(0, 0, 0x11, 0x94.toByte()))
+        short(rdata.size)
+        out.write(rdata)
+        return out.toByteArray()
+    }
 
     /** A response like the servers send: TXT, then SRV with a compressed target, then the A record. */
     private fun answer(name: String, address: ByteArray): ByteArray {

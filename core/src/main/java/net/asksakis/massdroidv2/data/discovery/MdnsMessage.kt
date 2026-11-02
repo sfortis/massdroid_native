@@ -5,14 +5,32 @@ import java.net.InetAddress
 
 /**
  * What one mDNS responder said about a service instance: the port and host from its SRV record,
- * its TXT properties, and the addresses it gave for that host.
+ * its TXT properties, and the addresses it gave for that host. [hasTxt] tells a TXT record with
+ * no properties from no TXT record at all.
  */
 data class MdnsServiceRecord(
     val port: Int?,
     val target: String?,
     val txt: Map<String, String?>,
-    val addresses: List<String>
-)
+    val addresses: List<String>,
+    val hasTxt: Boolean = txt.isNotEmpty()
+) {
+    /** Both the SRV and the TXT record are in: nothing more to wait for. */
+    val isComplete: Boolean get() = port != null && hasTxt
+
+    /**
+     * This answer and a [later] one from the same responder as one record. A responder may send
+     * the SRV and the TXT record in separate packets; reading only the first one ended the
+     * resolve with a TXT record and no port.
+     */
+    fun mergedWith(later: MdnsServiceRecord): MdnsServiceRecord = MdnsServiceRecord(
+        port = later.port ?: port,
+        target = later.target ?: target,
+        txt = if (later.hasTxt) later.txt else txt,
+        addresses = (addresses + later.addresses).distinct(),
+        hasTxt = hasTxt || later.hasTxt
+    )
+}
 
 /**
  * The two DNS messages the app's own mDNS resolve needs: a query for a service instance's SRV
@@ -34,6 +52,8 @@ internal object MdnsMessage {
     private const val MAX_POINTER_JUMPS = 32
     private const val IPV4_SIZE = 4
     private const val IPV6_SIZE = 16
+    // Priority, weight and port, and a target of at least the root label.
+    private const val MIN_SRV_SIZE = 7
 
     /** A query with id [id] for the SRV and TXT records of [instance], such as "x._mass._tcp.local". */
     fun query(instance: String, id: Int): ByteArray {
@@ -86,6 +106,7 @@ internal object MdnsMessage {
             require(start + length <= reader.limit)
             when {
                 type == TYPE_SRV && name.equals(instance, ignoreCase = true) -> {
+                    require(length >= MIN_SRV_SIZE)
                     reader.position = start + 4 // priority, weight
                     port = reader.short()
                     target = reader.name()
@@ -102,7 +123,7 @@ internal object MdnsMessage {
         if (port == null && txt == null) return null
         val addresses = hosts.filter { (host, _) -> target != null && host.equals(target, ignoreCase = true) }
             .map { it.second }
-        return MdnsServiceRecord(port, target, txt.orEmpty(), addresses)
+        return MdnsServiceRecord(port, target, txt.orEmpty(), addresses, hasTxt = txt != null)
     }
 
     private fun readTxt(bytes: ByteArray, start: Int, length: Int): Map<String, String?> {
@@ -110,6 +131,9 @@ internal object MdnsMessage {
         var i = start
         while (i < start + length) {
             val size = bytes[i].toInt() and 0xFF
+            // An entry that runs past its record would read the next record, or bytes left in
+            // the receive buffer by an earlier packet.
+            require(i + 1 + size <= start + length)
             val entry = String(bytes, i + 1, size, Charsets.UTF_8)
             i += 1 + size
             if (entry.isEmpty()) continue

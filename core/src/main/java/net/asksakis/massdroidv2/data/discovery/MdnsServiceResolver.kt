@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -36,18 +37,23 @@ data class MdnsReply(val record: MdnsServiceRecord, val responder: String)
 class MdnsServiceResolver @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    /** What the server behind [instance] answers, or null when nothing answered in time. */
-    suspend fun resolve(instance: String, timeoutMs: Long = RESOLVE_TIMEOUT_MS): MdnsReply? =
+    /**
+     * What the server behind [instance] answers, or null when nothing answered in time. The query
+     * goes out on [network], the network discovery found the service on when Android says so
+     * (API 33 and later), else on the first Wi-Fi or Ethernet network.
+     */
+    suspend fun resolve(
+        instance: String,
+        network: Network? = null,
+        timeoutMs: Long = RESOLVE_TIMEOUT_MS
+    ): MdnsReply? =
         withContext(Dispatchers.IO) {
-            val network = localNetwork()
+            val local = network ?: localNetwork()
             try {
                 MulticastSocket(null).use { socket ->
                     socket.reuseAddress = true
                     socket.bind(InetSocketAddress(0))
-                    network?.let { local ->
-                        local.bindSocket(socket)
-                        interfaceOf(local)?.let { socket.networkInterface = it }
-                    }
+                    if (local != null) pinTo(socket, local)
                     socket.timeToLive = MULTICAST_TTL
                     socket.soTimeout = RECEIVE_SLICE_MS
                     exchange(socket, instance, timeoutMs)
@@ -58,19 +64,41 @@ class MdnsServiceResolver @Inject constructor(
             }
         }
 
+    /**
+     * Keeps the query on [network]'s link. Both steps are best effort: a lockdown VPN can refuse
+     * to bind the socket to a network outside it, and the query is then still sent on the
+     * default route instead of not at all.
+     */
+    private fun pinTo(socket: MulticastSocket, network: Network) {
+        try {
+            network.bindSocket(socket)
+        } catch (e: IOException) {
+            Log.d(TAG, "Could not bind the query to the local network: ${e.message}")
+        }
+        try {
+            interfaceOf(network)?.let { socket.networkInterface = it }
+        } catch (e: IOException) {
+            Log.d(TAG, "Could not pin the query to the local interface: ${e.message}")
+        }
+    }
+
     private suspend fun exchange(socket: MulticastSocket, instance: String, timeoutMs: Long): MdnsReply? {
         val query = MdnsMessage.query(instance, Random.nextInt(1, MAX_QUERY_ID))
         val group = InetAddress.getByName(MDNS_GROUP)
         val buffer = ByteArray(MAX_PACKET)
-        val deadline = System.currentTimeMillis() + timeoutMs
+        // What each responder said so far, by address. Its SRV and TXT records can come in
+        // separate packets, so the resolve waits until one responder has sent both.
+        val replies = HashMap<String, MdnsServiceRecord>()
+        // The elapsed clock, so a change of the wall clock cannot stretch or end the wait.
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
         var nextSend = 0L
-        while (System.currentTimeMillis() < deadline) {
+        while (SystemClock.elapsedRealtime() < deadline) {
             coroutineContext.ensureActive()
             // A lost multicast packet is common on Wi-Fi, so the query goes out again until the
             // server answers or the time is up.
-            if (System.currentTimeMillis() >= nextSend) {
+            if (SystemClock.elapsedRealtime() >= nextSend) {
                 socket.send(DatagramPacket(query, query.size, group, MDNS_PORT))
-                nextSend = System.currentTimeMillis() + RESEND_INTERVAL_MS
+                nextSend = SystemClock.elapsedRealtime() + RESEND_INTERVAL_MS
             }
             val packet = DatagramPacket(buffer, buffer.size)
             try {
@@ -79,9 +107,13 @@ class MdnsServiceResolver @Inject constructor(
                 continue
             }
             val record = MdnsMessage.parseAnswer(packet.data, packet.length, instance) ?: continue
-            return MdnsReply(record, packet.address.hostAddress.orEmpty())
+            val responder = packet.address.hostAddress.orEmpty()
+            val merged = replies[responder]?.mergedWith(record) ?: record
+            replies[responder] = merged
+            if (merged.isComplete) return MdnsReply(merged, responder)
         }
-        return null
+        // A responder that sent its SRV record but never a TXT one still gives the port.
+        return replies.entries.firstOrNull { it.value.port != null }?.let { MdnsReply(it.value, it.key) }
     }
 
     /** The Wi-Fi or Ethernet network, which carries the LAN even while a VPN is the default. */
