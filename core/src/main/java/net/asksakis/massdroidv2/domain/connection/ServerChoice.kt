@@ -46,6 +46,21 @@ data class AnnouncedServer(
     val isHomeAssistantAddon: Boolean
 )
 
+/**
+ * [url] as one address: trimmed, without a trailing slash, and without the default port of its
+ * scheme, so "https://host:443/" and "https://host" are the same row. Compare results without
+ * regard to case.
+ */
+fun normalizedAddress(url: String): String {
+    val trimmed = url.trim().trimEnd('/')
+    val match = DEFAULT_PORT.matchEntire(trimmed) ?: return trimmed
+    val (scheme, host, port, rest) = match.destructured
+    val isDefault = (scheme.equals("https", true) && port == "443") || (scheme.equals("http", true) && port == "80")
+    return if (isDefault) "$scheme://$host$rest" else trimmed
+}
+
+private val DEFAULT_PORT = Regex("""^(https?)://([^/:]+):(\d+)(.*)$""", RegexOption.IGNORE_CASE)
+
 /** The address of [url] without its scheme, which is how the sign-in screens show it. */
 fun displayAddressOf(url: String): String = url.substringAfter("://").trimEnd('/')
 
@@ -60,8 +75,8 @@ fun serverRows(
     announced: List<AnnouncedServer>,
     usedBefore: List<String> = emptyList()
 ): List<ServerRow> {
-    val saved = savedUrl.trim().trimEnd('/')
-    val earlier = usedBefore.map { it.trim().trimEnd('/') }
+    val saved = normalizedAddress(savedUrl)
+    val earlier = usedBefore.map(::normalizedAddress)
         .filter { it.isNotEmpty() && !it.equals(saved, ignoreCase = true) }
         .distinctBy { it.lowercase() }
     fun usedLabel(url: String): String? = when {
@@ -74,17 +89,17 @@ fun serverRows(
             url = server.url,
             name = server.name,
             detail = listOfNotNull(
-                usedLabel(server.url.trimEnd('/')),
+                usedLabel(normalizedAddress(server.url)),
                 displayAddressOf(server.url),
                 server.version?.let { "v$it" }
             ).joinToString(" · "),
             group = ServerRowGroup.ON_THIS_NETWORK,
             isHomeAssistantAddon = server.isHomeAssistantAddon,
-            canForget = earlier.any { it.equals(server.url.trimEnd('/'), ignoreCase = true) }
+            canForget = earlier.any { it.equals(normalizedAddress(server.url), ignoreCase = true) }
         )
     }
     val used = (listOf(saved).filter { it.isNotEmpty() } + earlier)
-        .filter { url -> found.none { it.url.trimEnd('/').equals(url, ignoreCase = true) } }
+        .filter { url -> found.none { normalizedAddress(it.url).equals(url, ignoreCase = true) } }
         .map { url ->
             ServerRow(
                 url = url,

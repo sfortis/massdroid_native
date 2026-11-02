@@ -43,7 +43,7 @@ class ServerPicker private constructor(
     private val scope: CoroutineScope,
     private val finder: MaServerFinder,
     private val auth: MaAuthRepository,
-    private val settings: SettingsRepository
+    settings: SettingsRepository
 ) {
     class Factory @Inject constructor(
         private val finder: MaServerFinder,
@@ -86,12 +86,6 @@ class ServerPicker private constructor(
             emit(false)
         }
     }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), true)
-
-    /** Forgets a server used before, which drops its row; see [ServerRow.canForget]. */
-    fun forget(row: ServerRow) {
-        if (!row.canForget) return
-        scope.launch { settings.forgetServerAt(row.url) }
-    }
 
     /** Starts the search of the network again. */
     fun searchAgain() {

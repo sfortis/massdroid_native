@@ -25,6 +25,16 @@ class SavedSignInTest {
         val form = formFor("http://home:8095", "home")
         assertThat(form.username).isEqualTo("alice")
         assertThat(form.password).isEqualTo("secret")
+        assertThat(form.passwordServerId).isEqualTo("home")
+    }
+
+    @Test
+    fun `a password offered before the check answered still names its server`() {
+        // The row still says Checking: the address decides, and the password stays bound to
+        // the server it was saved for, so another machine at that address does not get it.
+        val form = formFor("http://home:8095", serverId = null)
+        assertThat(form.password).isEqualTo("secret")
+        assertThat(form.passwordServerId).isEqualTo("home")
     }
 
     @Test
@@ -33,6 +43,7 @@ class SavedSignInTest {
         assertThat(form.password).isEmpty()
         assertThat(form.username).isEmpty()
         assertThat(form.continueAs).isNull()
+        assertThat(form.passwordServerId).isNull()
     }
 
     @Test
@@ -63,6 +74,23 @@ class SavedSignInTest {
         // A different machine answering at the same private address on another network.
         val form = formFor("http://home:8095", "stranger")
         assertThat(form.password).isEmpty()
+    }
+
+    @Test
+    fun `with no server known at all, the saved password is not offered`() {
+        // Nothing could bind the password to a server, so it would go to whatever answers.
+        val beforeUpdate = home.copy(serverId = null)
+        val form = formFor("http://home:8095", serverId = null, current = beforeUpdate)
+        assertThat(form.password).isEmpty()
+        assertThat(form.passwordServerId).isNull()
+        assertThat(form.username).isEqualTo("alice")
+    }
+
+    @Test
+    fun `an address with its default port is the same server`() {
+        assertThat(sameServer("https://Music.Example.org:443/", "https://music.example.org")).isTrue()
+        assertThat(sameServer("http://home:80", "http://home")).isTrue()
+        assertThat(sameServer("http://home:8095", "http://home")).isFalse()
     }
 
     @Test

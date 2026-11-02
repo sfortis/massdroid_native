@@ -95,13 +95,16 @@ fun ServerList(
     onForget: ((ServerRow) -> Unit)? = null,
     largeTargets: Boolean = false
 ) {
-    val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED }
+    // Addresses confirmed for Forget. Forget first asks the address which server answers there,
+    // which can take seconds, so their rows leave the list at once and cannot be confirmed twice.
+    var forgotten by remember { mutableStateOf(emptySet<String>()) }
+    val lastUsed = rows.filter { it.group == ServerRowGroup.LAST_USED && it.url !in forgotten }
     val found = rows.filter { it.group == ServerRowGroup.ON_THIS_NETWORK }
     // A long press on a server used before offers to forget it. Saved by address, so the
     // question survives a rotation.
     var forgettingUrl by rememberSaveable { mutableStateOf<String?>(null) }
     val forgetAction: (ServerRow) -> (() -> Unit)? = { row ->
-        { forgettingUrl = row.url }.takeIf { onForget != null && row.canForget }
+        { forgettingUrl = row.url }.takeIf { onForget != null && row.canForget && row.url !in forgotten }
     }
     if (lastUsed.isNotEmpty()) {
         ServerListHeader("Recently used")
@@ -112,6 +115,7 @@ fun ServerList(
             name = row.name,
             onConfirm = {
                 onForget?.invoke(row)
+                forgotten = forgotten + row.url
                 forgettingUrl = null
             },
             onDismiss = { forgettingUrl = null }

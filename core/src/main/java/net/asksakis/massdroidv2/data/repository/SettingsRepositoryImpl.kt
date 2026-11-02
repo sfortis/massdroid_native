@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import net.asksakis.massdroidv2.domain.connection.normalizedAddress
 import net.asksakis.massdroidv2.domain.model.LibraryDisplayMode
 import net.asksakis.massdroidv2.domain.model.LibraryTabKey
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -60,9 +61,16 @@ private val KEY_PASSWORD = stringPreferencesKey("password")
 private fun serverTokenKey(serverId: String) = stringPreferencesKey("auth_token@$serverId")
 private fun serverUsernameKey(serverId: String) = stringPreferencesKey("username@$serverId")
 private val KEY_SERVER_ACCOUNTS_MIGRATED = booleanPreferencesKey("server_accounts_migrated")
-private const val SERVER_URL_PREFIX = "url@"
-private fun serverUrlKey(serverId: String) = stringPreferencesKey("$SERVER_URL_PREFIX$serverId")
-private fun serverUsedAtKey(serverId: String) = longPreferencesKey("used_at@$serverId")
+private val KEY_SERVER_ADDRESSES_MIGRATED = booleanPreferencesKey("server_addresses_migrated")
+// Every address the phone signed in through, named by the address: the server_id it leads to
+// and when it was last used. One server can have several, such as its home and remote address.
+private const val ADDRESS_PREFIX = "addr@"
+private fun addressKey(address: String) = stringPreferencesKey("$ADDRESS_PREFIX$address")
+private fun addressUsedAtKey(address: String) = longPreferencesKey("addr_used_at@$address")
+// The one address per server that builds before 2026-11-02 kept; moved to the keys above once.
+private const val LEGACY_SERVER_URL_PREFIX = "url@"
+private fun legacyServerUrlKey(serverId: String) = stringPreferencesKey("$LEGACY_SERVER_URL_PREFIX$serverId")
+private fun legacyServerUsedAtKey(serverId: String) = longPreferencesKey("used_at@$serverId")
 private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
 private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
 private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
@@ -281,17 +289,11 @@ class SettingsRepositoryImpl @Inject constructor(
         context.deviceDataStore.edit { it.migrateToServerAccounts(url) }
     }
 
-    override suspend fun forgetServerAt(url: String) {
-        context.deviceDataStore.edit { it.forgetServerAt(url) }
+    override suspend fun forgetServerAt(url: String, serverId: String?, savedUrl: String) {
+        context.deviceDataStore.edit { it.forgetServerAt(url, serverId, savedUrl) }
     }
 
-    override val usedServerUrls: Flow<List<String>> = deviceData.map { prefs ->
-        prefs.asMap().keys
-            .filter { it.name.startsWith(SERVER_URL_PREFIX) }
-            .map { it.name.removePrefix(SERVER_URL_PREFIX) }
-            .sortedByDescending { prefs[serverUsedAtKey(it)] ?: 0L }
-            .mapNotNull { prefs[serverUrlKey(it)] }
-    }.distinctUntilChanged()
+    override val usedServerUrls: Flow<List<String>> = deviceData.map { it.usedAddresses() }.distinctUntilChanged()
 
     override val sendspinEnabled: Flow<Boolean> = safeData.map { prefs ->
         prefs[KEY_SENDSPIN_ENABLED] ?: true
@@ -910,10 +912,13 @@ internal fun mergeRecentSearch(
 // The per-server entries of the device store. Top-level and internal so the rules are tested on
 // plain preferences, without a DataStore.
 
+/** An address as the keys name it; see [normalizedAddress]. */
+private fun addressOf(url: String) = normalizedAddress(url)
+
 /**
- * Saves one server's entry. Another server last used at the same address loses only that
- * address (and when it was used), so it leaves Recently used, but keeps its token: two servers
- * can share a private address on different networks, such as a friend's and one's own.
+ * Saves one server's account and the address it was used through. The address now leads to
+ * [serverId]: a different server saved before at the same address keeps its token, because two
+ * servers can share a private address on different networks, such as a friend's and one's own.
  */
 internal fun MutablePreferences.putServerEntry(
     serverId: String,
@@ -922,25 +927,38 @@ internal fun MutablePreferences.putServerEntry(
     username: String,
     usedAtMs: Long = System.currentTimeMillis()
 ) {
-    serverIdsAt(url).filter { it != serverId }.forEach {
-        remove(serverUrlKey(it))
-        remove(serverUsedAtKey(it))
-    }
     this[serverTokenKey(serverId)] = token
     this[serverUsernameKey(serverId)] = username
-    this[serverUrlKey(serverId)] = url
-    this[serverUsedAtKey(serverId)] = usedAtMs
+    putAddress(addressOf(url), serverId, usedAtMs)
 }
 
-/** Forgets every server last used at [url], except the current one, which Sign out leaves. */
-internal fun MutablePreferences.forgetServerAt(url: String) {
+private fun MutablePreferences.putAddress(address: String, serverId: String, usedAtMs: Long) {
+    // Compared as addresses, without regard to case or a default port, so one address never
+    // has two entries, also beside a key an earlier build stored unnormalized.
+    storedKeysFor(address).filter { it != address }.forEach { removeAddress(it) }
+    this[addressKey(address)] = serverId
+    this[addressUsedAtKey(address)] = usedAtMs
+}
+
+/**
+ * Forgets the address [url], and the account of each server behind it that no other address
+ * leads to: the server that answered there ([serverId]), which is the account the form showed,
+ * and the server the address was saved for. A token no row leads to would only wait to be
+ * refused. The current address ([savedUrl]) is never forgotten, and neither is the current
+ * server's account: Sign out leaves those.
+ */
+internal fun MutablePreferences.forgetServerAt(url: String, serverId: String?, savedUrl: String) {
+    val wanted = addressOf(url)
+    if (savedUrl.isBlank() || wanted.equals(addressOf(savedUrl), ignoreCase = true)) return
+    val keys = storedKeysFor(wanted)
+    val servers = (listOfNotNull(serverId) + keys.mapNotNull { this[addressKey(it)] }).distinct()
+    keys.forEach { removeAddress(it) }
     val current = this[KEY_TRUSTED_SERVER_ID]
-    serverIdsAt(url).filter { it != current }.forEach {
-        remove(serverTokenKey(it))
-        remove(serverUsernameKey(it))
-        remove(serverUrlKey(it))
-        remove(serverUsedAtKey(it))
-    }
+    servers.filter { it != current && addresses().none { address -> this[addressKey(address)] == it } }
+        .forEach {
+            remove(serverTokenKey(it))
+            remove(serverUsernameKey(it))
+        }
 }
 
 /** Forgets [token] where it is still the saved one: the current account and [serverId]'s entry. */
@@ -950,10 +968,13 @@ internal fun MutablePreferences.forgetRejectedToken(serverId: String?, token: St
 }
 
 /**
- * Copies the account saved before tokens were kept per server into its server's entry, once:
- * a flag marks it done even when there was nothing to copy.
+ * Brings the saved accounts up to date, once each: the account saved before tokens were kept
+ * per server moves to its server's entry, and the one address per server that the first builds
+ * of that kept becomes that server's first address. A flag marks each done even when there was
+ * nothing to move.
  */
 internal fun MutablePreferences.migrateToServerAccounts(url: String) {
+    migrateLegacyAddresses()
     if (this[KEY_SERVER_ACCOUNTS_MIGRATED] == true) return
     this[KEY_SERVER_ACCOUNTS_MIGRATED] = true
     val serverId = this[KEY_TRUSTED_SERVER_ID] ?: return
@@ -962,9 +983,32 @@ internal fun MutablePreferences.migrateToServerAccounts(url: String) {
     putServerEntry(serverId, url, token, this[KEY_USERNAME].orEmpty(), usedAtMs = 0L)
 }
 
-private fun Preferences.serverIdsAt(url: String): List<String> {
-    val address = url.trim().trimEnd('/')
-    return asMap().keys.filter { it.name.startsWith(SERVER_URL_PREFIX) }
-        .map { it.name.removePrefix(SERVER_URL_PREFIX) }
-        .filter { this[serverUrlKey(it)]?.trim()?.trimEnd('/').equals(address, ignoreCase = true) }
+private fun MutablePreferences.migrateLegacyAddresses() {
+    if (this[KEY_SERVER_ADDRESSES_MIGRATED] == true) return
+    this[KEY_SERVER_ADDRESSES_MIGRATED] = true
+    asMap().keys.map { it.name }.filter { it.startsWith(LEGACY_SERVER_URL_PREFIX) }
+        .map { it.removePrefix(LEGACY_SERVER_URL_PREFIX) }
+        .forEach { serverId ->
+            val url = this[legacyServerUrlKey(serverId)]
+            val usedAt = this[legacyServerUsedAtKey(serverId)] ?: 0L
+            remove(legacyServerUrlKey(serverId))
+            remove(legacyServerUsedAtKey(serverId))
+            if (!url.isNullOrBlank()) putAddress(addressOf(url), serverId, usedAt)
+        }
+}
+
+/** Every address signed in through, most recently used first. */
+internal fun Preferences.usedAddresses(): List<String> =
+    addresses().sortedByDescending { this[addressUsedAtKey(it)] ?: 0L }
+
+/** The stored keys that name [address], an earlier build's unnormalized spelling included. */
+private fun Preferences.storedKeysFor(address: String): List<String> =
+    addresses().filter { addressOf(it).equals(address, ignoreCase = true) }
+
+private fun Preferences.addresses(): List<String> =
+    asMap().keys.map { it.name }.filter { it.startsWith(ADDRESS_PREFIX) }.map { it.removePrefix(ADDRESS_PREFIX) }
+
+private fun MutablePreferences.removeAddress(address: String) {
+    remove(addressKey(address))
+    remove(addressUsedAtKey(address))
 }

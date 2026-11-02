@@ -42,6 +42,23 @@ class ServerRowsTest {
     }
 
     @Test
+    fun `the other addresses of the current server are listed, and only they can be forgotten`() {
+        // Signed in through the home address after the remote one: both are rows, the remote
+        // one forgettable, the current one not.
+        val rows = serverRows(
+            "http://192.168.1.14:8095",
+            listOf(mass),
+            usedBefore = listOf("http://192.168.1.14:8095", "https://mass.example.org")
+        )
+        assertThat(rows.map { it.url }).containsExactly("https://mass.example.org", "http://192.168.1.14:8095").inOrder()
+        assertThat(rows.associate { it.url to it.canForget }).containsExactly(
+            "https://mass.example.org", true,
+            "http://192.168.1.14:8095", false
+        )
+        assertThat(rows.first().detail).isEqualTo("Used before")
+    }
+
+    @Test
     fun `only servers used before can be forgotten, not the current one`() {
         val rows = serverRows("https://ma.example.com", emptyList(), usedBefore = listOf("https://office.example.com"))
         assertThat(rows.associate { it.url to it.canForget }).containsExactly(
@@ -57,6 +74,14 @@ class ServerRowsTest {
             "https://ma.example.com", "http://192.168.1.41:8095", "http://192.168.1.14:8095"
         ).inOrder()
         assertThat(rows.single { it.name == "mass" }.detail).isEqualTo("Used before · 192.168.1.14:8095 · v2.10.9")
+    }
+
+    @Test
+    fun `an address with its default port is the same row as without it`() {
+        val rows = serverRows("https://ma.example.com:443/", emptyList(), usedBefore = listOf("https://ma.example.com"))
+        assertThat(rows.map { it.url }).containsExactly("https://ma.example.com")
+        assertThat(normalizedAddress("http://host:80/x")).isEqualTo("http://host/x")
+        assertThat(normalizedAddress("http://host:8095")).isEqualTo("http://host:8095")
     }
 
     @Test

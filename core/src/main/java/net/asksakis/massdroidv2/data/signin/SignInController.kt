@@ -20,6 +20,8 @@ import net.asksakis.massdroidv2.data.websocket.MaTokenInfo
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.connection.ChosenServer
 import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.connection.ServerRow
+import net.asksakis.massdroidv2.domain.connection.normalizedAddress
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
@@ -29,9 +31,10 @@ import javax.inject.Inject
 /**
  * The sign-in form of the server chosen in step 1: with a username and password, with the
  * account saved for that server, or through Home Assistant, plus the client certificate for
- * servers behind mutual TLS. The phone's Settings screen and its onboarding share it, so both
- * sign in the same way. Each ViewModel creates one with its own scope through [Factory]; the
- * attempt itself runs in the app-scoped [SignInSession], so leaving the screen does not stop it.
+ * servers behind mutual TLS. The phone's Settings screen, its onboarding and the car's sign-in
+ * share it, so all three sign in the same way. Each ViewModel creates one with its own scope
+ * through [Factory]; the attempt itself runs in the app-scoped [SignInSession], so leaving the
+ * screen does not stop it.
  */
 class SignInController private constructor(
     private val scope: CoroutineScope,
@@ -98,9 +101,9 @@ class SignInController private constructor(
     }
 
     /**
-     * Signs in to [server] with a username and password; see [SignInSession.login]. A password
-     * that is the one saved for the current server goes only to that server, whether the form
-     * filled it in or it was typed again.
+     * Signs in to [server] with a username and password; see [SignInSession.login]. The
+     * password goes only to the server the check named. When the check named none and the
+     * password is the one saved for the current server, it goes only to that server.
      */
     fun login(server: ChosenServer, username: String, password: String) {
         val user = username.trim()
@@ -110,11 +113,15 @@ class SignInController private constructor(
             return
         }
         formError.value = null
-        scope.launch {
+        session.login(server.url, (server.check as? ServerCheck.Found)?.serverId, user, pass) {
             val saved = savedSignIn(server).first()
-            val passwordWasSaved = saved.password.isNotEmpty() && saved.password == pass
-            session.login(server.url, saved.serverId, user, pass, passwordWasSaved)
+            saved.passwordServerId.takeIf { saved.password.isNotEmpty() && saved.password == pass }
         }
+    }
+
+    /** Forgets a server used before from the list; see [SignInSession.forget]. */
+    fun forget(row: ServerRow) {
+        if (row.canForget) session.forget(row.url)
     }
 
     /** The server the last sign-in saved, until [consumeSuccess]; see [SignInSession.succeeded]. */
@@ -218,16 +225,21 @@ class SignInController private constructor(
  * @property serverId the server's `server_id`, when it answered the check.
  * @property continueAs the name of the account saved for the server, or null when it has no
  *   saved token.
+ * @property passwordServerId the server the offered [password] belongs to, so it is sent only
+ *   there even when the check has not answered; null when no password is offered, or when the
+ *   saved account names no server (saved before the server was recorded).
  */
 data class SavedSignIn(
     val serverId: String?,
     val username: String,
     val password: String,
-    val continueAs: String?
+    val continueAs: String?,
+    val passwordServerId: String? = null
 ) {
     // The password is a secret, so it never reaches a log.
     override fun toString(): String =
-        "SavedSignIn(serverId=$serverId, username=$username, hasPassword=${password.isNotEmpty()}, continueAs=$continueAs)"
+        "SavedSignIn(serverId=$serverId, username=$username, hasPassword=${password.isNotEmpty()}, " +
+            "continueAs=$continueAs, passwordServerId=$passwordServerId)"
 
     companion object {
         val NONE = SavedSignIn(serverId = null, username = "", password = "", continueAs = null)
@@ -260,11 +272,16 @@ internal fun savedSignInFor(
     } else {
         sameServer(current.url, server)
     }
+    // The saved password is offered only with the server it belongs to, so it can be bound to
+    // that server; with no server known at all it would go to whatever answers.
+    val owner = serverId ?: current.serverId
+    val password = current.password.takeIf { isCurrent && owner != null }.orEmpty()
     return SavedSignIn(
         serverId = serverId,
         username = saved?.username?.takeIf { it.isNotBlank() } ?: current.username.takeIf { isCurrent }.orEmpty(),
-        password = current.password.takeIf { isCurrent }.orEmpty(),
-        continueAs = saved?.takeIf { it.hasToken }?.let(nameOf)
+        password = password,
+        continueAs = saved?.takeIf { it.hasToken }?.let(nameOf),
+        passwordServerId = owner.takeIf { password.isNotEmpty() }
     )
 }
 
@@ -272,6 +289,6 @@ internal fun savedSignInFor(
 private fun accountName(account: ServerAccount): String =
     MaTokenInfo.decode(account.token)?.username ?: account.username.ifBlank { "saved account" }
 
-/** Whether two saved or chosen server URLs name the same server. */
+/** Whether two saved or chosen server URLs are the same address; see [normalizedAddress]. */
 fun sameServer(a: String, b: String): Boolean =
-    a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)
+    normalizedAddress(a).equals(normalizedAddress(b), ignoreCase = true)

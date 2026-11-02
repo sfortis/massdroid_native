@@ -45,6 +45,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -58,6 +59,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
+import net.asksakis.massdroidv2.data.signin.sameServer
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.AppLinks
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
@@ -107,7 +110,6 @@ private fun CarSignInScreen(
     val compressorLevel by viewModel.compressorLevel.collectAsStateWithLifecycle()
     val dither by viewModel.dither.collectAsStateWithLifecycle()
     val crossfade by viewModel.crossfade.collectAsStateWithLifecycle()
-    val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
     val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
     val picker = viewModel.serverPicker
     val rows by picker.rows.collectAsStateWithLifecycle()
@@ -116,22 +118,17 @@ private fun CarSignInScreen(
     val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
     val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
 
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var seeded by rememberSaveable { mutableStateOf(false) }
+    // What was typed for the chosen server; null shows what is saved for that server. Keyed by
+    // the server, so what was typed for one never reaches the next. The password is kept out of
+    // saved instance state, which the system may write to disk.
+    var typedUsername by rememberSaveable(chosen?.url) { mutableStateOf<String?>(null) }
+    var typedPassword by remember(chosen?.url) { mutableStateOf<String?>(null) }
     var choosingOther by rememberSaveable { mutableStateOf(false) }
     // Only auto-close after a sign-in initiated from THIS screen, so opening the
     // gear while already connected (to change server / sign out) does not slam shut.
     var attempted by rememberSaveable { mutableStateOf(false) }
-
-    // Pre-fill the username from saved settings once (without clobbering user typing).
-    LaunchedEffect(savedUsername) {
-        val saved = savedUsername ?: return@LaunchedEffect
-        if (!seeded) {
-            if (saved.isNotBlank()) username = saved
-            seeded = true
-        }
-    }
+    // The server this screen last sent a sign-in to; only its success closes the screen.
+    var sentUrl by rememberSaveable { mutableStateOf<String?>(null) }
 
     // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
     // server to the server list. The arrow in the top bar still closes the screen.
@@ -149,8 +146,15 @@ private fun CarSignInScreen(
     // Reload any saved client certificate so a re-opened screen keeps mTLS active.
     LaunchedEffect(Unit) { viewModel.loadSavedCertificate(context) }
 
-    LaunchedEffect(connection, attempted) {
-        if (attempted && connection is ConnectionState.Connected) onClose()
+    // Closes on a sign-in from this screen that saved its server. Connected alone is not enough:
+    // a failed switch connects to the previous server again.
+    val succeeded by viewModel.succeeded.collectAsStateWithLifecycle()
+    LaunchedEffect(succeeded, attempted, sentUrl) {
+        val done = succeeded ?: return@LaunchedEffect
+        if (attempted && sentUrl != null && sameServer(done, sentUrl.orEmpty())) {
+            viewModel.consumeSuccess()
+            onClose()
+        }
     }
 
     val connecting = connection is ConnectionState.Connecting
@@ -229,7 +233,7 @@ private fun CarSignInScreen(
                                 picker.choose(row.url, row.name)
                             },
                             onSearchAgain = picker::searchAgain,
-                            onForget = picker::forget,
+                            onForget = viewModel::forget,
                             largeTargets = true,
                             onOther = { choosingOther = true }
                         )
@@ -244,9 +248,33 @@ private fun CarSignInScreen(
                             onCheckAgain = picker::checkAgain
                         )
                         Spacer(Modifier.height(16.dp))
+                        val saved by remember(server) { viewModel.savedSignIn(server) }
+                            .collectAsStateWithLifecycle(SavedSignIn.NONE)
+                        val username = typedUsername ?: saved.username
+                        val password = typedPassword ?: saved.password
+                        saved.continueAs?.let { name ->
+                            Button(
+                                onClick = {
+                                    viewModel.continueAs(server, saved)
+                                    sentUrl = server.url
+                                    attempted = true
+                                },
+                                enabled = !connecting,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                            ) {
+                                Text("Continue as $name", fontSize = 18.sp)
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Or sign in with another account:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
                         OutlinedTextField(
                             value = username,
-                            onValueChange = { username = it },
+                            onValueChange = { typedUsername = it },
                             label = { Text("Username") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
@@ -255,7 +283,7 @@ private fun CarSignInScreen(
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(
                             value = password,
-                            onValueChange = { password = it },
+                            onValueChange = { typedPassword = it },
                             label = { Text("Password") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -268,7 +296,10 @@ private fun CarSignInScreen(
                             onClick = {
                                 // Only a sign-in that was actually sent may close the screen on
                                 // Connected; a rejected input while already connected keeps it open.
-                                if (viewModel.login(server.url, username, password)) attempted = true
+                                if (viewModel.login(server, username, password)) {
+                                    sentUrl = server.url
+                                    attempted = true
+                                }
                             },
                             enabled = !connecting,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),

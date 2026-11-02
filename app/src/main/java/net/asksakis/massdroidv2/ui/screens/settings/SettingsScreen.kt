@@ -783,7 +783,7 @@ private fun SignInForm(
                 picker.choose(row.url, row.name)
             },
             onSearchAgain = picker::searchAgain,
-            onForget = picker::forget,
+            onForget = viewModel.signIn::forget,
             onOther = { choosingOther = true }
         )
     } else {

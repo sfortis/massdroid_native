@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -20,10 +21,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
+import net.asksakis.massdroidv2.data.signin.SavedSignIn
+import net.asksakis.massdroidv2.data.signin.SignInController
 import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
-import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.connection.ChosenServer
+import net.asksakis.massdroidv2.domain.connection.ServerRow
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.QueueChoice
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
@@ -49,7 +53,11 @@ class CarSignInViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
     serverPickerFactory: ServerPicker.Factory,
+    signInFactory: SignInController.Factory,
 ) : ViewModel() {
+
+    // The phone's sign-in form logic: what to prefill for a server, and "Continue as".
+    private val signIn: SignInController = signInFactory.create(viewModelScope)
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
 
@@ -204,10 +212,6 @@ class CarSignInViewModel @Inject constructor(
     val certAlias: StateFlow<String?> = settingsRepository.clientCertAlias
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** The saved username, surfaced once to pre-fill the form. */
-    val savedUsername: StateFlow<String?> = settingsRepository.username
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-
     /** The server the app connects to, for the status line. */
     val serverUrl: StateFlow<String> = settingsRepository.serverUrl
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -230,22 +234,38 @@ class CarSignInViewModel @Inject constructor(
     }
 
     /**
+     * What the form may offer for [server], as on the phone: that server's saved username, the
+     * password only for the current server, and "Continue as" when it has a saved token.
+     */
+    fun savedSignIn(server: ChosenServer): Flow<SavedSignIn> = signIn.savedSignIn(server)
+
+    /** The server the last sign-in saved; the screen closes on it, see [consumeSuccess]. */
+    val succeeded: StateFlow<String?> = signInSession.succeeded
+
+    fun consumeSuccess() = signInSession.consumeSuccess()
+
+    /**
      * Starts a sign-in; false when the input was rejected and nothing was sent. It runs in the
      * phone's sign-in session, which saves the server only once it accepted the sign-in and
      * returns to the previous server when it does not.
      */
-    fun login(url: String, username: String, password: String): Boolean {
-        val user = username.trim()
-        val pass = password.trim()
-        if (user.isBlank() || pass.isBlank()) {
+    fun login(server: ChosenServer, username: String, password: String): Boolean {
+        if (username.isBlank() || password.isBlank()) {
             _error.value = "Enter your username and password."
             return false
         }
         _error.value = null
-        val serverId = (serverPicker.chosen.value?.check as? ServerCheck.Found)?.serverId
-            ?.takeIf { serverPicker.chosen.value?.url == url }
-        signInSession.login(url, serverId, user, pass, passwordWasSaved = false)
+        signIn.login(server, username, password)
         return true
+    }
+
+    /** Forgets a server used before from the list; see [SignInController.forget]. */
+    fun forget(row: ServerRow) = signIn.forget(row)
+
+    /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
+    fun continueAs(server: ChosenServer, saved: SavedSignIn) {
+        _error.value = null
+        signIn.continueAs(server, saved)
     }
 
     /**

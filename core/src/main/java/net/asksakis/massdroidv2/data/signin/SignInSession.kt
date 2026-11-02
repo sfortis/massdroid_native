@@ -21,7 +21,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
+import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -38,25 +40,27 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
  * refused it ([MaWebSocketClient.rejectedTokens]). The Home Assistant sign-in comes back here
  * too ([MaAuthRepository.completedOAuthSignIns]).
  *
- * The TV and the car keep their own sign-in paths.
+ * The phone (Settings and onboarding) and the car sign in here. The TV keeps its own path.
  */
 @Singleton
 class SignInSession internal constructor(
     private val wsClient: MaWebSocketClient,
     private val settings: SettingsRepository,
     private val auth: MaAuthRepository,
+    private val probe: MaAuthProbe,
     private val scope: CoroutineScope
 ) {
     @Inject
     constructor(
         wsClient: MaWebSocketClient,
         settings: SettingsRepository,
-        auth: MaAuthRepository
-    ) : this(wsClient, settings, auth, CoroutineScope(SupervisorJob() + Dispatchers.IO))
+        auth: MaAuthRepository,
+        probe: MaAuthProbe
+    ) : this(wsClient, settings, auth, probe, CoroutineScope(SupervisorJob() + Dispatchers.IO))
 
     private val started = AtomicBoolean(false)
     // Serialises every write of the account: an attempt's save, the save of other connections,
-    // forgetting a refused token, and Sign out.
+    // forgetting a refused token or a server, and Sign out.
     private val saveLock = Mutex()
     // Guards [pending] and [attemptJob], which the UI thread and the attempts change.
     private val lock = Any()
@@ -107,13 +111,38 @@ class SignInSession internal constructor(
 
     /**
      * Signs in to [serverUrl] with a username and password. [serverId] is the `server_id` the
-     * server gave when it was checked, if it answered. With [passwordWasSaved], the password is
-     * the one saved for that server, and it goes only to a server with that `server_id`.
+     * server gave when it was checked, if it answered, and the password goes only to a server
+     * with that id. Without it, [savedPasswordOwner] names the server a saved password belongs
+     * to, when the password is that one, and the password goes only to that server. It is read
+     * while the attempt prepares, so the attempt itself starts with this call.
      */
-    fun login(serverUrl: String, serverId: String?, username: String, password: String, passwordWasSaved: Boolean) {
+    fun login(
+        serverUrl: String,
+        serverId: String?,
+        username: String,
+        password: String,
+        savedPasswordOwner: suspend () -> String? = { null }
+    ) {
         begin(serverUrl, serverId) {
+            val expected = serverId ?: savedPasswordOwner()
             Credentials(username, password) {
-                wsClient.connectWithLogin(serverUrl, username, password, serverId.takeIf { passwordWasSaved }) { }
+                wsClient.connectWithLogin(serverUrl, username, password, expected) { }
+            }
+        }
+    }
+
+    /**
+     * Forgets the address [url] from the server list, and the account of the server behind it
+     * when it has no other address; see [SettingsRepository.forgetServerAt]. The server is the
+     * one that answers at the address now, which is the one the form showed for it.
+     */
+    fun forget(url: String) {
+        scope.launch {
+            val serverId = withTimeoutOrNull(FORGET_PROBE_TIMEOUT_MS) {
+                (probe.identify(url) as? ServerAnswer.MusicAssistant)?.serverId
+            }
+            saveLock.withLock {
+                settings.forgetServerAt(url, serverId, settings.serverUrl.first())
             }
         }
     }
@@ -295,14 +324,21 @@ class SignInSession internal constructor(
             wsClient.clearSavedCredentials()
         }
         attempt.saved = true
-        synchronized(lock) { if (pending === attempt) pending = null }
-        if (lateSwitch) {
+        val (current, replacedByNewer) = synchronized(lock) {
+            val inCharge = pending
+            if (inCharge === attempt) pending = null
+            (inCharge === attempt) to (inCharge != null && inCharge !== attempt)
+        }
+        // A newer attempt owns the connection; it connects to its own server.
+        if (lateSwitch && !replacedByNewer) {
             // Everything that loads per account loads on a new connection, so the server that
             // turned out to be another one is connected again after the reset.
             wsClient.disconnect()
             wsClient.connect(session.url, session.token, MaWebSocketClient.ConnectOrigin.SAVED_CREDENTIALS, session.serverId)
         }
-        _succeeded.value = attempt.url
+        // Only the attempt still in charge reports success: one that a newer attempt or a cancel
+        // replaced must not close a screen that is waiting for the newer one.
+        if (current) _succeeded.value = attempt.url
         Log.d(TAG, "Signed in to ${displayAddressOf(attempt.url)}, saved")
     }
 
@@ -422,6 +458,8 @@ class SignInSession internal constructor(
         // A little longer than the client's own handshake watchdog, so this only fires when the
         // attempt never resolves.
         const val ATTEMPT_TIMEOUT_MS = 35_000L
+        // An address that does not answer this soon is forgotten by what was saved for it.
+        const val FORGET_PROBE_TIMEOUT_MS = 5_000L
     }
 }
 

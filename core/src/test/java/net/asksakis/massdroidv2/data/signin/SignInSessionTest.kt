@@ -15,8 +15,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import net.asksakis.massdroidv2.data.websocket.AuthenticatedSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.RejectedToken
+import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.data.websocket.ServerInfo
 import net.asksakis.massdroidv2.domain.model.ServerAccount
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
@@ -91,6 +93,8 @@ class SignInSessionTest {
         coEvery { saveConnectionToken(any(), any(), any()) } answers { writes += "connection ${arg<String>(0)}" }
     }
 
+    private val probe = mockk<MaAuthProbe>()
+
     private val oauth = MutableSharedFlow<OAuthSignIn>(extraBufferCapacity = 1)
     private val auth = mockk<MaAuthRepository>(relaxed = true) {
         every { completedOAuthSignIns } returns oauth
@@ -118,7 +122,7 @@ class SignInSessionTest {
     private fun info(serverId: String) = ServerInfo(serverId, "2.10.9", 28, "http://x")
 
     private fun TestScope.session(): SignInSession =
-        SignInSession(client, settings, auth, backgroundScope).also {
+        SignInSession(client, settings, auth, probe, backgroundScope).also {
             it.start()
             runCurrent()
             writes.clear()
@@ -127,7 +131,7 @@ class SignInSessionTest {
     @Test
     fun `a switch that connects saves the new server after dropping the old one's state`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "bob password", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "bob password")
         runCurrent()
         serverAccepts()
         runCurrent()
@@ -140,7 +144,7 @@ class SignInSessionTest {
     @Test
     fun `a refused switch returns to the previous server with its token, player and trust`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "wrong", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "wrong")
         runCurrent()
         trusted.value = "office" // the client may already trust the server that answered
         serverRefuses()
@@ -157,7 +161,7 @@ class SignInSessionTest {
     @Test
     fun `a wrong password for the current server reconnects with its token`() = runTest {
         val session = session()
-        session.login(homeUrl, "home", "alice", "typo", passwordWasSaved = false)
+        session.login(homeUrl, "home", "alice", "typo")
         runCurrent()
         serverRefuses()
         runCurrent()
@@ -171,7 +175,7 @@ class SignInSessionTest {
     @Test
     fun `a cancel before the attempt connected connects nowhere`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "bob password", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "bob password")
         session.cancel()
         runCurrent()
 
@@ -182,7 +186,7 @@ class SignInSessionTest {
     @Test
     fun `a cancel after the attempt connected returns to the previous server`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "bob password", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "bob password")
         runCurrent()
         session.cancel()
         runCurrent()
@@ -226,7 +230,7 @@ class SignInSessionTest {
     @Test
     fun `another address of the same server keeps its state and player`() = runTest {
         val session = session()
-        session.login("https://music.example.org", "home", "alice", "alice password", passwordWasSaved = true)
+        session.login("https://music.example.org", "home", "alice", "alice password")
         runCurrent()
         state.value = ConnectionState.Connected(info("home"), generation)
         runCurrent()
@@ -239,9 +243,9 @@ class SignInSessionTest {
     @Test
     fun `an attempt that replaces another returns to the server used before both, and resets once`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "bob password", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "bob password")
         runCurrent()
-        session.login("http://third:8095", "third", "carol", "wrong", passwordWasSaved = false)
+        session.login("http://third:8095", "third", "carol", "wrong")
         runCurrent()
         serverRefuses()
         runCurrent()
@@ -274,7 +278,7 @@ class SignInSessionTest {
     @Test
     fun `Sign out stops an attempt without returning to the previous server`() = runTest {
         val session = session()
-        session.login(officeUrl, "office", "bob", "bob password", passwordWasSaved = false)
+        session.login(officeUrl, "office", "bob", "bob password")
         runCurrent()
         val before = connects.size
         session.signOut()
@@ -282,6 +286,40 @@ class SignInSessionTest {
 
         coVerify { auth.signOut() }
         assertThat(connects).hasSize(before)
+    }
+
+    @Test
+    fun `a password goes only to the server the check named, even when typed`() = runTest {
+        val session = session()
+        session.login(officeUrl, "office", "bob", "bob password")
+        runCurrent()
+        verify { client.connectWithLogin(officeUrl, "bob", "bob password", "office", any()) }
+    }
+
+    @Test
+    fun `without a check, the saved password goes only to the server it belongs to`() = runTest {
+        val session = session()
+        session.login(homeUrl, serverId = null, username = "alice", password = "alice password") { "home" }
+        runCurrent()
+        verify { client.connectWithLogin(homeUrl, "alice", "alice password", "home", any()) }
+    }
+
+    @Test
+    fun `Forget names the server that answers at the address, and the saved address`() = runTest {
+        coEvery { probe.identify(officeUrl) } returns ServerAnswer.MusicAssistant("2.10.9", emptyList(), "office")
+        val session = session()
+        session.forget(officeUrl)
+        runCurrent()
+        coVerify { settings.forgetServerAt(officeUrl, "office", homeUrl) }
+    }
+
+    @Test
+    fun `Forget of an address that does not answer leaves the server to what was saved`() = runTest {
+        coEvery { probe.identify(officeUrl) } returns ServerAnswer.Failed(null)
+        val session = session()
+        session.forget(officeUrl)
+        runCurrent()
+        coVerify { settings.forgetServerAt(officeUrl, null, homeUrl) }
     }
 
     @Test

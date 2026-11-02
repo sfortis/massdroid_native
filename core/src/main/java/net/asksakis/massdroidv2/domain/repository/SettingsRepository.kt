@@ -244,9 +244,10 @@ interface SettingsRepository : TrustedServerStore {
 
     /**
      * Saves a sign-in that succeeded: the current account (token, username, password, trusted
-     * server), the per-server entry with the address and the time it was used, and the server
-     * address last, so the saved address never names a server whose token is not saved yet.
-     * Another server saved under the same address is dropped, since the address now leads here.
+     * server), the server's own token and username, the address with the time it was used, and
+     * the server address last, so the saved address never names a server whose token is not
+     * saved yet. The address now leads to this server; another server that was saved at it
+     * keeps its token.
      */
     suspend fun saveSignIn(serverId: String, url: String, token: String, username: String, password: String)
 
@@ -266,13 +267,18 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun migrateToServerAccounts()
 
     /**
-     * The last address of every server signed in to from this phone, most recently used first,
-     * for the server list of the sign-in.
+     * Every address this phone signed in through, most recently used first, for the server list
+     * of the sign-in. One server can have several, such as its home and its remote address.
      */
     val usedServerUrls: Flow<List<String>>
 
-    /** Forgets the server last used at [url]: its token, username, address and time of use. */
-    suspend fun forgetServerAt(url: String)
+    /**
+     * Forgets the address [url]. The server behind it, [serverId] when the address answered
+     * with one, else the server it was saved for, loses its token and username too when it has
+     * no other address and is not the current server. The current address ([savedUrl]) is never
+     * forgotten, and nothing is when [savedUrl] could not be read.
+     */
+    suspend fun forgetServerAt(url: String, serverId: String?, savedUrl: String)
     suspend fun setSendspinEnabled(enabled: Boolean)
     suspend fun setSmartListeningEnabled(enabled: Boolean)
     suspend fun setSmartMixVariety(value: Float)
