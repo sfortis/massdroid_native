@@ -2,6 +2,7 @@ package net.asksakis.massdroidv2.domain.repository
 
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 
 /**
@@ -9,7 +10,7 @@ import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
  * state machine so the SettingsViewModel can stay focused on view state.
  */
 interface MaAuthRepository {
-    /** Login providers advertised by the most recently probed server. */
+    /** Login providers advertised by the most recently checked server. */
     val availableProviders: StateFlow<List<AuthProviderInfo>>
 
     /** True while an OAuth round-trip is in flight. */
@@ -19,11 +20,10 @@ interface MaAuthRepository {
     val oauthErrors: SharedFlow<String>
 
     /**
-     * Ask the server which login providers it exposes. Updates
-     * [availableProviders]. Safe to call repeatedly; failure leaves the
-     * previous list in place.
+     * Checks that Music Assistant answers at [serverUrl] and loads its login providers into
+     * [availableProviders], which empties when it does not answer.
      */
-    suspend fun probeProviders(serverUrl: String)
+    suspend fun checkServer(serverUrl: String): ServerCheck
 
     /**
      * Begin the Home Assistant OAuth round-trip. Returns the authorization URL

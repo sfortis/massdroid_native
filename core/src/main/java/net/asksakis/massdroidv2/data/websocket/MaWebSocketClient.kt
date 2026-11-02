@@ -373,15 +373,7 @@ class MaWebSocketClient(
             .replace("http://", "ws://")
             .replace("https://", "wss://") + "/ws"
 
-        // Relax hostname verification for private/local hosts (cert may not match local hostname)
-        val host = try { java.net.URI(url).host } catch (_: Exception) { null }
-        val client = if (host != null && isPrivateHost(host)) {
-            okHttpClient.newBuilder()
-                .hostnameVerifier { _, _ -> true }
-                .build()
-        } else {
-            okHttpClient
-        }
+        val client = httpClientFor(url)
 
         val request = try {
             Request.Builder().url(wsUrl).build()
@@ -440,7 +432,7 @@ class MaWebSocketClient(
                     return
                 }
 
-                _connectionState.value = ConnectionState.Error(t.message ?: "Connection failed")
+                _connectionState.value = ConnectionState.Error(describeConnectionFailure(t, url, signingIn = explicitSignIn))
                 consumeStableConnectionBackoffReset()
                 scheduleReconnect()
             }
@@ -1203,6 +1195,23 @@ class MaWebSocketClient(
 
     /** Expose current OkHttpClient so Coil can use same mTLS config */
     fun getHttpClient(): OkHttpClient = okHttpClient
+
+    /**
+     * The client a connection to [url] uses: the client certificate when one is set, and no
+     * hostname check for a private or local host, whose certificate may not match the local
+     * name. The sign-in screens check a server with it, so the check answers the way the
+     * connection would.
+     */
+    fun httpClientFor(url: String): OkHttpClient {
+        val host = try { java.net.URI(url).host } catch (_: Exception) { null }
+        return if (host != null && isPrivateHost(host)) {
+            okHttpClient.newBuilder()
+                .hostnameVerifier { _, _ -> true }
+                .build()
+        } else {
+            okHttpClient
+        }
+    }
 
     /** Client with finite timeouts for image/API downloads (inherits mTLS + connection pool) */
     fun getImageClient(): OkHttpClient = okHttpClient.newBuilder()

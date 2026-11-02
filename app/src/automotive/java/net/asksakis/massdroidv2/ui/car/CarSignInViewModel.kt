@@ -11,13 +11,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -46,9 +46,13 @@ class CarSignInViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val musicRepository: MusicRepository,
     private val queueToggles: QueueTogglesCache,
+    serverPickerFactory: ServerPicker.Factory,
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
+
+    /** Step 1 and step 2 of the sign-in, shared with the phone and the TV. */
+    val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -196,29 +200,43 @@ class CarSignInViewModel @Inject constructor(
     val certAlias: StateFlow<String?> = settingsRepository.clientCertAlias
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** Saved server URL + username, surfaced once to pre-fill the form. */
-    val prefill: StateFlow<Prefill?> = combine(
-        settingsRepository.serverUrl,
-        settingsRepository.username,
-    ) { url, username -> Prefill(url, username) }
+    /** The saved username, surfaced once to pre-fill the form. */
+    val savedUsername: StateFlow<String?> = settingsRepository.username
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    data class Prefill(val url: String, val username: String)
+    /** The server the app connects to, for the status line. */
+    val serverUrl: StateFlow<String> = settingsRepository.serverUrl
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private val _attemptedUrl = MutableStateFlow<String?>(null)
+
+    /** The server the last sign-in went to; the client's connection error belongs to it. */
+    val attemptedUrl: StateFlow<String?> = _attemptedUrl.asStateFlow()
+
+    fun clearError() {
+        _error.value = null
+    }
+
+    /**
+     * Abandons a sign-in still being set up when the user leaves its server, so it cannot
+     * finish and sign in to the server the user moved away from.
+     */
+    fun cancelAttempt() {
+        if (connectionState.value is ConnectionState.Connecting) wsClient.disconnect()
+        _attemptedUrl.value = null
+        _error.value = null
+    }
 
     /** Starts a sign-in; false when the input was rejected and nothing was sent. */
-    fun login(rawUrl: String, username: String, password: String): Boolean {
-        val url = rawUrl.trim().trimEnd('/')
+    fun login(url: String, username: String, password: String): Boolean {
         val user = username.trim()
         val pass = password.trim()
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            _error.value = "Add http:// or https:// to the URL"
-            return false
-        }
         if (user.isBlank() || pass.isBlank()) {
-            _error.value = "Enter username and password"
+            _error.value = "Enter your username and password."
             return false
         }
         _error.value = null
+        _attemptedUrl.value = url
         viewModelScope.launch {
             settingsRepository.setServerUrl(url)
             settingsRepository.setUsername(user)

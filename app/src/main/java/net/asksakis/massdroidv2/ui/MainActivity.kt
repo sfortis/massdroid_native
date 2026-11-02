@@ -6,7 +6,6 @@ import net.asksakis.massdroidv2.domain.shortcut.ShortcutActionDispatcher
 import net.asksakis.massdroidv2.service.FollowMeService
 import net.asksakis.massdroidv2.ui.components.MdTextButton
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -81,7 +80,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import net.asksakis.massdroidv2.ui.screens.settings.SettingsCategory
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.util.Log
@@ -146,14 +144,12 @@ class MainActivity : ComponentActivity() {
     // VolumeKeyController, which the MediaSession path shares.
     private var lastCountedVolumeDownTime = 0L
 
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { /* granted or not, nothing to do */ }
-
     private val followMePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.values.all { it }) {
+        // Notifications are asked with Follow Me, but it works without them.
+        val required = AppPermissions.followMeRequired()
+        if (results.filterKeys { it in required }.values.all { it }) {
             startService(
                 Intent(this, net.asksakis.massdroidv2.service.FollowMeService::class.java)
                     .setAction(net.asksakis.massdroidv2.service.FollowMeService.PROXIMITY_REEVALUATE_ACTION)
@@ -161,7 +157,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private var showNotificationPermissionDialog by mutableStateOf(false)
     private var showFollowMePermissionDialog by mutableStateOf(false)
     private var pendingFollowMePermissions by mutableStateOf<List<String>>(emptyList())
 
@@ -173,8 +168,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             enableEdgeToEdge()
         }
+        // Notifications are not asked at launch: playback controls do not need them, and the
+        // sleep timer and Follow Me ask when they are turned on.
         if (savedInstanceState == null) {
-            requestNotificationPermission()
             // Follow Me does not ship in the car build (its scan/location perms are
             // stripped), so never prompt for it there.
             if (!net.asksakis.massdroidv2.BuildConfig.IS_AUTOMOTIVE) {
@@ -243,16 +239,6 @@ class MainActivity : ComponentActivity() {
                         flow = playerRepository.volumeOsd
                     )
                     OutputCalibrationPrompt(acousticCalibrationCoordinator)
-                    if (showNotificationPermissionDialog) {
-                        PermissionRationaleDialog(
-                            spec = AppPermissionRationales.notifications,
-                            onConfirm = {
-                                showNotificationPermissionDialog = false
-                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            },
-                            onDismiss = { showNotificationPermissionDialog = false }
-                        )
-                    }
                     if (showFollowMePermissionDialog) {
                         PermissionRationaleDialog(
                             spec = AppPermissionRationales.followMe,
@@ -384,16 +370,6 @@ class MainActivity : ComponentActivity() {
         const val ACTION_OPEN_PLAYERS = "net.asksakis.massdroidv2.action.OPEN_PLAYERS"
     }
 
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-            showNotificationPermissionDialog = true
-        }
-    }
-
     private fun requestFollowMePermissionsIfNeeded() {
         lifecycleScope.launch {
             proximityConfigStore.load()
@@ -402,7 +378,8 @@ class MainActivity : ComponentActivity() {
 
             val missing = AppPermissions.missing(this@MainActivity, AppPermissions.followMeRequired())
             if (missing.isEmpty()) return@launch
-            pendingFollowMePermissions = missing
+            pendingFollowMePermissions = missing +
+                AppPermissions.missing(this@MainActivity, AppPermissions.notifications())
             showFollowMePermissionDialog = true
         }
     }
@@ -514,11 +491,13 @@ private fun MassDroidApp(
 
     val hideNav = currentRoute == Routes.NOW_PLAYING ||
         currentRoute == Routes.SETTINGS ||
+        currentRoute == Routes.ONBOARDING ||
         currentRoute == Routes.RECOMMENDATION_INSIGHTS ||
         currentRoute?.startsWith("room_setup") == true
     val showNav = !hideNav && currentRoute != null
     val showMiniPlayer = currentRoute != Routes.NOW_PLAYING &&
         currentRoute != Routes.SETTINGS &&
+        currentRoute != Routes.ONBOARDING &&
         currentRoute != Routes.RECOMMENDATION_INSIGHTS &&
         currentRoute?.startsWith("room_setup") != true
 
@@ -526,13 +505,11 @@ private fun MassDroidApp(
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // A first run has no server, so it opens where one is entered, and goes Home once the
-    // first sign-in connects.
+    // A first run has no server, so it opens the onboarding, which goes Home by itself once
+    // the first sign-in connects.
     LaunchedEffect(Unit) {
         if (!miniPlayerViewModel.isServerConfigured()) {
-            navController.navigate(Routes.settings(SettingsCategory.CONNECTION)) { launchSingleTop = true }
-            miniPlayerViewModel.miniPlayerUiState.first { it.connected }
-            navController.popBackStack(Routes.HOME, inclusive = false)
+            navController.navigate(Routes.ONBOARDING) { launchSingleTop = true }
         }
     }
 

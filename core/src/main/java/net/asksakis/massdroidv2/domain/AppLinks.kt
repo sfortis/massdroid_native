@@ -7,4 +7,7 @@ object AppLinks {
      * listing. It points at main, which carries the file from the first release that links it.
      */
     const val PRIVACY_POLICY_URL = "https://github.com/sfortis/massdroid_native/blob/main/docs/privacy.md"
+
+    /** What Music Assistant is, for a first launch on a phone that has no server yet. */
+    const val MUSIC_ASSISTANT_URL = "https://music-assistant.io"
 }

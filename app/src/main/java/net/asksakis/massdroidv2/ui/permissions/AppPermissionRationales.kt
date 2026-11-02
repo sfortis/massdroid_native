@@ -14,15 +14,18 @@ data class PermissionRationaleSpec(
 )
 
 object AppPermissionRationales {
-    val notifications = PermissionRationaleSpec(
+    val sleepTimer = PermissionRationaleSpec(
         icon = Icons.Default.NotificationsActive,
         title = "Allow notifications",
-        message = "MassDroid uses notifications for playback controls, background playback status, and Follow Me hand-off actions."
+        message = "The sleep timer shows the time left in a notification, with a button to cancel it. " +
+            "The timer works without it."
     )
 
     val followMe = PermissionRationaleSpec(
         icon = Icons.AutoMirrored.Filled.BluetoothSearching,
         title = "Allow Follow Me permissions",
-        message = "Follow Me needs Bluetooth, location, and activity access to detect room changes, scan nearby beacons, and speed up speaker hand-offs while you move."
+        message = "Follow Me needs Bluetooth, location, and activity access to detect room changes, " +
+            "scan nearby beacons, and speed up speaker hand-offs while you move. " +
+            "Notifications show its room prompts and tell you when it stops."
     )
 }

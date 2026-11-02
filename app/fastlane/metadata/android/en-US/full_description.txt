@@ -2,6 +2,8 @@ MassDroid is a native Android client for Music Assistant (music-assistant.io), t
 
 You need your own Music Assistant server to use this app.
 
+The sign-in screen finds the Music Assistant servers on your network by itself, through mDNS. This search stays on your local network.
+
 Features:
 
 * Remote control any Music Assistant player: play/pause, next/previous, seek, volume, shuffle and repeat.

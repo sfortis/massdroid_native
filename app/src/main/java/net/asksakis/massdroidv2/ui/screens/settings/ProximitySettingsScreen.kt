@@ -128,7 +128,8 @@ fun ProximitySettingsScreen(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         permissionRefreshTick++
-        if (results.values.all { it }) {
+        // Notifications are asked with Follow Me, but it works without them.
+        if (results.filterKeys { it in requiredPermissions }.values.all { it }) {
             if (!config.enabled) {
                 viewModel.setEnabled(true)
             }
@@ -281,7 +282,8 @@ fun ProximitySettingsScreen(
             onConfirm = {
                 showFollowMePermissionDialog = false
                 if (missingPermissions.isNotEmpty()) {
-                    permissionLauncher.launch(missingPermissions.toTypedArray())
+                    val notifications = AppPermissions.missing(context, AppPermissions.notifications())
+                    permissionLauncher.launch((missingPermissions + notifications).toTypedArray())
                 } else {
                     if (!config.enabled) {
                         viewModel.setEnabled(true)

@@ -19,6 +19,18 @@ object AppPermissions {
 
     fun acousticCalibrationRequired(): List<String> = listOf(Manifest.permission.RECORD_AUDIO)
 
+    /**
+     * Notifications, a runtime permission from Android 13. Playback controls do not need it,
+     * because media session notifications are exempt; the sleep timer, Follow Me and the
+     * connection status notification do. Asked by the features that use it, never at launch.
+     */
+    fun notifications(): List<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            listOf(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            emptyList()
+        }
+
     fun missing(context: Context, permissions: List<String>): List<String> =
         permissions.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
 }

@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.data.repository
 import android.util.Log
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,7 +19,13 @@ import net.asksakis.massdroidv2.data.websocket.MaAuthProbe
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.data.websocket.OAuthCallback
 import net.asksakis.massdroidv2.data.websocket.OAuthCallbackBus
+import net.asksakis.massdroidv2.data.websocket.ServerAnswer
 import net.asksakis.massdroidv2.data.websocket.SessionEventBus
+import net.asksakis.massdroidv2.data.websocket.describeServerCheckFailure
+import net.asksakis.massdroidv2.domain.connection.ServerCheck
+import net.asksakis.massdroidv2.domain.connection.signInOriginsToCheck
+import net.asksakis.massdroidv2.domain.connection.unfinishedSignInMessage
+import net.asksakis.massdroidv2.domain.connection.unreachableSignInMessage
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 import net.asksakis.massdroidv2.domain.repository.MaAuthRepository
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -57,6 +64,8 @@ class MaAuthRepositoryImpl @Inject constructor(
     @Volatile private var pendingServerUrl: String? = null
     /** Nonce of the sign-in in progress; a callback without it is not ours. */
     @Volatile private var pendingNonce: String? = null
+    /** An address the sign-in in progress opens besides the server's, named if it does not finish. */
+    @Volatile private var pendingForeignOrigin: String? = null
 
     init {
         scope.launch {
@@ -64,20 +73,19 @@ class MaAuthRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun probeProviders(serverUrl: String) {
-        if (serverUrl.isBlank()) {
-            _availableProviders.value = emptyList()
-            return
+    override suspend fun checkServer(serverUrl: String): ServerCheck =
+        when (val answer = probe.identify(serverUrl)) {
+            is ServerAnswer.MusicAssistant -> {
+                _availableProviders.value = answer.providers
+                Log.d(TAG, "Music Assistant ${answer.version} at $serverUrl: ${answer.providers.map { it.providerId }}")
+                ServerCheck.Found(serverUrl, answer.version)
+            }
+            is ServerAnswer.Failed -> {
+                _availableProviders.value = emptyList()
+                Log.d(TAG, "No Music Assistant at $serverUrl: ${answer.error?.message}")
+                ServerCheck.Problem(describeServerCheckFailure(answer.error, serverUrl))
+            }
         }
-        val list = probe.fetchProviders(serverUrl)
-        if (list.isNotEmpty()) {
-            _availableProviders.value = list
-            Log.d(TAG, "providers for $serverUrl: ${list.map { it.providerId }}")
-        } else {
-            Log.d(TAG, "providers probe returned empty for $serverUrl")
-            _availableProviders.value = emptyList()
-        }
-    }
 
     override suspend fun startHomeAssistantOAuth(serverUrl: String): String? {
         val provider = _availableProviders.value.firstOrNull { it.isHomeAssistant }
@@ -95,6 +103,26 @@ class MaAuthRepositoryImpl @Inject constructor(
             _oauthErrors.tryEmit("Could not start sign-in. Check the server URL and try again.")
             return null
         }
+        // The link can send the browser to addresses this phone cannot reach, such as the
+        // server's LAN address while the phone is away (see signInOriginsToCheck). The browser
+        // is not opened on a page that cannot load.
+        val foreignOrigins = signInOriginsToCheck(authUrl, serverUrl)
+        _oauthInProgress.value = true
+        // The checks can take seconds, and the screen that started them may go away
+        // meanwhile (Change server, a rotation). A cancelled start must not leave the button
+        // disabled on "Waiting for sign in" for the rest of the process.
+        val unreachable = try {
+            foreignOrigins.firstOrNull { !probe.answersHttp(it) }
+        } catch (e: CancellationException) {
+            _oauthInProgress.value = false
+            throw e
+        }
+        if (unreachable != null) {
+            _oauthInProgress.value = false
+            _oauthErrors.tryEmit(unreachableSignInMessage(unreachable))
+            return null
+        }
+        pendingForeignOrigin = foreignOrigins.lastOrNull()
         pendingServerUrl = serverUrl
         pendingNonce = nonce
         oauthStartedAtMs = System.currentTimeMillis()
@@ -149,7 +177,9 @@ class MaAuthRepositoryImpl @Inject constructor(
                 pendingServerUrl = null
                 pendingNonce = null
                 oauthStartedAtMs = 0L
-                _oauthErrors.tryEmit("Sign-in canceled.")
+                val origin = pendingForeignOrigin
+                pendingForeignOrigin = null
+                _oauthErrors.tryEmit(origin?.let(::unfinishedSignInMessage) ?: "Sign-in canceled.")
             }
         }
     }

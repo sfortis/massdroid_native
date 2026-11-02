@@ -41,8 +41,16 @@ class MiniPlayerViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository
 ) : ViewModel() {
 
+    /**
+     * Whether the app can sign in without the user: a server is saved, and with it a token or a
+     * saved password. A sign-in saves the server before it succeeds, so a server alone is not
+     * enough; a wrong password followed by closing the app must bring the onboarding back.
+     * A saved password counts, because the client signs in again with it when the token is
+     * gone.
+     */
     suspend fun isServerConfigured(): Boolean =
-        settingsRepository.serverUrl.first().isNotBlank()
+        settingsRepository.serverUrl.first().isNotBlank() &&
+            (settingsRepository.authToken.first().isNotBlank() || settingsRepository.password.first().isNotBlank())
 
     val noPlayerSelectedEvent: SharedFlow<Unit> = playerRepository.noPlayerSelectedEvent
 

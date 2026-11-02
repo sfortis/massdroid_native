@@ -5,11 +5,14 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.SettingsRepository
@@ -25,9 +28,17 @@ import javax.inject.Inject
 class TvOnboardingViewModel @Inject constructor(
     private val wsClient: MaWebSocketClient,
     private val settingsRepository: SettingsRepository,
+    serverPickerFactory: ServerPicker.Factory,
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = wsClient.connectionState
+
+    /** Step 1 and step 2 of the sign-in, shared with the phone and the car. */
+    val serverPicker: ServerPicker = serverPickerFactory.create(viewModelScope)
+
+    /** The saved username, to fill the field in once. */
+    val savedUsername: StateFlow<String?> = settingsRepository.username
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -43,17 +54,35 @@ class TvOnboardingViewModel @Inject constructor(
 
     private var attemptWatchdog: Job? = null
 
-    fun login(rawUrl: String, username: String, password: String) {
-        val url = rawUrl.trim().trimEnd('/')
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            _error.value = "Add http:// or https:// to the URL"
-            return
-        }
+    private val _attemptedUrl = MutableStateFlow<String?>(null)
+
+    /** The server the last login went to; the client's connection error belongs to it. */
+    val attemptedUrl: StateFlow<String?> = _attemptedUrl.asStateFlow()
+
+    fun clearError() {
+        _error.value = null
+    }
+
+    /**
+     * Abandons a login still in progress when the user leaves its server, so it cannot finish
+     * and sign in to the server the user moved away from, and Sign in is usable again at once.
+     */
+    fun cancelAttempt() {
+        attemptWatchdog?.cancel()
+        attemptWatchdog = null
+        if (_attempting.value && connectionState.value is ConnectionState.Connecting) wsClient.disconnect()
+        _attempting.value = false
+        _attemptedUrl.value = null
+        _error.value = null
+    }
+
+    fun login(url: String, username: String, password: String) {
         if (username.isBlank() || password.isBlank()) {
-            _error.value = "Enter username and password"
+            _error.value = "Enter your username and password."
             return
         }
         _error.value = null
+        _attemptedUrl.value = url
         viewModelScope.launch {
             settingsRepository.setServerUrl(url)
             settingsRepository.setUsername(username)

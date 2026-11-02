@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.ui.car
 import android.app.Activity
 import android.os.Bundle
 import android.security.KeyChain
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -59,8 +60,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.domain.AppLinks
+import net.asksakis.massdroidv2.domain.connection.displayAddressOf
 import net.asksakis.massdroidv2.domain.model.CrossfadeMode
 import net.asksakis.massdroidv2.domain.model.SendspinAudioFormat
+import net.asksakis.massdroidv2.ui.components.ChosenServerCard
+import net.asksakis.massdroidv2.ui.components.OtherServerSheet
+import net.asksakis.massdroidv2.ui.components.ServerList
 import net.asksakis.massdroidv2.ui.theme.MassDroidTheme
 import kotlin.math.roundToInt
 
@@ -98,27 +103,45 @@ private fun CarSignInScreen(
     val connection by viewModel.connectionState.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val certAlias by viewModel.certAlias.collectAsStateWithLifecycle()
-    val prefill by viewModel.prefill.collectAsStateWithLifecycle()
     val audioFormat by viewModel.audioFormat.collectAsStateWithLifecycle()
     val compressorLevel by viewModel.compressorLevel.collectAsStateWithLifecycle()
     val dither by viewModel.dither.collectAsStateWithLifecycle()
     val crossfade by viewModel.crossfade.collectAsStateWithLifecycle()
+    val savedUsername by viewModel.savedUsername.collectAsStateWithLifecycle()
+    val serverUrl by viewModel.serverUrl.collectAsStateWithLifecycle()
+    val picker = viewModel.serverPicker
+    val rows by picker.rows.collectAsStateWithLifecycle()
+    val chosen by picker.chosen.collectAsStateWithLifecycle()
+    val typedCheck by picker.typedCheck.collectAsStateWithLifecycle()
+    val attemptedUrl by viewModel.attemptedUrl.collectAsStateWithLifecycle()
 
-    var url by rememberSaveable { mutableStateOf("https://") }
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var seeded by rememberSaveable { mutableStateOf(false) }
+    var choosingOther by rememberSaveable { mutableStateOf(false) }
     // Only auto-close after a sign-in initiated from THIS screen, so opening the
     // gear while already connected (to change server / sign out) does not slam shut.
     var attempted by rememberSaveable { mutableStateOf(false) }
 
-    // Pre-fill the form from saved settings once (without clobbering user typing).
-    LaunchedEffect(prefill) {
-        val p = prefill ?: return@LaunchedEffect
+    // Pre-fill the username from saved settings once (without clobbering user typing).
+    LaunchedEffect(savedUsername) {
+        val saved = savedUsername ?: return@LaunchedEffect
         if (!seeded) {
-            if (p.url.isNotBlank()) url = p.url
-            if (p.username.isNotBlank()) username = p.username
+            if (saved.isNotBlank()) username = saved
             seeded = true
+        }
+    }
+
+    // BACK walks one step back, as on the phone and the TV: from Other server or from a chosen
+    // server to the server list. The arrow in the top bar still closes the screen.
+    BackHandler(enabled = choosingOther || chosen != null) {
+        if (choosingOther) {
+            picker.clearTyped()
+            choosingOther = false
+        } else {
+            viewModel.cancelAttempt()
+            attempted = false
+            picker.changeServer()
         }
     }
 
@@ -131,13 +154,32 @@ private fun CarSignInScreen(
 
     val connecting = connection is ConnectionState.Connecting
     val connected = connection is ConnectionState.Connected
+    // Only the error of a sign-in sent to the chosen server, not one left from another server.
+    val connectionError = (connection as? ConnectionState.Error)?.takeIf { attemptedUrl == chosen?.url }
     val statusMessage = error
-        ?: (connection as? ConnectionState.Error)?.message
+        ?: connectionError?.message
         ?: when {
             connecting -> "Connecting..."
-            connected -> "Connected to ${url.removePrefix("https://").removePrefix("http://")}"
+            connected -> "Connected to ${displayAddressOf(serverUrl)}"
             else -> null
         }
+
+    if (choosingOther) {
+        OtherServerSheet(
+            check = typedCheck,
+            onCheck = picker::checkTyped,
+            onUse = {
+                if (picker.useTyped()) {
+                    viewModel.clearError()
+                    choosingOther = false
+                }
+            },
+            onDismiss = {
+                picker.clearTyped()
+                choosingOther = false
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -173,52 +215,68 @@ private fun CarSignInScreen(
                     )
                     Spacer(Modifier.height(24.dp))
 
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = { url = it },
-                        label = { Text("Server URL") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it },
-                        label = { Text("Username") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    val server = chosen
+                    if (server == null) {
+                        // Typing in a car is slow, so the servers found come first and an
+                        // address of one's own is the last row.
+                        ServerList(
+                            rows = rows,
+                            onPick = { row ->
+                                viewModel.cancelAttempt()
+                                attempted = false
+                                picker.choose(row.url, row.name)
+                            },
+                            onOther = { choosingOther = true }
+                        )
+                    } else {
+                        ChosenServerCard(
+                            server = server,
+                            onChange = {
+                                viewModel.cancelAttempt()
+                                attempted = false
+                                picker.changeServer()
+                            },
+                            onCheckAgain = picker::checkAgain
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedTextField(
+                            value = username,
+                            onValueChange = { username = it },
+                            label = { Text("Username") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
 
-                    Spacer(Modifier.height(20.dp))
-                    Button(
-                        onClick = {
-                            // Only a sign-in that was actually sent may close the screen on
-                            // Connected; a rejected input while already connected keeps it open.
-                            if (viewModel.login(url, username, password)) attempted = true
-                        },
-                        enabled = !connecting,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                    ) {
-                        if (connecting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.height(20.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
-                            Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = {
+                                // Only a sign-in that was actually sent may close the screen on
+                                // Connected; a rejected input while already connected keeps it open.
+                                if (viewModel.login(server.url, username, password)) attempted = true
+                            },
+                            enabled = !connecting,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                        ) {
+                            if (connecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.height(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Text(if (connected) "Reconnect" else "Sign in", fontSize = 18.sp)
+                            }
                         }
                     }
 

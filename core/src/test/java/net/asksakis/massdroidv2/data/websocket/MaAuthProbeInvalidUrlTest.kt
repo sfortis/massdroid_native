@@ -13,11 +13,11 @@ import org.junit.Test
  */
 class MaAuthProbeInvalidUrlTest {
 
-    private val probe = MaAuthProbe(OkHttpClient(), Json { ignoreUnknownKeys = true })
+    private val probe = MaAuthProbe({ OkHttpClient() }, Json { ignoreUnknownKeys = true })
 
     @Test
-    fun `a host with a space returns no providers instead of throwing`() = runTest {
-        assertThat(probe.fetchProviders("http://home assistant.local:8095")).isEmpty()
+    fun `a host with a space is not Music Assistant instead of throwing`() = runTest {
+        assertThat(probe.identify("http://home assistant.local:8095")).isInstanceOf(ServerAnswer.Failed::class.java)
     }
 
     @Test
