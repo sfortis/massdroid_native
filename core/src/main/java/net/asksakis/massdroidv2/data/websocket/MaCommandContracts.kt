@@ -12,6 +12,10 @@ object MaCommands {
     object Auth {
         const val LOGIN = "auth/login"
         const val AUTH = "auth"
+        /** The signed-in user, with the preferences the MA frontend keeps for them. */
+        const val ME = "auth/me"
+        /** Updates the signed-in user; `preferences` replaces all of them at once. */
+        const val USER_UPDATE = "auth/user/update"
     }
 
     object Server {

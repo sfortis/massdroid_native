@@ -3,9 +3,6 @@ package net.asksakis.massdroidv2.data.repository
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
@@ -40,7 +37,7 @@ class MusicRepositoryImpl @Inject constructor(
          * The server rows Discover shows as sections (DiscoverSectionBuilder); the only rows whose
          * items are fetched one by one on MA 2.10, where the listing comes without them.
          */
-        private val HOME_RECOMMENDATION_ROWS = setOf("recent_favorite_tracks", "random_albums", "random_artists")
+        private const val RECOMMENDATION_ROW_TIMEOUT_MS = 10_000L
         /** Far above the ~100 genres MA ships, so one page holds them all. */
         private const val SERVER_GENRES_LIMIT = 500
         private const val MUSICBRAINZ_ARTIST_ID = "musicbrainz_artistid"
@@ -1102,51 +1099,55 @@ class MusicRepositoryImpl @Inject constructor(
         throw MaApiException("Could not resolve library_item_id for '$uri'", -1)
     }
 
-    override suspend fun getRecommendations(): List<RecommendationFolder> = coroutineScope {
+    override suspend fun getRecommendationRows(): List<RecommendationFolder> {
         val result = wsClient.sendCommand(MaCommands.Music.RECOMMENDATIONS, null)
-        val array = result as? JsonArray ?: return@coroutineScope emptyList()
-        array.map { element -> async { parseRecommendationFolder(element) } }.awaitAll().filterNotNull()
+        val array = result as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element -> parseRecommendationFolder(element) }
     }
 
-    private suspend fun parseRecommendationFolder(element: JsonElement): RecommendationFolder? = try {
+    override suspend fun getRecommendationItems(folder: RecommendationFolder): RecommendationItems =
+        toRecommendationItems(fetchRecommendationItems(folder.provider, folder.itemId))
+
+    private fun parseRecommendationFolder(element: JsonElement): RecommendationFolder? = try {
         val obj = element.jsonObject
         val itemId = obj["item_id"]?.jsonPrimitive?.content
         val name = obj["name"]?.jsonPrimitive?.content
         if (itemId == null || name == null) {
             null
         } else {
-            val provider = obj["provider"]?.jsonPrimitive?.content ?: "library"
-            val listed = (obj["items"] as? JsonArray).orEmpty()
-            val serverItems = if (listed.isEmpty() && itemId in HOME_RECOMMENDATION_ROWS) {
-                fetchRecommendationItems(provider, itemId)
-            } else {
-                parseMediaItems(JsonArray(listed))
-            }
-            val artists = serverItems.filter { it.mediaType == "artist" }.mapNotNull { it.toArtist() }
-            val albums = serverItems.filter { it.mediaType == "album" }.mapNotNull { it.toAlbum() }
-            val tracks = serverItems.filter { it.mediaType == "track" }.mapNotNull { it.toTrack() }
-            val playlists = serverItems.filter { it.mediaType == "playlist" }.mapNotNull { it.toPlaylist() }
             RecommendationFolder(
                 itemId = itemId,
                 name = name,
-                provider = provider,
-                items = RecommendationItems(artists, albums, tracks, playlists)
+                provider = obj["provider"]?.jsonPrimitive?.content ?: "library",
+                // Servers before MA 2.10 send each row's items inline.
+                items = toRecommendationItems(parseMediaItems(obj["items"] as? JsonArray ?: JsonArray(emptyList()))),
+                uri = obj["uri"]?.jsonPrimitive?.contentOrNull,
+                enabledByDefault = obj["enabled_by_default"]?.jsonPrimitive?.booleanOrNull ?: true
             )
         }
-    } catch (e: CancellationException) {
-        throw e
     } catch (e: Exception) {
         Log.e(TAG, "Failed to parse recommendation folder", e)
         null
     }
 
-    /**
-     * Items of one recommendation row. MA 2.10 lists the rows without items and serves each
-     * row's items on request, so only the rows Discover turns into sections are asked for.
-     */
+    private fun toRecommendationItems(serverItems: List<ServerMediaItem>) = RecommendationItems(
+        artists = serverItems.filter { it.mediaType == "artist" }.mapNotNull { it.toArtist() },
+        albums = serverItems.filter { it.mediaType == "album" }.mapNotNull { it.toAlbum() },
+        tracks = serverItems.filter { it.mediaType == "track" }.mapNotNull { it.toTrack() },
+        playlists = serverItems.filter { it.mediaType == "playlist" }.mapNotNull { it.toPlaylist() }
+    )
+
+    /** Items of one recommendation row, which MA 2.10 serves on request. */
     private suspend fun fetchRecommendationItems(provider: String, itemId: String): List<ServerMediaItem> = try {
         parseMediaItems(
-            wsClient.sendCommand(MaCommands.Music.RECOMMENDATION_ITEMS, RecommendationItemsArgs(provider, itemId))
+            // One slow provider must not hold the whole home screen back, so a row gets one try
+            // with a short limit and is left out when it does not answer.
+            wsClient.sendCommand(
+                MaCommands.Music.RECOMMENDATION_ITEMS,
+                RecommendationItemsArgs(provider, itemId).toJson(),
+                timeoutMs = RECOMMENDATION_ROW_TIMEOUT_MS,
+                retryAfterTimeout = false
+            )
         )
     } catch (e: MaApiException) {
         Log.w(TAG, "Recommendation row $itemId unavailable: ${e.message}")

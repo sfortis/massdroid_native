@@ -110,6 +110,13 @@ object RepositoryModule {
 
     @Provides
     @Singleton
+    fun provideHomeRowSettingsRepository(
+        wsClient: MaWebSocketClient
+    ): net.asksakis.massdroidv2.domain.repository.HomeRowSettingsRepository =
+        net.asksakis.massdroidv2.data.repository.HomeRowSettingsRepositoryImpl(wsClient)
+
+    @Provides
+    @Singleton
     fun provideMaAuthRepository(
         probe: MaAuthProbe,
         wsClient: MaWebSocketClient,

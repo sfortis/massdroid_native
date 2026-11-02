@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.SystemUpdate
@@ -134,7 +135,7 @@ import net.asksakis.massdroidv2.domain.recommendation.smartMixTrackTargetFor
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 
 enum class SettingsCategory {
-    CONNECTION, PHONE_AS_SPEAKER, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, DIAGNOSTICS, ABOUT
+    CONNECTION, PHONE_AS_SPEAKER, HOME_SCREEN, RECOMMENDATIONS, PROXIMITY, NFC_TAGS, DIAGNOSTICS, ABOUT
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -182,6 +183,7 @@ fun SettingsScreen(
                         when (selectedCategory) {
                             SettingsCategory.CONNECTION -> "Connection"
                             SettingsCategory.PHONE_AS_SPEAKER -> "Phone as speaker"
+                            SettingsCategory.HOME_SCREEN -> "Home screen"
                             SettingsCategory.RECOMMENDATIONS -> "Recommendations"
                             SettingsCategory.PROXIMITY -> "Follow Me"
                             SettingsCategory.NFC_TAGS -> "NFC tags"
@@ -222,6 +224,9 @@ fun SettingsScreen(
                 SettingsCategory.PROXIMITY -> ProximitySettingsScreen(
                     onBack = { selectedCategoryName = null },
                     onSetupRoom = onSetupRoom,
+                    modifier = Modifier.padding(paddingValues)
+                )
+                SettingsCategory.HOME_SCREEN -> HomeScreenSettingsScreen(
                     modifier = Modifier.padding(paddingValues)
                 )
                 SettingsCategory.RECOMMENDATIONS -> RecommendationsScreen(
@@ -298,6 +303,12 @@ private fun CategoryList(
         }
         SettingsSectionDivider()
         SettingsSectionHeader("Discovery")
+        SettingsNavigationRow(
+            title = "Home screen",
+            icon = Icons.Default.Home,
+            supporting = "Which Music Assistant rows the home screen shows",
+            onClick = { onSelect(SettingsCategory.HOME_SCREEN) }
+        )
         SettingsNavigationRow(
             title = "Recommendations",
             icon = Icons.Default.Explore,
