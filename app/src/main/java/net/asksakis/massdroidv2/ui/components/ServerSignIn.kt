@@ -76,7 +76,7 @@ import net.asksakis.massdroidv2.domain.connection.ServerRowGroup
 import net.asksakis.massdroidv2.domain.connection.displayAddressOf
 
 /** Saves what is typed under Other server across a rotation. */
-val ServerAddressInputSaver = listSaver<ServerAddressInput, String>(
+private val ServerAddressInputSaver = listSaver<ServerAddressInput, String>(
     save = { listOf(it.address, it.port, it.portEdited.toString(), it.https.toString()) },
     restore = { ServerAddressInput(it[0], it[1], it[2].toBoolean(), it[3].toBoolean()) }
 )

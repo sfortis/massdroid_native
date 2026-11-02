@@ -19,10 +19,9 @@ import net.asksakis.massdroidv2.domain.repository.SettingsRepository
 import javax.inject.Inject
 
 /**
- * Onboarding: log in to a Music Assistant server with credentials, persist the
- * server URL + credentials + returned token (so the next launch auto-connects),
- * exactly mirroring the phone SettingsViewModel login flow on the shared :core
- * MaWebSocketClient.
+ * The TV sign-in: a username and password for the server picked in step 1. The token, the
+ * account and the server are saved once the server hands out a token, so the next launch
+ * connects by itself.
  */
 @HiltViewModel
 class TvOnboardingViewModel @Inject constructor(
@@ -84,9 +83,8 @@ class TvOnboardingViewModel @Inject constructor(
         _error.value = null
         _attemptedUrl.value = url
         _attempting.value = true
-        // Everything is saved only when the server hands out a token, as on the phone. Saved
-        // before, a failed sign-in to another server left its URL next to the old server's
-        // token, and BACK out of Change server then made TvRootViewModel retry that pair for good.
+        // Everything is saved only when the server hands out a token, as on the phone, so a
+        // failed sign-in never leaves one server's address next to another server's token.
         wsClient.connectWithLogin(url, username, password) { token ->
             // The URL is written last, so the server a later start connects to changes only once
             // the sign-in for it is saved. The four values live in two DataStores, so one edit
@@ -100,9 +98,8 @@ class TvOnboardingViewModel @Inject constructor(
             wsClient.setSavedCredentials(username, password)
         }
 
-        // Backstop the UI: the core client now has its own handshake watchdog, but
-        // this keeps the button honest and turns any non-resolution into a plain
-        // user-facing message instead of an indefinite "Connecting...".
+        // Bounds what the screen shows: an attempt that neither connects nor fails in time is
+        // given up with a plain message instead of an endless "Connecting...".
         attemptWatchdog?.cancel()
         attemptWatchdog = viewModelScope.launch {
             val resolved = withTimeoutOrNull(ATTEMPT_TIMEOUT_MS) {
@@ -127,6 +124,6 @@ class TvOnboardingViewModel @Inject constructor(
         // The longest the TV screen waits for a sign-in to resolve, as SignInSession waits on
         // the phone and the car. A slow server can still be answering then, and the attempt
         // is given up rather than leaving the user near a minute on "Connecting".
-        private const val ATTEMPT_TIMEOUT_MS = 35_000L
+        const val ATTEMPT_TIMEOUT_MS = 35_000L
     }
 }
