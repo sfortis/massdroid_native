@@ -6,7 +6,11 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -289,6 +293,57 @@ class SignInSessionTest {
 
         coVerify { auth.signOut() }
         assertThat(connects).hasSize(before)
+    }
+
+    @Test
+    fun `a sign-in begun right after Sign out still connects`() = runTest {
+        // Sign out finishes in the session's scope; the attempt it stops is the one in flight
+        // when it was tapped, not one the user starts a moment later.
+        val session = session()
+        session.signOut()
+        session.login(officeUrl, "office", "bob", "bob password")
+        runCurrent()
+
+        coVerify { auth.signOut() }
+        assertThat(connects.map { it.first }).contains(officeUrl)
+    }
+
+    @Test
+    fun `a sign-in begun during Sign out waits for it and does not return to the signed-out server`() = runTest {
+        val signedOut = CompletableDeferred<Unit>()
+        coEvery { auth.signOut() } coAnswers {
+            signedOut.await()
+            token.value = ""
+            pass.value = ""
+            trusted.value = null
+        }
+        val session = session()
+        session.signOut()
+        session.login(officeUrl, "office", "bob", "bob password")
+        runCurrent()
+        assertThat(connects).isEmpty()
+
+        signedOut.complete(Unit)
+        runCurrent()
+        assertThat(connects.map { it.first }).containsExactly(officeUrl)
+
+        serverRefuses()
+        runCurrent()
+        // Nothing is left to return to: the home server's token was forgotten by the sign out.
+        assertThat(connects.map { it.first }).containsExactly(officeUrl)
+        verify { client.disconnect() }
+    }
+
+    @Test
+    fun `Sign out completes when the screen that asked for it closes`() = runTest {
+        val session = session()
+        val screen = CoroutineScope(Job())
+        val controller = SignInController.Factory(client, settings, auth, session).create(screen)
+        controller.signOut()
+        screen.cancel()
+        runCurrent()
+
+        coVerify { auth.signOut() }
     }
 
     @Test

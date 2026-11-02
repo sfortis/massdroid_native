@@ -3,6 +3,7 @@ package net.asksakis.massdroidv2.data.signin
 import android.content.Context
 import android.security.KeyChain
 import android.util.Log
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.asksakis.massdroidv2.data.websocket.MaTokenInfo
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
@@ -38,6 +41,7 @@ import javax.inject.Inject
  */
 class SignInController private constructor(
     private val scope: CoroutineScope,
+    private val io: CoroutineDispatcher,
     private val wsClient: MaWebSocketClient,
     private val settings: SettingsRepository,
     private val auth: MaAuthRepository,
@@ -49,8 +53,9 @@ class SignInController private constructor(
         private val auth: MaAuthRepository,
         private val session: SignInSession
     ) {
-        fun create(scope: CoroutineScope): SignInController =
-            SignInController(scope, wsClient, settings, auth, session)
+        /** [io] runs the KeyChain calls; tests pass their own dispatcher. */
+        fun create(scope: CoroutineScope, io: CoroutineDispatcher = Dispatchers.IO): SignInController =
+            SignInController(scope, io, wsClient, settings, auth, session)
     }
 
     private val formError = MutableStateFlow<String?>(null)
@@ -107,8 +112,9 @@ class SignInController private constructor(
      * false when an empty field rejected the input and nothing was sent.
      */
     fun login(server: ChosenServer, username: String, password: String): Boolean {
+        // The password is sent as typed, because a space at either end can be part of it.
         val user = username.trim()
-        val pass = password.trim()
+        val pass = password
         if (user.isBlank() || pass.isBlank()) {
             formError.value = "Enter your username and password."
             return false
@@ -132,7 +138,7 @@ class SignInController private constructor(
     fun consumeSuccess() = session.consumeSuccess()
 
     /** Signs out of the current server; see [SignInSession.signOut]. */
-    suspend fun signOut() = session.signOut()
+    fun signOut() = session.signOut()
 
     /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
     fun continueAs(server: ChosenServer, saved: SavedSignIn) {
@@ -186,16 +192,28 @@ class SignInController private constructor(
 
     fun clearCertificate() {
         scope.launch {
-            settings.setClientCertAlias(null)
-            wsClient.clearMtls()
+            certLock.withLock { forgetCertificate() }
         }
     }
 
     private suspend fun loadCertificate(alias: String, context: Context) {
-        withContext(Dispatchers.IO) {
-            try {
-                val privateKey = KeyChain.getPrivateKey(context, alias)
-                val certChain = KeyChain.getCertificateChain(context, alias)
+        withContext(io) {
+            val loaded = runCatching {
+                KeyChain.getPrivateKey(context, alias) to KeyChain.getCertificateChain(context, alias)
+            }
+            // The check and the change are one step, so two loads, or a load and a clear, cannot
+            // leave one certificate applied while another is selected.
+            certLock.withLock {
+                // KeyChain can take a while. A certificate removed or replaced meanwhile is left
+                // alone whether it loaded or not, so the newer choice stands.
+                if (settings.clientCertAlias.first() != alias) {
+                    Log.d(TAG, "Certificate $alias no longer selected, not applying it")
+                    return@withContext
+                }
+                val (privateKey, certChain) = loaded.getOrElse {
+                    Log.e(TAG, "Error loading cert: ${it.message}")
+                    null to null
+                }
                 if (privateKey != null && certChain != null) {
                     wsClient.configureMtls(privateKey, certChain)
                     Log.d(TAG, "mTLS loaded: $alias")
@@ -203,13 +221,11 @@ class SignInController private constructor(
                     Log.e(TAG, "Failed to load cert for alias: $alias")
                     forgetCertificate()
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading cert: ${e.message}")
-                forgetCertificate()
             }
         }
     }
 
+    // Called with certLock held.
     private suspend fun forgetCertificate() {
         settings.setClientCertAlias(null)
         wsClient.clearMtls()
@@ -218,6 +234,9 @@ class SignInController private constructor(
     private companion object {
         const val TAG = "SignIn"
         const val STOP_TIMEOUT_MS = 5_000L
+
+        // One client certificate is applied per process, whichever screen chose it.
+        val certLock = Mutex()
     }
 }
 

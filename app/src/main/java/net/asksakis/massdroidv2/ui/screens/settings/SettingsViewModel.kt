@@ -89,11 +89,7 @@ class SettingsViewModel @Inject constructor(
     /** Signing in to the chosen server, shared with the onboarding. */
     val signIn: SignInController = signInFactory.create(viewModelScope)
 
-    fun signOut() {
-        viewModelScope.launch {
-            signIn.signOut()
-        }
-    }
+    fun signOut() = signIn.signOut()
 
     val enrichmentProgress = libraryGenreEnricher.progress
 

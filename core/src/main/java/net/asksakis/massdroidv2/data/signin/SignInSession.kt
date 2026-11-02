@@ -63,10 +63,13 @@ class SignInSession internal constructor(
     // Serialises every write of the account: an attempt's save, the save of other connections,
     // forgetting a refused token or a server, and Sign out.
     private val saveLock = Mutex()
-    // Guards [pending] and [attemptJob], which the UI thread and the attempts change.
+    // Guards [pending], [attemptJob] and [signOutJob], which the UI thread and the attempts change.
     private val lock = Any()
     private var pending: Attempt? = null
     private var attemptJob: Job? = null
+    // Kept apart from [attemptJob], because a new attempt cancels that one and a sign out must
+    // always finish.
+    private var signOutJob: Job? = null
 
     private val _error = MutableStateFlow<String?>(null)
 
@@ -211,14 +214,21 @@ class SignInSession internal constructor(
         }
     }
 
-    /** Sign out: stops an attempt without returning anywhere, then forgets this server's token. */
-    suspend fun signOut() {
-        val job = synchronized(lock) {
+    /**
+     * Sign out: stops an attempt without returning anywhere, then forgets this server's token.
+     * It runs in the session's scope, so a screen closed meanwhile does not stop it halfway. The
+     * attempt to stop is taken at the call, so a sign-in begun right after it is not stopped;
+     * that sign-in waits for the sign out instead, see [begin].
+     */
+    fun signOut() {
+        synchronized(lock) {
             pending = null
-            attemptJob
+            val job = attemptJob
+            signOutJob = scope.launch {
+                job?.cancelAndJoin()
+                saveLock.withLock { auth.signOut() }
+            }
         }
-        job?.cancelAndJoin()
-        saveLock.withLock { auth.signOut() }
     }
 
     fun clearError() {
@@ -247,10 +257,14 @@ class SignInSession internal constructor(
             // over under the lock the first one marks its connect under, so nothing is missed.
             pending?.takeIf { !it.saved }?.let(attempt::takeOver)
             val running = attemptJob
+            val signingOut = signOutJob
             pending = attempt
             running?.cancel()
             attemptJob = scope.launch {
                 running?.join()
+                // A sign out still running would read as the server to return to, token and
+                // all, and its disconnect could drop this attempt's connection.
+                signingOut?.join()
                 run(attempt, prepare)
             }
         }

@@ -1,12 +1,10 @@
 package net.asksakis.massdroidv2.ui.car
 
 import android.content.Context
-import android.security.KeyChain
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,7 +14,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.asksakis.massdroidv2.data.discovery.ServerPicker
 import net.asksakis.massdroidv2.data.repository.QueueTogglesCache
@@ -201,9 +198,8 @@ class CarSignInViewModel @Inject constructor(
         return if (effective == SMART_CROSSFADE) CrossfadeMode.SMART else CrossfadeMode.STANDARD
     }
 
-    /** Currently selected mTLS client-certificate alias, or null. */
-    val certAlias: StateFlow<String?> = settingsRepository.clientCertAlias
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    /** The selected client certificate's alias, or null; see [SignInController.clientCertAlias]. */
+    val certAlias: StateFlow<String?> = signIn.clientCertAlias
 
     /** The server the app connects to, for the status line. */
     val serverUrl: StateFlow<String> = settingsRepository.serverUrl
@@ -242,65 +238,16 @@ class CarSignInViewModel @Inject constructor(
     /** Signs in to [server] with the account saved for it, the "Continue as" choice. */
     fun continueAs(server: ChosenServer, saved: SavedSignIn) = signIn.continueAs(server, saved)
 
-    /**
-     * Apply a client certificate picked from the Android KeyChain. Mirrors the
-     * phone settings cert flow: persist the alias, load the key/chain off-main,
-     * and reconfigure the shared OkHttp/WebSocket client for mTLS.
-     */
-    fun onCertificateSelected(alias: String?, context: Context) {
-        if (alias == null) return
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(alias)
-            loadCertificate(alias, context.applicationContext)
-        }
-    }
+    /** Uses the certificate picked in the system KeyChain picker; see [SignInController.selectCertificate]. */
+    fun onCertificateSelected(alias: String?, context: Context) = signIn.selectCertificate(alias, context)
 
-    fun clearCertificate() {
-        viewModelScope.launch {
-            settingsRepository.setClientCertAlias(null)
-            wsClient.clearMtls()
-        }
-    }
+    fun clearCertificate() = signIn.clearCertificate()
 
-    fun signOut() {
-        viewModelScope.launch { signIn.signOut() }
-    }
+    /** Signs out of the current server; see [SignInController.signOut]. */
+    fun signOut() = signIn.signOut()
 
-    private suspend fun loadCertificate(alias: String, context: Context) {
-        withContext(Dispatchers.IO) {
-            try {
-                val privateKey = KeyChain.getPrivateKey(context, alias)
-                val certChain = KeyChain.getCertificateChain(context, alias)
-                // KeyChain can take a while; a certificate removed or replaced meanwhile must
-                // not be applied over the newer choice.
-                if (settingsRepository.clientCertAlias.first() != alias) {
-                    Log.d(TAG, "Certificate $alias no longer selected, not applying it")
-                    return@withContext
-                }
-                if (privateKey != null && certChain != null) {
-                    wsClient.configureMtls(privateKey, certChain)
-                    Log.d(TAG, "mTLS loaded: $alias")
-                } else {
-                    Log.e(TAG, "Failed to load cert for alias: $alias")
-                    settingsRepository.setClientCertAlias(null)
-                    wsClient.clearMtls()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading cert: ${e.message}")
-                settingsRepository.setClientCertAlias(null)
-                wsClient.clearMtls()
-            }
-        }
-    }
-
-    /** One-shot: load the saved cert (if any) so a re-opened screen keeps mTLS. */
-    fun loadSavedCertificate(context: Context) {
-        val appContext = context.applicationContext
-        viewModelScope.launch {
-            val alias = settingsRepository.clientCertAlias.first() ?: return@launch
-            loadCertificate(alias, appContext)
-        }
-    }
+    /** Loads the saved certificate again, so a re-opened screen keeps mTLS. */
+    fun loadSavedCertificate(context: Context) = signIn.loadSavedCertificate(context)
 
     companion object {
         /** How long to wait for the queue toggles to seed after a connect. */
