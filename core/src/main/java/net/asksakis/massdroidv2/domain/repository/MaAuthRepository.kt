@@ -6,8 +6,9 @@ import net.asksakis.massdroidv2.domain.connection.ServerCheck
 import net.asksakis.massdroidv2.domain.model.AuthProviderInfo
 
 /**
- * Bridges Music Assistant's authentication flow to the UI. Owns the OAuth
- * state machine so the SettingsViewModel can stay focused on view state.
+ * Music Assistant's authentication for the sign-in screens: the server check with its login
+ * providers, the Home Assistant OAuth round trip, Sign out, and the reset before a switch to
+ * another server.
  */
 interface MaAuthRepository {
     /** Login providers advertised by the most recently checked server. */
@@ -58,7 +59,7 @@ interface MaAuthRepository {
 
     /**
      * Drops the per-account state (the Discover cache and everything held in memory) before a
-     * sign-in to another server, as Sign out and the Home Assistant sign-in do.
+     * sign-in to another server, and on Sign out.
      */
     suspend fun prepareServerSwitch()
 }

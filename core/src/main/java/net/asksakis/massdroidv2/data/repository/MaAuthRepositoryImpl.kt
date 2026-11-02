@@ -71,6 +71,11 @@ class MaAuthRepositoryImpl @Inject constructor(
     @Volatile private var pendingNonce: String? = null
     /** An address the sign-in in progress opens besides the server's, named if it does not finish. */
     @Volatile private var pendingForeignOrigin: String? = null
+    /**
+     * The nonce of the start that may still open the browser. A cancel clears it and a newer
+     * start replaces it, so a start whose checks end after either does nothing.
+     */
+    @Volatile private var activeStart: String? = null
 
     init {
         scope.launch {
@@ -113,6 +118,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         // is not opened on a page that cannot load.
         val foreignOrigins = signInOriginsToCheck(authUrl, serverUrl)
         _oauthInProgress.value = true
+        activeStart = nonce
         // The checks can take seconds, and the screen that started them may go away
         // meanwhile (Change server, a rotation). A cancelled start must not leave the button
         // disabled on "Waiting for sign in" for the rest of the process.
@@ -122,6 +128,8 @@ class MaAuthRepositoryImpl @Inject constructor(
             _oauthInProgress.value = false
             throw e
         }
+        // Cancelled or replaced during the checks: the newer state, nonce included, stays.
+        if (activeStart != nonce) return null
         if (unreachable != null) {
             _oauthInProgress.value = false
             _oauthErrors.tryEmit(unreachableSignInMessage(unreachable))
@@ -131,13 +139,13 @@ class MaAuthRepositoryImpl @Inject constructor(
         pendingServerUrl = serverUrl
         pendingNonce = nonce
         oauthStartedAtMs = System.currentTimeMillis()
-        _oauthInProgress.value = true
         return authUrl
     }
 
     override fun cancelOAuth() {
         if (_oauthInProgress.value) {
             _oauthInProgress.value = false
+            activeStart = null
             pendingServerUrl = null
             pendingNonce = null
             oauthStartedAtMs = 0L
@@ -167,8 +175,7 @@ class MaAuthRepositoryImpl @Inject constructor(
         // server that happens to expose a same-id player would silently latch
         // back onto something the user did not choose.
         runCatching { settingsRepository.setSelectedPlayerId(null) }
-        runCatching { discoverCache.clear() }
-        sessionEventBus.emitReset()
+        prepareServerSwitch()
         // Leave the server URL alone, the user is signing OUT and not switching
         // servers. They can edit the URL field if they want to move on.
     }
@@ -189,6 +196,7 @@ class MaAuthRepositoryImpl @Inject constructor(
             if (_oauthInProgress.value && oauthStartedAtMs == started) {
                 Log.d(TAG, "OAuth canceled by user (returned to app without callback)")
                 _oauthInProgress.value = false
+                activeStart = null
                 pendingServerUrl = null
                 pendingNonce = null
                 oauthStartedAtMs = 0L
@@ -222,8 +230,7 @@ class MaAuthRepositoryImpl @Inject constructor(
 
     private fun finishOAuth(url: String, token: String) {
         // The sign-in session connects with the token and saves it, with the server, only once
-        // the server accepted it. Saving here left an unreachable server saved with a token
-        // nobody had checked, and the previous server's password wiped.
+        // the server accepted it.
         if (!_completedOAuthSignIns.tryEmit(OAuthSignIn(url, token))) {
             _oauthErrors.tryEmit("Sign-in completed but could not be applied. Please try again.")
         }

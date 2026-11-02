@@ -537,6 +537,9 @@ class MaWebSocketClient(
         handshakeWatchdogJob = null
     }
 
+    // Written directly only where the caller already owns its generation: the invalid-URL write
+    // in doConnectLocked, under the lock, and the retry budget in scheduleReconnect. Socket
+    // callbacks go through [writeError].
     private fun errorState(message: String, gen: Int) = ConnectionState.Error(message, gen)
 
     /** Writes the error of socket [gen], unless a newer socket has replaced it meanwhile. */
