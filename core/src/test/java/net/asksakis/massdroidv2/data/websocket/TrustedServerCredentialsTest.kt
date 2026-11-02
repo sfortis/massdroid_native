@@ -35,15 +35,21 @@ class TrustedServerCredentialsTest {
     }
 
     @Test
-    fun `a token saved for one server goes only to that server`() {
-        assertThat(savedTokenAllowedFor(expected = "office", offered = "office")).isTrue()
-        assertThat(savedTokenAllowedFor(expected = "office", offered = "home")).isFalse()
-        assertThat(savedTokenAllowedFor(expected = "office", offered = null)).isFalse()
+    fun `a connect that names its server sends credentials only to that server`() {
+        val named = credentialGates(expected = "office", explicitSignIn = false, trusted = "home", offered = "office")
+        assertThat(named.credentials).isTrue()
+        assertThat(named.passwordFallback).isTrue()
+        val other = credentialGates(expected = "office", explicitSignIn = true, trusted = "office", offered = "home")
+        assertThat(other.credentials).isFalse()
+        assertThat(other.passwordFallback).isFalse()
+        assertThat(credentialGates(expected = "office", explicitSignIn = false, trusted = null, offered = null).credentials).isFalse()
     }
 
     @Test
-    fun `a connect that names no server leaves the decision to the trusted server check`() {
-        assertThat(savedTokenAllowedFor(expected = null, offered = "home")).isTrue()
+    fun `a connect that names no server leaves the decision to the trusted server`() {
+        val gates = credentialGates(expected = null, explicitSignIn = true, trusted = "home", offered = "new")
+        assertThat(gates.credentials).isTrue()
+        assertThat(gates.passwordFallback).isFalse()
     }
 
     @Test

@@ -94,6 +94,8 @@ dependencies {
     testImplementation("com.google.truth:truth:1.4.4")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("io.mockk:mockk:1.13.12")
+    // A real WebSocket server for the client's sign-in tests; the version of the okhttp above.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 kapt {

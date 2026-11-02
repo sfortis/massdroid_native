@@ -124,9 +124,9 @@ class TvOnboardingViewModel @Inject constructor(
     }
 
     private companion object {
-        // A little longer than the core client's HANDSHAKE_TIMEOUT_MS (20 s) plus
-        // the auth command timeout, so the UI backstop only fires when the client
-        // genuinely never resolves.
+        // The longest the TV screen waits for a sign-in to resolve, as SignInSession waits on
+        // the phone and the car. A slow server can still be answering then, and the attempt
+        // is given up rather than leaving the user near a minute on "Connecting".
         private const val ATTEMPT_TIMEOUT_MS = 35_000L
     }
 }
