@@ -1,19 +1,29 @@
 package net.asksakis.massdroidv2.tv.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
@@ -21,6 +31,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.Icon
+import androidx.tv.material3.IconButton
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import net.asksakis.massdroidv2.domain.search.SearchSession
@@ -34,6 +46,8 @@ import net.asksakis.massdroidv2.domain.search.SearchSession
 @Composable
 fun TvSearchScreen(
     onOpenArtist: (itemId: String, provider: String) -> Unit,
+    voiceRequested: Boolean = false,
+    onVoiceHandled: () -> Unit = {},
     viewModel: TvSearchViewModel = hiltViewModel()
 ) {
     val session by viewModel.session.collectAsStateWithLifecycle()
@@ -47,6 +61,30 @@ fun TvSearchScreen(
         viewModel.errors.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
+    // Voice input through the TV's speech recogniser (the Google app on Android TV): what it
+    // heard is searched at once, as a submitted query, since the listener has said it all.
+    val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+        if (!heard.isNullOrBlank()) viewModel.searchAgain(heard)
+    }
+    val startVoice = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say an artist, album, track or playlist")
+        try {
+            voice.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "This TV has no voice input", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // The remote's microphone key, pressed here or on another screen on the way in.
+    LaunchedEffect(voiceRequested) {
+        if (voiceRequested) {
+            onVoiceHandled()
+            startVoice()
+        }
+    }
+
     // The field takes the cursor on the first entry, so one press of the centre key opens the
     // keyboard. A return from an artist has a saved card, which the grid focus helper restores.
     val fieldFocus = rememberInitialFocus(enabled = session.query.isBlank())
@@ -57,15 +95,23 @@ fun TvSearchScreen(
         title = "Search",
         header = {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = TV_GRID_EDGE)) {
-                TvTextField(
-                    label = "Artist, album, track, playlist, radio or audiobook",
-                    value = session.query,
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Search,
-                    onImeAction = viewModel::submitQuery,
-                    focusRequester = fieldFocus,
-                    onValueChange = viewModel::updateQuery
-                )
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        TvTextField(
+                            label = "Artist, album, track, playlist, radio or audiobook",
+                            value = session.query,
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Search,
+                            onImeAction = viewModel::submitQuery,
+                            focusRequester = fieldFocus,
+                            onValueChange = viewModel::updateQuery
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    IconButton(onClick = startVoice, modifier = Modifier.pointerClick(onClick = startVoice)) {
+                        Icon(Icons.Filled.Mic, contentDescription = "Search by voice")
+                    }
+                }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     SearchFilter.entries.forEach { f ->
