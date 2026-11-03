@@ -1,0 +1,2 @@
+Sign-in finds the servers on your network and keeps an account per server, Home shows the rows you choose, and Library filters albums by type.
+Switching servers no longer erases what the app learned about your artists, and the phone speaker resumes after a reconnect only when it should.

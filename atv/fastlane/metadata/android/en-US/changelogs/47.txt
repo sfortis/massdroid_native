@@ -1,0 +1,2 @@
+Sign in with Home Assistant, servers found on your network, and Library can show only album artists and filter albums by type.
+A wrong port is named in the error, a failed sign-in no longer saves the new server, and the keyboard and BACK behave better.
