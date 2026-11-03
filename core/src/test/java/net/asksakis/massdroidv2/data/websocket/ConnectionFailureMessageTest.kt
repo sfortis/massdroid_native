@@ -39,9 +39,16 @@ class ConnectionFailureMessageTest {
 
     @Test
     fun `a refused connection names the host and port`() {
-        val error = ConnectException("Failed to connect to homeassistant.local/192.168.1.41:80")
+        val error = okHttpConnectFailure("homeassistant.local/192.168.1.41:80", REFUSED)
         assertThat(describeConnectionFailure(error, "http://homeassistant.local"))
-            .contains("homeassistant.local:80")
+            .startsWith("Nothing answers at homeassistant.local:80.")
+    }
+
+    @Test
+    fun `an unreachable host is not called a wrong port`() {
+        val error = okHttpConnectFailure("ma.local/192.168.1.41:8095", NO_ROUTE)
+        assertThat(describeConnectionFailure(error, "http://ma.local:8095"))
+            .startsWith("This device can't reach ma.local:8095.")
     }
 
     @Test
@@ -80,6 +87,25 @@ class ConnectionFailureMessageTest {
     }
 
     @Test
+    fun `the sign-in check names the port when another port refuses the connection`() {
+        val error = okHttpConnectFailure("ma.tail1234.ts.net/100.64.0.7:8085", REFUSED)
+        assertThat(describeServerCheckFailure(error, "http://ma.tail1234.ts.net:8085")).isEqualTo(
+            "Nothing answers at ma.tail1234.ts.net:8085. Check the address and the port. " +
+                "Music Assistant normally uses port 8095."
+        )
+        assertThat(describeServerCheckFailure(IOException("outer", error), "http://100.64.0.7:8085"))
+            .contains("100.64.0.7:8085")
+    }
+
+    @Test
+    fun `the sign-in check keeps the network advice when another port cannot be reached`() {
+        // A VPN that is off: Android reports the unreachable host as a ConnectException too.
+        val error = okHttpConnectFailure("ma.example.com/203.0.113.7:443", NO_ROUTE)
+        assertThat(describeServerCheckFailure(error, "https://ma.example.com"))
+            .isEqualTo(NO_MUSIC_ASSISTANT_MESSAGE)
+    }
+
+    @Test
     fun `the sign-in check names the secure switch for a plain server`() {
         val error = SSLProtocolException("Read error: ssl=0x7: WRONG_VERSION_NUMBER")
         assertThat(describeServerCheckFailure(error, "https://192.168.1.41:8095"))
@@ -93,5 +119,16 @@ class ConnectionFailureMessageTest {
             .isEqualTo(NOT_MUSIC_ASSISTANT_MESSAGE)
         assertThat(describeServerCheckFailure(UnknownHostException("mass.local"), "http://mass.local:8095"))
             .contains(".local")
+    }
+
+    // OkHttp's ConnectException around the one Android's libcore raises, as a device reports them.
+    private fun okHttpConnectFailure(address: String, errno: String): ConnectException {
+        val socket = ConnectException("failed to connect to /${address.substringAfter('/')} after 10000ms: $errno")
+        return ConnectException("Failed to connect to $address").apply { initCause(socket) }
+    }
+
+    private companion object {
+        const val REFUSED = "isConnected failed: ECONNREFUSED (Connection refused)"
+        const val NO_ROUTE = "isConnected failed: EHOSTUNREACH (No route to host)"
     }
 }

@@ -1,5 +1,6 @@
 package net.asksakis.massdroidv2.data.websocket
 
+import net.asksakis.massdroidv2.domain.connection.MA_DEFAULT_PORT
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.IOException
 import java.net.ConnectException
@@ -47,8 +48,13 @@ internal fun describeConnectionFailure(error: Throwable, serverUrl: String?, sig
                 "address. If the name ends in .local, try the server's IP address instead."
             is NoRouteToHostException -> return "This device can't reach $target. Check that it is " +
                 "on the same network as Music Assistant, or connected through your VPN."
-            is ConnectException -> return "Nothing answers at $target. Check the address and the " +
-                "port. Music Assistant normally uses port 8095."
+            is ConnectException -> return if (isRefused(error)) {
+                "Nothing answers at $target. Check the address and the port. Music Assistant " +
+                    "normally uses port 8095."
+            } else {
+                "This device can't reach $target. Check that it is on the same network as Music " +
+                    "Assistant, or connected through your VPN."
+            }
             is SocketTimeoutException -> return "The server did not answer in time. Check the address " +
                 "and that Music Assistant is reachable on this network."
         }
@@ -68,20 +74,32 @@ internal const val NOT_SECURE_MESSAGE =
  *
  * The sign-in screens set https with a switch rather than with the scheme, so a secure
  * connection to a plain server names the switch. A name that cannot be looked up keeps its
- * own advice about .local names. Everything else that never reached a server is said in one
- * sentence, because the user's next step is the same for all of it.
+ * own advice about .local names. A connection refused on a port other than Music Assistant's
+ * names the port, because a wrong port is the usual cause. Everything else that never reached
+ * a server is said in one sentence, because the user's next step is the same for all of it.
  */
 internal fun describeServerCheckFailure(error: Throwable?, serverUrl: String): String {
     if (error == null) return NO_MUSIC_ASSISTANT_MESSAGE
-    for (cause in generateSequence(error) { it.cause }) {
+    // The whole chain is read for a known cause first, because a wrapper around it is an
+    // IOException too and would hide it behind the general sentence.
+    val causes = generateSequence(error) { it.cause }.toList()
+    for (cause in causes) {
         when (cause) {
             is SSLException -> if (isPlainHttpAnswer(cause)) return NOT_SECURE_MESSAGE
             is ProtocolException -> if (UPGRADE_STATUS.containsMatchIn(cause.message.orEmpty())) {
                 return describeConnectionFailure(error, serverUrl)
             }
             is UnknownHostException -> return describeConnectionFailure(error, serverUrl)
-            is IOException -> return NO_MUSIC_ASSISTANT_MESSAGE
+            is ConnectException -> {
+                val port = serverUrl.toHttpUrlOrNull()?.port
+                if (port != null && port != MA_DEFAULT_PORT && isRefused(error)) {
+                    return describeConnectionFailure(cause, serverUrl)
+                }
+            }
         }
+    }
+    if (causes.any { it is IOException && it !is SSLException && it !is ProtocolException }) {
+        return NO_MUSIC_ASSISTANT_MESSAGE
     }
     return describeConnectionFailure(error, serverUrl)
 }
@@ -93,6 +111,14 @@ private fun describeUpgradeStatus(status: Int): String = when (status) {
     HTTP_UNAUTHORIZED, HTTP_FORBIDDEN -> "The server or a proxy in front of it refused access (HTTP $status)."
     in HTTP_BAD_GATEWAY..HTTP_GATEWAY_TIMEOUT -> "The server's proxy could not reach Music Assistant (HTTP $status)."
     else -> "The server refused the connection (HTTP $status)."
+}
+
+// Android raises ConnectException for most connect errors, an unreachable network or host
+// included, so only the errno text tells a refused connection apart: "ECONNREFUSED (Connection
+// refused)" on Android, "Connection refused" on the JVM.
+private fun isRefused(error: Throwable): Boolean = generateSequence(error) { it.cause }.any { cause ->
+    val message = cause.message.orEmpty()
+    message.contains("ECONNREFUSED") || message.contains("Connection refused", ignoreCase = true)
 }
 
 // A TLS handshake sent to a plain http port reads the http answer as a TLS record, which
