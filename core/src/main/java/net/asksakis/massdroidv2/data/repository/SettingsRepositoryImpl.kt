@@ -59,7 +59,14 @@ private val KEY_USERNAME = stringPreferencesKey("username")
 private val KEY_PASSWORD = stringPreferencesKey("password")
 
 // One token and one username per Music Assistant server, named by its server_id.
-private fun serverTokenKey(serverId: String) = stringPreferencesKey("auth_token@$serverId")
+private fun serverTokenKey(serverId: String) = stringPreferencesKey("$SERVER_TOKEN_PREFIX$serverId")
+
+/** The MA servers this device has signed in to or registered its speaker on. */
+internal fun knownServerIds(device: Preferences): Set<String> =
+    device.asMap().keys.mapNotNull { key -> key.name.removePrefix(SERVER_TOKEN_PREFIX).takeIf { it != key.name } }
+        .toSet() + device[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty()
+
+private const val SERVER_TOKEN_PREFIX = "auth_token@"
 private fun serverUsernameKey(serverId: String) = stringPreferencesKey("username@$serverId")
 private val KEY_SERVER_ACCOUNTS_MIGRATED = booleanPreferencesKey("server_accounts_migrated")
 private val KEY_SERVER_ADDRESSES_MIGRATED = booleanPreferencesKey("server_addresses_migrated")
@@ -75,6 +82,9 @@ private fun legacyServerUsedAtKey(serverId: String) = longPreferencesKey("used_a
 private val KEY_SENDSPIN_CLIENT_ID = stringPreferencesKey("sendspin_client_id")
 private val KEY_SENDSPIN_LEGACY_CLIENT_ID = stringPreferencesKey("sendspin_legacy_client_id")
 private val KEY_SENDSPIN_MIGRATED_SERVERS = stringSetPreferencesKey("sendspin_migrated_servers")
+// In the backed-up store, because they describe the database, which Android backup copies too.
+private val KEY_LIBRARY_SYNC_SERVERS = stringSetPreferencesKey("library_sync_servers")
+private val KEY_MA_CACHE_SERVER = stringPreferencesKey("ma_cache_server")
 private val KEY_SENDSPIN_UNPAIRED_SERVERS = stringSetPreferencesKey("sendspin_unpaired_servers")
 private val KEY_SENDSPIN_SYNC_DELAY_MS = stringPreferencesKey("sendspin_sync_delay_ms")
 private val KEY_SENDSPIN_CLOCK_OFFSET_US = stringPreferencesKey("sendspin_server_minus_wall_us")
@@ -463,6 +473,24 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun addSendspinMigratedServer(serverId: String) {
         context.deviceDataStore.edit { it[KEY_SENDSPIN_MIGRATED_SERVERS] = it[KEY_SENDSPIN_MIGRATED_SERVERS].orEmpty() + serverId }
+    }
+
+    override suspend fun addLibrarySyncServer(serverId: String): Set<String> {
+        // The first sync after the update starts from every server this device already knows,
+        // so a first sync on another server than the one used so far does not read the
+        // database as that server's alone. A restored phone has no device store, which is
+        // harmless: the set then starts from the server synced first.
+        val known = knownServerIds(deviceData.first())
+        val prefs = context.dataStore.edit {
+            it[KEY_LIBRARY_SYNC_SERVERS] = (it[KEY_LIBRARY_SYNC_SERVERS] ?: known) + serverId
+        }
+        return prefs[KEY_LIBRARY_SYNC_SERVERS].orEmpty()
+    }
+
+    override val maCacheServer: Flow<String?> = safeData.map { prefs -> prefs[KEY_MA_CACHE_SERVER] }
+
+    override suspend fun setMaCacheServer(serverId: String) {
+        context.dataStore.edit { it[KEY_MA_CACHE_SERVER] = serverId }
     }
 
     override val sendspinUnpairedServers: Flow<Set<String>> = deviceData.map { prefs ->

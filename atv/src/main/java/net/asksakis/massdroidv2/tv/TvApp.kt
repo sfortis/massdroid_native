@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import net.asksakis.massdroidv2.data.repository.MaAnswerCacheGuard
 import net.asksakis.massdroidv2.data.sendspin.OutputRouteKeys
 import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.repository.AcousticRouteCalibration
@@ -28,6 +29,7 @@ class TvApp : Application(), ImageLoaderFactory {
 
     @Inject lateinit var wsClient: MaWebSocketClient
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var maAnswerCacheGuard: MaAnswerCacheGuard
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -57,6 +59,9 @@ class TvApp : Application(), ImageLoaderFactory {
             }
             wsClient.markStartupReady()
         }
+
+        // Clears the cached MA answers when a connection reaches another MA server.
+        maAnswerCacheGuard.start()
 
         // The global sync delay became an output delay per output. A negative
         // value (played earlier) carries over to HDMI, the output it was set

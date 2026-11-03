@@ -296,6 +296,19 @@ interface SettingsRepository : TrustedServerStore {
     suspend fun addSendspinUnpairedServer(serverId: String)
     suspend fun removeSendspinUnpairedServer(serverId: String)
     suspend fun clearSendspinUnpairedServers()
+
+    /**
+     * Records that the library sync ran against [serverId] and returns every MA server it has
+     * run against, this one included. The local artist table holds the library ids of all of
+     * them, and the database has no column that says which server a row came from. The first
+     * call starts from every server this device already has an account on.
+     */
+    suspend fun addLibrarySyncServer(serverId: String): Set<String>
+
+    /** The MA server the cached MA answers in the database belong to, or null before the first. */
+    val maCacheServer: Flow<String?>
+
+    suspend fun setMaCacheServer(serverId: String)
     suspend fun setLibraryDisplayMode(tab: LibraryTabKey, mode: LibraryDisplayMode)
     suspend fun setLibrarySortOption(tab: Int, option: SortOption)
     suspend fun setLibrarySortDescending(tab: Int, descending: Boolean)

@@ -57,6 +57,7 @@ class DiscoveryGenreEnrichmentTest {
         musicRepository = mockk(relaxed = true),
         transactions = transactions,
         genreSpellings = GenreSpellingResolver(dao),
+        wsClient = mockk(relaxed = true),
     )
 
     private fun gap(name: String, uri: String, mbid: String? = null) =

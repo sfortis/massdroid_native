@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import net.asksakis.massdroidv2.data.repository.MaAnswerCacheGuard
 import net.asksakis.massdroidv2.data.signin.SignInSession
 import net.asksakis.massdroidv2.data.websocket.ConnectionState
 import net.asksakis.massdroidv2.data.update.AppUpdateChecker
@@ -30,6 +31,9 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var signInSession: SignInSession
+
+    @Inject
+    lateinit var maAnswerCacheGuard: MaAnswerCacheGuard
 
     @Inject
     lateinit var playHistoryRepository: PlayHistoryRepository
@@ -151,6 +155,8 @@ class MassDroidApp : Application(), ImageLoaderFactory {
 
         // Saves the token of every connection and forgets one the server refused.
         signInSession.start()
+        // Clears the cached MA answers when a connection reaches another MA server.
+        maAnswerCacheGuard.start()
         appScope.launch {
             wsClient.connectionState.collect { state ->
                 when (state) {
@@ -181,9 +187,10 @@ class MassDroidApp : Application(), ImageLoaderFactory {
                         // critical-path queries. Cancel any previously scheduled sync
                         // so flap reconnects don't stack parallel launches.
                         genreEnrichmentJob?.cancel()
+                        val serverId = state.serverInfo.serverId
                         genreEnrichmentJob = appScope.launch {
                             delay(genreEnrichmentStartupDelayMs)
-                            libraryGenreEnricher.enrichAllUnenriched()
+                            libraryGenreEnricher.enrichAllUnenriched(serverId)
                         }
                     }
                     is ConnectionState.Error -> {

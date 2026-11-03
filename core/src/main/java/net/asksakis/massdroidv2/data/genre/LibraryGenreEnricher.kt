@@ -17,6 +17,8 @@ import net.asksakis.massdroidv2.data.database.GenreEntity
 import net.asksakis.massdroidv2.data.database.PlayHistoryDao
 import net.asksakis.massdroidv2.data.musicbrainz.GenreOutcome
 import net.asksakis.massdroidv2.data.database.TransactionRunner
+import net.asksakis.massdroidv2.data.websocket.ConnectionState
+import net.asksakis.massdroidv2.data.websocket.MaWebSocketClient
 import net.asksakis.massdroidv2.domain.model.Artist
 import net.asksakis.massdroidv2.domain.recommendation.canonicalKey
 import net.asksakis.massdroidv2.domain.recommendation.genreKey
@@ -36,7 +38,8 @@ class LibraryGenreEnricher @Inject constructor(
     private val settingsRepository: net.asksakis.massdroidv2.domain.repository.SettingsRepository,
     private val musicRepository: net.asksakis.massdroidv2.domain.repository.MusicRepository,
     private val transactions: TransactionRunner,
-    private val genreSpellings: GenreSpellingResolver
+    private val genreSpellings: GenreSpellingResolver,
+    private val wsClient: MaWebSocketClient
 ) {
     data class EnrichmentProgress(
         val total: Int = 0,
@@ -160,7 +163,7 @@ class LibraryGenreEnricher @Inject constructor(
      * search inside the resolver.
      */
     @Suppress("TooGenericExceptionCaught")
-    fun enrichAllUnenriched() {
+    fun enrichAllUnenriched(serverId: String) {
         if (enrichJob?.isActive == true) {
             // A UI-driven enrichInBackground holds enrichJob, and that path never
             // schedules the discovery sweep. Returning outright here skipped
@@ -172,7 +175,7 @@ class LibraryGenreEnricher @Inject constructor(
         }
         enrichJob = scope.launch {
             try {
-                syncLibraryArtists()
+                syncLibraryArtists(serverId)
                 revalidateNameResolvedIdentities()
                 val allGaps = dao.getArtistsWithoutGenres()
                 // An artist MusicBrainz has already said it does not know is not
@@ -407,15 +410,38 @@ class LibraryGenreEnricher @Inject constructor(
      * occupant changed is repointed, its genres are dropped to be rebuilt from
      * MusicBrainz for whoever lives there now, and the previous occupant's plays,
      * feedback and block move off it (see `reassignLibraryArtistUri`).
+     *
+     * That holds only while the table has one server's ids. Each MA server numbers its own
+     * library, and the table has no column that says which server a row came from, so after a
+     * switch to another server nearly every id names someone else there. Treating those as
+     * reused wiped the plays and feedback of every colliding artist on each switch. Once a
+     * second server ([serverId]) has been synced, a reused id is left as it is. A server counts
+     * once its listing answered, and it stays counted, so a single sign-in to a test server
+     * turns the repoint off for good. That only leaves a stale name behind, and the database
+     * per server that replaces this will not need it.
+     *
+     * The listing comes from whichever server is connected, so the sync stops as soon as that
+     * is no longer [serverId]: another server's page would otherwise be read with this one's
+     * decision.
      */
-    private suspend fun syncLibraryArtists() {
+    @VisibleForTesting
+    internal suspend fun syncLibraryArtists(serverId: String) {
         try {
+            var repointReused: Boolean? = null
             var offset = 0
             var inserted = 0
             var repointed = 0
+            var leftAlone = 0
             while (true) {
                 val batch = musicRepository.getArtists(limit = PAGE_SIZE, offset = offset, orderBy = "name")
+                if (!connectedTo(serverId)) {
+                    Log.d(TAG, "Library sync stopped: the app is no longer connected to the server it started on")
+                    return
+                }
                 if (batch.isEmpty()) break
+                val repoint = repointReused
+                    ?: repointsReusedLibraryIds(settingsRepository.addLibrarySyncServer(serverId), serverId)
+                        .also { repointReused = it }
                 val known = dao.getArtistsByUris(batch.map { it.uri }).associateBy { it.uri }
                 for (artist in batch) {
                     if (artist.name.isBlank()) continue
@@ -443,10 +469,12 @@ class LibraryGenreEnricher @Inject constructor(
                             LibraryUriChange.SAME -> Unit
                             LibraryUriChange.RENAMED ->
                                 dao.replaceArtistIdentity(artist.uri, artist.name, artist.mbid)
-                            LibraryUriChange.REUSED -> {
+                            LibraryUriChange.REUSED -> if (repoint) {
                                 Log.d(TAG, "Library id reused: ${artist.uri} was '${local.name}', now '${artist.name}'")
                                 dao.reassignLibraryArtistUri(artist.uri, local.name, artist.name, artist.mbid)
                                 repointed++
+                            } else {
+                                leftAlone++
                             }
                         }
                     }
@@ -470,10 +498,20 @@ class LibraryGenreEnricher @Inject constructor(
             if (inserted > 0 || repointed > 0) {
                 Log.d(TAG, "Library sync: $inserted new, $repointed uris repointed to a new artist")
             }
+            if (leftAlone > 0) {
+                Log.d(
+                    TAG,
+                    "Library sync: $leftAlone ids name another artist here, left alone because " +
+                        "the database holds more than one server's ids"
+                )
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Library artist sync failed: ${e.message}")
         }
     }
+
+    private fun connectedTo(serverId: String): Boolean =
+        (wsClient.connectionState.value as? ConnectionState.Connected)?.serverInfo?.serverId == serverId
 
     companion object {
         private const val TAG = "GenreEnricher"
@@ -489,6 +527,16 @@ class LibraryGenreEnricher @Inject constructor(
         private const val DELETE_CHUNK = 400
     }
 }
+
+/**
+ * Whether a library id that names another artist on the server is repointed (see
+ * `LibraryGenreEnricher.syncLibraryArtists`). Only while every sync so far ran against
+ * [current]: with a second server in the table, a different name at the same id is usually the
+ * other server's artist, not a reused id.
+ */
+@VisibleForTesting
+internal fun repointsReusedLibraryIds(syncedServers: Set<String>, current: String): Boolean =
+    syncedServers == setOf(current)
 
 /** What happened to a library uri between the local row and the server's listing. */
 internal enum class LibraryUriChange { SAME, RENAMED, REUSED }
